@@ -306,6 +306,38 @@
     Historique des boucles
   </h2>
 
+  {# ─── Filet de sécurité (loop-backup) ──────────────────────────────
+     The twice-daily backup timer's verdict per dept: loop alive → skip,
+     loop dead/parked → one backup tick. {{OPERATOR}} msg 1171, 2026-06-01. #}
+  <div class="backup-net">
+    <div class="backup-net-head">
+      <span class="backup-net-title">Filet de sécurité</span>
+      <span class="backup-net-sub">sauvegarde planifiée · 08:00 + 14:00 (Paris)</span>
+    </div>
+    {% if latest_backup %}
+      <div class="backup-latest backup-latest--{{ 'ok' if latest_backup.ok else 'fail' }}">
+        <span class="backup-dot" aria-hidden="true"></span>
+        <span class="backup-verdict">{{ latest_backup.verdict_fr }}</span>
+        <span class="backup-when">{{ latest_backup.ts }}{% if latest_backup.age_human %} · boucle vue il y a {{ latest_backup.age_human }}{% endif %}</span>
+      </div>
+      {% if backup_events|length > 1 %}
+        <details class="backup-recent">
+          <summary>{{ backup_events|length }} derniers passages</summary>
+          <ul class="backup-events">
+            {% for ev in backup_events %}
+              <li class="backup-event backup-event--{{ 'ok' if ev.ok else 'fail' }}">
+                <span class="backup-event-ts">{{ ev.ts }}</span>
+                <span class="backup-event-verdict">{{ ev.verdict_fr }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+    {% else %}
+      <p class="backup-empty">Aucun passage enregistré pour l'instant — le filet se déclenchera au prochain créneau (08:00 / 14:00 Paris) et le résultat s'affichera ici.</p>
+    {% endif %}
+  </div>
+
   {% if loop_runs %}
     <ul class="loop-runs">
       {% for run in loop_runs %}

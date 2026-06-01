@@ -1494,6 +1494,96 @@ code, .code {
 }
 .loop-extra-label { font-style: italic; margin-right: 6px; }
 
+/* ─── Filet de sécurité / loop-backup ({{OPERATOR}} msg 1171) ──────────── */
+.backup-net {
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--sage-soft);
+  border-radius: 4px;
+  padding: 12px 18px;
+  margin-bottom: 20px;
+  background: var(--paper-soft);
+}
+.backup-net-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.backup-net-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink-soft);
+}
+.backup-net-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+}
+.backup-latest {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+}
+.backup-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--sage);
+  align-self: center;
+  flex: 0 0 auto;
+}
+.backup-latest--fail .backup-dot { background: #a3503f; }
+.backup-verdict { color: var(--body); }
+.backup-latest--fail .backup-verdict { color: #a3503f; font-weight: 600; }
+.backup-when {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+}
+.backup-empty {
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--body-muted);
+  margin: 0;
+}
+.backup-recent { margin-top: 8px; }
+.backup-recent > summary {
+  font-size: 12px;
+  color: var(--ochre-deep);
+  cursor: pointer;
+}
+.backup-events { list-style: none; margin: 8px 0 0; padding: 0; }
+.backup-event {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12.5px;
+  padding: 2px 0;
+}
+.backup-event-ts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+  flex: 0 0 auto;
+}
+.backup-event--fail .backup-event-verdict { color: #a3503f; }
+.backup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--body-muted);
+  margin: -8px 0 28px;
+  padding: 7px 14px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--sage-soft);
+  border-radius: 3px;
+}
+.backup-banner--fail { border-left-color: #a3503f; color: #a3503f; }
+
 /* Output viewer page */
 .output-breadcrumb {
   font-size: 13px;

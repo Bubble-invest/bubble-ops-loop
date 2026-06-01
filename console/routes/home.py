@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import dept_registry, github_reader
+from console.services import backup_history, dept_registry, github_reader
 from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
@@ -36,6 +36,9 @@ def home(request: Request):
             "gate_groups": _group_gates_by_kind(gates),
         })
     total_gates = sum(c["gate_count"] for c in columns)
+    # Safety-net roll-up — last loop-backup fire across all depts ({{OPERATOR}} msg
+    # 1171). One compact banner so the operator sees the net is live + acting.
+    backup_rollup = backup_history.rollup()
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -44,5 +47,6 @@ def home(request: Request):
             "total_gates": total_gates,
             "live_count": len([c for c in columns if c["dept"].is_live]),
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
+            "backup_rollup": backup_rollup,
         },
     )

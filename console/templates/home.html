@@ -14,6 +14,19 @@
   </p>
 </section>
 
+{# ─── Filet de sécurité — roll-up ({{OPERATOR}} msg 1171) ──────────────
+   The loop-backup timer (08:00 + 14:00 Paris) catches any /loop that
+   died. Shown only once it has fired at least once. #}
+{% if backup_rollup and backup_rollup.any_activity %}
+<p class="backup-banner{% if backup_rollup.failed %} backup-banner--fail{% endif %}">
+  <span class="backup-dot" aria-hidden="true"></span>
+  Filet de sécurité · dernier passage {{ backup_rollup.last_fire_ts }} —
+  {{ backup_rollup.healthy }} boucle{{ '' if backup_rollup.healthy == 1 else 's' }} active{{ '' if backup_rollup.healthy == 1 else 's' }}
+  {%- if backup_rollup.backed_up %}, {{ backup_rollup.backed_up }} sauvegardée{{ '' if backup_rollup.backed_up == 1 else 's' }}{% endif %}
+  {%- if backup_rollup.failed %} · {{ backup_rollup.failed }} en échec{% endif %}.
+</p>
+{% endif %}
+
 {# ─── Section 1 — Décisions qu'on attend de toi ───────────────── #}
 <section class="cabinet-section" aria-labelledby="decisions-heading">
   <h2 id="decisions-heading" class="section-heading">

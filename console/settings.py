@@ -13,6 +13,14 @@ PROJECT_ROOT = CONSOLE_DIR.parent  # bubble-ops-loop/
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 BOOTSTRAP_SCRIPT = SCRIPTS_DIR / "bootstrap-dept.sh"
 
+# loop-backup event log — the safety-net timer (loop-backup.sh) appends one
+# JSON line per dept per fire here; the cockpit reads it back to surface the
+# result in the front end ({{OPERATOR}} msg 1171). Keep the default in sync with
+# loop-backup.sh's BUBBLE_BACKUP_LOG.
+BACKUP_LOG_PATH = Path(
+    os.environ.get("BUBBLE_BACKUP_LOG", str(PROJECT_ROOT / "state" / "loop-backup.jsonl"))
+)
+
 # ---- Env-var driven knobs --------------------------------------------
 
 # Bearer token — operator MUST set this in prod. Tests inject via conftest.

@@ -7,13 +7,20 @@ skip) or dead/parked (stale heartbeat → run ONE backup dispatch tick).
 This module is the PURE decision + a small heartbeat-locator helper. The
 bash wrapper (loop-backup.sh) does the side effects: flock mutex, the
 `claude -p` one-tick run, and Telegram notify.
+
+It also owns the EVENT LOG ({{OPERATOR}} msg 1171, 2026-06-01): every fire appends
+one JSON line per dept to a central jsonl so the cockpit can surface the
+safety-net result in the front end (was journal-only, invisible to the UI).
+Writer lives here; the console reads it back via the same `read_events`.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import glob
+import json
 import os
 import re
-from typing import Optional
+from typing import List, Optional
 
 
 # An ISO-8601 UTC timestamp at the start of a heartbeat line, e.g.
@@ -110,3 +117,98 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
         if best is None or ts_epoch > best:
             best = ts_epoch
     return best
+
+
+# ─── Event log ───────────────────────────────────────────────────────────
+#
+# Each fire of the backup timer appends one line per dept. The cockpit reads
+# this back to render the "Filet de sécurité" block on each dept page + the
+# home roll-up. Kept dead-simple (append-only JSONL) so a half-written line
+# never corrupts the file and the reader can skip it.
+
+
+def now_iso() -> str:
+    """Current time as an ISO-8601 UTC second-resolution stamp (matches the
+    heartbeat-line format the rest of the system uses)."""
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def format_event(
+    slug: str,
+    action: str,
+    reason: str,
+    age_sec: Optional[int] = None,
+    exit_code: Optional[int] = None,
+    ts: Optional[str] = None,
+) -> dict:
+    """Build one event record. `ts` defaults to now (UTC ISO).
+
+    action is "skip" (loop alive — no tick) or "run" (loop stale — a backup
+    tick was attempted). `exit_code` is set only for runs.
+    """
+    ev: dict = {
+        "ts": ts or now_iso(),
+        "slug": slug,
+        "action": action,
+        "reason": reason,
+    }
+    if age_sec is not None:
+        ev["age_sec"] = int(age_sec)
+    if exit_code is not None:
+        ev["exit"] = int(exit_code)
+    return ev
+
+
+def append_event(path: str, event: dict) -> None:
+    """Append one event as a JSON line, creating parent dirs as needed."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_events(
+    path: str,
+    slug: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[dict]:
+    """Read the event log (chronological, oldest→newest).
+
+    Skips blank and unparseable lines (a half-written tail never breaks the
+    reader). Optionally filter by `slug` and keep only the last `limit`.
+    Returns [] if the file is absent.
+    """
+    if not os.path.exists(path):
+        return []
+    out: List[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                if slug is not None and ev.get("slug") != slug:
+                    continue
+                out.append(ev)
+    except OSError:
+        return []
+    if limit is not None and limit >= 0:
+        out = out[-limit:]
+    return out
+
+
+def latest_per_dept(events: List[dict]) -> dict:
+    """Reduce a chronological event list to {slug: most-recent-event}."""
+    latest: dict = {}
+    for ev in events:
+        s = ev.get("slug")
+        if s:
+            latest[s] = ev
+    return latest

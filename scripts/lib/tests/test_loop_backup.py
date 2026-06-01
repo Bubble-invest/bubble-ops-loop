@@ -22,9 +22,17 @@ TDD: written BEFORE the function exists. RED -> GREEN.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from scripts.lib.loop_backup import backup_decision
+from scripts.lib.loop_backup import (
+    append_event,
+    backup_decision,
+    format_event,
+    latest_per_dept,
+    read_events,
+)
 
 
 HOUR = 3600
@@ -88,3 +96,77 @@ def test_threshold_is_respected_per_call():
     hb = now - 30 * 60  # 30 min ago
     assert backup_decision(hb, now, 20 * 60)["action"] == "run"   # 20m thresh → stale
     assert backup_decision(hb, now, 60 * 60)["action"] == "skip"  # 60m thresh → fresh
+
+
+# ─── Event log ({{OPERATOR}} msg 1171) ──────────────────────────────────────────
+#
+# Every fire appends one JSON line per dept so the cockpit can surface the
+# safety-net result in the front end. Reader/writer share this module.
+
+
+def test_format_event_minimal():
+    ev = format_event("maya", "skip", "loop alive", ts="2026-06-01T12:00:00Z")
+    assert ev == {
+        "ts": "2026-06-01T12:00:00Z",
+        "slug": "maya",
+        "action": "skip",
+        "reason": "loop alive",
+    }
+
+
+def test_format_event_run_carries_age_and_exit():
+    ev = format_event("tony", "run", "loop stale", age_sec=9000, exit_code=0,
+                      ts="2026-06-01T12:00:01Z")
+    assert ev["action"] == "run"
+    assert ev["age_sec"] == 9000
+    assert ev["exit"] == 0
+
+
+def test_append_then_read_roundtrip(tmp_path):
+    path = str(tmp_path / "state" / "loop-backup.jsonl")  # parent created on write
+    append_event(path, format_event("maya", "skip", "alive", ts="2026-06-01T08:00:00Z"))
+    append_event(path, format_event("tony", "run", "stale", age_sec=9000,
+                                    exit_code=0, ts="2026-06-01T08:00:01Z"))
+    events = read_events(path)
+    assert [e["slug"] for e in events] == ["maya", "tony"]      # chronological
+    assert events[1]["exit"] == 0
+
+
+def test_read_events_missing_file_is_empty():
+    assert read_events("/no/such/path.jsonl") == []
+
+
+def test_read_events_skips_blank_and_garbage_lines(tmp_path):
+    path = tmp_path / "log.jsonl"
+    path.write_text(
+        json.dumps({"ts": "t1", "slug": "maya", "action": "skip", "reason": "x"}) + "\n"
+        "\n"                                   # blank
+        "not json at all\n"                    # garbage — must be skipped
+        "[1,2,3]\n"                            # valid json but not a dict — skipped
+        + json.dumps({"ts": "t2", "slug": "tony", "action": "run", "reason": "y"}) + "\n",
+        encoding="utf-8",
+    )
+    events = read_events(str(path))
+    assert [e["slug"] for e in events] == ["maya", "tony"]
+
+
+def test_read_events_filter_by_slug_and_limit(tmp_path):
+    path = tmp_path / "log.jsonl"
+    for i in range(5):
+        append_event(str(path), format_event("maya", "skip", f"r{i}", ts=f"t{i}"))
+        append_event(str(path), format_event("tony", "skip", f"r{i}", ts=f"t{i}"))
+    maya = read_events(str(path), slug="maya")
+    assert len(maya) == 5 and all(e["slug"] == "maya" for e in maya)
+    last2 = read_events(str(path), slug="maya", limit=2)
+    assert [e["reason"] for e in last2] == ["r3", "r4"]
+
+
+def test_latest_per_dept_keeps_most_recent():
+    events = [
+        {"ts": "t1", "slug": "maya", "action": "run", "reason": "a"},
+        {"ts": "t2", "slug": "maya", "action": "skip", "reason": "b"},
+        {"ts": "t3", "slug": "tony", "action": "skip", "reason": "c"},
+    ]
+    latest = latest_per_dept(events)
+    assert latest["maya"]["reason"] == "b"     # second maya event wins
+    assert latest["tony"]["reason"] == "c"
