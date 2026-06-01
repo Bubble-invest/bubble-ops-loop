@@ -32,10 +32,19 @@ CONCIERGES = ("morty", "claudette")
 
 @dataclass
 class SessionTurn:
-    """One human-readable turn from a session transcript."""
+    """One human-readable turn from a session transcript.
+
+    kind:
+      - "message" → real prose the agent said (text content). ``text`` set.
+      - "tool"    → a tool action. ``tool_name`` + ``detail`` set, ``text`` = "".
+    Pure tool-result / empty turns are dropped upstream (mechanical noise).
+    """
     ts: str
-    role: str            # "assistant" | "user"
-    text: str            # rendered text (tool calls summarized)
+    role: str             # "assistant" | "user"
+    kind: str = "message"  # "message" | "tool"
+    text: str = ""         # prose (message kind)
+    tool_name: str = ""    # tool kind
+    detail: str = ""       # tool kind — a short useful detail (file/command/url)
 
 
 @dataclass
@@ -122,27 +131,62 @@ def _summary(name: str, ws: str) -> ConciergeSummary:
     )
 
 
-def _render_content(content: Any) -> str:
-    """Turn a message 'content' field into a short human-readable string.
+# Per-tool: pick the most informative single field for a compact detail line.
+_TOOL_DETAIL_KEYS = {
+    "Bash": ("command",),
+    "Edit": ("file_path",),
+    "Write": ("file_path",),
+    "Read": ("file_path",),
+    "NotebookEdit": ("notebook_path",),
+    "Glob": ("pattern",),
+    "Grep": ("pattern",),
+    "WebFetch": ("url",),
+    "WebSearch": ("query",),
+}
 
-    Tool calls are summarized as ``[tool: name]``; tool results as
-    ``[result]``; text is passed through (trimmed)."""
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
+
+def _tool_detail(name: str, inp: Any) -> str:
+    """A short, useful one-liner for a tool call (the file, command, url…)."""
+    if not isinstance(inp, dict):
         return ""
-    parts: List[str] = []
+    for key in _TOOL_DETAIL_KEYS.get(name, ()):
+        v = inp.get(key)
+        if v:
+            s = str(v).strip().replace("\n", " ")
+            # For file paths, the basename is what the operator cares about.
+            if key.endswith("path") and "/" in s:
+                s = s.rsplit("/", 1)[-1]
+            return s[:120]
+    # Fallback: first short string value, if any.
+    for v in inp.values():
+        if isinstance(v, str) and v.strip():
+            return v.strip().replace("\n", " ")[:120]
+    return ""
+
+
+def _classify(content: Any) -> list:
+    """Turn a message 'content' into a list of (kind, payload) classified
+    items. ``message`` → text str; ``tool`` → (name, detail). Pure
+    tool_result items are dropped (mechanical noise)."""
+    if isinstance(content, str):
+        s = content.strip()
+        return [("message", s)] if s else []
+    if not isinstance(content, list):
+        return []
+    out: list = []
     for c in content:
         if not isinstance(c, dict):
             continue
         t = c.get("type")
         if t == "text":
-            parts.append((c.get("text") or "").strip())
+            s = (c.get("text") or "").strip()
+            if s:
+                out.append(("message", s))
         elif t == "tool_use":
-            parts.append(f"[tool: {c.get('name', '?')}]")
-        elif t == "tool_result":
-            parts.append("[result]")
-    return " ".join(p for p in parts if p).strip()
+            name = c.get("name", "?")
+            out.append(("tool", (name, _tool_detail(name, c.get("input")))))
+        # tool_result → dropped (noise)
+    return out
 
 
 def read_recent_session(
@@ -177,9 +221,13 @@ def read_recent_session(
         role = msg.get("role", "")
         if role not in ("assistant", "user"):
             continue
-        text = _render_content(msg.get("content"))
-        if not text:
-            continue
         ts = (obj.get("timestamp") or "")[:19]
-        turns.append(SessionTurn(ts=ts, role=role, text=text))
+        for kind, payload in _classify(msg.get("content")):
+            if kind == "message":
+                turns.append(SessionTurn(ts=ts, role=role,
+                                         kind="message", text=payload))
+            elif kind == "tool":
+                name, detail = payload
+                turns.append(SessionTurn(ts=ts, role=role, kind="tool",
+                                         tool_name=name, detail=detail))
     return turns[-n:]
