@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ concierge.name|capitalize }} — concierge{% endblock %}
+{% block content %}
+
+<header class="dept-header">
+  <h1 class="dept-title">{{ concierge.name|capitalize }}</h1>
+  <p class="dept-subtitle">
+    Concierge — assistant réactif (pas un département à boucle).
+    <br>
+    <span class="slug-ref">{{ concierge.workspace }}</span>
+  </p>
+</header>
+
+<div class="gate-meta" style="margin-bottom:18px;">
+  <div>état du service
+    <b style="color: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};">
+      {{ status }}
+    </b>
+  </div>
+  <div>dernière activité <b>{{ concierge.last_activity_iso or '—' }}</b></div>
+</div>
+
+{# ─── Live session view ───────────────────────────────────────────
+   The raw terminal is discarded (script → /dev/null), so we tail the
+   session transcript JSONL instead. HTMX re-fetches every 5s so the
+   feed updates live while the concierge works. #}
+<section>
+  <h2 class="section-title" style="margin-bottom:8px;">Session en direct</h2>
+  <p class="muted-italic" style="font-size:13px; margin:0 0 10px;">
+    Les derniers tours de {{ concierge.name|capitalize }} — rafraîchi
+    automatiquement toutes les 5 s.
+  </p>
+
+  <div id="concierge-session"
+       hx-get="/concierge/{{ concierge.name }}/session"
+       hx-trigger="every 5s"
+       hx-swap="innerHTML">
+    {% include "partials/concierge_session.html" %}
+  </div>
+</section>
+
+<p style="margin-top:24px;">
+  <a href="/" class="discreet-link">← retour à l'équipe</a>
+</p>
+
+{% endblock %}

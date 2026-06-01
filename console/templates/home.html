@@ -111,6 +111,34 @@
     {% endfor %}
     </div>
   {% endif %}
+
+  {# ─── Concierges (Morty, Claudette) — reactive assistants, not
+       loop-depts. Own sub-section with a link to their live page. #}
+  {% if concierges %}
+    <h3 class="section-subheading" style="margin-top:22px;">Les concierges</h3>
+    <p class="muted-italic" style="font-size:13px; margin:0 0 10px;">
+      Assistants réactifs — pas de boucle de département. Clique pour voir
+      leur état et leur session en direct.
+    </p>
+    <div class="equipe-list">
+    {% for c in concierges %}
+      {% set status = c.metadata.get('service_status', 'unknown') %}
+      {% set initial = c.name[0]|upper %}
+      {% set state_html %}
+        <span class="en-poste-dot" aria-hidden="true"
+              style="background: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};"></span>
+        <span class="en-poste-label">{{ 'En service' if status == 'active' else status }}</span>
+        {% if c.last_activity_iso %} · actif {{ c.last_activity_iso }}{% endif %}
+      {% endset %}
+      {% with variant='live', name=c.name|capitalize, initial=initial,
+              href="/concierge/" ~ c.name,
+              role="Concierge — assistant réactif.",
+              state_html=state_html, cta="Voir la session →" %}
+        {% include "components/collegue-card.html" %}
+      {% endwith %}
+    {% endfor %}
+    </div>
+  {% endif %}
 </section>
 
 {# ─── Section 3 — Cette semaine en bref ───────────────────────── #}

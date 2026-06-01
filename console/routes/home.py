@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import backup_history, dept_registry, github_reader
+from console.services import backup_history, concierge_reader, dept_registry, github_reader
 from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
@@ -39,6 +39,9 @@ def home(request: Request):
     # Safety-net roll-up — last loop-backup fire across all depts ({{OPERATOR}} msg
     # 1171). One compact banner so the operator sees the net is live + acting.
     backup_rollup = backup_history.rollup()
+    # Concierges (Morty, Claudette) — reactive assistants, not loop-depts;
+    # listed in their own home sub-section with a link to their live page.
+    concierges = concierge_reader.list_concierges()
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -48,5 +51,6 @@ def home(request: Request):
             "live_count": len([c for c in columns if c["dept"].is_live]),
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
             "backup_rollup": backup_rollup,
+            "concierges": concierges,
         },
     )
