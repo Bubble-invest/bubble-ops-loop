@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from console.services import (
+    backup_history,
     dept_registry,
     github_reader,
     loop_history,
@@ -62,6 +63,11 @@ def dept_detail(slug: str, request: Request):
     # Loop-run history — one entry per active day, with clickable outputs.
     # Joris msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
+    # Safety-net (loop-backup) events — the twice-daily backup timer's verdict
+    # per fire: loop alive → skip, or loop dead/parked → one backup tick.
+    # Joris msg 1171, 2026-06-01.
+    backup_events = backup_history.recent_backups(slug)
+    latest_backup = backup_history.latest_backup(slug)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -80,6 +86,8 @@ def dept_detail(slug: str, request: Request):
             "whiteboard": whiteboard,
             "whiteboard_graphs": whiteboard_graphs,
             "loop_runs": loop_runs,
+            "backup_events": backup_events,
+            "latest_backup": latest_backup,
         },
     )
 

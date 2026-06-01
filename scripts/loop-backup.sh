@@ -33,9 +33,30 @@ REPO_ROOT="${BUBBLE_OPS_LOOP_ROOT:-/home/claude/bubble-ops-loop}"
 PY="${REPO_ROOT}/venv/bin/python"
 LOCK_DIR="/run/lock"
 DRY_RUN="${BUBBLE_BACKUP_DRY_RUN:-0}"
+# Event log the cockpit reads to surface this safety net in the front end
+# (Joris msg 1171). Keep in sync with console.settings.BACKUP_LOG_PATH.
+BACKUP_LOG="${BUBBLE_BACKUP_LOG:-${REPO_ROOT}/state/loop-backup.jsonl}"
 
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(TS)] [loop-backup] $*"; }
+
+# Append one event to the cockpit log. Never fatal — a logging failure must
+# not abort the safety net itself.
+emit_event() {
+    local slug="$1" action="$2" reason="$3" age="${4:-}" exit_code="${5:-}"
+    "$PY" - "$BACKUP_LOG" "$slug" "$action" "$reason" "$age" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write event to $BACKUP_LOG"
+import sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.loop_backup import format_event, append_event
+path, slug, action, reason, age, exit_code = sys.argv[1:7]
+ev = format_event(
+    slug, action, reason,
+    age_sec=int(age) if age not in ("", "None") else None,
+    exit_code=int(exit_code) if exit_code not in ("", "None") else None,
+)
+append_event(path, ev)
+PYEOF
+}
 
 # The single-tick prompt. Explicitly ONE tick, no /loop.
 read -r -d '' TICK_PROMPT <<'PROMPT' || true
@@ -102,7 +123,8 @@ for slug in "${DEPTS[@]}"; do
         log "$slug: SKIP — workdir $workdir not found"
         continue
     fi
-    # Pure decision (heartbeat freshness).
+    # Pure decision (heartbeat freshness). Emits action, reason, age_sec
+    # (tab-separated) so we can record age in the cockpit event.
     decision="$("$PY" - "$workdir/outputs" "$STALE_AFTER_SEC" <<'PYEOF'
 import sys, time
 sys.path.insert(0, "/home/claude/bubble-ops-loop")
@@ -110,17 +132,30 @@ from scripts.lib.loop_backup import latest_heartbeat_epoch, backup_decision
 outputs, stale = sys.argv[1], int(sys.argv[2])
 hb = latest_heartbeat_epoch(outputs)
 d = backup_decision(hb, time.time(), stale)
-print(d["action"] + "\t" + d["reason"])
+print(d["action"] + "\t" + d["reason"] + "\t" + ("" if d["age_sec"] is None else str(d["age_sec"])))
 PYEOF
 )"
-    action="${decision%%$'\t'*}"
-    reason="${decision#*$'\t'}"
+    action="$(cut -f1 <<<"$decision")"
+    reason="$(cut -f2 <<<"$decision")"
+    age="$(cut -f3 <<<"$decision")"
     if [[ "$action" == "skip" ]]; then
         log "$slug: skip — $reason"
+        emit_event "$slug" "skip" "$reason" "$age"
         continue
     fi
     log "$slug: $reason"
-    run_backup_tick "$slug" "$workdir" "$envfile" || OVERALL=1
+    if [[ "$DRY_RUN" == "1" ]]; then
+        # Record the decision even in dry-run so a smoke test of the schedule
+        # shows up in the cockpit, without spending a real tick.
+        emit_event "$slug" "skip" "DRY_RUN — would run a backup tick ($reason)" "$age"
+        continue
+    fi
+    if run_backup_tick "$slug" "$workdir" "$envfile"; then
+        emit_event "$slug" "run" "$reason" "$age" 0
+    else
+        OVERALL=1
+        emit_event "$slug" "run" "$reason" "$age" 1
+    fi
 done
 
 log "done (depts=${DEPTS[*]})"

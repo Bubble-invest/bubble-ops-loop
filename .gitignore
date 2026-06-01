@@ -20,3 +20,5 @@ __pycache__/
 
 # Local lock/state
 *.lock
+# loop-backup runtime event log (cockpit reads it; per-box, not versioned)
+state/
