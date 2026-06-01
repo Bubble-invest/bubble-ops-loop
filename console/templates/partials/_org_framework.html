@@ -1,24 +1,14 @@
-{% extends "base.html" %}
-{% block title %}Le cadre — Cabinet d'éclosion{% endblock %}
-{% block content %}
-
-<section class="page-hero">
-  <h1 class="page-hero-title">Le cadre</h1>
-  <p class="page-hero-lede">
-    Comment l'organisation est faite : qui décide, qui exécute, et la
-    journée-type que chaque département répète.
-  </p>
-</section>
+{# Org-framework flowchart — included in the Carnet de bord page.
+   Expects: management, ops, concierges, layers. Joris msg 1183/1188. #}
 
 {# ─── Org chart : Principal → Management → Ops, + Concierges à côté ─── #}
 <section class="cabinet-section" aria-labelledby="fw-org-heading">
   <h2 id="fw-org-heading" class="section-heading">
-    <span class="section-heading-number">1.</span>
+    <span class="section-heading-number">2.</span>
     La hiérarchie
   </h2>
 
   <div class="fw-chart">
-    {# Principal #}
     <div class="fw-tier">
       <div class="fw-node fw-node--principal">
         <span class="fw-node-role">Principal</span>
@@ -31,7 +21,6 @@
       <span class="fw-link-label">↓ directives (PR)&nbsp;&nbsp;·&nbsp;&nbsp;exports + KPIs ↑</span>
     </div>
 
-    {# Management #}
     <div class="fw-tier">
       {% if management %}
         {% for d in management %}
@@ -52,7 +41,6 @@
 
     <div class="fw-link fw-link--down"><span class="fw-link-label">↓</span></div>
 
-    {# Ops #}
     <div class="fw-tier fw-tier--ops">
       {% if ops %}
         {% for d in ops %}
@@ -70,7 +58,6 @@
     </div>
   </div>
 
-  {# Concierges — beside the loop, reactive #}
   <div class="fw-concierges">
     <span class="fw-concierges-label">À côté, au service du Principal &amp; de l'équipe —</span>
     {% for c in concierges %}
@@ -83,7 +70,7 @@
 {# ─── The 4-layer daily loop every dept runs ─────────────────────── #}
 <section class="cabinet-section" aria-labelledby="fw-loop-heading">
   <h2 id="fw-loop-heading" class="section-heading">
-    <span class="section-heading-number">2.</span>
+    <span class="section-heading-number">3.</span>
     La journée d'un département — 4 moments
   </h2>
   <p class="fw-loop-intro">
@@ -110,7 +97,7 @@
 {# ─── Two rails (engine + safety net) ───────────────────────────── #}
 <section class="cabinet-section" aria-labelledby="fw-rails-heading">
   <h2 id="fw-rails-heading" class="section-heading">
-    <span class="section-heading-number">3.</span>
+    <span class="section-heading-number">4.</span>
     Deux rails (ceinture + bretelles)
   </h2>
   <div class="fw-rails">
@@ -120,9 +107,7 @@
     </div>
     <div class="fw-rail fw-rail--net">
       <span class="fw-rail-title">Filet de sécurité</span>
-      <span class="fw-rail-body">Sauvegarde planifiée (08:00 + 14:00) + routines cloud quotidiennes. Si une boucle meurt, le filet exécute un tick à sa place. Visible dans le Carnet de bord.</span>
+      <span class="fw-rail-body">Sauvegarde planifiée (08:00 + 14:00) + routines cloud quotidiennes. Si une boucle meurt, le filet exécute un tick à sa place — son passage est tracé ci-dessus.</span>
     </div>
   </div>
 </section>
-
-{% endblock %}

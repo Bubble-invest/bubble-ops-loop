@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import dept_registry, morty_reader
+from console.services import dept_registry, morty_reader, org_framework
 
 router = APIRouter()
 
@@ -22,6 +22,9 @@ def health(request: Request):
     by_dept = {}
     for r in rows:
         by_dept.setdefault(r.dept, []).append(r)
+    # The org-framework flowchart lives on this same page (Joris msg 1188:
+    # in the Carnet de bord, not a separate page).
+    framework = org_framework.build()
     return request.app.state.templates.TemplateResponse(
         "health.html",
         {
@@ -30,5 +33,9 @@ def health(request: Request):
             "by_dept": by_dept,
             "pulse": pulse,
             "any_stale": any(r.is_stale for r in rows),
+            "management": framework["management"],
+            "ops": framework["ops"],
+            "concierges": framework["concierges"],
+            "layers": framework["layers"],
         },
     )
