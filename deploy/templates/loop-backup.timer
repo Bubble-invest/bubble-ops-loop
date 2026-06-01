@@ -1,0 +1,15 @@
+[Unit]
+Description=Fire ops-loop dept backup twice daily (morning + afternoon)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+# 08:00 and 14:00 Europe/Paris — systemd handles CET/CEST automatically.
+OnCalendar=*-*-* 08:00:00 Europe/Paris
+OnCalendar=*-*-* 14:00:00 Europe/Paris
+# If the box was off/asleep at fire time, run as soon as it's back.
+Persistent=true
+# Deterministic small offset so it doesn't collide with other top-of-hour jobs.
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

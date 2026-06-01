@@ -6,7 +6,12 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import dept_registry, github_reader, whiteboard_series
+from console.services import (
+    dept_registry,
+    github_reader,
+    loop_history,
+    whiteboard_series,
+)
 from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
@@ -54,6 +59,9 @@ def dept_detail(slug: str, request: Request):
     # KPI graphs — time series built from the dept's Layer-4 output history
     # (one datapoint per loop run). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)
+    # Loop-run history — one entry per active day, with clickable outputs.
+    # {{OPERATOR}} msg 1168, 2026-06-01.
+    loop_runs = loop_history.list_loop_runs(slug)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -71,7 +79,30 @@ def dept_detail(slug: str, request: Request):
             "layer_recent_outputs": layer_recent_outputs,
             "whiteboard": whiteboard,
             "whiteboard_graphs": whiteboard_graphs,
+            "loop_runs": loop_runs,
         },
+    )
+
+
+@router.get("/dept/{slug}/output", response_class=HTMLResponse)
+def output_file(slug: str, f: str, request: Request):
+    """View a single loop-run output file in-browser ({{OPERATOR}} msg 1168).
+
+    `f` is a repo-relative path that must live under outputs/ — the reader
+    refuses anything that escapes it.
+    """
+    d = dept_registry.get_department(slug)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
+    fileinfo = loop_history.read_output_file(slug, f)
+    if fileinfo is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Fichier introuvable ou hors du dossier outputs/ : {f}",
+        )
+    return request.app.state.templates.TemplateResponse(
+        "output_file.html",
+        {"request": request, "dept": d, "file": fileinfo},
     )
 
 

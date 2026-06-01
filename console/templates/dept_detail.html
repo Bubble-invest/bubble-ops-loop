@@ -297,6 +297,75 @@
   {% endif %}
 </section>
 
+{# ─── Historique des boucles ─────────────────────────────────────
+   One entry per active day, with every output file clickable to read
+   in-browser — empty runs shown too ({{OPERATOR}} msg 1168, 2026-06-01). #}
+<section class="cabinet-section" aria-labelledby="dept-history-heading">
+  <h2 id="dept-history-heading" class="section-heading">
+    <span class="section-heading-number">4.</span>
+    Historique des boucles
+  </h2>
+
+  {% if loop_runs %}
+    <ul class="loop-runs">
+      {% for run in loop_runs %}
+        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
+          <div class="loop-run-head">
+            <span class="loop-run-date">{{ run.date }}</span>
+            {% if run.total_rounds is not none %}
+              <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
+            {% endif %}
+            {% if run.is_empty %}
+              <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
+            {% endif %}
+          </div>
+
+          {% for layer in run.layers %}
+            <div class="loop-layer">
+              <div class="loop-layer-head">
+                <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
+                {% if layer.last_run %}
+                  <span class="loop-layer-time">{{ layer.last_run }}</span>
+                {% endif %}
+                {% if layer.rounds %}
+                  <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
+                {% endif %}
+              </div>
+              {% if layer.files %}
+                <ul class="loop-files">
+                  {% for of in layer.files %}
+                    <li>
+                      <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
+                        {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
+                      </a>
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
+              {% endif %}
+            </div>
+          {% endfor %}
+
+          {% if run.extra_files %}
+            <div class="loop-extra">
+              <span class="loop-extra-label">Journal de boucle :</span>
+              {% for of in run.extra_files %}
+                <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
+              {% endfor %}
+            </div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    {% with title="Aucune boucle enregistrée pour l'instant.",
+            body=dept.display_name ~ " n'a pas encore tourné — l'historique se remplira à chaque cycle." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% endif %}
+</section>
+
 <p>
   <a href="/settings/{{ dept.slug }}" class="discreet-link">Ajuster ses réglages →</a>
 </p>
@@ -311,7 +380,7 @@
 <section class="cabinet-section cabinet-section--danger"
          aria-labelledby="dept-retire-heading">
   <h2 id="dept-retire-heading" class="section-heading" style="color:#8a3a3a;">
-    <span class="section-heading-number">4.</span>
+    <span class="section-heading-number">5.</span>
     Mettre à la retraite
   </h2>
   <p class="prose-block">
