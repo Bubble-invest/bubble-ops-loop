@@ -14,6 +14,8 @@
       <p class="page-hero-lede">
         <span class="ochre-num">{{ live|length }}</span>
         collègue{{ '' if live|length == 1 else 's' }} en poste ·
+        {% if concierges %}<span class="ochre-num">{{ concierges|length }}</span>
+        concierge{{ '' if concierges|length == 1 else 's' }} ·{% endif %}
         <span class="ochre-num">{{ eclore|length }}</span>
         en éclosion
         {% if eclore|length > 0 %}<span class="muted">(à éclore)</span>{% endif %}
@@ -53,6 +55,40 @@
     {% endwith %}
   {% endif %}
 </section>
+
+{# ─── Les concierges ─────────────────────────────────────────────
+   Morty + Claudette — reactive assistants (not loop-depts). They are
+   part of the team; shown with the same card + a link to their live
+   session page (Joris 2026-06-01). #}
+{% if concierges %}
+<section class="cabinet-section">
+  <h2 class="section-heading">
+    <span class="section-heading-number">2.</span>
+    Les concierges
+  </h2>
+  <p class="muted-italic" style="font-size:13px; margin:-4px 0 12px;">
+    Assistants réactifs — ils répondent quand on les sollicite, sans boucle.
+  </p>
+  <div class="equipe-list">
+    {% for c in concierges %}
+      {% set status = c.metadata.get('service_status', 'unknown') %}
+      {% set initial = c.name[0]|upper %}
+      {% set state_html %}
+        <span class="en-poste-dot" aria-hidden="true"
+              style="background: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};"></span>
+        <span class="en-poste-label">{{ 'En service' if status == 'active' else status }}</span>
+        {% if c.last_activity_iso %} &middot; actif {{ c.last_activity_iso }}{% endif %}
+      {% endset %}
+      {% with variant='live', name=c.name|capitalize, initial=initial,
+              href="/concierge/" ~ c.name,
+              role="Concierge — assistant réactif.",
+              state_html=state_html, cta="Voir la session →" %}
+        {% include "components/collegue-card.html" %}
+      {% endwith %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {# ─── Anciens collègues ──────────────────────────────────────────
    Sprint Lifecycle (2026-05-21): collapsible 3rd section for depts

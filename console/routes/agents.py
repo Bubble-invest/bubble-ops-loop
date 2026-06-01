@@ -31,7 +31,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from console import settings
-from console.services import dept_registry, eclosure_launcher
+from console.services import concierge_reader, dept_registry, eclosure_launcher
 
 # Make scripts/lib importable so we can call cancel_eclosion + retire_dept
 # directly from the route handlers (production wiring). Tests mock
@@ -109,6 +109,7 @@ def agents_page(request: Request):
     live = dept_registry.live_departments()
     eclore = dept_registry.agents_a_eclore()
     anciens = dept_registry.anciens_collegues()
+    concierges = concierge_reader.list_concierges()
     return request.app.state.templates.TemplateResponse(
         "agents.html",
         {
@@ -116,6 +117,7 @@ def agents_page(request: Request):
             "live": live,
             "eclore": eclore,
             "anciens": anciens,
+            "concierges": concierges,
         },
     )
 
