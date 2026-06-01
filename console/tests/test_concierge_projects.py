@@ -54,3 +54,11 @@ def test_status_line_truncated(tmp_path):
     _make_project(tmp_path, "morty", "verbose", "# V\n**" + "x" * 300 + "**")
     c = concierge_reader.list_projects("morty", agents_root=str(tmp_path))[0]
     assert len(c.status_line) <= 160 and c.status_line.endswith("…")
+
+
+def test_parses_demo_url(tmp_path):
+    _make_project(tmp_path, "morty", "demo-proj",
+                  "# Demo\n**État : live**\n**Démo :** https://host.ts.net:8444/\n")
+    c = concierge_reader.list_projects("morty", agents_root=str(tmp_path))[0]
+    assert c.url == "https://host.ts.net:8444/"
+    assert "Démo" not in c.status_line  # the État line stays the status line

@@ -21,6 +21,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
@@ -69,6 +70,7 @@ class ProjectCard:
     slug: str
     title: str
     status_line: str        # one-line current state (the **État** line)
+    url: str = ""           # first http(s) link in STATUS.md (live demo, etc.)
     has_status: bool = True
 
 
@@ -95,7 +97,13 @@ def _parse_status(path: str, slug: str) -> "ProjectCard":
                 break
     if len(state) > 160:
         state = state[:157] + "…"
-    return ProjectCard(slug=slug, title=title, status_line=state)
+    # First http(s) URL anywhere in the file → clickable link on the card
+    # (e.g. a "**Démo :** https://…" line). Strip trailing markdown/punct.
+    url = ""
+    m = re.search(r"https?://[^\s<>)\]]+", "\n".join(lines))
+    if m:
+        url = m.group(0).rstrip(".,;)")
+    return ProjectCard(slug=slug, title=title, status_line=state, url=url)
 
 
 def list_projects(name: str, agents_root: str = "/home/claude/agents") -> List["ProjectCard"]:
