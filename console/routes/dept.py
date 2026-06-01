@@ -57,6 +57,9 @@ def dept_detail(slug: str, request: Request):
     # Per-dept whiteboard — agent-surfaced KPIs/metrics for {{OPERATOR}}
     # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
+    # Free-space whiteboard — a blank canvas card the dept manager fills with
+    # anything (whiteboard.md, verbatim). {{OPERATOR}} msg 1174, 2026-06-01.
+    whiteboard_freeform = github_reader.load_whiteboard_freeform(slug)
     # KPI graphs — time series built from the dept's Layer-4 output history
     # (one datapoint per loop run). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)
@@ -84,6 +87,7 @@ def dept_detail(slug: str, request: Request):
             "mandate_md": mandate_md,
             "layer_recent_outputs": layer_recent_outputs,
             "whiteboard": whiteboard,
+            "whiteboard_freeform": whiteboard_freeform,
             "whiteboard_graphs": whiteboard_graphs,
             "loop_runs": loop_runs,
             "backup_events": backup_events,

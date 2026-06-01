@@ -86,7 +86,6 @@
      • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
      • graphs — KPI time-series built from Layer-4 output history
        (whiteboard_graphs, {{OPERATOR}} msg 1163, 2026-06-01). #}
-{% if whiteboard or whiteboard_graphs %}
 <section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
   <h2 id="dept-whiteboard-heading" class="section-heading">
     <span class="section-heading-number">1.</span>
@@ -134,8 +133,26 @@
   {% if whiteboard and whiteboard.notes %}
     <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
   {% endif %}
+
+  {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
+     A real blank canvas the dept manager fills with anything. Content
+     comes from <repo>/whiteboard.md, rendered verbatim. Always present
+     (the framework), empty until the agent writes to it. #}
+  <div class="whiteboard-free">
+    <div class="whiteboard-free-head">
+      <h3 class="whiteboard-free-title">Whiteboard</h3>
+      <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}</span>
+    </div>
+    {% if whiteboard_freeform %}
+      <article class="whiteboard-free-body">{{ whiteboard_freeform }}</article>
+    {% else %}
+      <div class="whiteboard-free-empty">
+        <p class="whiteboard-free-empty-lede">Espace libre — {{ dept.display_name }} écrit ici ce qu'elle veut : notes, données du métier, liens, suivi… Rien pour l'instant.</p>
+        <p class="whiteboard-free-hint">Le contenu du fichier <code>whiteboard.md</code> du département s'affiche ici, tel quel.</p>
+      </div>
+    {% endif %}
+  </div>
 </section>
-{% endif %}
 
 {# ─── Décisions qu'on attend de toi ──────────────────────────── #}
 <section class="cabinet-section" aria-labelledby="dept-decisions-heading">

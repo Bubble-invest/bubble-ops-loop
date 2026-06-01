@@ -71,6 +71,30 @@ def load_mandate_md(slug: str) -> Optional[str]:
         return None
 
 
+def load_whiteboard_freeform(slug: str) -> Optional[str]:
+    """Return the verbatim text of <repo>/whiteboard.md — the dept manager's
+    free-space whiteboard, or None if missing/empty.
+
+    {{OPERATOR}} msg 1174 (2026-06-01): the Tableau de bord needs a real blank
+    canvas card the dept manager can fill with anything (different per dept,
+    populated by the agent — e.g. Maya adds department-specific data). This
+    is intentionally unstructured: whatever the agent writes is rendered
+    verbatim. Distinct from whiteboard.yaml (structured KPI cards).
+    """
+    root = repo_path(slug)
+    if root is None:
+        return None
+    p = root / "whiteboard.md"
+    if not p.exists():
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        _log.warning("could not read %s: %s", p, exc)
+        return None
+    return text if text.strip() else None
+
+
 def load_layer_prompt_md(slug: str, layer_num: int) -> Optional[str]:
     """Return the verbatim text of <repo>/layers/<N>/PROMPT.md, or None
     if missing. {{OPERATOR}} flag 2026-05-24 msg 3137 — the UI must surface
