@@ -1,0 +1,1323 @@
+/* ============================================================
+ * bubble-ops-console — UX-refresh
+ * Aesthetic: Bureau de Cadre (papier crème + encre marine,
+ * serif élégant pour les titres, sans-serif refined pour le corps).
+ * Cabinet d'éclosion — concierge, not operator dashboard.
+ * Strict: no Inter, no purple gradients, no AI-slop.
+ * Palette + base typography copied verbatim from Maya webapp
+ * /static/style.css lines 1-120 (read-only reference codebase).
+ * ============================================================ */
+
+:root {
+  /* Palette papier crème */
+  --paper: #faf7f2;
+  --paper-soft: #f3eee5;
+  --paper-edge: #ece6d8;
+
+  /* Encre marine + variations */
+  --ink: #1a2b4a;        /* titres, important */
+  --ink-soft: #2b3f63;
+  --body: #2d2d2d;        /* corps de texte */
+  --body-soft: #4a4a4a;
+  --body-muted: #6b6863;
+
+  /* Accents */
+  --ochre: #b8804a;       /* chiffres KPI, états actifs, arêtes du flowchart */
+  --ochre-soft: #d6a679;
+  --ochre-deep: #8c5e34;
+  --sage: #7a8b7e;        /* états "calmes", secondaires */
+  --sage-soft: #9eada2;
+
+  /* Bordures */
+  --line: #d5cfc4;
+  --line-soft: #e4e0d5;
+
+  /* Fonts — Cormorant Garamond (display), Source Sans 3 (body), JetBrains Mono (code) */
+  --font-display: "Cormorant Garamond", "EB Garamond", Georgia, "Times New Roman", serif;
+  --font-body: "Source Sans 3", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Geometry */
+  --maxw: 1100px;
+  --section-gap: 64px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  /* Subtle paper grain — single tile, ~1% opacity to avoid texture noise */
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(184, 128, 74, 0.025) 0%, transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(122, 139, 126, 0.018) 0%, transparent 55%);
+  color: var(--body);
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--ochre-soft);
+  text-underline-offset: 3px;
+  transition: color 0.2s ease, text-decoration-color 0.2s ease;
+}
+a:hover { color: var(--ochre-deep); text-decoration-color: var(--ochre); }
+
+code, .code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--body-muted);
+  background: var(--paper-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line-soft);
+  letter-spacing: -0.01em;
+}
+
+/* ─── Top bar (cabinet) ───────────────────────────────────── */
+
+.topbar {
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  padding: 20px 0;
+}
+.topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 28px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.brand-sub {
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--body-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.topnav {
+  display: flex;
+  gap: 28px;
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.topnav a {
+  color: var(--body-muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  padding-bottom: 2px;
+  letter-spacing: 0.01em;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.topnav a:hover,
+.topnav a.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--ochre);
+}
+
+/* ─── Layout ────────────────────────────────────────────────── */
+
+.content {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 56px 32px 80px;
+}
+
+.page-hero { margin-bottom: var(--section-gap); }
+.page-hero-title {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 4vw, 44px);
+  font-weight: 500;
+  font-style: italic;
+  color: var(--ink);
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  margin: 0 0 14px;
+}
+.page-hero-lede {
+  font-size: 17px;
+  color: var(--body-soft);
+  max-width: 680px;
+  margin: 0;
+  line-height: 1.6;
+}
+.page-hero-lede .ochre-num {
+  color: var(--ochre-deep);
+  font-weight: 500;
+}
+
+/* Section heading */
+.section-heading {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+  margin: 0 0 28px;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.section-heading-number {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ochre);
+  font-weight: 500;
+  font-size: 22px;
+}
+
+.cabinet-section {
+  margin-bottom: var(--section-gap);
+  animation: cabinet-fadein 600ms ease-out both;
+}
+.cabinet-section:nth-of-type(2) { animation-delay: 80ms; }
+.cabinet-section:nth-of-type(3) { animation-delay: 160ms; }
+.cabinet-section:nth-of-type(4) { animation-delay: 240ms; }
+
+@keyframes cabinet-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ─── Decision cards (action-card variant) ───────────────────── */
+
+.decisions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.decision-card {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--ochre);
+  border-radius: 2px;
+  padding: 24px 24px 22px;
+  text-decoration: none;
+  display: block;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.22s ease,
+              box-shadow 0.22s ease;
+}
+.decision-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--ochre-soft);
+  box-shadow: 0 6px 16px rgba(26, 43, 74, 0.06);
+  text-decoration: none;
+}
+.decision-card:focus-visible {
+  outline: 2px solid var(--ochre);
+  outline-offset: 2px;
+}
+.decision-card-count {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 500;
+  color: var(--ochre);
+  line-height: 1;
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+.decision-card-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 19px;
+  color: var(--ink);
+  margin: 0 0 6px;
+  line-height: 1.25;
+}
+.decision-card-body {
+  font-size: 14px;
+  color: var(--body-soft);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.decision-card-cta {
+  font-size: 13px;
+  color: var(--ochre-deep);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* Serene empty state */
+.serene-empty {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 56px 32px;
+  text-align: center;
+  max-width: 580px;
+  margin: 0 auto;
+}
+.serene-empty-illustration {
+  width: 120px;
+  height: 80px;
+  margin-bottom: 18px;
+}
+.serene-empty-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 500;
+  font-style: italic;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+.serene-empty-body {
+  font-size: 15px;
+  color: var(--body-soft);
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+/* ─── Collègue rows / cards ──────────────────────────────────── */
+
+.equipe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.collegue-row {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 18px 20px;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  text-decoration: none;
+  transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+}
+.collegue-row:hover {
+  border-color: var(--ochre-soft);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(26, 43, 74, 0.05);
+  text-decoration: none;
+}
+
+.collegue-avatar {
+  flex: 0 0 auto;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 500;
+  color: var(--ochre-deep);
+  line-height: 1;
+}
+.collegue-avatar--lg {
+  width: 80px;
+  height: 80px;
+  font-size: 40px;
+}
+
+.collegue-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.collegue-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 4px;
+  line-height: 1.2;
+}
+.collegue-role {
+  font-style: italic;
+  font-size: 14px;
+  color: var(--body-muted);
+  margin: 0 0 6px;
+}
+.collegue-state {
+  font-size: 14px;
+  color: var(--body-soft);
+  margin: 0;
+}
+.collegue-cta {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--ochre-deep);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.en-poste-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ochre);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.en-poste-label {
+  font-size: 13px;
+  color: var(--ochre-deep);
+  letter-spacing: 0.02em;
+}
+
+/* Eclosure variant — paper-soft tint */
+.collegue-row--eclosion {
+  background: var(--paper-soft);
+  border-style: dashed;
+  border-color: var(--sage-soft);
+}
+.collegue-row--eclosion:hover {
+  border-color: var(--sage);
+  border-style: dashed;
+}
+
+.eclosion-progress {
+  margin-top: 8px;
+  height: 2px;
+  width: 100%;
+  background: var(--line-soft);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.eclosion-progress-bar {
+  height: 100%;
+  background: var(--ochre);
+  border-radius: 1px;
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.collegue-card-stack {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+/* ─── KPI cards (Maya kpi-card recolored) ────────────────────── */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+}
+.kpi-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 24px 22px;
+}
+.kpi-value {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 500;
+  color: var(--ochre-deep);
+  line-height: 1;
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+.kpi-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+.kpi-note {
+  font-size: 13px;
+  color: var(--body-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* ─── Onboarding (carnet d'arrivée) ──────────────────────────── */
+
+.carnet-header {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: var(--section-gap);
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+.carnet-header-body { flex: 1 1 auto; min-width: 0; }
+.carnet-title {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 4vw, 40px);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+.carnet-subtitle {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--body-muted);
+  margin: 0 0 8px;
+}
+.carnet-state {
+  font-size: 14px;
+  color: var(--body-soft);
+  margin: 0;
+}
+
+.carnet-section { margin-bottom: var(--section-gap); }
+.carnet-section-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 18px;
+  letter-spacing: -0.005em;
+}
+
+.carnet-mission {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  border-left: 3px solid var(--ochre);
+  padding: 6px 0 6px 22px;
+  margin: 0;
+}
+.carnet-mission .underline-ochre {
+  background-image: linear-gradient(transparent 60%, var(--ochre-soft) 60%);
+  background-size: 100% 100%;
+  padding: 0 2px;
+}
+
+.etapes-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-left: 1px solid var(--line);
+  padding-left: 22px;
+}
+.etape {
+  position: relative;
+  margin-bottom: 22px;
+}
+.etape:last-child { margin-bottom: 0; }
+.etape::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: -28px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.etape[data-status="validated"]::before {
+  background: var(--ochre);
+  border-color: var(--ochre);
+}
+/* Polish E4 (msg 2709): validated puce wears a small white ✓ inside the
+   ochre disc to read with confidence (done, validated). */
+.etape[data-status="validated"]::after {
+  content: "✓";
+  position: absolute;
+  top: 4px;
+  left: -26px;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--paper);
+  line-height: 1;
+  pointer-events: none;
+}
+/* in_progress puce: filled ochre + outer halo ring (the colleague is on
+   this step right now). */
+.etape[data-status="in_progress"]::before {
+  background: var(--ochre);
+  border-color: var(--ochre);
+  box-shadow: 0 0 0 3px var(--paper), 0 0 0 4px var(--ochre-soft);
+}
+.etape-nom {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 4px;
+  line-height: 1.3;
+}
+.etape[data-status="pending"] .etape-nom { color: var(--body-muted); }
+.etape-desc {
+  font-size: 14px;
+  color: var(--body-soft);
+  margin: 0 0 4px;
+}
+.etape-state {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--body-muted);
+}
+.etape[data-status="validated"] .etape-state { color: var(--sage); }
+.etape[data-status="in_progress"] .etape-state { color: var(--ochre-deep); }
+
+.carnet-prose {
+  font-size: 16px;
+  color: var(--body);
+  line-height: 1.7;
+  margin: 0;
+  max-width: 760px;
+}
+.carnet-prose .ochre-emph {
+  color: var(--ochre-deep);
+  font-weight: 500;
+}
+
+.reprendre-card {
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--ochre);
+  border-radius: 2px;
+  padding: 24px 26px;
+}
+.reprendre-card p {
+  font-size: 15px;
+  color: var(--body-soft);
+  margin: 0 0 14px;
+}
+.reprendre-command {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+  border-radius: 2px;
+  color: var(--ink);
+  display: block;
+  overflow-x: auto;
+  user-select: all;
+  cursor: text;
+  letter-spacing: -0.01em;
+}
+
+.carnet-footer-link {
+  font-size: 14px;
+  color: var(--body-muted);
+  text-decoration: none;
+}
+.carnet-footer-link:hover { color: var(--ochre-deep); }
+
+/* ─── Dept detail (collègue en poste) ────────────────────────── */
+
+.dept-header {
+  margin-bottom: var(--section-gap);
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+.dept-title {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 36px);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+.dept-subtitle {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--body-muted);
+  margin: 0;
+}
+
+.prose-block {
+  font-size: 16px;
+  color: var(--body);
+  line-height: 1.7;
+  max-width: 760px;
+}
+.prose-block .slug-ref {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--body-muted);
+  background: var(--paper-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.moments-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.moment {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 16px 18px;
+}
+.moment-num {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ochre);
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.moment-nom {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* ─── Settings (réglages, read-only) ─────────────────────────── */
+
+.reglage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.reglage {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 22px 24px;
+}
+.reglage-name {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+.reglage-prose {
+  font-size: 15px;
+  color: var(--body-soft);
+  margin: 0 0 6px;
+  line-height: 1.6;
+}
+.reglage-future {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--body-muted);
+  margin: 0;
+}
+.reglage-slug {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+  letter-spacing: 0.02em;
+}
+
+/* ─── Health (carnet de bord) ────────────────────────────────── */
+
+.carnet-bord-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: var(--font-body);
+}
+.carnet-bord-table th,
+.carnet-bord-table td {
+  text-align: left;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 14px;
+}
+.carnet-bord-table th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--paper-soft);
+}
+.carnet-bord-table tr:last-child td { border-bottom: none; }
+.carnet-bord-table .trace-recent { color: var(--sage); }
+.carnet-bord-table .trace-quiet { color: var(--body-muted); }
+.carnet-bord-table .trace-vide { color: var(--ochre-deep); font-style: italic; }
+
+/* ─── Form (accueillir un nouveau collègue) ──────────────────── */
+
+.cabinet-form {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 32px 30px;
+  max-width: 560px;
+}
+.cabinet-field {
+  margin-bottom: 22px;
+}
+.cabinet-field label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+.cabinet-field input {
+  width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: 15px;
+  color: var(--ink);
+  border-radius: 2px;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+/* Radio/checkbox inputs must NOT inherit the 100%-width text-input style —
+   it pushed the radio dot to the full row and made the label text wrap
+   mid-word below it ({{OPERATOR}} msg 3046, 2026-05-24, "Son rôle dans l'équipe"). */
+.cabinet-field input[type="radio"],
+.cabinet-field input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  margin: 0;
+  vertical-align: middle;
+}
+/* Stacked-radio cluster used for the level/role choice in the éclosion
+   form. Mobile-first: one option per row, generous tap target, no
+   mid-word wrap on the label. */
+.radio-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+.radio-stack label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 15px;
+  margin: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cabinet-field input:focus {
+  outline: none;
+  border-color: var(--ochre);
+  background: var(--paper-soft);
+}
+.cabinet-field-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+  margin: 4px 0 0;
+  letter-spacing: 0.01em;
+}
+
+.btn-ochre {
+  display: inline-block;
+  background: var(--ochre);
+  color: var(--paper);
+  border: none;
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 500;
+  padding: 12px 26px;
+  border-radius: 2px;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.22s ease, transform 0.22s ease;
+}
+.btn-ochre:hover {
+  background: var(--ochre-deep);
+  transform: translateY(-1px);
+  text-decoration: none;
+  color: var(--paper);
+}
+.btn-ghost {
+  display: inline-block;
+  background: transparent;
+  color: var(--body-muted);
+  border: 1px solid var(--line);
+  font-family: var(--font-body);
+  font-size: 14px;
+  padding: 11px 22px;
+  border-radius: 2px;
+  text-decoration: none;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.btn-ghost:hover {
+  color: var(--ink);
+  border-color: var(--ochre-soft);
+  text-decoration: none;
+}
+
+/* ─── Activation ceremony / letter preview ───────────────────── */
+
+.lettre-card {
+  background: var(--paper-edge);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--ochre);
+  border-radius: 2px;
+  padding: 28px 32px;
+  margin: 24px 0 28px;
+  font-family: var(--font-body);
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--body);
+}
+.lettre-card pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+/* ─── Footer (discreet) ──────────────────────────────────────── */
+
+.cabinet-footer {
+  max-width: var(--maxw);
+  margin: 60px auto 30px;
+  padding: 24px 32px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--body-muted);
+  font-style: italic;
+}
+.cabinet-footer a {
+  color: var(--body-muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+.cabinet-footer a:hover { color: var(--ochre-deep); border-color: var(--ochre); }
+
+/* ─── Gate (operator decision page — kept restrained) ────────── */
+
+.gate-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 28px 32px;
+  margin-top: 24px;
+}
+.gate-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+  font-size: 13px;
+  color: var(--body-muted);
+  margin-bottom: 22px;
+}
+.gate-meta b {
+  display: block;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 14px;
+  margin-top: 2px;
+}
+.gate-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+/* Autonomy trajectory block — Notion v5 lines 920-924.
+   3 lines (niveau actuel / pourrait apprendre / phase d'observation)
+   surfaced on every gate card. Sage-muted shadow line signals
+   "future, not active yet". */
+.gate-autonomie {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  margin-bottom: 22px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--ochre-soft);
+  border-radius: 2px;
+}
+.gate-autonomie-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--body);
+  line-height: 1.5;
+}
+.gate-autonomie-label {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--body-muted);
+  letter-spacing: 0.01em;
+  min-width: 150px;
+}
+.gate-autonomie-value {
+  flex: 1 1 auto;
+  color: var(--ink);
+}
+.gate-autonomie-shadow .gate-autonomie-value { color: var(--sage); }
+.gate-autonomie-info { margin-left: auto; }
+.gate-autonomie-info summary { list-style: none; }
+.gate-autonomie-info summary::-webkit-details-marker { display: none; }
+
+/* ─── Misc helpers ───────────────────────────────────────────── */
+
+.muted { color: var(--body-muted); }
+.muted-italic { color: var(--body-muted); font-style: italic; }
+.discreet-link {
+  font-size: 14px;
+  color: var(--body-muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1px;
+}
+.discreet-link:hover {
+  color: var(--ochre-deep);
+  border-color: var(--ochre);
+}
+
+/* ─── Responsive ─────────────────────────────────────────────── */
+/* Mobile-first triage — Notion v5 line 1012:
+   "Mobile-friendly — {{OPERATOR}} valide ses gates depuis son téléphone".
+   QA-Spirit Blocker C (2026-05-21) found:
+     - H1 cut mid-word at 375px
+     - top-nav clipped "Carnet de bord"
+     - collègue-row CTA truncated
+     - 4-up grids didn't collapse on phone
+   Contract: RESTACK, never hide. {{OPERATOR}} must see the same info as on
+   desktop, just laid out vertically. No `display: none` allowed in any
+   mobile block (enforced by test_mobile_responsive_css.py). */
+
+/* Hero title — fluid sizing + word-break so long French phrases
+   ("Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.") can wrap
+   instead of being clipped at narrow widths. The clamp() declaration
+   here OVERRIDES the desktop clamp(32px,4vw,44px) at every viewport;
+   the dektop rule above gives a stronger lower bound at large widths,
+   and this rule kicks in to keep the 320–720 range readable. */
+.page-hero-title {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+
+@media (max-width: 720px) {
+  .content { padding: 36px 22px 60px; }
+  .carnet-header { flex-direction: column; align-items: flex-start; }
+
+  /* Hero — clamp tighter so 28px is the floor on a 375px phone */
+  .page-hero-title {
+    font-size: clamp(26px, 6.2vw, 36px);
+    line-height: 1.18;
+  }
+  .page-hero-lede { font-size: 15.5px; }
+
+  /* Top bar — let "Carnet de bord" wrap instead of clipping */
+  .topbar { padding: 14px 0; }
+  .topbar-inner {
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 0 22px;
+  }
+  .brand-name { font-size: 24px; }
+  .brand-sub { font-size: 11px; }
+  .topnav {
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    width: 100%;
+  }
+
+  /* Collègue rows — stack avatar/body/CTA vertically so the role +
+     state get full width and the CTA doesn't truncate */
+  .collegue-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 16px 18px;
+  }
+  .collegue-body { width: 100%; min-width: 0; }
+  .collegue-role {
+    display: block;
+    max-width: 100%;
+    white-space: normal;
+  }
+  .collegue-cta {
+    width: 100%;
+    text-align: left;
+    font-size: 12.5px;
+    white-space: normal;
+  }
+
+  /* Decision cards — keep CTA on one line, shrink slightly */
+  .decision-card { padding: 20px 20px 18px; }
+  .decision-card-cta { font-size: 12px; white-space: nowrap; }
+  .decision-card-title { font-size: 17px; }
+
+  /* Gate autonomy block — restack label+value vertically so the
+     150px label column doesn't squeeze the value off-screen */
+  .gate-autonomie { padding: 14px 14px; }
+  .gate-autonomie-line { flex-direction: column; gap: 2px; }
+  .gate-autonomie-label { min-width: 0; }
+  .gate-autonomie-info { margin-left: 0; margin-top: 4px; }
+
+  /* Section headings */
+  .section-heading { font-size: 22px; gap: 12px; }
+  .dept-title { font-size: clamp(24px, 5.5vw, 30px); }
+}
+
+@media (max-width: 480px) {
+  .content { padding: 28px 16px 48px; }
+
+  /* Hero shrinks one more notch */
+  .page-hero-title {
+    font-size: clamp(22px, 7vw, 30px);
+    line-height: 1.2;
+  }
+  .section-heading { font-size: 20px; }
+  .carnet-title { font-size: clamp(24px, 6vw, 30px); }
+
+  /* All multi-column grids collapse to single column */
+  .kpi-grid,
+  .decisions-grid,
+  .collegue-card-stack,
+  .moments-list,
+  .missions-list { grid-template-columns: 1fr; }
+
+  /* Mission meta on mobile: stack label above value */
+  .mission-meta { grid-template-columns: 1fr; gap: 2px 0; }
+  .mission-meta dd { margin-bottom: 4px; }
+
+  /* Gate meta also stacks */
+  .gate-meta { grid-template-columns: 1fr; gap: 10px; }
+
+  /* Buttons full-width so they're tap-friendly */
+  .gate-actions { flex-direction: column; }
+  .gate-actions .btn-ochre,
+  .gate-actions .btn-ghost { width: 100%; text-align: center; }
+}
+
+/* ─── Mission cards ({{OPERATOR}} flag msg 3137) ────────────────────────
+   Used by /dept/<slug> + /agents/<slug>/onboarding to render each
+   recurring mission's cadence + description + layer + creates
+   + gate_policy_id. Compact grid so the page stays scannable in
+   5 seconds on iPhone. */
+.missions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.mission-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 14px 16px 12px;
+  border-left: 3px solid var(--ochre-soft);
+}
+.mission-card-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.mission-layer-badge {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--ochre);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--paper-soft);
+  padding: 2px 7px;
+  border-radius: 2px;
+}
+.mission-nom {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+  flex: 1 1 auto;
+}
+.mission-id {
+  font-size: 0.7em;
+}
+.mission-cadence {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ochre-deep);
+  margin: 4px 0 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.mission-cadence-icon {
+  font-style: normal;
+}
+.mission-desc {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--body);
+  margin: 0 0 10px;
+}
+.mission-meta {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 12px;
+}
+.mission-meta dt {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--body-muted);
+  margin: 0;
+}
+.mission-meta dd {
+  margin: 0;
+  color: var(--body);
+}
+
+/* Legacy backward-compat — preserved for older tests / partials.
+   These classes used to drive the dark "operator dashboard" UI;
+   they no longer paint anything dark, just no-op so partial
+   templates that still reference them don't crash visually. */
+.mono { font-family: var(--font-mono); font-size: 0.95em; }
+.pill {
+  display: inline-block;
+  padding: 2px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--paper-soft);
+  color: var(--body-muted);
+}
+.pill-live { background: var(--paper); color: var(--ochre-deep); border-color: var(--ochre-soft); }
+.pill-eclore { background: var(--paper-soft); color: var(--sage); border-color: var(--sage-soft); border-style: dashed; }
+.pill-stale { background: var(--paper-soft); color: var(--ochre-deep); border-color: var(--ochre-soft); }
+.pill-mute { background: var(--paper-soft); color: var(--body-muted); }
+
+/* ─── Dept detail — mandate one-liner ───────────────────────── */
+/* Shown plainly before the collapsible MANDATE.md so {{OPERATOR}} sees
+   a human-readable summary without having to expand anything. */
+.dept-mandate-brief {
+  font-size: 17px;
+  color: var(--body-soft);
+  line-height: 1.6;
+  max-width: 720px;
+  margin: -10px 0 18px;
+}
+
+/* ─── Moments kanban — recent output badge ───────────────────── */
+/* Activity indicators in moment cards ({{OPERATOR}} msg 1071). */
+.moment--active {
+  border-color: var(--ochre-soft);
+}
+.moment-last-run {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  background: var(--paper-soft);
+  border-radius: 3px;
+  border-left: 2px solid var(--sage-soft);
+}
+.moment-last-run-time {
+  font-size: 11.5px;
+  color: var(--body-muted);
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+.moment-summary-excerpt {
+  font-size: 12.5px;
+  color: var(--body-soft);
+  margin: 4px 0 0;
+  line-height: 1.45;
+  font-style: italic;
+}
+
+/* ─── Whiteboard (tableau de bord) ──────────────────────────── */
+/* Per-dept section where the agent surfaces KPIs for {{OPERATOR}}
+   ({{OPERATOR}} msg 1073, 2026-05-28). */
+.whiteboard-updated {
+  font-size: 13px;
+  color: var(--body-muted);
+  margin: -16px 0 28px;
+  font-style: italic;
+}
+.whiteboard-kpis {
+  margin-bottom: 24px;
+}
+.kpi-trend {
+  font-size: 26px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1;
+}
+.kpi-trend--up { color: var(--sage); }
+.kpi-trend--down { color: #c75f5f; }
+.whiteboard-notes {
+  padding: 16px 22px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--sage);
+  border-radius: 4px;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--body-soft);
+  white-space: pre-wrap;
+  max-width: 760px;
+}

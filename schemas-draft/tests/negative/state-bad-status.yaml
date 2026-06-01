@@ -1,0 +1,11 @@
+# Negative example: status is outside the 7-value enum
+# (Notion v5 lines 794-801). Schema must reject.
+schema_version: 1
+slug: miranda
+display_name: Miranda
+owner: joris
+created_at: "2026-05-20T19:30:00Z"
+status: NotARealStatus
+validated_steps: []
+last_updated_at: "2026-05-20T19:30:00Z"
+commits: []

@@ -1,0 +1,75 @@
+# Example: Miranda (content), MID-ONBOARDING (status: onboarding).
+# This is what the dept.yaml looks like after Steps 1-5 are validated but
+# before activation (Step 7). Used by the skill as the canonical reference
+# for an "Agent a eclore" in the front-end Agent Nursery.
+
+department:
+  slug: miranda
+  display_name: Miranda
+  level: ops
+  status: onboarding
+  mandate: "Produire, planifier et auditer du contenu social pour Bubble Invest."
+  owner: joris
+  forbidden:
+    - publier informations confidentielles
+    - donner conseil financier personnalise
+    - nommer client sans validation
+
+layers:
+  subscribed: [1, 2, 3, 4]
+
+recurring_missions:
+  - id: content_signal_scan
+    layer: 1
+    cadence: daily
+    time: "07:30"
+    description: "Scanner les signaux de contenu (wiki + LinkedIn + notes)."
+    input_sources: [wiki, linkedin, notes]
+    output_queue: queues/research/
+    creates: [content_idea_task]
+    gate_policy_id: social_post
+
+  - id: weekly_performance_review
+    layer: 1
+    cadence: weekly
+    day: monday
+    time: "09:00"
+    description: "Recap hebdomadaire de performance contenu."
+    output_queue: queues/research/
+    creates: [perf_review_task]
+
+skills:
+  layer_1: [content-signal-scanner, content-calendar-reader]
+  layer_2: [post-drafter, angle-generator]
+  layer_3: [content-scheduler]
+  layer_4: [brand-safety-auditor, content-performance-reviewer]
+
+tools:
+  - linkedin-reader
+  - shared-wiki-reader
+  - post-scheduler
+  - analytics-reader
+
+gate_policies:
+  social_post:
+    current_mode: manual_required
+    eligible_future_modes: [auto_with_veto_window, auto_if_policy_passed]
+    authorization_band: low_risk_evergreen
+    kpi_guardrail_set: miranda_content_kpis
+
+hierarchy:
+  level: ops
+  parent: tony
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+
+optional_domain_ledger: null

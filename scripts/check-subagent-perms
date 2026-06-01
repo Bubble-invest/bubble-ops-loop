@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# check-subagent-perms — CLI wrapper for the Step 6 verification suite.
+#
+# Runs pytest on tests/subagent-perms/ from the bubble-ops-loop project root.
+# Pass-through flags supported (e.g. `check-subagent-perms -k cross_pollination`).
+#
+# Source-of-truth: Notion v4 architecture page (/tmp/notion_final.txt L438-L466).
+# Fixture repo: /tmp/bubble-ops-fixture/ (commit 72d045c or later).
+
+set -euo pipefail
+
+# Resolve to the bubble-ops-loop project root regardless of caller cwd.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$PROJECT_ROOT"
+exec python3 -m pytest tests/subagent-perms/ -v --tb=short "$@"

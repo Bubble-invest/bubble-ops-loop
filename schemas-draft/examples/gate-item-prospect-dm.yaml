@@ -1,0 +1,25 @@
+# Positive example: a domain gate item — Maya's "prospect_dm" decision card.
+# Verbatim from Notion v3 dump /tmp/notion_final.txt lines 393-411 (the
+# "Exemple de gate Maya produite par Layer 2" block). This is the
+# load-bearing v3 shape: gate_policy_id + authorization_band_id +
+# current_mode + future_eligible_modes are REQUIRED for domain kinds.
+id: dm-jean-dupont-2026-05-20
+kind: prospect_dm
+source_layer: 2
+target_layer: 3
+risk_level: medium
+requires_human: true
+gate_policy_id: prospect_dm
+authorization_band_id: maya_warm_prospect_band
+current_mode: manual_required
+future_eligible_modes:
+  - auto_with_veto_window
+channel: linkedin
+prospect_id: jean_dupont
+draft:
+  text: "Bonjour Jean, j'ai vu votre annonce sur..."
+actions:
+  - approve
+  - reject
+  - modify
+  - defer

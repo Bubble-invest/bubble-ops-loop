@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+{% block title %}{{ dept.display_name }} — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{# Layer → human-name map (the 4 moments de la journée). #}
+{% set moment_names = {
+  1: 'Le matin',
+  2: 'La recherche',
+  3: "L'exécution",
+  4: 'Le débrief du soir',
+} %}
+{% set moment_what = {
+  1: 'préparation de la journée',
+  2: "explorations, recueil d'informations",
+  3: "actions, productions concrètes",
+  4: 'relecture, ajustements pour demain',
+} %}
+
+{# Map manual_required → human gate-mode phrasing. #}
+{% set mode_phrasing = {
+  'manual_required':            "Tu valides chaque fois.",
+  'manual_unless_policy_passed': "Tu valides — sauf si elle respecte la règle.",
+  'auto_if_policy_passed':       dept.display_name ~ " gère seule si la règle est OK.",
+  'auto_with_veto_window':       dept.display_name ~ " agit ; tu peux revenir dessus.",
+  'disabled':                    "Désactivé.",
+} %}
+
+<header class="dept-header">
+  <h1 class="dept-title">{{ dept.display_name }}</h1>
+  <p class="dept-subtitle">
+    {% if dept.is_ancien %}
+      {% if dept.status == 'Cancelled' %}
+        Ancienne éclosion — annulée avant l'activation.
+      {% else %}
+        Ancien collègue — à la retraite.
+      {% endif %}
+    {% elif dept.is_live %}
+      Collègue en poste · niveau d'autonomie actuel : tu valides chaque fois.
+    {% else %}
+      Collègue en éclosion — encore en train d'apprendre son métier.
+    {% endif %}
+  </p>
+</header>
+
+{# Sprint Lifecycle — banner for Cancelled/Retired (read-only archive). #}
+{% if dept.is_ancien %}
+<aside class="dept-ancien-banner" role="status">
+  <strong>Ce collègue ne fait plus partie de l'équipe active.</strong>
+  Sa fiche est consultable en lecture seule.
+  {% if dept.status == 'Retired' %}
+    Tu peux toujours retrouver ses traces dans le registre du cabinet.
+  {% elif dept.status == 'Cancelled' %}
+    Le dépôt GitHub a été archivé ; rien n'est perdu.
+  {% endif %}
+</aside>
+{% endif %}
+
+{# ─── Son mandat ────────────────────────────────────────────────
+   One-line mandate shown plainly first (human-readable), then the
+   full MANDATE.md as a collapsible for audit ({{OPERATOR}} msg 1071). #}
+<section class="cabinet-section" aria-labelledby="dept-mandate-heading">
+  <h2 id="dept-mandate-heading" class="section-heading">
+    <span class="section-heading-number">0.</span>
+    Son mandat
+  </h2>
+  {% if dept_yaml and dept_yaml.department and dept_yaml.department.mandate %}
+    <p class="dept-mandate-brief">{{ dept_yaml.department.mandate }}</p>
+  {% endif %}
+  {% if mandate_md %}
+    <details class="mandate-full">
+      <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.95em; padding:8px 0;">
+        Lire son mandat complet (MANDATE.md) →
+      </summary>
+      <article class="mandate-body"
+               style="margin-top:14px; padding:18px 22px; background:#fdf6e8;
+                      border-left:3px solid var(--ochre); border-radius:4px;
+                      white-space:pre-wrap; font-family:var(--font-body);
+                      font-size:0.92em; line-height:1.55; color:var(--ink);">{{ mandate_md }}</article>
+    </details>
+  {% endif %}
+</section>
+
+{# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
+   Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
+   mission cards) + "Ses 4 moments" (4 layer cards). {{OPERATOR}} flagged
+   msg 3142: every mission already has a `layer:` so this duplicates.
+   Now ONE section: 4 Moment cards, each containing its missions
+   inline + its PROMPT.md collapsible.
+
+   Section #3 ("Ses 4 moments") below is REMOVED in the same refactor.
+#}
+<section class="cabinet-section" aria-labelledby="dept-missions-heading">
+  <h2 id="dept-missions-heading" class="section-heading">
+    <span class="section-heading-number">1.</span>
+    Ses 4 moments de la journée
+  </h2>
+
+  {% if layers %}
+    <ul class="moments-list">
+      {% for l in layers %}
+        {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
+        {% set _prompt = layer_prompts.get(l) if layer_prompts else None %}
+        {% set _recent = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
+        <li class="moment{% if _recent %} moment--active{% endif %}" data-layer="{{ l }}">
+          <div class="moment-num">Moment {{ l }} sur 4</div>
+          <h4 class="moment-nom">{{ moment_names.get(l, 'Moment ' ~ l) }}</h4>
+          <p class="muted" style="font-size:13px; margin:6px 0 0;">
+            {{ moment_what.get(l, '') }}
+          </p>
+          {% if _recent %}
+            <div class="moment-last-run">
+              {% if _recent.last_run %}
+                <span class="moment-last-run-time">{{ _recent.last_run }}</span>
+              {% endif %}
+              {% if _recent.summary_excerpt %}
+                <p class="moment-summary-excerpt">{{ _recent.summary_excerpt }}</p>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {# Missions for this Moment (nested inline) #}
+          {% if _ms %}
+            <ul class="missions-list" style="margin-top:14px;">
+              {% for m in _ms %}
+                <li class="mission-card" data-mission-id="{{ m.id }}" data-layer="{{ m.layer }}">
+                  <div class="mission-card-head">
+                    <h4 class="mission-nom">{{ m.id.replace('_', ' ')|capitalize_fr }}</h4>
+                    <span class="slug-ref mission-id">{{ m.id }}</span>
+                  </div>
+                  <p class="mission-cadence">
+                    <span class="mission-cadence-icon" aria-hidden="true">⏱</span>
+                    {{ humanize_cadence(m) }}
+                  </p>
+                  {% if m.description %}
+                    <p class="mission-desc">{{ m.description|trim }}</p>
+                  {% endif %}
+                  <dl class="mission-meta">
+                    {% if m.creates %}
+                      <dt>Produit</dt>
+                      <dd>
+                        {% for c in m.creates %}
+                          <span class="slug-ref">{{ c }}</span>{% if not loop.last %} · {% endif %}
+                        {% endfor %}
+                      </dd>
+                    {% endif %}
+                    {% if m.gate_policy_id %}
+                      <dt>Règle de gate</dt>
+                      <dd><span class="slug-ref">{{ m.gate_policy_id }}</span></dd>
+                    {% endif %}
+                  </dl>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
+              Aucune mission déclarée pour ce moment.
+            </p>
+          {% endif %}
+
+          {# PROMPT.md collapsible at the bottom of each Moment #}
+          {% if _prompt %}
+            <details class="layer-prompt" style="margin-top:14px;">
+              <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.85em;">
+                Lire son prompt de Moment {{ l }} →
+              </summary>
+              <article class="layer-prompt-body"
+                       style="margin-top:10px; padding:14px 16px; background:#fdf6e8;
+                              border-left:3px solid var(--ochre); border-radius:4px;
+                              white-space:pre-wrap; font-family:var(--font-body);
+                              font-size:0.88em; line-height:1.55; color:var(--ink);">{{ _prompt }}</article>
+            </details>
+          {% else %}
+            <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
+              Prompt à écrire à l'étape Layers.
+            </p>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="prose-block muted-italic">
+      Aucun moment déclaré pour l'instant.
+    </p>
+  {% endif %}
+</section>
+
+{# ─── Décisions qu'on attend de toi ──────────────────────────── #}
+<section class="cabinet-section" aria-labelledby="dept-decisions-heading">
+  <h2 id="dept-decisions-heading" class="section-heading">
+    <span class="section-heading-number">2.</span>
+    Décisions qu'on attend de toi
+  </h2>
+
+  {% if gate_groups %}
+    {# Mirror the home page: group gates of the same kind into one card.
+       Single-gate kinds keep the existing one-card-per-gate behaviour but
+       use the same shape so the visual rhythm is consistent.
+       {{OPERATOR}} msg 3030 (2026-05-24): "shouldn't they be grouped?" #}
+    <div class="decisions-grid">
+      {% for grp in gate_groups %}
+        {% if grp.count >= 2 %}
+          {# Grouped: one card → links to dept page anchored on this kind.
+             We deep-link to the first gate since /dept/<slug> already
+             lists all of them; until a per-kind view exists this gives
+             the operator a fast entry to triage. #}
+          <a class="decision-card"
+             href="/gate/{{ dept.slug }}/{{ grp.gates[0].id }}">
+            <div class="decision-card-count">{{ grp.count }}</div>
+            <h3 class="decision-card-title">
+              {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
+              — {{ grp.kind_label|capitalize_fr }}
+            </h3>
+            <p class="decision-card-body">
+              {{ grp.count }} {{ grp.kind_label }} en attente · ouvrir la première →
+            </p>
+            <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
+          </a>
+        {% else %}
+          {% set g = grp.gates[0] %}
+          <a class="decision-card" href="/gate/{{ dept.slug }}/{{ g.id }}">
+            <div class="decision-card-count">1</div>
+            <h3 class="decision-card-title">
+              {{ grp.kind_label|capitalize_fr }}
+            </h3>
+            <p class="decision-card-body">
+              Risque
+              <span class="slug-ref">{{ g.risk_level or 'inconnu' }}</span>
+              · <span class="slug-ref">{{ g.id }}</span>
+            </p>
+            <span class="decision-card-cta">Ouvrir →</span>
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% else %}
+    {% with title="Aucune décision en attente.",
+            body=dept.display_name ~ " travaille en silence." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% endif %}
+</section>
+
+{# Section 3 "Ses 4 moments de la journée" REMOVED in msg-3142 refactor —
+   merged into Section 1 above. Each Moment now contains its missions
+   AND its PROMPT.md collapsible in a single card. #}
+
+{# ─── Tableau de bord (whiteboard) ───────────────────────────────
+   Per-dept configurable section where the agent surfaces chosen
+   KPIs/metrics for {{OPERATOR}} ({{OPERATOR}} msg 1073, 2026-05-28). #}
+{% if whiteboard %}
+<section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
+  <h2 id="dept-whiteboard-heading" class="section-heading">
+    <span class="section-heading-number">3.</span>
+    {% if whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
+  </h2>
+  {% if whiteboard.updated_at %}
+    <p class="whiteboard-updated">Mis à jour : {{ whiteboard.updated_at }}</p>
+  {% endif %}
+  {% if whiteboard.kpis %}
+    <div class="kpi-grid whiteboard-kpis">
+      {% for kpi in whiteboard.kpis %}
+        <div class="kpi-card">
+          <div class="kpi-value">
+            {{ kpi.value }}
+            {% if kpi.trend == 'up' %}
+              <span class="kpi-trend kpi-trend--up">↑</span>
+            {% elif kpi.trend == 'down' %}
+              <span class="kpi-trend kpi-trend--down">↓</span>
+            {% elif kpi.trend == 'stable' %}
+              <span class="kpi-trend">→</span>
+            {% endif %}
+          </div>
+          <h4 class="kpi-label">{{ kpi.label }}</h4>
+          {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+  {% if whiteboard.notes %}
+    <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
+  {% endif %}
+</section>
+{% endif %}
+
+<p>
+  <a href="/settings/{{ dept.slug }}" class="discreet-link">Ajuster ses réglages →</a>
+</p>
+
+{# ─── Mettre à la retraite ────────────────────────────────────────
+   Sprint Lifecycle (UI gap fixed 2026-05-24, {{OPERATOR}} msg 3030): backend
+   route POST /agents/<slug>/retire existed but no UI element triggered
+   it — operators had to use curl. CTA only shown for Live depts;
+   éclore depts use cancel-eclosion (different workflow), anciens are
+   already retired. #}
+{% if dept.is_live %}
+<section class="cabinet-section cabinet-section--danger"
+         aria-labelledby="dept-retire-heading">
+  <h2 id="dept-retire-heading" class="section-heading" style="color:#8a3a3a;">
+    <span class="section-heading-number">4.</span>
+    Mettre à la retraite
+  </h2>
+  <p class="prose-block">
+    Si {{ dept.display_name }} n'a plus sa place dans l'équipe, tu peux
+    la retirer en douceur. Son repo est archivé, son service systemd
+    s'arrête, et un dernier message Telegram lui est envoyé. Tout
+    reste consultable en lecture seule.
+  </p>
+
+  <details class="retire-confirm">
+    <summary class="btn-ghost" style="cursor:pointer; display:inline-block;">
+      Retirer {{ dept.display_name }} →
+    </summary>
+    <form id="retire-{{ dept.slug }}-form"
+          hx-post="/agents/{{ dept.slug }}/retire"
+          hx-target="#retire-{{ dept.slug }}-result"
+          hx-swap="innerHTML"
+          hx-confirm="Tu confirmes que {{ dept.display_name }} ne fait plus partie de l'équipe ? Cette action est réversible côté GitHub mais le service systemd s'arrête."
+          style="margin-top:16px; padding:16px; border:1px solid #d4a64a; border-radius:8px; background:#fdf6e8;">
+      <label for="retire-{{ dept.slug }}-reason"
+             style="display:block; margin-bottom:8px; font-weight:600;">
+        Raison du départ (visible dans le commit de retrait)
+      </label>
+      <input type="text" id="retire-{{ dept.slug }}-reason" name="reason"
+             value="Decommissioned by operator"
+             style="width:100%; padding:10px; border:1px solid #ccc; border-radius:6px; margin-bottom:14px;">
+      <button type="submit" class="btn-ochre"
+              style="background:#8a3a3a; border-color:#8a3a3a;">
+        Confirmer le départ
+      </button>
+    </form>
+    <div id="retire-{{ dept.slug }}-result" style="margin-top:18px;"></div>
+  </details>
+</section>
+{% endif %}
+
+{% endblock %}

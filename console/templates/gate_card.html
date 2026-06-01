@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Décision {{ gate_id }} — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+<header class="dept-header">
+  <h1 class="dept-title">
+    Une décision t'attend
+  </h1>
+  <p class="dept-subtitle">
+    {{ slug }} te demande ton avis
+    {% if gate.kind %} sur une {{ humanize_kind(gate.kind) }}{% endif %}.
+    <br>
+    <span class="slug-ref">{{ gate_id }}</span>
+  </p>
+</header>
+
+<div class="gate-card">
+  <div class="gate-meta">
+    <div>moment d'origine <b>{{ gate.source_layer }}</b></div>
+    <div>moment cible <b>{{ gate.target_layer }}</b></div>
+    <div>niveau de risque <b>{{ gate.risk_level }}</b></div>
+  </div>
+
+  {# ─── Autonomy trajectory — Notion v5 lines 920-924 ─────────────
+     3 lines mandated on every gate surface ({{OPERATOR}} triage on phone):
+       1. Niveau actuel         → current_mode humanized
+       2. Pourrait apprendre    → future_eligible_modes humanized
+       3. Phase d'observation   → shadow autonomy placeholder
+                                  (real state computed by Layer 4 at
+                                  dept level under
+                                  management-export.autonomy_readiness,
+                                  not on the gate itself — v1 static)
+  ─────────────────────────────────────────────────────────────── #}
+  <div class="gate-autonomie">
+    <div class="gate-autonomie-line">
+      <span class="gate-autonomie-label">Niveau actuel</span>
+      <span class="gate-autonomie-value">{{ humanize_mode(gate.current_mode) or gate.current_mode }}</span>
+    </div>
+    <div class="gate-autonomie-line">
+      <span class="gate-autonomie-label">Pourrait apprendre</span>
+      <span class="gate-autonomie-value">{{ humanize_future_modes(gate.future_eligible_modes) }}</span>
+    </div>
+    <div class="gate-autonomie-line gate-autonomie-shadow">
+      <span class="gate-autonomie-label">Phase d'observation</span>
+      <span class="gate-autonomie-value muted">{{ shadow_autonomy_label(gate) }}</span>
+      <details class="gate-autonomie-info">
+        <summary class="muted-italic" style="cursor:pointer; font-size:12px;">pourquoi ?</summary>
+        <p style="font-size:13px; color: var(--body-soft); margin: 6px 0 0;">
+          La phase d'observation (shadow autonomy) compare ce que {{ slug }}
+          aurait auto-approuvé avec ce que tu as réellement décidé. C'est
+          Layer 4 qui la pilote au niveau de l'équipe — elle s'allumera
+          ici dès qu'une classe d'action sera prête à grandir.
+        </p>
+      </details>
+    </div>
+  </div>
+
+  {# ─── Draft + angles (prospect_dm / warming_comment) ────────────
+     Rendered prominently ONLY when the gate carries a draft. {{OPERATOR}}
+     triages from his phone: he must read the message + see the chosen
+     angle + the alternatives, and know that typing a variant (e.g. V2)
+     in the comment asks Maya to redraft (a fresh gate, no auto-send).
+     Graceful: absent on echo-style gates with no draft_body. #}
+  {% if gate.draft_body or gate.comment_body %}
+  <div class="gate-draft-block" style="margin:18px 0; padding:14px 16px;
+       background: var(--paper-soft); border:1px solid var(--line);
+       border-radius:2px;">
+    <div class="gate-draft-label muted-italic"
+         style="font-size:12px; margin-bottom:6px;">
+      Message proposé{% if gate.account_used %} — compte {{ gate.account_used }}{% endif %}
+    </div>
+    <div class="gate-draft-body"
+         style="font-family: var(--font-body); font-size:15px; line-height:1.5;
+                color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body or gate.comment_body }}</div>
+
+    {% if gate.chosen_variant %}
+    <div class="gate-angle-chosen" style="margin-top:14px; font-size:14px;">
+      <b>Angle retenu : {{ gate.chosen_variant }}</b>
+      {% if gate.chosen_angle %}<div style="color: var(--body-soft); margin-top:2px;">{{ gate.chosen_angle }}</div>{% endif %}
+      {% if gate.chosen_reason %}<div class="muted-italic" style="font-size:13px; margin-top:2px;">{{ gate.chosen_reason }}</div>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if gate.alternatives %}
+    <details class="gate-angle-alternatives" style="margin-top:12px;">
+      <summary class="muted-italic" style="cursor:pointer; font-size:13px;">
+        Autres angles possibles ({{ gate.alternatives | length }})
+      </summary>
+      <ul style="margin:8px 0 0; padding-left:18px; font-size:14px;">
+        {% for alt in gate.alternatives %}
+        <li style="margin-bottom:6px;">
+          <b>{{ alt.variant }}</b>{% if alt.angle %} — {{ alt.angle }}{% endif %}{% if alt.comment %} — {{ alt.comment }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="muted-italic" style="font-size:13px; margin:8px 0 0;">
+        Pour basculer sur un autre angle, écris son variant (ex : <b>V1</b>)
+        dans le commentaire ci-dessous puis approuve — {{ slug }} redraftera
+        et te resoumettra une nouvelle décision.
+      </p>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <details>
+    <summary class="muted-italic" style="cursor:pointer; margin-bottom:10px;">
+      Voir le détail technique de la décision (yaml)
+    </summary>
+    <pre style="font-family: var(--font-mono); font-size:12px; background: var(--paper-soft);
+                border:1px solid var(--line); padding:14px; border-radius:2px;
+                white-space:pre-wrap; overflow-x:auto;">{{ gate_raw }}</pre>
+  </details>
+
+  <form hx-post="/gate/{{ slug }}/{{ gate_id }}/decide"
+        hx-target="#decision-result" hx-swap="innerHTML"
+        style="margin-top:22px;">
+    <div class="cabinet-field">
+      <label for="gate-comment">Un mot pour {{ slug }} (facultatif)</label>
+      <textarea name="comment" id="gate-comment" rows="3"
+                style="width:100%; background: var(--paper); border:1px solid var(--line);
+                       padding:10px 12px; font-family: var(--font-body); font-size:14px;
+                       color: var(--ink); border-radius:2px; resize:vertical;"
+                placeholder="pourquoi cette décision…"></textarea>
+    </div>
+
+    <div class="gate-actions">
+      <button type="submit" name="action" value="approve" class="btn-ochre">approve</button>
+      <button type="submit" name="action" value="reject" class="btn-ghost">reject</button>
+      <button type="submit" name="action" value="modify" class="btn-ghost">modify</button>
+      <button type="submit" name="action" value="defer" class="btn-ghost">defer</button>
+    </div>
+
+    <div id="decision-result"></div>
+  </form>
+</div>
+
+<p style="margin-top:24px;">
+  <a href="/dept/{{ slug }}" class="discreet-link">← retour à {{ slug }}</a>
+</p>
+
+{% endblock %}

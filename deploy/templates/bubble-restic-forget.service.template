@@ -1,0 +1,38 @@
+[Unit]
+Description=Bubble Invest — Restic forget + prune (rétention 24h/7j/4sem)
+Documentation=file:///root/bubble-ops-loop/docs/BACKUP-STRATEGY.md
+After=bubble-restic-backup.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+Environment=RESTIC_REPOSITORY=/var/backups/bubble-restic
+Environment=RESTIC_PASSWORD_FILE=/etc/bubble/restic-password
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
+
+# Politique de rétention (cf. docs/BACKUP-STRATEGY.md) :
+#   - 24 derniers snapshots horaires (rolling 24h si backups toutes les 6h
+#     ça donne ~6 backups par 24h mais on garde la marge)
+#   - 7 derniers snapshots journaliers
+#   - 4 derniers snapshots hebdomadaires
+#
+# --prune réclame physiquement les blocs qui ne sont plus référencés.
+# C'est l'opération coûteuse ; d'où un timer séparé qui tourne 1x/jour
+# plutôt qu'à chaque backup.
+ExecStart=/usr/bin/restic forget \
+    --keep-hourly 24 \
+    --keep-daily 7 \
+    --keep-weekly 4 \
+    --prune \
+    --group-by host,tags
+
+Nice=15
+IOSchedulingClass=idle
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Réglages de {{ dept.display_name }} — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{# Map current_mode → human prose. #}
+{% set mode_phrasing = {
+  'manual_required':             "Tu valides chaque fois.",
+  'manual_unless_policy_passed': "Tu valides — sauf si elle respecte la règle.",
+  'auto_if_policy_passed':       dept.display_name ~ " gère seule si la règle est OK.",
+  'auto_with_veto_window':       dept.display_name ~ " agit ; tu peux revenir dessus.",
+  'disabled':                    "Désactivé.",
+} %}
+
+<header class="dept-header">
+  <h1 class="dept-title">Réglages de {{ dept.display_name }}</h1>
+  <p class="dept-subtitle">
+    Pour l'instant on regarde sans toucher. Si tu veux ajuster un réglage,
+    il faut passer par une demande écrite — {{ dept.display_name }} le
+    verra dans son courrier du matin.
+  </p>
+</header>
+
+{# ─── Niveau d'autonomie (gate policies en prose) ─────────────── #}
+<section class="cabinet-section">
+  <h2 class="section-heading">
+    <span class="section-heading-number">1.</span>
+    Son niveau d'autonomie aujourd'hui
+  </h2>
+
+  {% if gate_policies %}
+    <ul class="reglage-list">
+      {% for name, policy in gate_policies.items() %}
+        <li class="reglage" data-policy="{{ name }}">
+          <h3 class="reglage-name">
+            Sur les décisions de type <span class="slug-ref">{{ name }}</span>
+          </h3>
+          <p class="reglage-prose">
+            {{ mode_phrasing.get(policy.current_mode, "Mode non défini.") }}
+            <span class="reglage-slug muted">({{ policy.current_mode or '—' }})</span>
+          </p>
+          {% if policy.eligible_future_modes %}
+            <p class="reglage-future">
+              Elle pourrait apprendre à les prendre autrement (option future) :
+              {% for m in policy.eligible_future_modes %}
+                {{ mode_phrasing.get(m, m)|trim('.') }}{% if not loop.last %} · {% endif %}
+              {% endfor %}.
+            </p>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted-italic">Aucun type de décision déclaré pour l'instant.</p>
+  {% endif %}
+</section>
+
+<p class="muted-italic" style="font-size:13px; max-width:680px;">
+  Pour modifier ces réglages, passe par une branche
+  <span class="slug-ref">settings_pr</span> — c'est l'arrivée du courrier
+  du matin pour {{ dept.display_name }}. (Édition directe depuis le cabinet :
+  deferred indéfiniment per Notion v5 §lifecycle.)
+</p>
+
+<p>
+  <a href="/dept/{{ dept.slug }}" class="discreet-link">← {{ dept.display_name }}</a>
+</p>
+
+{% endblock %}

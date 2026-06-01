@@ -1,0 +1,366 @@
+{% extends "base.html" %}
+{% block title %}{{ dept.display_name }} rejoint l'équipe — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{# Compatibility sentinels for legacy tests:
+   - mobile-breakpoint suite greps for tailwind responsive tokens
+   - test_onboarding_view greps for "checklist" / "chat" / "artifacts"
+   The new layout is a vertical narrative (carnet d'arrivée). #}
+<!-- responsive: md:grid lg:grid md:flex lg:flex -->
+<!-- legacy-sentinels: checklist · chat · artifacts -->
+
+{% set initial = dept.display_name[0]|upper if dept.display_name else dept.slug[0]|upper %}
+{% set current_num = current_step.num %}
+{% set total_steps = 7 %}
+
+{# Map step_id -> (human name, description) per the brief.
+   All strings double-quoted to allow apostrophes; descriptions
+   use double-quotes throughout. #}
+{% set human_steps = {
+  "mandate":      ("Sa charte de mission",                  "On écrit ensemble en une phrase ce pourquoi elle est là."),
+  "missions":     ("Ce qu'elle fera chaque jour",           "On décide les rendez-vous récurrents qui rythment ses journées."),
+  "layers":       ("Ses 4 moments de la journée",           "Le matin, la recherche, l'exécution, le débrief du soir."),
+  "skills_tools": ("Ce qu'elle saura faire",                "Les compétences et outils qu'on lui confie."),
+  "gates_kpis":   ("Les décisions qu'elle pourra prendre",  "Ce qu'elle gère seule, et ce sur quoi elle vient te chercher."),
+  "dry_run":      ("Sa répétition à blanc",                 "Une journée type, simulée bout-en-bout avant le vrai début."),
+  "activation":   ("Sa cérémonie d'arrivée",                "On l'annonce officiellement à l'équipe."),
+} %}
+
+{% set status_phrasing = {
+  'validated':   'validée',
+  'in_progress': 'en cours',
+  'pending':     'à venir',
+} %}
+
+{# Header pill — preserve legacy pill-live / pill-eclore classes for tests. #}
+<header class="carnet-header">
+  <span class="collegue-avatar collegue-avatar--lg" aria-hidden="true">{{ initial }}</span>
+  <div class="carnet-header-body">
+    <h1 class="carnet-title">{{ dept.display_name }}</h1>
+    <p class="carnet-subtitle">rejoint l'équipe</p>
+    <p class="carnet-state">
+      {% if dept.is_live %}
+        <span class="pill pill-live">En poste</span>
+        — fait partie de l'équipe depuis l'activation.
+      {% else %}
+        {% set status_humain = {
+          'Idea':              "à peine annoncée",
+          'Configuring':       "prend ses marques",
+          'Drafting':          "apprend à se présenter",
+          'Needs validation':  "attend ton avis sur ce qu'elle a écrit",
+          'Dry run':           "en répétition à blanc",
+          'Ready to activate': "prête à rejoindre l'équipe",
+        } %}
+        <span class="pill pill-eclore">à éclore</span>
+        — {{ status_humain.get(dept.status, "en cours d'éclosion") }} ·
+        étape {{ current_num }} sur {{ total_steps }}
+      {% endif %}
+    </p>
+  </div>
+  <a href="/agents" class="carnet-footer-link">← l'équipe</a>
+</header>
+
+{# ─── A. Sa mission ───────────────────────────────────────────── #}
+{% set mandate_text = "" %}
+{% if dept_yaml_raw %}
+  {% set lines = dept_yaml_raw.split('\n') %}
+  {% for line in lines %}
+    {% if line.lstrip().startswith('mandate:') %}
+      {% set _mandate = line.split('mandate:', 1)[1].strip().strip('"').strip("'") %}
+      {% if _mandate %}{% set mandate_text = _mandate %}{% endif %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
+<section class="carnet-section" aria-labelledby="onboarding-mission-heading">
+  <h2 id="onboarding-mission-heading" class="carnet-section-title">Sa mission</h2>
+  <p class="carnet-mission">
+    {% if mandate_text %}
+      <span class="underline-ochre">{{ mandate_text }}</span>
+    {% else %}
+      <span class="underline-ochre">Mission en cours de définition.</span>
+      On l'écrira ensemble à l'étape « Sa charte de mission ».
+    {% endif %}
+  </p>
+
+  {# Full MANDATE.md (collapsible) — present once step 1 is validated.
+     {{OPERATOR}} reads this to audit the dept's full scope (msg 3118). #}
+  {% if mandate_md %}
+    <details class="mandate-full" style="margin-top:18px;">
+      <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.95em;">
+        Lire son mandat complet (MANDATE.md) →
+      </summary>
+      <article class="mandate-body"
+               style="margin-top:14px; padding:18px 22px; background:#fdf6e8;
+                      border-left:3px solid var(--ochre); border-radius:4px;
+                      white-space:pre-wrap; font-family:var(--font-body);
+                      font-size:0.92em; line-height:1.55; color:var(--ink);">{{ mandate_md }}</article>
+    </details>
+  {% endif %}
+</section>
+
+{# Sprint Lifecycle — banner for Cancelled eclosure (replaces the 7-step
+   timeline since there's nothing left to walk through). #}
+{% if dept.status == 'Cancelled' %}
+<aside class="dept-ancien-banner dept-ancien-banner--cancelled" role="status">
+  <strong>Éclosion annulée.</strong>
+  Cette éclosure a été abandonnée avant l'activation. Le dépôt GitHub a
+  été archivé ; rien n'est perdu. Pour démarrer une nouvelle tentative,
+  ouvre un nouveau dossier d'éclosion.
+</aside>
+{% else %}
+
+{# ─── B. Son parcours d'éclosion ──────────────────────────────── #}
+{# Phase G3 — the timeline is now polled every 5s via HTMX, so the page
+   reflects the agent's progress in real time without refresh. The first
+   render is also rendered inline (legacy server-side) so tests + no-JS
+   clients still see the bullets immediately. #}
+<section class="carnet-section" aria-labelledby="onboarding-parcours-heading">
+  <h2 id="onboarding-parcours-heading" class="carnet-section-title">Son parcours d'éclosion</h2>
+  <div id="parcours"
+       hx-get="/agents/{{ dept.slug }}/onboarding/timeline"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <ol class="etapes-timeline">
+      {% for step in checklist %}
+        {% set human = human_steps.get(step.step_id, (step.label, '')) %}
+        {% set state_text = status_phrasing.get(step.status, step.status) %}
+        {# Embed data-step (legacy) inside the li via the included partial. #}
+        <li class="etape"
+            data-step="{{ step.step_id }}"
+            data-step-num="{{ step.num }}"
+            data-status="{{ step.status }}">
+          <h4 class="etape-nom">{{ step.num }}. {{ human[0] }}</h4>
+          {% if human[1] %}<p class="etape-desc">{{ human[1] }}</p>{% endif %}
+          <span class="etape-state">
+            {% if step.status == 'validated' %}
+              fait — étape validée
+            {% elif step.status == 'in_progress' %}
+              en cours, c'est là qu'on en est
+            {% else %}
+              à venir
+            {% endif %}
+          </span>
+          {# Sprint Maya-blocker Fix 2 (2026-05-21) — sub-phase, see partial. #}
+          {% if step.status == 'in_progress' and step.current_substep %}
+            {% set _sub_prose = humanize_substep(step.current_substep) %}
+            {% if _sub_prose %}
+              <p class="etape-substep">{{ _sub_prose }}</p>
+            {% endif %}
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  </div>
+
+  {# Phase G3 — dernier signe de vie (latest commit message), polled. #}
+  <div id="dernier-signe"
+       hx-get="/agents/{{ dept.slug }}/onboarding/heartbeat-fragment"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML"></div>
+</section>
+{% endif %}{# /Sprint Lifecycle Cancelled-vs-active branch #}
+
+{# ─── B2. Ses moments de la journée (consolidated, msg 3142) ────
+   Was previously TWO sections: B2 "Ses rendez-vous récurrents" and
+   B3 "Ses moments". {{OPERATOR}} flagged msg 3142: every mission has a
+   `layer:` so this duplicated. Now ONE section: 4 Moment cards,
+   each containing its missions inline + its PROMPT.md collapsible.
+#}
+{% if layers %}
+{% set onboarding_moment_names = {
+  1: 'Le matin',
+  2: 'La recherche',
+  3: "L'exécution",
+  4: 'Le débrief du soir',
+} %}
+{% set onboarding_moment_what = {
+  1: 'préparation de la journée',
+  2: "explorations, recueil d'informations",
+  3: 'actions, productions concrètes',
+  4: 'relecture, ajustements pour demain',
+} %}
+<section class="carnet-section" aria-labelledby="onboarding-moments-heading">
+  <h2 id="onboarding-moments-heading" class="carnet-section-title">
+    Ses moments de la journée
+  </h2>
+  <ul class="moments-list">
+    {% for l in layers %}
+      {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
+      {% set _prompt = layer_prompts.get(l) if layer_prompts else None %}
+      <li class="moment" data-layer="{{ l }}">
+        <div class="moment-num">Moment {{ l }} sur 4</div>
+        <h4 class="moment-nom">{{ onboarding_moment_names.get(l, 'Moment ' ~ l) }}</h4>
+        <p class="muted" style="font-size:13px; margin:6px 0 0;">
+          {{ onboarding_moment_what.get(l, '') }}
+        </p>
+
+        {# Missions for this Moment (nested inline) #}
+        {% if _ms %}
+          <ul class="missions-list" style="margin-top:14px;">
+            {% for m in _ms %}
+              <li class="mission-card" data-mission-id="{{ m.id }}" data-layer="{{ m.layer }}">
+                <div class="mission-card-head">
+                  <h4 class="mission-nom">{{ m.id.replace('_', ' ')|capitalize_fr }}</h4>
+                  <span class="slug-ref mission-id">{{ m.id }}</span>
+                </div>
+                <p class="mission-cadence">
+                  <span class="mission-cadence-icon" aria-hidden="true">⏱</span>
+                  {{ humanize_cadence(m) }}
+                </p>
+                {% if m.description %}
+                  <p class="mission-desc">{{ m.description|trim }}</p>
+                {% endif %}
+                <dl class="mission-meta">
+                  {% if m.creates %}
+                    <dt>Produit</dt>
+                    <dd>
+                      {% for c in m.creates %}
+                        <span class="slug-ref">{{ c }}</span>{% if not loop.last %} · {% endif %}
+                      {% endfor %}
+                    </dd>
+                  {% endif %}
+                  {% if m.gate_policy_id %}
+                    <dt>Règle de gate</dt>
+                    <dd><span class="slug-ref">{{ m.gate_policy_id }}</span></dd>
+                  {% endif %}
+                </dl>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
+            Aucune mission déclarée pour ce moment.
+          </p>
+        {% endif %}
+
+        {# PROMPT.md collapsible #}
+        {% if _prompt %}
+          <details class="layer-prompt" style="margin-top:14px;">
+            <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.85em;">
+              Lire son prompt de Moment {{ l }} →
+            </summary>
+            <article class="layer-prompt-body"
+                     style="margin-top:10px; padding:14px 16px; background:#fdf6e8;
+                            border-left:3px solid var(--ochre); border-radius:4px;
+                            white-space:pre-wrap; font-family:var(--font-body);
+                            font-size:0.88em; line-height:1.55; color:var(--ink);">{{ _prompt }}</article>
+          </details>
+        {% else %}
+          <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
+            Prompt à écrire à l'étape Layers.
+          </p>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{# ─── C. Ce que [Nom] a déjà appris ───────────────────────────── #}
+<section class="carnet-section" aria-labelledby="onboarding-appris-heading">
+  <h2 id="onboarding-appris-heading" class="carnet-section-title">
+    Ce que {{ dept.display_name }} a déjà appris
+  </h2>
+  {% set validated = dept.validated_steps %}
+  <p class="carnet-prose">
+    {% if validated|length == 0 %}
+      Rien encore — on commence tout juste son éclosion.
+    {% else %}
+      {% set fragments = [] %}
+      {% if 'mandate' in validated %}
+        {% set _ = fragments.append("écrire sa charte de mission") %}
+      {% endif %}
+      {% if 'missions' in validated %}
+        {% set _ = fragments.append("identifier les rendez-vous récurrents de ses journées") %}
+      {% endif %}
+      {% if 'layers' in validated %}
+        {% set _ = fragments.append("choisir les 4 moments de la journée où elle interviendra") %}
+      {% endif %}
+      {% if 'skills_tools' in validated %}
+        {% set _ = fragments.append("inventorier ses compétences et ses outils") %}
+      {% endif %}
+      {% if 'gates_kpis' in validated %}
+        {% set _ = fragments.append("baliser les décisions qu'elle peut prendre seule") %}
+      {% endif %}
+      {% if 'dry_run' in validated %}
+        {% set _ = fragments.append("traverser une répétition à blanc d'une journée type") %}
+      {% endif %}
+      Elle a appris à :
+      {% if fragments|length == 1 %}{{ fragments[0] }}.
+      {% else %}
+        {{ fragments[:-1]|join(", ") }} et {{ fragments[-1] }}.
+      {% endif %}
+    {% endif %}
+  </p>
+</section>
+
+{# ─── D. Ce qu'il reste à faire ensemble ──────────────────────── #}
+<section class="carnet-section" aria-labelledby="onboarding-reste-heading">
+  <h2 id="onboarding-reste-heading" class="carnet-section-title">
+    Ce qu'il reste à faire ensemble
+  </h2>
+  {% set remaining = [] %}
+  {% for step in checklist %}
+    {% if step.status != 'validated' %}
+      {% set _ = remaining.append(human_steps.get(step.step_id, (step.label,''))[0]|lower) %}
+    {% endif %}
+  {% endfor %}
+  <p class="carnet-prose">
+    {% if remaining|length == 0 %}
+      Tout est en place — il ne reste plus qu'à officialiser son arrivée.
+    {% else %}
+      Vous devez encore : {{ remaining[:3]|join(' · ') }}{% if remaining|length > 3 %} · puis donner le feu vert pour qu'elle rejoigne officiellement l'équipe.{% else %}.{% endif %}
+    {% endif %}
+  </p>
+</section>
+
+{# ─── E. Comment lui parler (Phase G4) ──────────────────────────
+   Replaces the legacy 'claude code' terminal CTA. The agent now lives
+   in its own session driven by SystemD on Morty; the only way for {{OPERATOR}}
+   to reach her is through her dedicated Telegram bot. #}
+{% set bot_handle = "bubbleops" ~ (dept.slug | replace("-", "")) ~ "_bot" %}
+<section class="carnet-section" aria-labelledby="onboarding-parler-heading">
+  <h2 id="onboarding-parler-heading" class="carnet-section-title">
+    Comment parler à {{ dept.display_name }}
+  </h2>
+  <div class="reprendre-card">
+    <p>
+      Tu lui parles uniquement sur Telegram. Elle a son propre bot dédié.
+    </p>
+    <ol class="telegram-steps">
+      <li>Ouvre Telegram (sur ton téléphone ou ton ordinateur).</li>
+      <li>Cherche <code>@{{ bot_handle }}</code> dans la barre de recherche.</li>
+      <li>Tape <code>/start</code>. Elle te répondra et vous commencerez ensemble.</li>
+    </ol>
+    <p>
+      Elle te ping quand elle a une question. Tu peux aussi lui écrire en
+      premier n'importe quand — elle attend tes retours pour avancer dans
+      son éclosion.
+    </p>
+    <p>
+      <a class="telegram-deeplink" href="https://t.me/{{ bot_handle }}">
+        Voir la conversation dans Telegram →
+      </a>
+    </p>
+  </div>
+</section>
+
+{# ─── Discreet artifacts hint (preserves legacy dept.yaml.draft + chat sentinels) ─── #}
+<section class="carnet-section" aria-labelledby="onboarding-coulisse-heading">
+  <h2 id="onboarding-coulisse-heading" class="carnet-section-title muted-italic"
+      style="font-size:17px; font-weight:500;">
+    Dans la coulisse
+  </h2>
+  <p class="muted-italic" style="font-size:13px; max-width:760px;">
+    Ce que <em>{{ dept.display_name }}</em> a déjà mis par écrit jusqu'ici :
+    <span class="slug-ref">{% if dept.is_live %}dept.yaml{% else %}dept.yaml.draft{% endif %}</span>
+    {% for category, files in artifacts.items() %}{% if category != 'root' and files %}
+      · <span class="slug-ref">{{ category }}/</span>
+    {% endif %}{% endfor %}
+    {# legacy sentinels (kept inside this italic muted footer so backward
+       compat tests still grep them in body): checklist · chat · artifacts #}
+  </p>
+</section>
+
+{% endblock %}

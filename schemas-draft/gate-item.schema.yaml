@@ -1,0 +1,155 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/gate-item.json"
+title: Gate Item v3
+description: |
+  Shape of every YAML under queues/gates/ — a decision-card surfaced to
+  the human ({{OPERATOR}}) via the console + Telegram. Source: Notion v3 §"Gates
+  levables & missions récurrentes" + §"Contrats minimaux à standardiser
+  - Gate item".
+
+  v3 changes vs v1:
+    1) `kind` is extensible (enum + pattern fallback) so domain gates
+       (prospect_dm, trade_order, content_publish, domain:*) coexist with
+       the v1 internal enum (decision, exec_retry, mandate_breach, modify).
+    2) NEW required fields: `current_mode`, `future_eligible_modes`.
+       The 5-mode autonomy doctrine applies to EVERY gate (Notion lines
+       250-263) — even internal-kind ones get tracked under shadow
+       autonomy.
+    3) NEW conditional-required fields: `gate_policy_id` and
+       `authorization_band_id` are REQUIRED when `kind` is a domain kind
+       (i.e. anything other than the 4 v1 internal kinds). They link the
+       gate to the dept.yaml::gate_policies entry that governs it.
+type: object
+required:
+  - id
+  - kind
+  - source_layer
+  - target_layer
+  - risk_level
+  - requires_human
+  - actions
+  - current_mode
+  - future_eligible_modes
+# additionalProperties: true at root — domain gates carry kind-specific
+# payload (channel, prospect_id, draft, ticker, ...) that is not enum-
+# locked here. Per-domain payload tightening can land in v4.
+additionalProperties: true
+properties:
+  id:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: Kebab-case unique identifier for the gate.
+  kind:
+    description: |
+      v3 extensible. Three accepted shapes:
+        (a) v1 internal enum: decision, exec_retry, mandate_breach, modify
+        (b) documented domain enum: prospect_dm, prospect_followup,
+            trade_order, content_publish
+        (c) free-form domain:<snake_case> for future extensions
+            (e.g. domain:legal_review).
+      The dispatch logic (Layer 2 → console → Layer 3) handles all three.
+    oneOf:
+      - type: string
+        enum:
+          # v1 internal kinds
+          - decision
+          - exec_retry
+          - mandate_breach
+          - modify
+          # v3 documented domain kinds (Notion examples)
+          - prospect_dm
+          - prospect_followup
+          - trade_order
+          - content_publish
+      - type: string
+        pattern: "^domain:[a-z][a-z_]+$"
+        description: |
+          Free-form domain kind escape hatch. Use `domain:legal_review`,
+          `domain:contract_signature`, etc. when a dept invents a new
+          gated-action class that does not fit the documented enum.
+  source_layer:
+    type: integer
+    minimum: 1
+    maximum: 4
+    description: Which layer emitted this gate.
+  target_layer:
+    type: integer
+    minimum: 1
+    maximum: 4
+    description: |
+      Which layer consumes the gate's resolution. Often == source_layer
+      (e.g. exec_retry from L3 to L3) but not always.
+  risk_level:
+    type: string
+    enum: [low, medium, high, critical]
+    description: Drives notification urgency and digest eligibility.
+  requires_human:
+    type: boolean
+    description: |
+      Default true. False is reserved for future fully-automated lanes
+      (NOT used in v3 — every gate is manual_required by default).
+  actions:
+    type: array
+    items:
+      type: string
+      enum: [approve, reject, modify, defer]
+    minItems: 1
+    uniqueItems: true
+    description: |
+      Allowed actions a human can take on this gate via the console.
+      Subset of [approve, reject, modify, defer] — never empty.
+  current_mode:
+    type: string
+    enum:
+      - manual_required
+      - manual_unless_policy_passed
+      - auto_if_policy_passed
+      - auto_with_veto_window
+      - disabled
+    description: |
+      The autonomy mode in effect for this gate AT THE TIME IT WAS
+      EMITTED. In v1 always manual_required. Snapshot, not a live link
+      to the policy — so an audit can replay what mode the system was
+      operating under when the decision happened.
+  future_eligible_modes:
+    type: array
+    items:
+      type: string
+      enum:
+        - manual_required
+        - manual_unless_policy_passed
+        - auto_if_policy_passed
+        - auto_with_veto_window
+        - disabled
+    uniqueItems: true
+    description: |
+      Modes this gate COULD eventually be raised to. May be empty for
+      internal-kind gates (decision/exec_retry/mandate_breach/modify)
+      that are intended to stay manual_required forever.
+  gate_policy_id:
+    type: string
+    minLength: 1
+    description: |
+      REQUIRED when `kind` is a domain kind (prospect_dm, trade_order,
+      content_publish, domain:*). Links to dept.yaml::gate_policies.<id>.
+      Optional for internal-kind gates.
+  authorization_band_id:
+    type: string
+    minLength: 1
+    description: |
+      REQUIRED when `kind` is a domain kind. Identifies the dept-domain
+      authorization band that scopes WHICH instances of this action class
+      are eligible for autonomy (e.g. maya_warm_prospect_band).
+# Conditional requirement: domain kinds MUST carry gate_policy_id AND
+# authorization_band_id. We express this with a single `not(internal)`
+# implication: if `kind` is NOT one of the 4 internal enum values, then
+# both fields are required.
+allOf:
+  - if:
+      properties:
+        kind:
+          not:
+            enum: [decision, exec_retry, mandate_breach, modify]
+      required: [kind]
+    then:
+      required: [gate_policy_id, authorization_band_id]

@@ -1,0 +1,27 @@
+{# Row representing a colleague. Two variants:
+     variant='live'      — colleague currently en poste
+     variant='eclosion'  — colleague currently in éclosion
+   Params:
+     name        — display name
+     initial     — first letter for the avatar
+     href        — link to their page
+     role        — one-line italic role/mission
+     state_html  — current state in human prose (may contain a span)
+     cta         — call-to-action label (e.g. "Voir →")
+#}
+<a class="collegue-row {% if variant == 'eclosion' %}collegue-row--eclosion{% endif %}"
+   href="{{ href }}">
+  <span class="collegue-avatar" aria-hidden="true">{{ initial }}</span>
+  <span class="collegue-body">
+    <span class="collegue-name">{{ name }}</span>
+    {% if role %}<span class="collegue-role">{{ role }}</span>{% endif %}
+    {% if state_html %}<span class="collegue-state">{{ state_html|safe }}</span>{% endif %}
+    {% if variant == 'eclosion' and percent is defined %}
+      <span class="eclosion-progress" aria-hidden="true">
+        <span class="eclosion-progress-bar"
+              style="width: {{ percent }}%"></span>
+      </span>
+    {% endif %}
+  </span>
+  <span class="collegue-cta">{{ cta or "Voir →" }}</span>
+</a>

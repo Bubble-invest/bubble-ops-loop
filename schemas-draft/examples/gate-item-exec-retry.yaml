@@ -1,0 +1,19 @@
+# Positive example: an exec_retry gate (v1 internal kind) — Layer 3 failed
+# mid-execution and is asking for human guidance.
+# Proves both: (a) internal-kind support is preserved, (b) source_layer
+# and target_layer can match (L3 -> L3 retry loop).
+id: gate-exec-retry-saxo-001
+kind: exec_retry
+source_layer: 3
+target_layer: 3
+risk_level: high
+requires_human: true
+current_mode: manual_required
+future_eligible_modes: []
+actions:
+  - approve   # = retry
+  - reject    # = abort
+  - defer     # = hand-off to persistent agent (v2)
+context:
+  failed_order_id: saxo-2026-05-20-7421
+  error: "broker returned 503 after 3 retries"

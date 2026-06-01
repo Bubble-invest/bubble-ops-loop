@@ -1,0 +1,12 @@
+{# HTMX fragment after a gate decision (approve/reject/modify/defer). #}
+<div class="reprendre-card" style="margin-top:14px; border-left-color: var(--sage);">
+  <p style="margin:0 0 6px; color: var(--sage); font-weight:500;">
+    Décision enregistrée : {{ action }}
+  </p>
+  <p style="margin:0; font-size:13px; color: var(--body-muted);">
+    Le cabinet a pris note. <em>{{ slug }}</em> sera prévenu au prochain courrier.
+  </p>
+  <p style="margin-top:10px;">
+    <a href="/dept/{{ slug }}" class="discreet-link">← retour à {{ slug }}</a>
+  </p>
+</div>

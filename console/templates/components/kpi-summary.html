@@ -1,0 +1,11 @@
+{# Single KPI tile, recolored Maya kpi-card.
+   params:
+     value   — large number or string ('—' for muted)
+     label   — short title (Cormorant)
+     note    — small helper text
+#}
+<article class="kpi-card">
+  <div class="kpi-value">{{ value }}</div>
+  <h3 class="kpi-label">{{ label }}</h3>
+  {% if note %}<p class="kpi-note">{{ note }}</p>{% endif %}
+</article>

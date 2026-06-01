@@ -1,0 +1,12 @@
+{# Slide-in panel placeholder — reserved for post-MVP polish.
+   The Maya webapp ships a full slide-panel pattern (base.html + JS).
+   This MVP keeps it minimal; component exists so future pages can
+   include it without re-creating the markup. #}
+<aside id="slide-panel" class="slide-panel" aria-hidden="true">
+  <div class="slide-panel-overlay" data-close-panel></div>
+  <div class="slide-panel-content">
+    <button class="slide-panel-close" type="button" data-close-panel
+            aria-label="Fermer le panneau">×</button>
+    <div id="slide-panel-body"></div>
+  </div>
+</aside>

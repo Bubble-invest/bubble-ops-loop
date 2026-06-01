@@ -1,0 +1,22 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Backups (session-local)
+*.bak
+*.bak-*
+*.bak/
+
+# Runtime / secrets (never commit)
+*.env
+.env
+*.sops.env
+*credentials*
+*.pem
+*.key
+*.private*
+
+# Local lock/state
+*.lock

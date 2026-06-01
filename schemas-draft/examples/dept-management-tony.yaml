@@ -1,0 +1,61 @@
+# Positive example: Tony — the management-level dept.
+# Mirrors the Notion §"Scope dept.yaml pour un département management"
+# (/tmp/notion_final.txt lines 218-246). Tony has children, no recurring
+# missions of his own (he reads ops depts' management-exports instead), and
+# his directive_policy opens priority PRs into ops depts' queues/management/.
+
+department:
+  slug: tony
+  level: management
+  mandate: "Aggregator across ops depts; produces priority directives; arbitrates cross-dept conflicts."
+
+layers:
+  subscribed: [1, 4]   # Tony: lightweight Layer 1 (CEO_INBOX sweep) + weekly Layer 4
+
+recurring_missions: []   # management depts may legitimately have zero recurring missions
+
+skills:
+  layer_1:
+    - cross-dept-aggregator
+  layer_4:
+    - directive-quality-auditor
+
+tools:
+  - github-api
+  - telegram-reporter
+
+gate_policies:
+  priority_directive:
+    current_mode: manual_required
+    eligible_future_modes:
+      - auto_if_policy_passed
+    authorization_band: tony_low_risk_directive_band
+    kpi_guardrail_set: tony_directive_quality_kpis
+
+hierarchy:
+  level: management
+  parent: principal
+  children:
+    - ben
+    - maya
+    - miranda
+    - eliot
+  visibility:
+    read_outputs:
+      - ben
+      - maya
+      - miranda
+      - eliot
+    read_risk_kpis: true
+    read_risk_briefs: true
+    read_raw_artifacts: false   # Notion line 239: Tony NEVER reads raw artifacts
+    read_secrets: false         # hardcoded const: false in schema
+  directive_policy:
+    can_open_priority_prs: true
+    target_queue: queues/management/
+    requires_human_gate_for:
+      - mandate_change
+      - capital_allocation
+      - live_execution
+
+optional_domain_ledger: null

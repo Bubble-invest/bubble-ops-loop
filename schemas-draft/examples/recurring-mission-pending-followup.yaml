@@ -1,0 +1,17 @@
+# Positive example: a sub-daily recurring mission with active_hours window.
+# Verbatim from Notion v3 dump /tmp/notion_final.txt lines 352-363 (the
+# Maya "pending_followup_scan" example). Demonstrates the every_Nh cadence
+# pattern + active_hours guard.
+id: pending_followup_scan
+layer: 1
+cadence: every_2h
+active_hours: "08:00-18:00"
+description: "Identifier les prospects qui nécessitent un follow-up"
+input_sources:
+  - crm
+  - sent_messages
+  - inbox_replies
+output_queue: queues/research/
+creates:
+  - followup_draft_task
+gate_policy_id: prospect_dm

@@ -1,0 +1,19 @@
+{# Sprint Lifecycle — HTMX fragment returned by POST /agents/<slug>/retire.
+   Shows the farewell Telegram message that was sent to the dept's chat.
+#}
+<div class="lifecycle-result lifecycle-result--retired">
+  <h3 class="lifecycle-result-title">
+    {{ display_name }} prend sa retraite
+  </h3>
+  <p class="lifecycle-result-body">
+    {{ display_name }} ne fait plus partie de l'équipe active. Son dépôt
+    et son historique restent consultables en lecture seule dans la
+    section <em>Anciens collègues</em>.
+  </p>
+  <h4 class="lifecycle-result-subtitle">
+    Message d'au revoir envoyé sur Telegram
+  </h4>
+  <blockquote class="lifecycle-result-quote">
+    {{ final_telegram_msg }}
+  </blockquote>
+</div>

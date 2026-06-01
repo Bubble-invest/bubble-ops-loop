@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Carnet de bord — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{% set moment_names = {
+  1: 'Le matin',
+  2: 'La recherche',
+  3: "L'exécution",
+  4: 'Le débrief du soir',
+} %}
+
+<section class="page-hero">
+  <h1 class="page-hero-title">Carnet de bord</h1>
+  <p class="page-hero-lede">
+    Quand chaque collègue a été actif pour la dernière fois.
+  </p>
+</section>
+
+{% if not depts %}
+  {% with title="Le cabinet n'a pas encore de collègues.",
+          body="Le carnet est vierge." %}
+    {% include "components/empty-state.html" %}
+  {% endwith %}
+{% else %}
+<table class="carnet-bord-table">
+  <thead>
+    <tr>
+      <th>Collègue</th>
+      <th>{{ moment_names[1] }} <span class="muted" style="font-weight:400;font-size:11px;">(layer 1)</span></th>
+      <th>{{ moment_names[2] }}</th>
+      <th>{{ moment_names[3] }}</th>
+      <th>{{ moment_names[4] }}</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for dept in depts %}
+    <tr>
+      <td>
+        <strong style="font-family: var(--font-display); font-weight:600;">
+          {{ dept.display_name }}
+        </strong>
+        <span class="muted slug-ref" style="font-size:11px;">/ {{ dept.slug }}</span>
+      </td>
+      {% for r in by_dept.get(dept.slug, []) %}
+      <td>
+        {% if r.last_success_iso %}
+          <span class="trace-recent">Travail dernière trace : {{ r.last_success_iso }}</span>
+        {% else %}
+          <span class="trace-vide">pas encore commencé</span>
+        {% endif %}
+        <div class="muted" style="font-size:11px; margin-top:2px;">
+          Rythme : toutes les {{ r.cadence_minutes }} min
+          {% if r.is_stale and r.last_success_iso %} · silence inhabituel{% endif %}
+        </div>
+      </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<p class="muted-italic" style="font-size:13px; max-width:680px; margin-top:24px;">
+  Les détails techniques (journald, ssh, traces brutes) sont dans la coulisse —
+  Rick s'en occupe. Le branchement à la source vivante est encore
+  <em>pending</em> (post-MVP).
+</p>
+
+{% endblock %}

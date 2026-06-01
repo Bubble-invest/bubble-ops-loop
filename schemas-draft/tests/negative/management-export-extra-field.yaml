@@ -1,0 +1,18 @@
+# NEGATIVE CASE — must be REJECTED by management-export.schema.yaml
+# Rule broken: management-export.yaml MUST forbid additional properties at
+# its root, so an ops dept cannot smuggle raw artifacts / secrets / ad-hoc
+# fields past the management boundary (Notion §"Management exports" line
+# 175: "résumé COMPACT publié par le dept pour la hiérarchie"). The extra
+# `secret_api_key:` field is the canonical leak attempt.
+dept: rogue
+date: 2026-05-20
+status: clean
+last_successful_layer: 4
+open_gates: 0
+open_exceptions: 0
+top_kpis:
+  some_kpi: 1.0
+needs_management_attention: []
+links:
+  risk_kpis: outputs/2026-05-20/4/risk-kpis.yaml
+secret_api_key: "sk-bogus-leaked"   # <-- NOT in schema; must reject

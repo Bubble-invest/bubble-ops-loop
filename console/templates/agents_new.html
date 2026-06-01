@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Accueillir un nouveau collègue — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+<section class="page-hero">
+  <h1 class="page-hero-title">Accueillir un nouveau collègue</h1>
+  <p class="page-hero-lede">
+    Avant tout, donne-lui un nom. Tu pourras affiner sa mission ensuite.
+  </p>
+</section>
+
+<form action="/agents/new" method="post" class="cabinet-form">
+  <div class="cabinet-field">
+    <label for="field-display-name">Son prénom</label>
+    <input type="text" name="display_name" id="field-display-name" required
+           placeholder="Miranda" autofocus>
+  </div>
+
+  <div class="cabinet-field">
+    <label for="field-slug">Comment on l'appelle techniquement</label>
+    <input type="text" name="slug" id="field-slug" required
+           pattern="[a-z][a-z0-9\-]+" placeholder="miranda">
+    <p class="cabinet-field-hint">en minuscules, sans accent · format
+      <span class="slug-ref">^[a-z][a-z0-9-]+$</span></p>
+  </div>
+
+  <div class="cabinet-field">
+    <label for="field-owner">Qui sera son parrain dans l'équipe</label>
+    <input type="text" name="owner" id="field-owner" required value="joris">
+  </div>
+
+  <div class="cabinet-field">
+    <label for="field-telegram-bot-token">Son token Telegram</label>
+    <input type="text" name="telegram_bot_token" id="field-telegram-bot-token" required
+           pattern="\d{8,11}:[A-Za-z0-9_\-]{30,}"
+           placeholder="123456789:ABC-DEF…"
+           autocomplete="off"
+           spellcheck="false">
+    <p class="cabinet-field-hint">
+      Crée le bot via <a href="https://t.me/BotFather" target="_blank">@BotFather</a> (<code>/newbot</code>),
+      colle le token reçu ici. Il sera chiffré et stocké côté serveur.
+    </p>
+  </div>
+
+  <fieldset class="cabinet-field" style="border:none; padding:0;">
+    <legend style="padding:0; margin-bottom:8px; font-family:var(--font-display); font-size:17px; font-weight:600;">
+      Son rôle dans l'équipe
+    </legend>
+    <div class="radio-stack">
+      <label>
+        <input type="radio" name="level" value="ops" id="field-level-ops" checked
+               onchange="document.getElementById('children-block').hidden = true;">
+        <span>Collègue opérationnel</span>
+      </label>
+      <label>
+        <input type="radio" name="level" value="management" id="field-level-management"
+               onchange="document.getElementById('children-block').hidden = false;">
+        <span>Manager d'une équipe</span>
+      </label>
+    </div>
+    <p class="cabinet-field-hint" style="margin-top:8px;">
+      Un opérationnel travaille seul, sur son propre périmètre.<br>
+      Un manager agrège le travail de plusieurs opérationnels (lit leurs rapports Layer-4, peut leur envoyer des directives prioritaires).
+    </p>
+  </fieldset>
+
+  <div class="cabinet-field" id="children-block" hidden>
+    <label for="field-children">Qui sont les collègues sous sa responsabilité ?</label>
+    <input type="text" name="children" id="field-children"
+           placeholder="ben,maya,miranda,eliot"
+           autocomplete="off"
+           spellcheck="false">
+    <p class="cabinet-field-hint">
+      Liste des <em>slugs techniques</em> des collègues qu'il/elle supervise, séparés par des virgules.<br>
+      Chaque slug doit exister comme département (ou être éclos après celui-ci).
+    </p>
+  </div>
+
+  <div style="display:flex; gap:14px; align-items:center; margin-top:8px;">
+    <button type="submit" class="btn-ochre">Commencer l'éclosion</button>
+    <a href="/agents" class="btn-ghost">Annuler</a>
+  </div>
+</form>
+
+<p>
+  <a href="/agents" class="discreet-link" style="margin-top:24px; display:inline-block;">
+    ← l'équipe
+  </a>
+</p>
+
+{% endblock %}

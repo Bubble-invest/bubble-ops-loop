@@ -1,0 +1,21 @@
+# Reference policy YAML for bubble-ops-fixture
+# Shape per Notion v4 §"Ops department standard" (lines 624-644).
+
+github_access:
+  actor: ops-loop-fixture
+  own_repo: bubble-ops-fixture
+
+  read:
+    - bubble-ops-fixture
+    - bubble-shared-wiki
+
+  write:
+    - repo: bubble-ops-fixture
+      allowed_paths:
+        - outputs/**
+        - queues/**
+        - inbox/**
+      mode: direct_runtime_commit
+
+  pull_requests:
+    can_open_to: []

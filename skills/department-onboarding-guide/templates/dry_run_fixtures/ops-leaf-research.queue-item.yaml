@@ -1,0 +1,16 @@
+# DRY-RUN ARTIFACT — Maya-shape (prospect research) fake queue item.
+# Notion v5 lines 925-946. NEVER promote to production.
+id: dryrun-prospect-research-001
+kind: prospect_research_task
+source_layer: 1
+target_layer: 2
+priority: low
+created_at: "2026-05-20T00:00:00Z"
+payload:
+  prospect_id: fake_prospect_dryrun
+  company: "FakeCo (dry-run)"
+  reason: "Synthetic prospect research item for dry-run round-trip."
+  fake: true
+  requested_outputs:
+    - short_research_brief
+    - dm_angle

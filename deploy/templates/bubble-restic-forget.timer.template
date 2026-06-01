@@ -1,0 +1,17 @@
+[Unit]
+Description=Bubble Invest — Restic forget+prune timer (daily 03:30 UTC)
+Documentation=file:///root/bubble-ops-loop/docs/BACKUP-STRATEGY.md
+
+[Timer]
+# Une fois par jour, en heures creuses (03:30 UTC = 04:30/05:30 Paris
+# selon DST). Décalé de 30 minutes par rapport au prochain tick backup
+# (00:00/06:00) pour éviter la collision avec le verrou.
+OnCalendar=*-*-* 03:30:00
+
+Persistent=true
+RandomizedDelaySec=600
+
+Unit=bubble-restic-forget.service
+
+[Install]
+WantedBy=timers.target

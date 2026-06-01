@@ -1,0 +1,14 @@
+{# Phase G3 — "dernier signe de vie" fragment.
+   Polled every Ns. Reads `git log -1 --format=%s` and `--format=%ar` to
+   show the latest commit message + human-readable relative time.
+   Must NOT include <html> or <body>. #}
+<p class="carnet-heartbeat muted-italic" style="font-size:13px;">
+  {% if last_commit_msg %}
+    Dernier signe de vie : <em>« {{ last_commit_msg }} »</em>
+    {% if last_commit_age %}
+      ({{ last_commit_age }})
+    {% endif %}
+  {% else %}
+    Pas encore de signe de vie — elle n'a rien commit pour l'instant.
+  {% endif %}
+</p>

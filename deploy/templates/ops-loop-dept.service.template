@@ -1,0 +1,136 @@
+# /etc/systemd/system/ops-loop-${DEPT_SLUG}.service
+# Bubble Ops-Loop systemd unit — UX-5 deploy template.
+# Source: STEP-7-DEPLOYMENT-RESULTS.md (fixture pattern, verified working).
+#
+# Placeholders (substituted by scripts/deploy-to-morty.sh):
+#   ${DEPT_SLUG}            kebab-case dept slug (e.g. "miranda")
+#   ${TELEGRAM_STATE_DIR}   /home/claude/.claude/channels/telegram-<slug>
+#   ${ENV_FILE}             /run/claude-agent-<slug>/env
+#
+# Doctrine references:
+#   - SPEC-007 + SPEC-009 (Claude agent systemd recipe)
+#   - bubble-vps-platform/hetzner-migration/CLAUDE_AGENT_RECIPE.md
+#   - STEP-7-DEPLOYMENT-RESULTS.md (fixture deployment proof)
+#
+# Critical invariants:
+#   - Use /usr/bin/script for pty allocation (avoid pty wrappers that
+#     break the OAuth/auth flow).
+#   - Use the interactive claude binary with --dangerously-skip-permissions
+#     plus --channels plugin:telegram@claude-plugins-official.
+#   - Per-dept SOPS env at /etc/bubble/secrets-<slug>.sops.env.
+#
+# ============================================================================
+# DOCTRINE — two INDEPENDENT runtime bans below (Ban #1 and Ban #2).
+# Different root causes, different fixes. Read both paragraphs in full
+# before deviating from either. Adopting one does NOT avoid the other's
+# failure mode.
+# ============================================================================
+#
+# Ban #1 — NO tmux inside this unit (empirical tooling regression).
+#   Rule:        ExecStart must NOT spawn or attach to a tmux session.
+#                Use /usr/bin/script -qfc for pty allocation instead.
+#   Root cause:  Claude Code v2.1.139 returns HTTP 404 "issue with the
+#                selected model" on EVERY model for any fresh session
+#                started inside a tmux pty on Linux. Direct ssh shells
+#                are unaffected. Pure CLI bug, not a contract choice.
+#   Evidence:    STEP-4-SMOKE-TEST-RESULTS.md (~90 min diagnosis;
+#                7 model/wrapper combinations all 404 inside tmux).
+#                Also catalogued in docs/ARCHITECTURE.md
+#                §6 "Failure modes catalogue" row #1.
+#   Alternative: /usr/bin/script -qfc (used below in ExecStart) gives
+#                a real pty without triggering the resolver bug.
+#
+# Ban #2 — NO `claude -p` headless mode (product policy + hooks loss).
+#   Rule:        ExecStart must invoke the INTERACTIVE binary (with
+#                --dangerously-skip-permissions + --channels …),
+#                NEVER `claude -p` / `claude --print`.
+#   Root cause:  Two unrelated reasons stacked on the same flag:
+#                  (a) Anthropic is moving `-p` (print / headless) to
+#                      a paid tier mid-June 2026 — Claude Max plans
+#                      lose access.
+#                  (b) Headless mode DISABLES Claude Code hooks. Our
+#                      unit depends on hooks for env-read-alert and
+#                      bash-validator; running `-p` silently breaks
+#                      those guards.
+#   Evidence:    STEP-7-DEPLOYMENT-RESULTS.md (`claude -p` headless
+#                doctrine); docs/ARCHITECTURE.md §6 row #2.
+#   Alternative: interactive `claude --dangerously-skip-permissions
+#                --channels plugin:telegram@claude-plugins-official`
+#                (used below in ExecStart). Driven by SessionStart hook
+#                + /loop for cadence.
+# ============================================================================
+[Unit]
+Description=Claude Agent — ops-loop-${DEPT_SLUG} (bubble-ops-loop, dept=${DEPT_SLUG})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude
+Group=claude
+WorkingDirectory=/home/claude/agents/${DEPT_SLUG}
+
+Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+Environment=BUBBLE_DEPT=${DEPT_SLUG}
+Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
+
+# PEM pre-decryption: broker (running as `claude`) cannot read
+# /etc/age/key.txt (root-only), so we decrypt the GitHub App private key
+# here as root and chown to claude. The broker wrapper auto-detects
+# BUBBLE_BROKER_PEM_PATH and passes --no-sops to skip SOPS at mint time.
+# G-4 fix (GAP-10): these 3 blocks were present in the live fixture unit
+# but missing from this template — required for any dept to mint broker
+# tokens (Tony, Maya, Ben, etc.).
+Environment=BUBBLE_BROKER_PEM_PATH=/run/bubble-${DEPT_SLUG}/pem
+Environment=GITHUB_APP_PRIVATE_KEY_PATH=/run/bubble-${DEPT_SLUG}/pem
+Environment=BUBBLE_BROKER_JOURNAL=on
+
+# Tmpfs runtime dir with per-dept isolation (mirrors morty's pattern).
+ExecStartPre=+/bin/mkdir -p /run/claude-agent-${DEPT_SLUG}
+ExecStartPre=+/bin/chown claude:claude /run/claude-agent-${DEPT_SLUG}
+ExecStartPre=+/bin/chmod 0750 /run/claude-agent-${DEPT_SLUG}
+
+# Decrypt SOPS env file into tmpfs (root-only step).
+ExecStartPre=+/bin/sh -c 'SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops --decrypt --output /run/claude-agent-${DEPT_SLUG}/env.raw.tmp /etc/bubble/secrets-${DEPT_SLUG}.sops.env'
+
+# Per-dept token rewrite: drop morty's TELEGRAM_BOT_TOKEN= line (if any)
+# and promote DEPT-prefixed bot token to TELEGRAM_BOT_TOKEN= so the
+# plugin reads the right token.
+ExecStartPre=+/bin/sh -c 'grep -v "^TELEGRAM_BOT_TOKEN=" /run/claude-agent-${DEPT_SLUG}/env.raw.tmp | sed "s/^DEPT_TELEGRAM_BOT_TOKEN=/TELEGRAM_BOT_TOKEN=/" > /run/claude-agent-${DEPT_SLUG}/env.tmp'
+ExecStartPre=+/bin/rm /run/claude-agent-${DEPT_SLUG}/env.raw.tmp
+ExecStartPre=+/bin/mv /run/claude-agent-${DEPT_SLUG}/env.tmp ${ENV_FILE}
+ExecStartPre=+/bin/chmod 0400 ${ENV_FILE}
+ExecStartPre=+/bin/chown claude:claude ${ENV_FILE}
+
+# Decrypt PEM into /run/bubble-<slug>/pem (claude-readable tmpfs).
+ExecStartPre=+/bin/mkdir -p /run/bubble-${DEPT_SLUG}
+ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}
+ExecStartPre=+/bin/chmod 0750 /run/bubble-${DEPT_SLUG}
+ExecStartPre=+/bin/sh -c 'SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops --decrypt --input-type binary --output-type binary --output /run/bubble-${DEPT_SLUG}/pem.tmp /srv/bubble-secrets/github-app-bubble-ops-bot.private-key.sops.pem'
+ExecStartPre=+/bin/mv /run/bubble-${DEPT_SLUG}/pem.tmp /run/bubble-${DEPT_SLUG}/pem
+ExecStartPre=+/bin/chmod 0400 /run/bubble-${DEPT_SLUG}/pem
+ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
+
+EnvironmentFile=-${ENV_FILE}
+
+# Use script(1) for pty allocation.
+ExecStart=/bin/sh -c '/usr/bin/script -qfc "/usr/bin/claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official" /dev/null'
+
+# G-3 fix (GAP-10): On EVERY service start (including after Restart=on-failure),
+# send a Telegram message via the dept's own bot to trigger a new /loop turn.
+# Without this, a session crash leaves the agent idle indefinitely (it waits
+# at the input prompt — the session-start hook fires but has no turn to process).
+# bubble-loop-reinit.sh reads the bot token from ${ENV_FILE} (never echoes it),
+# curls Telegram sendMessage, which causes an incoming turn, which re-registers
+# the /loop cron. The 5s sleep lets the Claude TUI settle before the curl fires.
+ExecStartPost=+/bin/sleep 5
+ExecStartPost=+/usr/local/bin/bubble-loop-reinit.sh ${DEPT_SLUG}
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+ExecStopPost=+/bin/rm -f ${ENV_FILE} /run/bubble-${DEPT_SLUG}/pem
+
+[Install]
+WantedBy=multi-user.target

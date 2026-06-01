@@ -1,0 +1,23 @@
+# NEGATIVE CASE — must STILL be REJECTED by management-export.schema.yaml
+# even after the v3.1 relaxation ({{OPERATOR}} msg 2676, 2026-05-20).
+#
+# This file exercises BOTH relaxed features (string needs_management_attention
+# + extra link keys) at once. They are valid in isolation, but the rogue
+# `secret_api_key` field at ROOT level must still trigger rejection. The
+# relaxation only touches `links` and `needs_management_attention.items`;
+# the root-level boundary stays strict so a dept cannot smuggle arbitrary
+# fields past Tony's import surface.
+dept: rogue
+date: "2026-05-20"
+status: clean
+last_successful_layer: 4
+open_gates: 0
+open_exceptions: 0
+top_kpis:
+  some_kpi: 1.0
+needs_management_attention:
+  - "A plain string item — newly allowed"
+links:
+  risk_kpis: "outputs/2026-05-20/4/risk-kpis.yaml"
+  extra_nav_link: "outputs/2026-05-20/2/summary.md"   # allowed under relaxation
+secret_api_key: "sk-bogus-leaked"   # ROOT-level leak — must still reject

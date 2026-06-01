@@ -1,0 +1,17 @@
+# NEGATIVE CASE — must be REJECTED by directive.schema.yaml
+# Rule broken: `requires_acceptance` is REQUIRED. Per Notion line 212 the
+# target dept may reject a directive via a human gate even after PR merge,
+# so the safe default is True — and the absence of the field would default
+# silently to "auto-accept" in any naive consumer. Schema forces the
+# author to set the field explicitly.
+id: directive-rogue-2026-05-20-001
+source_dept: tony
+target_dept: ben
+kind: priority_directive
+priority: high
+created_at: "2026-05-20T14:00:00Z"
+# requires_acceptance: MISSING ON PURPOSE
+requested_by: tony
+message: "Do the thing."
+expected_layer: 1
+expected_output: "Plan"

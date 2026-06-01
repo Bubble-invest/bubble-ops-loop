@@ -1,0 +1,13 @@
+{# One step in the éclosion timeline (Section B of the carnet d'arrivée).
+   params:
+     num             — 1..7
+     nom             — human step name (e.g. "Sa charte de mission")
+     description     — one-line description in human voice
+     status          — 'validated' | 'in_progress' | 'pending'
+     state_text      — short prose: 'fait le 17 mai' / 'en cours, depuis 3 jours' / 'à venir'
+#}
+<li class="etape" data-step-num="{{ num }}" data-status="{{ status }}">
+  <h4 class="etape-nom">{{ num }}. {{ nom }}</h4>
+  {% if description %}<p class="etape-desc">{{ description }}</p>{% endif %}
+  <span class="etape-state">{{ state_text }}</span>
+</li>

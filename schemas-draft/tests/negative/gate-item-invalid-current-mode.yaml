@@ -1,0 +1,20 @@
+# NEGATIVE CASE — must be REJECTED by gate-item.schema.yaml
+# Rule broken: `current_mode` must be one of the 5 enum values
+#   {manual_required, manual_unless_policy_passed, auto_if_policy_passed,
+#    auto_with_veto_window, disabled}
+# "yolo" is the canonical "I disabled the guardrail" footgun and must be
+# rejected at schema time, not at runtime.
+id: dm-rogue-001
+kind: prospect_dm
+source_layer: 2
+target_layer: 3
+risk_level: medium
+requires_human: true
+gate_policy_id: prospect_dm
+authorization_band_id: maya_warm_prospect_band
+current_mode: yolo   # <-- INVALID
+future_eligible_modes:
+  - auto_with_veto_window
+actions:
+  - approve
+  - reject

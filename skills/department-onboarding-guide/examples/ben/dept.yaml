@@ -1,0 +1,71 @@
+# Example: Ben (family office), fully onboarded (status: live).
+# Ben is the only example shipped with a domain ledger (SQLite) — Notion v3
+# §"Doctrine storage corrigee" callout.
+
+department:
+  slug: ben
+  display_name: Ben
+  level: ops
+  status: live
+  mandate: "Gerer le family office: decisions investissement, ordres, ledger, exceptions."
+  owner: joris
+  forbidden:
+    - executer un ordre sans gate humain en v1
+    - liquider une position sans risk brief Layer 4 sign-off
+
+layers:
+  subscribed: [1, 2, 3, 4]
+
+recurring_missions:
+  - id: morning_market_pulse
+    layer: 1
+    cadence: daily
+    time: "08:30"
+    description: "Pulse marche pre-ouverture: positions, news, calendrier earnings."
+    input_sources: [fmp_api, ledger_db, news_feed]
+    output_queue: queues/research/
+    creates: [pre_market_brief_task]
+
+skills:
+  layer_1: [fmp-data-curator, positions-snapshotter, news-scanner]
+  layer_2: [order-drafter, risk-sizer]
+  layer_3: [order-executor, ledger-writer]
+  layer_4: [pnl-auditor, exception-handler]
+
+tools:
+  - fmp-api
+  - alpaca-api
+  - sqlite-ledger
+  - telegram-reporter
+
+gate_policies:
+  order_submission:
+    current_mode: manual_required
+    eligible_future_modes: [manual_unless_policy_passed]
+    authorization_band: ben_small_size_band
+    kpi_guardrail_set: ben_execution_kpis
+
+  position_close:
+    current_mode: manual_required
+    eligible_future_modes: []
+    authorization_band: ben_close_position_band
+    kpi_guardrail_set: ben_pnl_kpis
+
+hierarchy:
+  level: ops
+  parent: tony
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: [order_submission, position_close]
+
+optional_domain_ledger:
+  kind: sqlite
+  path: ledger/ben.sqlite

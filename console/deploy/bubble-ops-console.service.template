@@ -1,0 +1,39 @@
+# /etc/systemd/system/bubble-ops-console.service
+#
+# Template — UX-5 will deliver the pyinfra recipe that materializes this on
+# Morty. For v1 (UX-3) we ship the template only.
+#
+# Required env vars at deploy time (operator-set via SOPS+age):
+#   CONSOLE_BEARER_TOKEN
+#   READ_FROM_DISK           (path to the parent of all bubble-ops-* clones)
+
+[Unit]
+Description=bubble-ops-console (UX-3 unified frontend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude
+Group=claude
+WorkingDirectory=/home/claude/bubble-ops-loop
+Environment="CONSOLE_BEARER_TOKEN=__OPERATOR_SET__"
+Environment="READ_FROM_DISK=/home/claude/agents"
+Environment="CONSOLE_BIND_HOST=127.0.0.1"
+Environment="CONSOLE_BIND_PORT=8642"
+ExecStart=/home/claude/bubble-ops-loop/venv/bin/python -m uvicorn console.main:app \
+            --host 127.0.0.1 --port 8642 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/home/claude/agents
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

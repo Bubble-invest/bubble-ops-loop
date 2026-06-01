@@ -1,0 +1,7 @@
+ts,ticks_total,broker_audit_lines,guard_audit_lines,journald_broker_entries,ops_loop_pid,ops_loop_active,remote_commit_count,errors_in_journal
+2026-05-20T19:04:33Z,0,18,19,3,103245,active,13,0
+2026-05-20T19:09:34Z,0,18,19,3,110366,active,14,0
+2026-05-20T19:14:36Z,0,18,22,5,110366,active,15,0
+2026-05-20T19:19:37Z,0,18,22,5,110366,active,15,0
+2026-05-20T19:24:39Z,0,18,22,5,110366,active,15,0
+2026-05-20T19:29:40Z,0,18,26,5,110366,active,16,0

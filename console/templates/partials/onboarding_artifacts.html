@@ -1,0 +1,58 @@
+{# Phase G3 — artifacts pane fragment ("Ce que [Nom] a déjà appris").
+   Polled every Ns. Lists actual files present in the dept dir + prose
+   for each validated step. Must NOT include <html> or <body>. #}
+<div class="artifacts-fragment">
+  {% set validated = dept.validated_steps %}
+  <p class="carnet-prose">
+    {% if validated|length == 0 %}
+      Rien encore — on commence tout juste son éclosion.
+    {% else %}
+      {% set fragments = [] %}
+      {% if 'mandate' in validated %}
+        {% set _ = fragments.append("écrire sa charte de mission") %}
+      {% endif %}
+      {% if 'missions' in validated %}
+        {% set _ = fragments.append("identifier les rendez-vous récurrents de ses journées") %}
+      {% endif %}
+      {% if 'layers' in validated %}
+        {% set _ = fragments.append("choisir les 4 moments de la journée où elle interviendra") %}
+      {% endif %}
+      {% if 'skills_tools' in validated %}
+        {% set _ = fragments.append("inventorier ses compétences et ses outils") %}
+      {% endif %}
+      {% if 'gates_kpis' in validated %}
+        {% set _ = fragments.append("baliser les décisions qu'elle peut prendre seule") %}
+      {% endif %}
+      {% if 'dry_run' in validated %}
+        {% set _ = fragments.append("traverser une répétition à blanc d'une journée type") %}
+      {% endif %}
+      Elle a appris à :
+      {% if fragments|length == 1 %}{{ fragments[0] }}.
+      {% else %}
+        {{ fragments[:-1]|join(", ") }} et {{ fragments[-1] }}.
+      {% endif %}
+    {% endif %}
+  </p>
+
+  {# File census — concrete artifacts on disk. #}
+  <p class="carnet-prose muted-italic" style="font-size:13px;">
+    Ce qu'elle a déjà mis par écrit :
+    {% set seen = [] %}
+    {% if artifacts.get('root') %}
+      {% for f in artifacts['root'] %}
+        {% set _ = seen.append(f) %}
+        <span class="slug-ref">{{ f }}</span>{% if not loop.last %} · {% endif %}
+      {% endfor %}
+    {% endif %}
+    {% for category, files in artifacts.items() %}
+      {% if category != 'root' and files %}
+        · <span class="slug-ref">{{ category }}/</span>
+      {% endif %}
+    {% endfor %}
+    {% if extra_files %}
+      {% for f in extra_files %}
+        · <span class="slug-ref">{{ f }}</span>
+      {% endfor %}
+    {% endif %}
+  </p>
+</div>

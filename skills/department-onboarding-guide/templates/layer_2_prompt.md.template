@@ -1,0 +1,188 @@
+---
+name: layer-2-prompt
+description: Canonical Layer 2 (Research / Plan Execution) prompt for any bubble-ops-<slug> department. Consumes queue items, spawns task subagents, produces gates conforming to schemas-draft/gate-item.schema.yaml v3.
+---
+
+# Layer 2 — Research / Plan Execution
+
+> Notion v5 §"Layer 2 — Research / Plan Execution" (lines 446-455).
+> Owned by the `task-orchestrator` subagent
+> (see `subagents/task-orchestrator.md`).
+> Default cadence: every 20 min, driven by `/loop`.
+>
+> This file is the canonical template shipped by bubble-ops-loop's
+> `skills/department-onboarding-guide/templates/layer_2_prompt.md.template`.
+> Live fixtures keep a synced copy at `layers/2/PROMPT.md` (pushed via the
+> token-broker + git-guard chain — never edited directly in the live clone).
+
+## Mission
+
+Read the day's queue items from `queues/research/`. For each, spawn a
+dedicated sub-task subagent that runs the relevant skill (per
+`dept.yaml::skills.layer_2`) and either:
+
+- emits a **gate** (`queues/gates/<id>.yaml`) when human validation is
+  required, OR
+- files an **improvement proposal** (`queues/improvements/<id>.yaml`)
+  when no human decision is needed and the work can land directly in
+  tomorrow's Layer 1 input set.
+
+## Inputs
+
+- `queues/research/*.yaml` — queue items materialized by Layer 1
+- `outputs/<today>/1/summary.md` — context: what Layer 1 said about the day
+- `dept.yaml::gate_policies` — for each queue item kind, look up which gate
+  policy applies (`echo_action`, `mandate_breach_escalation`, etc.) plus
+  the `authorization_band` that scopes which instances are eligible
+
+## Process
+
+For each item in `queues/research/`:
+
+1. Read the item; validate against `queue-item.schema.yaml` (operator-side).
+2. **Spawn `task-orchestrator` subagent per item** with a focused prompt
+   (one item, one skill, one decision-or-proposal).
+3. The sub-subagent runs the skill (for the fixture: `echo-skill`).
+4. Skill output → write to `outputs/<today>/2/research/<item-id>.md`.
+5. Decide: gate or improvement?
+   - **If `dept.yaml::gate_policies.<kind>.current_mode == manual_required`**
+     → emit `queues/gates/<item-id>.yaml` (validates against
+     `gate-item.schema.yaml` v3 — see skeleton below).
+   - **Else** → emit `queues/improvements/<item-id>.yaml` for Layer 1
+     tomorrow.
+6. Once an item is consumed, move it out of `queues/research/` (delete
+   or rename with `.consumed` suffix).
+7. **After the tick has committed + pushed** (STEP E in the `/loop`
+   prompt), invoke the gate notification primitive **once per gate
+   created this tick**:
+   ```bash
+   python3 /home/claude/agents/fixture/tools/notify-gate/notify.py \
+       --gate-path queues/gates/<id>.yaml \
+       --repo bubble-ops-fixture \
+       --commit-sha "$(git rev-parse HEAD)" \
+       --repo-root /home/claude/agents/fixture
+   ```
+   The tool reads `FIXTURE_TELEGRAM_BOT_TOKEN` (preferred) or
+   `TELEGRAM_BOT_TOKEN` (fallback) from env, formats a Markdown message
+   with gate id / kind / risk / GitHub blob URL / the 4 actions
+   (`approve|reject|modify|defer`), and POSTs to @bubtiktikbot →
+   chat {{OPERATOR_CHAT_ID}} ({{OPERATOR}}). The token is never logged. On Telegram
+   failure the tool exits non-zero but does NOT abort the tick — the
+   gate is already on GitHub, the kanban is the source of truth, the
+   notification is a courtesy.
+
+## Gate item v3 — required shape
+
+Every gate written to `queues/gates/<id>.yaml` MUST conform to
+`schemas-draft/gate-item.schema.yaml` v3. The following 9 root-level
+fields are REQUIRED on every gate:
+
+- `id` — kebab-case unique identifier, e.g. `gate-research-001`.
+- `kind` — one of the documented enums OR a `domain:<snake_case>`
+  free-form value. Allowed values:
+    - v1 internal kinds: `decision`, `exec_retry`, `mandate_breach`, `modify`
+    - v3 documented domain kinds: `prospect_dm`, `prospect_followup`,
+      `trade_order`, `content_publish`
+    - free-form domain escape hatch: `domain:<snake_case>` (e.g.
+      `domain:research_decision`, `domain:legal_review`)
+  Do NOT invent bare names like `research_decision` — they violate both
+  the enum and the `^domain:[a-z][a-z_]+$` pattern.
+- `source_layer` — integer 1..4, layer that emitted the gate
+  (Layer 2 → `2`).
+- `target_layer` — integer 1..4, layer that consumes the resolution
+  (Layer 2 → Layer 3 hand-off → `3`).
+- `risk_level` — one of `low | medium | high | critical`.
+- `requires_human` — boolean, default `true` for v1 (every gate is
+  `manual_required`).
+- `actions` — non-empty subset of `[approve, reject, modify, defer]`,
+  unique, no duplicates.
+- `current_mode` — autonomy mode AT EMIT-TIME, snapshot value, MUST be
+  one of the 5 OFFICIAL modes (Notion v5 lines 256-260):
+    - `manual_required` (default for every new dept at eclosure)
+    - `manual_unless_policy_passed`
+    - `auto_if_policy_passed`
+    - `auto_with_veto_window`
+    - `disabled`
+  Do NOT use any informal shorthand outside this enum — shorthand like
+  "shadow-autonomy" / "full-autonomy" abstractions lose the doctrine's
+  nuance (each official mode encodes a specific human-AI control split).
+- `future_eligible_modes` — array of modes this gate could eventually
+  be raised to, drawn from the same 5-mode enum. May be empty for
+  internal-kind gates intended to stay `manual_required` forever.
+
+CONDITIONALLY REQUIRED when `kind` is NOT one of the 4 internal kinds
+(i.e. it is a documented domain kind or a `domain:*` free-form):
+
+- `gate_policy_id` — links to `dept.yaml::gate_policies.<id>`.
+- `authorization_band_id` — identifies the dept-domain authorization
+  band that scopes which instances of this action class are eligible
+  for autonomy (e.g. `maya_warm_prospect_band`).
+
+## Gate skeleton example (copy + adapt per item)
+
+```yaml
+# queues/gates/gate-research-001.yaml
+id: gate-research-001
+kind: domain:research_decision        # OR `decision` for the internal kind
+source_layer: 2
+target_layer: 3                       # 2 if the resolution loops back to L2
+risk_level: low                       # one of: low | medium | high | critical
+requires_human: true                  # v1 default; every gate is manual
+actions:                              # non-empty subset, unique
+  - approve
+  - reject
+  - modify
+  - defer
+current_mode: manual_required         # snapshot at emit-time; 5-mode enum
+future_eligible_modes:                # subset of the same 5-mode enum
+  - auto_with_veto_window
+  - auto_if_policy_passed
+gate_policy_id: echo_action           # REQUIRED when kind is a domain kind
+authorization_band_id: default_band   # REQUIRED when kind is a domain kind
+# --- payload (additionalProperties: true at root) -----------------------
+summary: |
+  E2E round-trip validation complete. Layer 2 processed
+  research-roundtrip-test-001 successfully. Awaiting human sign-off.
+evidence:
+  - outputs/2026-05-20/2/research/research-roundtrip-test-001.md
+  - outputs/2026-05-20/2/summary.md
+created_at: 2026-05-20T18:44:13Z
+```
+
+The 5 official autonomy modes again, for searchability and so any future
+audit-grep finds them in one place:
+
+- `manual_required`
+- `manual_unless_policy_passed`
+- `auto_if_policy_passed`
+- `auto_with_veto_window`
+- `disabled`
+
+## Outputs (the 4-file schema — per Notion v5 §"Output layer")
+
+Write ALL FOUR files under `outputs/<today>/2/`:
+
+| File | Content |
+|---|---|
+| `outputs/<today>/2/summary.md` | Narrative: items processed, gates created, improvements filed |
+| `outputs/<today>/2/artifacts/.gitkeep` | Placeholder (per-item research briefs land here as `<id>.md`) |
+| `outputs/<today>/2/logs.jsonl` | One JSON line per item processed: `{ts, item_id, decision, target_file}` |
+| `outputs/<today>/2/.last-run` | ISO timestamp of this tick's completion |
+
+Plus gates: `queues/gates/<item-id>.yaml` (one per gating decision).
+
+## Side-effects
+
+- `git add outputs/<today>/2/ queues/gates/ queues/improvements/ queues/research/`
+- Commit message: `layer-2: N items processed, M gates, K improvements`.
+- Push (via `/opt/bubble-git-guard/bin/bubble-git-guard push`).
+- **Telegram ping per gate** via the `notify-gate` primitive
+  (`tools/notify-gate/notify.py`) — see step 7 above. Each gate fires
+  exactly one notification. The token never appears in logs.
+
+## Perm policy (recap)
+
+The `task-orchestrator` has `Agent` in its toolset (it spawns sub-task
+subagents) and `permissionMode: acceptEdits`. Write paths must stay within
+`outputs/*/2/` + `queues/gates/` + `queues/improvements/` + the cleanup of
+consumed items in `queues/research/`.

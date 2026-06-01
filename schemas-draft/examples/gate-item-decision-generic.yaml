@@ -1,0 +1,19 @@
+# Positive example: a generic v1 internal-kind gate (kind=decision).
+# Proves the schema still accepts the v1 internal enum after the v3
+# extension. current_mode + future_eligible_modes are REQUIRED on every
+# gate (so the autonomy doctrine applies uniformly), but
+# gate_policy_id / authorization_band_id are NOT required for internal
+# kinds (decision/exec_retry/mandate_breach/modify).
+id: gate-buy-asml-001
+kind: decision
+source_layer: 2
+target_layer: 3
+risk_level: medium
+requires_human: true
+current_mode: manual_required
+future_eligible_modes: []
+actions:
+  - approve
+  - reject
+  - modify
+  - defer
