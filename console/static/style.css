@@ -1322,6 +1322,65 @@ code, .code {
   max-width: 760px;
 }
 
+/* ─── Whiteboard — espace libre (Joris msg 1174) ───────────────── */
+/* A blank canvas card the dept manager fills with anything. */
+.whiteboard-free {
+  margin-top: 28px;
+  padding: 18px 22px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+.whiteboard-free-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.whiteboard-free-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+.whiteboard-free-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+}
+.whiteboard-free-body {
+  white-space: pre-wrap;
+  font-family: var(--font-body);
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  max-width: 820px;
+}
+.whiteboard-free-empty { padding: 18px 4px; }
+.whiteboard-free-empty-lede {
+  font-size: 14px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 0 0 8px;
+}
+.whiteboard-free-hint {
+  font-size: 12px;
+  color: var(--body-muted);
+  margin: 0;
+}
+.whiteboard-free-hint code,
+.whiteboard-free-body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--paper-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
 /* ─── Whiteboard graphs (KPI time-series, fed by Layer 4) ───────── */
 /* One inline-SVG line chart per KPI. Joris msg 1163, 2026-06-01. */
 .whiteboard-graphs-heading {
