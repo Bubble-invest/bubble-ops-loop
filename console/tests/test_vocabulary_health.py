@@ -36,10 +36,11 @@ def test_health_uses_pas_encore_commence_for_never(client):
         "no 'never' label in visible copy"
 
 
-def test_health_footer_mentions_coulisse(client):
-    """Footer italic muted note tells the operator the technical details
-    are 'dans la coulisse'."""
+def test_health_footer_explains_live_source(client):
+    """Footer tells the operator the data is read live from the real loop
+    traces (updated 2026-06-01: was the stub-era 'dans la coulisse' note;
+    the source is now actually wired — Joris msg 1180)."""
     r = client.get("/health")
-    body = r.text
-    assert "coulisse" in body.lower(), \
-        "footer must say 'détails techniques dans la coulisse'"
+    body = r.text.lower()
+    assert "en direct" in body or "source vivante" in body, \
+        "footer must say the data is read live from the real loop traces"
