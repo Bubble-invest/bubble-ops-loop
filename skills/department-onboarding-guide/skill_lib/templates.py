@@ -44,6 +44,7 @@ def render_template(name: str, context: Dict[str, Any]) -> str:
         "mission.yaml": "mission.yaml.template",
         "gate_policy.yaml": "gate_policy.yaml.template",
         "test_fixture": "test_fixture.template.yaml",
+        "WORKING_MEMORY.md": "WORKING_MEMORY.md.template",
     }
     fname = aliases.get(name, name)
     env = _env()

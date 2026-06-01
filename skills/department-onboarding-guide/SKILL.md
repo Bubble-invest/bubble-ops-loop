@@ -151,6 +151,52 @@ Context dict shape (Step 1):
 }
 ```
 
+### Step 1b — Working memory + mission-file lock (MANDATORY, generated)
+
+| Aspect | Value |
+|---|---|
+| Template | `templates/WORKING_MEMORY.md.template` |
+| Helper | `skill_lib.templates.render_template("WORKING_MEMORY.md", {"display_name": ...})` |
+| Commit | `onboarding: working memory + mission-file lock` |
+
+Every dept gets a writable **`WORKING_MEMORY.md`** at its repo root. This is the
+ONE place the agent records **transient, time-bound topics** (e.g. "watch the
+SpaceX IPO for the coming weeks") instead of editing its mission files. Render
+the template into `WORKING_MEMORY.md` and commit it.
+
+This pairs with the **mission-file lock** (governance fix 2026-06-01): the dept's
+mission-definition files are STRUCTURAL and the agent **cannot push them** — the
+box-side git credential helper mints a read-only token whenever a push touches
+any structural path, so the only way to change a mission is a PR {{OPERATOR}}/{{OPERATOR_2}}
+merges. Structural paths (see `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`):
+`CLAUDE.md, MANDATE.md, dept.yaml, skills_manifest.yaml, config.yaml,
+gate_policy.yaml, layers/**, missions/**, skills/**, tools/**, subagents/**,
+policies/**, templates/**, .claude/**`. `WORKING_MEMORY.md` and `whiteboard.yaml`
+are deliberately NOT structural (writable runtime/working state).
+
+The dept's `CLAUDE.md` MUST reference `WORKING_MEMORY.md` so the agent knows
+where to write transient topics and that it cannot touch its own mission. Use
+this standard block (translate to the dept's working language):
+
+```markdown
+## Mémoire de travail vs mission (NE JAMAIS confondre)
+
+Ma **mission est fixe** : `CLAUDE.md`, `MANDATE.md`, `dept.yaml`, `layers/**`,
+`missions/**`, `skills/**`, ... Je **ne peux pas** les modifier — seul {{OPERATOR}} ou
+{{OPERATOR_2}} le peut, via une pull request qu'ils valident. Si on me demande d'ajouter
+un sujet temporaire (ex. « surveille l'IPO SpaceX ces prochaines semaines »),
+je l'écris dans **`WORKING_MEMORY.md`** (mon seul espace inscriptible pour les
+sujets transitoires), JAMAIS dans un fichier de mission. Mes prompts de layer
+lisent `WORKING_MEMORY.md` au début de chaque run et intègrent ses sujets actifs.
+Si un sujet devient durable au point de mériter d'entrer dans ma mission, je le
+signale à {{OPERATOR}}/{{OPERATOR_2}} pour qu'ILS le promeuvent — je ne touche jamais la mission
+moi-même.
+```
+
+The layer prompts (`layers/*/PROMPT.md`) should read `WORKING_MEMORY.md` at the
+start of each run and fold its active items into that run's work — that is how a
+temporary instruction takes effect without drifting into the permanent spec.
+
 ### Step 2 — Recurring missions
 
 | Aspect | Value |
