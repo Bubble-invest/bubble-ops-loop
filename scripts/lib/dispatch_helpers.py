@@ -309,6 +309,68 @@ _L4_WINDOW_START = _time(22, 0)
 _L4_WINDOW_END = _time(22, 30)
 
 
+def _queue_has_items(queue_dir: Path) -> bool:
+    """True if `queue_dir` holds at least one actionable item.
+
+    "Actionable" = a regular `*.yaml` file that is NOT a dotfile/hidden helper.
+    Excludes `.gitkeep`, anything starting with `.`, and processed/archived
+    subdirs (`.processed/`, `.deferred/`, `.purged/` — they start with `.` so
+    they're skipped by the glob anyway). Missing dir → False (fail-safe).
+    """
+    queue_dir = Path(queue_dir)
+    if not queue_dir.is_dir():
+        return False
+    for p in queue_dir.glob("*.yaml"):
+        if p.name.startswith("."):
+            continue
+        if p.is_file():
+            return True
+    return False
+
+
+def build_dispatch_ctx(
+    repo_dir: Path | str = ".",
+    *,
+    now_utc: datetime | None = None,
+    fire_after_rounds: int = 1,
+) -> dict[str, Any]:
+    """Build the ctx dict that `decide_dispatch` consumes, by SCANNING the
+    repo's queues + today's runtime markers.
+
+    THIS is the piece that was missing (2026-06-01): `decide_dispatch` is a
+    pure decision function — it needs `has_research_items` / `has_inbox_decisions`
+    / `layer_4_last_run_today` / `round_counter` passed IN. Without a builder,
+    the /loop was calling `decide_dispatch({...})` with a placeholder, so the
+    flags were never set and the tree fell through to "heartbeat" forever — L2
+    and L3 never fired and work piled up in the queues. ({{OPERATOR}} msg 3588: fix as
+    infra for all current + future depts.)
+
+    Queue conventions (dept template):
+      - `queues/research/*.yaml`        → has_research_items (drives Layer 2)
+      - `queues/inbox/decisions/*.yaml` → has_inbox_decisions (drives Layer 3)
+      - `outputs/<today>/4/.last-run`   → layer_4_last_run_today (L4 idempotence)
+      - `outputs/<today>/round_counter.json` → round_counter (L1 idle gate)
+
+    `repo_dir` defaults to cwd (the /loop runs from the dept repo root).
+    `now_utc` defaults to datetime.now(timezone.utc). Returns a dict ready to
+    hand straight to `decide_dispatch`.
+    """
+    repo = Path(repo_dir)
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    today = now_utc.strftime("%Y-%m-%d")
+    today_dir = repo / "outputs" / today
+
+    return {
+        "now_utc": now_utc,
+        "has_research_items": _queue_has_items(repo / "queues" / "research"),
+        "has_inbox_decisions": _queue_has_items(repo / "queues" / "inbox" / "decisions"),
+        "layer_4_last_run_today": read_last_run(today_dir / "4"),
+        "round_counter": read_round_counter(today_dir),
+        "fire_after_rounds": fire_after_rounds,
+    }
+
+
 def decide_dispatch(ctx: dict[str, Any]) -> str:
     """Return one of "layer_1" / "layer_2" / "layer_3" / "layer_4" /
     "heartbeat" given the tick context.
