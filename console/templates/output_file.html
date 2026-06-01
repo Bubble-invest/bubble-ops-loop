@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} — {{ dept.display_name }}{% endblock %}
+{% block content %}
+
+<nav class="output-breadcrumb" aria-label="Fil d'ariane">
+  <a href="/dept/{{ dept.slug }}">← {{ dept.display_name }}</a>
+  <span class="output-breadcrumb-sep">·</span>
+  <span class="output-breadcrumb-path">{{ file.rel_path }}</span>
+</nav>
+
+<header class="output-header">
+  <h1 class="output-title">{{ file.name }}</h1>
+  <span class="output-kind slug-ref">{{ file.kind }}</span>
+</header>
+
+{% if file.empty %}
+  <p class="output-empty">Ce fichier est vide — la couche s'est exécutée sans rien écrire ici.</p>
+{% else %}
+  <pre class="output-content output-content--{{ file.kind }}">{{ file.content }}</pre>
+{% endif %}
+
+<p style="margin-top:28px;">
+  <a href="/dept/{{ dept.slug }}" class="discreet-link">← Retour à la fiche de {{ dept.display_name }}</a>
+</p>
+
+{% endblock %}

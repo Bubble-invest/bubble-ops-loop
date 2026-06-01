@@ -1,0 +1,19 @@
+[Unit]
+Description=ops-loop dept backup execution — one dispatch tick per stale dept
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+# Don't run while the box is still booting agents.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+WorkingDirectory=/home/claude
+Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+# Depts + threshold are overridable here without touching the script.
+Environment=BUBBLE_BACKUP_DEPTS=maya tony cgp
+Environment=BUBBLE_BACKUP_STALE_SEC=5400
+Environment=BUBBLE_BACKUP_MODEL=sonnet
+Environment=BUBBLE_BACKUP_BUDGET_USD=3.00
+ExecStart=/home/claude/bubble-ops-loop/scripts/loop-backup.sh
+# A backup run can spawn a layer subagent; give it room but cap it.
+TimeoutStartSec=1800
