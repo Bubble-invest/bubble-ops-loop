@@ -90,6 +90,54 @@ def test_series_skips_booleans_and_strings(disk_root):
     assert "dry_run" not in keys          # boolean flag must not be plotted
 
 
+def test_series_accepts_kpis_snapshot_block(disk_root):
+    """Maya's L4 emits `kpis_snapshot` (not `top_kpis`) — must be picked up
+    as the curated source rather than falling back to risk-kpis."""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path)
+    for day, drafts in (("2026-05-30", 35), ("2026-05-31", 30)):
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True)
+        (d / "management-export.yaml").write_text(
+            yaml.safe_dump({
+                "dept": "demo", "date": day, "status": "warning",
+                "kpis_snapshot": {
+                    "drafts_pending": drafts,
+                    "validation_latency_p50_hours": None,  # null → skipped
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+        # a risk-kpis with many leaves that must NOT be used (snapshot wins)
+        (d / "risk-kpis.yaml").write_text(
+            yaml.safe_dump({"volumes": {"a": 1, "b": 2, "c": 3}}), encoding="utf-8")
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+    assert set(series) == {"drafts_pending"}          # snapshot used, null dropped
+    assert series["drafts_pending"].trend == "down"   # 35 → 30
+    assert series["drafts_pending"].label == "Drafts en attente"
+
+
+def test_series_capped_to_max(disk_root):
+    """A risk-kpis fallback with many leaves is capped, keeping the movers."""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path)
+    # Build 20 KPIs across 2 days; only a few actually move.
+    for i, day in enumerate(("2026-05-30", "2026-05-31")):
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True)
+        block = {f"flat_{n}": 5 for n in range(20)}        # 20 static
+        block["mover_a"] = i * 100                          # moves a lot
+        block["mover_b"] = i * 50                           # moves some
+        (d / "risk-kpis.yaml").write_text(
+            yaml.safe_dump({"k": block}), encoding="utf-8")
+
+    series = whiteboard_series.load_whiteboard_series("demo")
+    assert len(series) <= 12
+    keys = {s.key for s in series}
+    assert "k.mover_a" in keys and "k.mover_b" in keys     # movers kept
+
+
 def test_series_falls_back_to_risk_kpis(disk_root):
     """No management-export → flatten risk-kpis.yaml numeric leaves."""
     tmp_path = disk_root
