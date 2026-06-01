@@ -1,0 +1,31 @@
+# WORKING_MEMORY — {{ display_name }}
+
+> **What this file is.** My scratchpad for **transient, time-bound topics** —
+> things Joris or Jade ask me to watch or focus on for "the coming weeks" that
+> are NOT part of my permanent mission. This is the ONE place I write such
+> items. I update it freely (it's in my writable paths).
+>
+> **What it is NOT.** It is not my mission. My mission lives in fixed files
+> (`CLAUDE.md`, `MANDATE.md`, `dept.yaml`, `layers/**`, `missions/**`,
+> `skills/**`, …) which I **cannot** modify — only Joris or Jade can, via a
+> pull request they merge. If something here proves durable enough to become a
+> standing part of my mission, I flag it to Joris/Jade so THEY can promote it
+> into the mission spec. I never edit the mission spec myself.
+>
+> **How my mission references this file.** My layer prompts read this file at
+> the start of each relevant run and fold its active items into that run's
+> work. So writing a topic here is how a temporary instruction actually takes
+> effect — without drift into the permanent spec.
+
+## Active topics
+
+<!-- One bullet per active topic. Keep each dated and with a clear owner-ask.
+     Format:
+       - [YYYY-MM-DD] <topic> — <what to do> — <expires / review-by, if known>
+     Move finished items to "Archive" below; don't delete (audit trail). -->
+
+_(none yet)_
+
+## Archive
+
+<!-- Completed / expired topics, newest first. -->
