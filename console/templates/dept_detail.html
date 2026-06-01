@@ -169,19 +169,18 @@
     <div class="decisions-grid">
       {% for grp in gate_groups %}
         {% if grp.count >= 2 %}
-          {# Grouped: one card → links to dept page anchored on this kind.
-             We deep-link to the first gate since /dept/<slug> already
-             lists all of them; until a per-kind view exists this gives
-             the operator a fast entry to triage. #}
+          {# Grouped: one card → the BATCH view (/gate/<slug>/kind/<kind>)
+             listing ALL gates of this kind with inline actions, so the
+             operator triages the whole pile in place (2026-06-01). #}
           <a class="decision-card"
-             href="/gate/{{ dept.slug }}/{{ grp.gates[0].id }}">
+             href="/gate/{{ dept.slug }}/kind/{{ grp.kind }}">
             <div class="decision-card-count">{{ grp.count }}</div>
             <h3 class="decision-card-title">
               {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
               — {{ grp.kind_label|capitalize_fr }}
             </h3>
             <p class="decision-card-body">
-              {{ grp.count }} {{ grp.kind_label }} en attente · ouvrir la première →
+              {{ grp.count }} {{ grp.kind_label }} en attente · les voir toutes →
             </p>
             <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
           </a>

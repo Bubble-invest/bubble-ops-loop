@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ count }} {{ kind_label }} — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+<header class="dept-header">
+  <h1 class="dept-title">
+    {{ count }} décision{{ '' if count == 1 else 's' }} à prendre
+  </h1>
+  <p class="dept-subtitle">
+    {{ slug }} attend ton avis sur {{ count }} {{ kind_label }}{{ '' if count == 1 else 's' }}.
+    Décide chacune ci-dessous — elle disparaît de la pile dès que tu l'as tranchée.
+    <br>
+    <a href="/dept/{{ slug }}" class="discreet-link">← retour à {{ slug }}</a>
+  </p>
+</header>
+
+{% if count == 0 %}
+  <div class="gate-card" style="text-align:center; color: var(--body-muted);">
+    <p style="margin:0;">Aucune décision en attente de ce type. Belle pile vide. ✨</p>
+    <p style="margin-top:10px;"><a href="/dept/{{ slug }}" class="discreet-link">← retour à {{ slug }}</a></p>
+  </div>
+{% else %}
+
+<div class="gate-batch-list" style="display:flex; flex-direction:column; gap:18px;">
+  {% for gate in gates %}
+    {% set gid = gate.id %}
+    {# Each gate is a self-contained card. Deciding it swaps THIS element
+       (outerHTML) for a compact 'done' stub, so the operator flows through
+       the whole pile without leaving the page (2026-06-01 fix). #}
+    <div class="gate-card" id="gatecard-{{ gid }}">
+      <div class="gate-batch-head" style="display:flex; justify-content:space-between;
+                  align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+                  padding-bottom:8px; margin-bottom:12px;">
+        <h3 style="margin:0; font-size:16px; color: var(--ink);">
+          {{ gate.slug or gid }}
+          {% if gate.chosen_variant %}
+            <span class="slug-ref" style="font-weight:400;">· angle {{ gate.chosen_variant }}</span>
+          {% endif %}
+        </h3>
+        <span class="slug-ref" style="font-size:12px;">
+          risque {{ gate.risk_level or 'inconnu' }} · {{ gid }}
+        </span>
+      </div>
+
+      {% if gate.summary %}
+        <p style="margin:0 0 10px; font-size:14px; color: var(--body-muted);">{{ gate.summary }}</p>
+      {% endif %}
+
+      {# The actual draft {{OPERATOR}} is approving — rendered inline so he can triage
+         without opening each gate. Mirrors gate_card.html's draft block. #}
+      {% if gate.draft_body or gate.comment_body %}
+      <div class="gate-draft-block" style="margin:12px 0; padding:12px 14px;
+                  background: var(--paper-soft); border:1px solid var(--line);
+                  border-left:3px solid var(--ochre); border-radius:2px;">
+        <div class="gate-draft-body"
+             style="font-family: var(--font-body); font-size:14px; line-height:1.5;
+                    color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body or gate.comment_body }}</div>
+        {% if gate.chosen_angle %}
+        <div class="muted-italic" style="margin-top:10px; font-size:12.5px;
+                    color: var(--body-muted); border-top:1px dashed var(--line); padding-top:8px;">
+          <b>Angle {{ gate.chosen_variant }}</b> — {{ gate.chosen_angle }}
+          {% if gate.alternatives %}
+            <details style="margin-top:6px;">
+              <summary style="cursor:pointer;">autres angles ({{ gate.alternatives|length }}) — écris un variant (ex. V1) dans le mot pour redrafter</summary>
+              <ul style="margin:6px 0 0; padding-left:18px;">
+                {% for alt in gate.alternatives %}
+                  <li><b>{{ alt.variant }}</b> — {{ alt.angle }}</li>
+                {% endfor %}
+              </ul>
+            </details>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <form hx-post="/gate/{{ slug }}/{{ gid }}/decide"
+            hx-target="#gatecard-{{ gid }}"
+            hx-swap="outerHTML"
+            style="margin-top:12px;">
+        <div class="cabinet-field" style="margin-bottom:10px;">
+          <input type="text" name="comment"
+                 placeholder="un mot (facultatif) — ou un variant (V1/V2/V3) pour redrafter"
+                 style="width:100%; background: var(--paper); border:1px solid var(--line);
+                        padding:8px 10px; font-family: var(--font-body); font-size:13px;
+                        color: var(--ink); border-radius:2px;">
+        </div>
+        <div class="gate-actions">
+          <button type="submit" name="action" value="approve" class="btn-ochre">approve</button>
+          <button type="submit" name="action" value="reject" class="btn-ghost">reject</button>
+          <button type="submit" name="action" value="modify" class="btn-ghost">modify</button>
+          <button type="submit" name="action" value="defer" class="btn-ghost">defer</button>
+        </div>
+      </form>
+    </div>
+  {% endfor %}
+</div>
+
+<p style="margin-top:24px;">
+  <a href="/dept/{{ slug }}" class="discreet-link">← retour à {{ slug }}</a>
+</p>
+
+{% endif %}
+{% endblock %}
