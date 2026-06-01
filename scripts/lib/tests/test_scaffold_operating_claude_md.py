@@ -189,6 +189,20 @@ def test_operating_has_voice_rules_for_non_tech_user():
     )
 
 
+def test_operating_states_telegram_is_the_channel_to_joris():
+    """Joris msg 3594: every dept's CLAUDE.md must clearly state that its
+    channel to Joris IS its Telegram bot (escalations/questions/decisions go
+    there; the session transcript does not reach him). Pins the directive so it
+    can't silently regress + so future depts inherit it."""
+    out = scaffold.render_claude_md_operating(_make_dept_yaml_ops(slug="maya"))
+    low = out.lower()
+    assert "canal vers joris" in low, "missing the explicit 'mon canal vers Joris' directive"
+    assert "@bubbleopsmaya_bot" in out, "the channel directive must name the dept's Telegram bot"
+    # must convey 'always via Telegram' + 'transcript doesn't reach him'
+    assert "toujours par là" in low or "toujours par la" in low
+    assert "transcript" in low
+
+
 def test_operating_keeps_karpathy_garde_fous():
     """The 5 garde-fous (think-before-act / simplicity / surgical /
     verifiable / scope) are evergreen — must be reused verbatim."""
