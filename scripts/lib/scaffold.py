@@ -660,11 +660,10 @@ chaque tâche de Moment à un subagent stateless via Agent. Les subagents
 
 1. `git pull --quiet --rebase || echo 'pull-failed-continuing'`
 
-2. Appeler le helper déterministe pour décider quoi faire :
-   `python3 -c "from scripts.lib.dispatch_helpers import decide_dispatch; print(decide_dispatch({{...}}))"`
-   Le helper renvoie : `layer_1` / `layer_2` / `layer_3` / `layer_4` / `heartbeat`.
-   Il encode tout l'arbre de priorité (fenêtre L4 22:00–22:30 UTC > queue
-   research > inbox decisions > gate idle L1 > heartbeat). Source de vérité.
+2. Appeler le helper déterministe — il **scanne lui-même mes queues** (jamais
+   de dict placeholder, sinon il retombe sur `heartbeat` et les Moments 2/3 ne
+   partent jamais) et renvoie `layer_1`/`2`/`3`/`4`/`heartbeat` :
+   `python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
 
 3. Si décision ≠ `heartbeat` — spawn + verify chaque subagent :
    - Lire `layers/<N>/PROMPT.md` (la fiche d'instruction du Moment).
@@ -718,7 +717,7 @@ chaque tâche de Moment à un subagent stateless via Agent. Les subagents
    Pas de gate créée = pas de message.
 
 **Helpers Python disponibles** (`scripts/lib/dispatch_helpers.py`) :
-`decide_dispatch`, `read_last_run`, `write_last_run`, `read_round_counter`,
+`build_dispatch_ctx`, `decide_dispatch`, `read_last_run`, `write_last_run`, `read_round_counter`,
 `increment_round_counter`, `layer_1_gate_satisfied`, `is_mission_due`,
 `materialize_due_missions`, `validate_layer_output`, `should_retry`,
 `force_commit_and_push`. Détails dans chaque `layers/<N>/PROMPT.md`.
