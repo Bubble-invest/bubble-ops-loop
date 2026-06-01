@@ -12,9 +12,15 @@
 <section class="page-hero">
   <h1 class="page-hero-title">Carnet de bord</h1>
   <p class="page-hero-lede">
-    Quand chaque collègue a été actif pour la dernière fois.
+    Comment l'organisation est faite, et quand chaque collègue a été actif pour la dernière fois.
   </p>
 </section>
+
+<section class="cabinet-section" aria-labelledby="carnet-activite-heading">
+  <h2 id="carnet-activite-heading" class="section-heading">
+    <span class="section-heading-number">1.</span>
+    Activité en direct
+  </h2>
 
 {% if not depts %}
   {% with title="Le cabinet n'a pas encore de collègues.",
@@ -76,5 +82,9 @@
   cœur + dernière exécution de chaque moment), lues en direct à chaque
   ouverture de cette page.
 </p>
+</section>
+
+{# ─── Le cadre — org-framework flowchart, on this same page (msg 1188) ── #}
+{% include "partials/_org_framework.html" %}
 
 {% endblock %}
