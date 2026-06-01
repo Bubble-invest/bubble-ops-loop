@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import dept_registry, github_reader
+from console.services import dept_registry, github_reader, whiteboard_series
 from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
@@ -51,6 +51,9 @@ def dept_detail(slug: str, request: Request):
     # Per-dept whiteboard — agent-surfaced KPIs/metrics for Joris
     # (Joris msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
+    # KPI graphs — time series built from the dept's Layer-4 output history
+    # (one datapoint per loop run). Joris msg 1163, 2026-06-01.
+    whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -67,6 +70,7 @@ def dept_detail(slug: str, request: Request):
             "mandate_md": mandate_md,
             "layer_recent_outputs": layer_recent_outputs,
             "whiteboard": whiteboard,
+            "whiteboard_graphs": whiteboard_graphs,
         },
     )
 

@@ -245,18 +245,21 @@
    AND its PROMPT.md collapsible in a single card. #}
 
 {# ─── Tableau de bord (whiteboard) ───────────────────────────────
-   Per-dept configurable section where the agent surfaces chosen
-   KPIs/metrics for Joris (Joris msg 1073, 2026-05-28). #}
-{% if whiteboard %}
+   Per-dept section where the agent surfaces chosen KPIs/metrics for Joris
+   (Joris msg 1073, 2026-05-28). Two halves:
+     • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
+     • graphs — KPI time-series built from Layer-4 output history
+       (whiteboard_graphs, Joris msg 1163, 2026-06-01). #}
+{% if whiteboard or whiteboard_graphs %}
 <section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
   <h2 id="dept-whiteboard-heading" class="section-heading">
     <span class="section-heading-number">3.</span>
-    {% if whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
+    {% if whiteboard and whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
   </h2>
-  {% if whiteboard.updated_at %}
+  {% if whiteboard and whiteboard.updated_at %}
     <p class="whiteboard-updated">Mis à jour : {{ whiteboard.updated_at }}</p>
   {% endif %}
-  {% if whiteboard.kpis %}
+  {% if whiteboard and whiteboard.kpis %}
     <div class="kpi-grid whiteboard-kpis">
       {% for kpi in whiteboard.kpis %}
         <div class="kpi-card">
@@ -276,7 +279,23 @@
       {% endfor %}
     </div>
   {% endif %}
-  {% if whiteboard.notes %}
+
+  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop. #}
+  {% if whiteboard_graphs %}
+    <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
+    <div class="kpi-chart-grid">
+      {% for metric in whiteboard_graphs %}
+        {% include "components/kpi-sparkline.html" %}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="whiteboard-graphs-empty">
+      Les graphiques apparaîtront après quelques cycles de boucle —
+      la Couche 4 publie un point de mesure à chaque passage.
+    </p>
+  {% endif %}
+
+  {% if whiteboard and whiteboard.notes %}
     <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
   {% endif %}
 </section>

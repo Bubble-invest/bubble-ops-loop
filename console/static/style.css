@@ -1321,3 +1321,89 @@ code, .code {
   white-space: pre-wrap;
   max-width: 760px;
 }
+
+/* ─── Whiteboard graphs (KPI time-series, fed by Layer 4) ───────── */
+/* One inline-SVG line chart per KPI. Joris msg 1163, 2026-06-01. */
+.whiteboard-graphs-heading {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 8px 0 16px;
+}
+.whiteboard-graphs-empty {
+  font-size: 14px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 4px 0 24px;
+}
+.kpi-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+  margin-bottom: 28px;
+}
+.kpi-chart-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 16px 18px 12px;
+}
+.kpi-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.kpi-chart-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+  margin: 0;
+  line-height: 1.2;
+}
+.kpi-chart-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--ochre-deep);
+  line-height: 1;
+  white-space: nowrap;
+}
+.kpi-chart-value .kpi-trend { font-size: 17px; }
+.kpi-chart-svg {
+  display: block;
+  width: 100%;
+  height: 48px;
+  overflow: visible;
+}
+.kpi-chart-line {
+  fill: none;
+  stroke: var(--ochre);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.kpi-chart-area { fill: rgba(184, 128, 74, 0.10); stroke: none; }
+.kpi-chart-svg--up   .kpi-chart-line { stroke: var(--sage); }
+.kpi-chart-svg--up   .kpi-chart-area { fill: rgba(122, 139, 126, 0.12); }
+.kpi-chart-svg--down .kpi-chart-line { stroke: #c75f5f; }
+.kpi-chart-svg--down .kpi-chart-area { fill: rgba(199, 95, 95, 0.10); }
+.kpi-chart-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+}
+.kpi-chart-single {
+  font-size: 12.5px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 6px 0 2px;
+}

@@ -1,0 +1,30 @@
+{# Single KPI graph tile — inline SVG line chart, no JS dependency.
+   Expects `metric` in context: a MetricSeries (see services/whiteboard_series.py)
+   with .label, .last_display, .min_display, .max_display, .trend, .polyline,
+   .area, .points, .has_chart. #}
+<article class="kpi-chart-card">
+  <header class="kpi-chart-head">
+    <h4 class="kpi-chart-label">{{ metric.label }}</h4>
+    <span class="kpi-chart-value">
+      {{ metric.last_display }}
+      {% if metric.trend == 'up' %}<span class="kpi-trend kpi-trend--up">↑</span>
+      {% elif metric.trend == 'down' %}<span class="kpi-trend kpi-trend--down">↓</span>
+      {% else %}<span class="kpi-trend">→</span>{% endif %}
+    </span>
+  </header>
+  {% if metric.has_chart %}
+  <svg class="kpi-chart-svg kpi-chart-svg--{{ metric.trend }}"
+       viewBox="0 0 100 32" preserveAspectRatio="none"
+       role="img" aria-label="Évolution de {{ metric.label }} sur {{ metric.points | length }} cycles">
+    <polygon class="kpi-chart-area" points="{{ metric.area }}" />
+    <polyline class="kpi-chart-line" points="{{ metric.polyline }}" />
+  </svg>
+  <footer class="kpi-chart-foot">
+    <span>min {{ metric.min_display }}</span>
+    <span>max {{ metric.max_display }}</span>
+    <span>{{ metric.points | length }} cycles</span>
+  </footer>
+  {% else %}
+  <p class="kpi-chart-single">Un seul point pour l'instant — le graphe apparaît au 2ᵉ cycle.</p>
+  {% endif %}
+</article>
