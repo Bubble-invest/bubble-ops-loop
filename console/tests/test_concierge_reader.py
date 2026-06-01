@@ -97,7 +97,8 @@ def test_read_recent_session_summarizes_tool_calls(tmp_path, monkeypatch):
     ])
     turns = read_recent_session("claudette", agents_root=str(tmp_path / "agents"))
     assert len(turns) == 1
-    assert "[tool: Bash]" in turns[0].text
+    # UX v2: tool calls are now a structured kind, not text noise.
+    assert turns[0].kind == "tool" and turns[0].tool_name == "Bash"
 
 
 def test_read_recent_session_skips_empty_turns(tmp_path, monkeypatch):
@@ -143,3 +144,57 @@ def test_service_status_returns_string(tmp_path, monkeypatch):
     from console.services.concierge_reader import service_status
     s = service_status("morty")
     assert isinstance(s, str) and s
+
+
+# ─── UX v2: richer turn classification ─────────────────────────────
+
+def test_turn_has_kind_message_for_text(tmp_path, monkeypatch):
+    home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
+    _seed_session(home, "morty", [
+        {"timestamp": "2026-06-01T08:00:00Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "text", "text": "Voici le résumé."}]}},
+    ])
+    turns = read_recent_session("morty", agents_root=str(tmp_path / "agents"))
+    assert turns[-1].kind == "message"
+    assert turns[-1].text == "Voici le résumé."
+
+
+def test_tool_turn_has_kind_tool_and_detail(tmp_path, monkeypatch):
+    home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
+    _seed_session(home, "morty", [
+        {"timestamp": "t", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash",
+             "input": {"command": "git push origin main"}}]}},
+    ])
+    turns = read_recent_session("morty", agents_root=str(tmp_path / "agents"))
+    assert turns[-1].kind == "tool"
+    assert turns[-1].tool_name == "Bash"
+    assert "git push" in turns[-1].detail
+
+
+def test_pure_tool_result_turns_are_dropped(tmp_path, monkeypatch):
+    """A user turn that is ONLY a tool_result is mechanical noise — drop it."""
+    home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
+    _seed_session(home, "morty", [
+        {"timestamp": "t1", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "x"}]}},
+        {"timestamp": "t2", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "real"}]}},
+    ])
+    turns = read_recent_session("morty", agents_root=str(tmp_path / "agents"))
+    # only the real message survives; the tool_result-only turn is dropped
+    assert len(turns) == 1
+    assert turns[0].kind == "message"
+
+
+def test_tool_detail_for_edit_shows_file(tmp_path, monkeypatch):
+    home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
+    _seed_session(home, "morty", [
+        {"timestamp": "t", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "/home/claude/x/home.html"}}]}},
+    ])
+    turns = read_recent_session("morty", agents_root=str(tmp_path / "agents"))
+    assert turns[-1].kind == "tool"
+    assert "home.html" in turns[-1].detail

@@ -1,23 +1,45 @@
-{# Live session feed for a concierge — the last N turns from the session
-   transcript. Included on the detail page and re-fetched by HTMX every 5s. #}
+{# Live session feed for a concierge — classified turns from the session
+   transcript. Messages render as readable prose; tool actions as compact
+   muted chips. Re-fetched by HTMX every 5s. #}
 {% if not turns %}
   <p class="muted-italic" style="font-size:13px;">
     Pas d'activité récente — la session est silencieuse.
   </p>
 {% else %}
   <div class="concierge-feed"
-       style="font-family: var(--font-mono); font-size:12.5px; line-height:1.5;
-              background: var(--paper-soft); border:1px solid var(--line);
-              border-radius:2px; padding:12px 14px; max-height:520px;
-              overflow-y:auto; white-space:pre-wrap;">
+       style="font-size:13.5px; line-height:1.55;
+              background: var(--paper); border:1px solid var(--line);
+              border-radius:4px; padding:14px 16px; max-height:560px;
+              overflow-y:auto;">
     {% for t in turns %}
-      <div class="feed-turn" style="margin-bottom:8px;">
-        <span style="color: var(--body-soft); font-size:11px;">{{ t.ts }}</span>
-        <span style="font-weight:600; color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">
-          {{ '▸' if t.role == 'assistant' else '·' }} {{ t.role }}
-        </span>
-        <div style="margin-left:2px; color: var(--ink);">{{ t.text }}</div>
-      </div>
+      {% set tstime = t.ts[11:16] if t.ts|length >= 16 else t.ts %}
+      {% if t.kind == 'tool' %}
+        {# Tool action — compact, muted, single line. #}
+        <div class="feed-tool"
+             style="display:flex; align-items:baseline; gap:8px;
+                    margin:2px 0; color: var(--body-soft); font-size:12px;">
+          <span style="font-variant-numeric:tabular-nums; opacity:.6;">{{ tstime }}</span>
+          <span style="font-family: var(--font-mono); background: var(--paper-soft);
+                       border:1px solid var(--line); border-radius:3px;
+                       padding:0 6px; font-size:11px; color: var(--ink);">{{ t.tool_name }}</span>
+          {% if t.detail %}
+            <span style="font-family: var(--font-mono); opacity:.75;
+                         overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ t.detail }}</span>
+          {% endif %}
+        </div>
+      {% else %}
+        {# Message — readable prose, clearly attributed. #}
+        <div class="feed-message"
+             style="margin:12px 0; padding-left:12px;
+                    border-left:3px solid {{ '#c9962e' if t.role == 'assistant' else 'var(--line)' }};">
+          <div style="font-size:11px; color: var(--body-soft); margin-bottom:3px;">
+            <span style="font-variant-numeric:tabular-nums;">{{ tstime }}</span>
+            ·
+            <b style="color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">{{ name|capitalize if t.role == 'assistant' else 'opérateur' }}</b>
+          </div>
+          <div style="color: var(--ink); white-space:pre-wrap;">{{ t.text }}</div>
+        </div>
+      {% endif %}
     {% endfor %}
   </div>
 {% endif %}

@@ -3,32 +3,59 @@
 {% block content %}
 
 <header class="dept-header">
-  <h1 class="dept-title">{{ concierge.name|capitalize }}</h1>
+  <h1 class="dept-title">
+    {{ concierge.name|capitalize }}
+    {% if status == 'active' %}
+      <span style="display:inline-block; vertical-align:middle; width:9px; height:9px;
+                   border-radius:50%; background:#2e7d32; margin-left:8px;
+                   box-shadow:0 0 0 3px rgba(46,125,50,.18);"
+            title="en service" aria-label="en service"></span>
+    {% else %}
+      <span style="display:inline-block; vertical-align:middle; width:9px; height:9px;
+                   border-radius:50%; background:#b71c1c; margin-left:8px;"
+            title="hors service" aria-label="hors service"></span>
+    {% endif %}
+  </h1>
   <p class="dept-subtitle">
-    Concierge — assistant réactif (pas un département à boucle).
-    <br>
-    <span class="slug-ref">{{ concierge.workspace }}</span>
+    Concierge — assistant réactif (il répond quand on le sollicite, il ne
+    tourne pas en boucle comme un département).
   </p>
 </header>
 
-<div class="gate-meta" style="margin-bottom:18px;">
-  <div>état du service
-    <b style="color: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};">
-      {{ status }}
-    </b>
+{# ─── Status strip ───────────────────────────────────────────────── #}
+<div style="display:flex; flex-wrap:wrap; gap:18px; align-items:center;
+            padding:12px 16px; background: var(--paper-soft);
+            border:1px solid var(--line); border-radius:4px; margin-bottom:20px;">
+  <div>
+    <div style="font-size:11px; color: var(--body-soft); text-transform:uppercase; letter-spacing:.04em;">État</div>
+    <div style="font-weight:600; color: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};">
+      {{ 'En service' if status == 'active' else status }}
+    </div>
   </div>
-  <div>dernière activité <b>{{ concierge.last_activity_iso or '—' }}</b></div>
+  <div style="width:1px; align-self:stretch; background: var(--line);"></div>
+  <div>
+    <div style="font-size:11px; color: var(--body-soft); text-transform:uppercase; letter-spacing:.04em;">Dernière activité</div>
+    <div style="font-weight:600; color: var(--ink);">{{ concierge.last_activity_iso or '—' }}</div>
+  </div>
 </div>
 
 {# ─── Live session view ───────────────────────────────────────────
    The raw terminal is discarded (script → /dev/null), so we tail the
-   session transcript JSONL instead. HTMX re-fetches every 5s so the
-   feed updates live while the concierge works. #}
+   session transcript instead — and render it cleanly: messages as prose,
+   tool actions as compact chips. HTMX re-fetches every 5s. #}
 <section>
-  <h2 class="section-title" style="margin-bottom:8px;">Session en direct</h2>
-  <p class="muted-italic" style="font-size:13px; margin:0 0 10px;">
-    Les derniers tours de {{ concierge.name|capitalize }} — rafraîchi
-    automatiquement toutes les 5 s.
+  <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
+    <h2 class="section-title" style="margin:0;">Session en direct</h2>
+    <span style="display:inline-flex; align-items:center; gap:5px;
+                 font-size:11px; color:#2e7d32;">
+      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32;
+                   animation: pulse 1.6s infinite;"></span>
+      live · rafraîchi toutes les 5 s
+    </span>
+  </div>
+  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
+    Ce que {{ concierge.name|capitalize }} fait en ce moment — ses messages
+    et ses actions, dans l'ordre.
   </p>
 
   <div id="concierge-session"
@@ -38,6 +65,10 @@
     {% include "partials/concierge_session.html" %}
   </div>
 </section>
+
+<style>
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+</style>
 
 <p style="margin-top:24px;">
   <a href="/" class="discreet-link">← retour à l'équipe</a>
