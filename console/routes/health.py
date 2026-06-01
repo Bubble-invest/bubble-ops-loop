@@ -1,4 +1,7 @@
-"""GET /health — last successful run per (layer x dept), red if stale > 2x."""
+"""GET /health — the Carnet de bord: real per-dept loop activity.
+
+Reads live on-disk loop traces (heartbeat + per-layer .last-run) via
+morty_reader — no longer a stub ({{OPERATOR}} msg 1180, 2026-06-01)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -14,6 +17,7 @@ def health(request: Request):
     depts = dept_registry.list_departments()
     slugs = [d.slug for d in depts]
     rows = morty_reader.per_dept_layer_heartbeats(slugs)
+    pulse = morty_reader.loop_pulse(slugs)
     # group rows by dept for the table
     by_dept = {}
     for r in rows:
@@ -24,6 +28,7 @@ def health(request: Request):
             "request": request,
             "depts": depts,
             "by_dept": by_dept,
+            "pulse": pulse,
             "any_stale": any(r.is_stale for r in rows),
         },
     )

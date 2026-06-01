@@ -777,6 +777,20 @@ code, .code {
 .carnet-bord-table .trace-recent { color: var(--sage); }
 .carnet-bord-table .trace-quiet { color: var(--body-muted); }
 .carnet-bord-table .trace-vide { color: var(--ochre-deep); font-style: italic; }
+/* Dept-level loop pulse — the live heartbeat ({{OPERATOR}} msg 1180). */
+.loop-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+.loop-pulse-dot { width: 7px; height: 7px; border-radius: 50%; }
+.loop-pulse--alive { color: var(--sage); }
+.loop-pulse--alive .loop-pulse-dot { background: var(--sage); }
+.loop-pulse--silent { color: #a3503f; }
+.loop-pulse--silent .loop-pulse-dot { background: #a3503f; }
 
 /* ─── Form (accueillir un nouveau collègue) ──────────────────── */
 

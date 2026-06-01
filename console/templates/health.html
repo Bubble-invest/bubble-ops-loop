@@ -34,24 +34,35 @@
   </thead>
   <tbody>
   {% for dept in depts %}
+    {% set p = pulse.get(dept.slug) %}
     <tr>
       <td>
         <strong style="font-family: var(--font-display); font-weight:600;">
           {{ dept.display_name }}
         </strong>
         <span class="muted slug-ref" style="font-size:11px;">/ {{ dept.slug }}</span>
+        {% if p and p.heartbeat_iso %}
+          <div class="loop-pulse loop-pulse--{{ 'alive' if p.alive else 'silent' }}">
+            <span class="loop-pulse-dot" aria-hidden="true"></span>
+            {% if p.alive %}Boucle active · vue {{ p.age_human }}{% else %}Boucle silencieuse · {{ p.age_human }}{% endif %}
+          </div>
+        {% else %}
+          <div class="loop-pulse loop-pulse--silent">
+            <span class="loop-pulse-dot" aria-hidden="true"></span>
+            Pas encore de battement
+          </div>
+        {% endif %}
       </td>
       {% for r in by_dept.get(dept.slug, []) %}
       <td>
         {% if r.last_success_iso %}
-          <span class="trace-recent">Travail dernière trace : {{ r.last_success_iso }}</span>
+          <span class="trace-recent">Dernière trace : {{ r.last_success_iso }}</span>
+          <div class="muted" style="font-size:11px; margin-top:2px;">
+            {{ r.age_human }}{% if r.is_stale %} · silence inhabituel{% endif %}
+          </div>
         {% else %}
           <span class="trace-vide">pas encore commencé</span>
         {% endif %}
-        <div class="muted" style="font-size:11px; margin-top:2px;">
-          Rythme : toutes les {{ r.cadence_minutes }} min
-          {% if r.is_stale and r.last_success_iso %} · silence inhabituel{% endif %}
-        </div>
       </td>
       {% endfor %}
     </tr>
@@ -61,9 +72,9 @@
 {% endif %}
 
 <p class="muted-italic" style="font-size:13px; max-width:680px; margin-top:24px;">
-  Les détails techniques (journald, ssh, traces brutes) sont dans la coulisse —
-  Rick s'en occupe. Le branchement à la source vivante est encore
-  <em>pending</em> (post-MVP).
+  Source vivante : les traces réelles des boucles sur le serveur (battement de
+  cœur + dernière exécution de chaque moment), lues en direct à chaque
+  ouverture de cette page.
 </p>
 
 {% endblock %}
