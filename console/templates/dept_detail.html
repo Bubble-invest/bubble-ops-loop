@@ -80,6 +80,119 @@
   {% endif %}
 </section>
 
+{# ─── Tableau de bord (whiteboard) ───────────────────────────────
+   KPIs first — {{OPERATOR}} msg 1167 (2026-06-01) reordered the page so health
+   leads, then decisions awaiting him, then the 4 moments. Two halves:
+     • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
+     • graphs — KPI time-series built from Layer-4 output history
+       (whiteboard_graphs, {{OPERATOR}} msg 1163, 2026-06-01). #}
+{% if whiteboard or whiteboard_graphs %}
+<section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
+  <h2 id="dept-whiteboard-heading" class="section-heading">
+    <span class="section-heading-number">1.</span>
+    {% if whiteboard and whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
+  </h2>
+  {% if whiteboard and whiteboard.updated_at %}
+    <p class="whiteboard-updated">Mis à jour : {{ whiteboard.updated_at }}</p>
+  {% endif %}
+  {% if whiteboard and whiteboard.kpis %}
+    <div class="kpi-grid whiteboard-kpis">
+      {% for kpi in whiteboard.kpis %}
+        <div class="kpi-card">
+          <div class="kpi-value">
+            {{ kpi.value }}
+            {% if kpi.trend == 'up' %}
+              <span class="kpi-trend kpi-trend--up">↑</span>
+            {% elif kpi.trend == 'down' %}
+              <span class="kpi-trend kpi-trend--down">↓</span>
+            {% elif kpi.trend == 'stable' %}
+              <span class="kpi-trend">→</span>
+            {% endif %}
+          </div>
+          <h4 class="kpi-label">{{ kpi.label }}</h4>
+          {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop. #}
+  {% if whiteboard_graphs %}
+    <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
+    <div class="kpi-chart-grid">
+      {% for metric in whiteboard_graphs %}
+        {% include "components/kpi-sparkline.html" %}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="whiteboard-graphs-empty">
+      Les graphiques apparaîtront après quelques cycles de boucle —
+      la Couche 4 publie un point de mesure à chaque passage.
+    </p>
+  {% endif %}
+
+  {% if whiteboard and whiteboard.notes %}
+    <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ─── Décisions qu'on attend de toi ──────────────────────────── #}
+<section class="cabinet-section" aria-labelledby="dept-decisions-heading">
+  <h2 id="dept-decisions-heading" class="section-heading">
+    <span class="section-heading-number">2.</span>
+    Décisions qu'on attend de toi
+  </h2>
+
+  {% if gate_groups %}
+    {# Mirror the home page: group gates of the same kind into one card.
+       Single-gate kinds keep the existing one-card-per-gate behaviour but
+       use the same shape so the visual rhythm is consistent.
+       {{OPERATOR}} msg 3030 (2026-05-24): "shouldn't they be grouped?" #}
+    <div class="decisions-grid">
+      {% for grp in gate_groups %}
+        {% if grp.count >= 2 %}
+          {# Grouped: one card → links to dept page anchored on this kind.
+             We deep-link to the first gate since /dept/<slug> already
+             lists all of them; until a per-kind view exists this gives
+             the operator a fast entry to triage. #}
+          <a class="decision-card"
+             href="/gate/{{ dept.slug }}/{{ grp.gates[0].id }}">
+            <div class="decision-card-count">{{ grp.count }}</div>
+            <h3 class="decision-card-title">
+              {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
+              — {{ grp.kind_label|capitalize_fr }}
+            </h3>
+            <p class="decision-card-body">
+              {{ grp.count }} {{ grp.kind_label }} en attente · ouvrir la première →
+            </p>
+            <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
+          </a>
+        {% else %}
+          {% set g = grp.gates[0] %}
+          <a class="decision-card" href="/gate/{{ dept.slug }}/{{ g.id }}">
+            <div class="decision-card-count">1</div>
+            <h3 class="decision-card-title">
+              {{ grp.kind_label|capitalize_fr }}
+            </h3>
+            <p class="decision-card-body">
+              Risque
+              <span class="slug-ref">{{ g.risk_level or 'inconnu' }}</span>
+              · <span class="slug-ref">{{ g.id }}</span>
+            </p>
+            <span class="decision-card-cta">Ouvrir →</span>
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% else %}
+    {% with title="Aucune décision en attente.",
+            body=dept.display_name ~ " travaille en silence." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% endif %}
+</section>
+
 {# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
    Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
    mission cards) + "Ses 4 moments" (4 layer cards). {{OPERATOR}} flagged
@@ -87,11 +200,11 @@
    Now ONE section: 4 Moment cards, each containing its missions
    inline + its PROMPT.md collapsible.
 
-   Section #3 ("Ses 4 moments") below is REMOVED in the same refactor.
-#}
+   Moved below Décisions in the msg-1167 reorder (KPIs → décisions →
+   moments). #}
 <section class="cabinet-section" aria-labelledby="dept-missions-heading">
   <h2 id="dept-missions-heading" class="section-heading">
-    <span class="section-heading-number">1.</span>
+    <span class="section-heading-number">3.</span>
     Ses 4 moments de la journée
   </h2>
 
@@ -183,123 +296,6 @@
     </p>
   {% endif %}
 </section>
-
-{# ─── Décisions qu'on attend de toi ──────────────────────────── #}
-<section class="cabinet-section" aria-labelledby="dept-decisions-heading">
-  <h2 id="dept-decisions-heading" class="section-heading">
-    <span class="section-heading-number">2.</span>
-    Décisions qu'on attend de toi
-  </h2>
-
-  {% if gate_groups %}
-    {# Mirror the home page: group gates of the same kind into one card.
-       Single-gate kinds keep the existing one-card-per-gate behaviour but
-       use the same shape so the visual rhythm is consistent.
-       {{OPERATOR}} msg 3030 (2026-05-24): "shouldn't they be grouped?" #}
-    <div class="decisions-grid">
-      {% for grp in gate_groups %}
-        {% if grp.count >= 2 %}
-          {# Grouped: one card → links to dept page anchored on this kind.
-             We deep-link to the first gate since /dept/<slug> already
-             lists all of them; until a per-kind view exists this gives
-             the operator a fast entry to triage. #}
-          <a class="decision-card"
-             href="/gate/{{ dept.slug }}/{{ grp.gates[0].id }}">
-            <div class="decision-card-count">{{ grp.count }}</div>
-            <h3 class="decision-card-title">
-              {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
-              — {{ grp.kind_label|capitalize_fr }}
-            </h3>
-            <p class="decision-card-body">
-              {{ grp.count }} {{ grp.kind_label }} en attente · ouvrir la première →
-            </p>
-            <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
-          </a>
-        {% else %}
-          {% set g = grp.gates[0] %}
-          <a class="decision-card" href="/gate/{{ dept.slug }}/{{ g.id }}">
-            <div class="decision-card-count">1</div>
-            <h3 class="decision-card-title">
-              {{ grp.kind_label|capitalize_fr }}
-            </h3>
-            <p class="decision-card-body">
-              Risque
-              <span class="slug-ref">{{ g.risk_level or 'inconnu' }}</span>
-              · <span class="slug-ref">{{ g.id }}</span>
-            </p>
-            <span class="decision-card-cta">Ouvrir →</span>
-          </a>
-        {% endif %}
-      {% endfor %}
-    </div>
-  {% else %}
-    {% with title="Aucune décision en attente.",
-            body=dept.display_name ~ " travaille en silence." %}
-      {% include "components/empty-state.html" %}
-    {% endwith %}
-  {% endif %}
-</section>
-
-{# Section 3 "Ses 4 moments de la journée" REMOVED in msg-3142 refactor —
-   merged into Section 1 above. Each Moment now contains its missions
-   AND its PROMPT.md collapsible in a single card. #}
-
-{# ─── Tableau de bord (whiteboard) ───────────────────────────────
-   Per-dept section where the agent surfaces chosen KPIs/metrics for {{OPERATOR}}
-   ({{OPERATOR}} msg 1073, 2026-05-28). Two halves:
-     • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
-     • graphs — KPI time-series built from Layer-4 output history
-       (whiteboard_graphs, {{OPERATOR}} msg 1163, 2026-06-01). #}
-{% if whiteboard or whiteboard_graphs %}
-<section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
-  <h2 id="dept-whiteboard-heading" class="section-heading">
-    <span class="section-heading-number">3.</span>
-    {% if whiteboard and whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
-  </h2>
-  {% if whiteboard and whiteboard.updated_at %}
-    <p class="whiteboard-updated">Mis à jour : {{ whiteboard.updated_at }}</p>
-  {% endif %}
-  {% if whiteboard and whiteboard.kpis %}
-    <div class="kpi-grid whiteboard-kpis">
-      {% for kpi in whiteboard.kpis %}
-        <div class="kpi-card">
-          <div class="kpi-value">
-            {{ kpi.value }}
-            {% if kpi.trend == 'up' %}
-              <span class="kpi-trend kpi-trend--up">↑</span>
-            {% elif kpi.trend == 'down' %}
-              <span class="kpi-trend kpi-trend--down">↓</span>
-            {% elif kpi.trend == 'stable' %}
-              <span class="kpi-trend">→</span>
-            {% endif %}
-          </div>
-          <h4 class="kpi-label">{{ kpi.label }}</h4>
-          {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
-        </div>
-      {% endfor %}
-    </div>
-  {% endif %}
-
-  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop. #}
-  {% if whiteboard_graphs %}
-    <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
-    <div class="kpi-chart-grid">
-      {% for metric in whiteboard_graphs %}
-        {% include "components/kpi-sparkline.html" %}
-      {% endfor %}
-    </div>
-  {% else %}
-    <p class="whiteboard-graphs-empty">
-      Les graphiques apparaîtront après quelques cycles de boucle —
-      la Couche 4 publie un point de mesure à chaque passage.
-    </p>
-  {% endif %}
-
-  {% if whiteboard and whiteboard.notes %}
-    <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
-  {% endif %}
-</section>
-{% endif %}
 
 <p>
   <a href="/settings/{{ dept.slug }}" class="discreet-link">Ajuster ses réglages →</a>
