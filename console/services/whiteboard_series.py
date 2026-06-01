@@ -39,6 +39,18 @@ _log = logging.getLogger(__name__)
 # bounded. 60 days of daily loop runs is plenty of trend signal.
 _MAX_POINTS = 60
 
+# Cap how many KPIs we graph. Curated sources (top_kpis/kpis_snapshot) are
+# small; this mainly guards the risk-kpis fallback, which can flatten into
+# dozens of leaves (Maya's L4 has ~19). We keep the most *variable* series
+# (those that actually move) and note the rest was dropped.
+_MAX_SERIES = 12
+
+# Curated KPI blocks inside management-export.yaml, in priority order. Depts
+# drifted on the field name (Notion v4 spec said `top_kpis`; Maya's L4 emits
+# `kpis_snapshot`) — accept either. First one that flattens to a non-empty
+# numeric dict wins.
+_CURATED_KEYS = ("top_kpis", "kpis_snapshot")
+
 # Flattened risk-kpis leaf keys we never want to plot: constants (limits),
 # booleans, and identity fields. Matched against the LAST dotted segment.
 _SKIP_LEAF = {"limit", "breached", "dry_run", "date", "dept",
@@ -99,6 +111,11 @@ def _humanize_key(key: str) -> str:
         "gates.open_total": "Gates ouvertes (total)",
         "gates.opened_today": "Gates ouvertes / jour",
         "directives.open_pending_approval": "Directives en attente",
+        # Maya (prospection) curated KPIs — kpis_snapshot block.
+        "reply_rate_7d": "Taux de réponse (7j)",
+        "validation_latency_p50_hours": "Latence validation p50 (h)",
+        "drafts_pending": "Drafts en attente",
+        "drafts_over_3d": "Drafts bloqués > 3j",
     }
     if key in known:
         return known[key]
@@ -131,21 +148,22 @@ def _flatten_numeric(obj: Any, prefix: str = "") -> Dict[str, float]:
 def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
     """Extract the numeric KPIs for one date dir.
 
-    Primary source: management-export.yaml::top_kpis (flat, console-curated).
-    Looked for both at `<date>/management-export.yaml` (Notion v4 spec) and
+    Primary source: management-export.yaml's curated KPI block (`top_kpis` or
+    `kpis_snapshot` — depts drifted on the name). Looked for both at
+    `<date>/management-export.yaml` (Notion v4 spec) and
     `<date>/4/management-export.yaml` (where the live dept PROMPT.md writes
     it). Fallback: flatten `<date>/4/risk-kpis.yaml`.
     """
-    # 1) management-export top_kpis (preferred)
+    # 1) management-export curated KPIs (preferred — flat, console-intended)
     for rel in ("management-export.yaml", "4/management-export.yaml"):
-        p = date_dir / rel
-        data = _safe_load_yaml(p)
+        data = _safe_load_yaml(date_dir / rel)
         if isinstance(data, dict):
-            top = data.get("top_kpis")
-            if isinstance(top, dict):
-                flat = _flatten_numeric(top)
-                if flat:
-                    return flat
+            for block in _CURATED_KEYS:
+                curated = data.get(block)
+                if isinstance(curated, dict):
+                    flat = _flatten_numeric(curated)
+                    if flat:
+                        return flat
 
     # 2) fallback: risk-kpis.yaml (richer nested), flatten under its `kpis`
     #    block if present, else the whole doc.
@@ -250,6 +268,18 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
     for d, kpis in dated:
         for key, val in kpis.items():
             pivot.setdefault(key, []).append((d.isoformat(), val))
+
+    # Cap to keep the page readable. Prefer series that actually MOVE (a
+    # flat-line KPI is noise on a dashboard), then fall back to alphabetical
+    # for the tie-break so the order is stable across renders.
+    if len(pivot) > _MAX_SERIES:
+        def _variation(kv: Tuple[str, List[Tuple[str, float]]]) -> float:
+            vals = [v for _, v in kv[1]]
+            return (max(vals) - min(vals)) if len(vals) > 1 else 0.0
+        kept = sorted(pivot.items(), key=lambda kv: (-_variation(kv), kv[0]))
+        pivot = dict(kept[:_MAX_SERIES])
+        _log.info("whiteboard_series[%s]: capped to %d of %d KPIs",
+                  slug, _MAX_SERIES, len(kept))
 
     series: List[MetricSeries] = []
     for key in sorted(pivot):
