@@ -1,5 +1,8 @@
 """
-GET  /gate/<dept>/<id>          — decision card with 4 actions
+GET  /gate/<dept>/kind/<kind>   — BATCH view: all pending gates of one kind,
+                                  each with an inline action form (triage many
+                                  at once; deciding one swaps just that card).
+GET  /gate/<dept>/<id>          — decision card with 4 actions (single gate)
 POST /gate/<dept>/<id>/decide   — writes inbox/decisions/<id>.yaml
 """
 from __future__ import annotations
@@ -10,10 +13,36 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from console.services import dept_registry, github_reader
+from console.services.humanize import humanize_kind
 
 router = APIRouter()
 
 ALLOWED_ACTIONS = {"approve", "reject", "modify", "defer"}
+
+
+# IMPORTANT: this MUST be declared before /gate/{slug}/{gate_id} — otherwise
+# FastAPI would match "kind" as a gate_id. Specific routes before catch-all.
+@router.get("/gate/{slug}/kind/{kind}", response_class=HTMLResponse)
+def gate_batch(slug: str, kind: str, request: Request):
+    """List every pending gate of `kind` for the dept, each with an inline
+    decision form. Fixes the two triage pains (2026-06-01): see all at once,
+    and act-then-advance in place instead of being stranded on gate #1."""
+    if dept_registry.get_department(slug) is None:
+        raise HTTPException(404, f"Unknown dept: {slug}")
+    gates = [g for g in github_reader.list_pending_gates(slug)
+             if (g.get("kind") or "decision") == kind]
+    return request.app.state.templates.TemplateResponse(
+        "gate_batch.html",
+        {
+            "request": request,
+            "slug": slug,
+            "kind": kind,
+            "kind_label": humanize_kind(kind),
+            "gates": gates,
+            "count": len(gates),
+            "actions": sorted(ALLOWED_ACTIONS),
+        },
+    )
 
 
 @router.get("/gate/{slug}/{gate_id}", response_class=HTMLResponse)
