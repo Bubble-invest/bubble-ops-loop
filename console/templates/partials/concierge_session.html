@@ -1,0 +1,23 @@
+{# Live session feed for a concierge — the last N turns from the session
+   transcript. Included on the detail page and re-fetched by HTMX every 5s. #}
+{% if not turns %}
+  <p class="muted-italic" style="font-size:13px;">
+    Pas d'activité récente — la session est silencieuse.
+  </p>
+{% else %}
+  <div class="concierge-feed"
+       style="font-family: var(--font-mono); font-size:12.5px; line-height:1.5;
+              background: var(--paper-soft); border:1px solid var(--line);
+              border-radius:2px; padding:12px 14px; max-height:520px;
+              overflow-y:auto; white-space:pre-wrap;">
+    {% for t in turns %}
+      <div class="feed-turn" style="margin-bottom:8px;">
+        <span style="color: var(--body-soft); font-size:11px;">{{ t.ts }}</span>
+        <span style="font-weight:600; color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">
+          {{ '▸' if t.role == 'assistant' else '·' }} {{ t.role }}
+        </span>
+        <div style="margin-left:2px; color: var(--ink);">{{ t.text }}</div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
