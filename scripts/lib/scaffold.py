@@ -129,7 +129,24 @@ CLAUDE_SETTINGS_MINIMAL = {
                     }
                 ]
             }
-        ]
+        ],
+        # Mission-file lock — early/visible layer ({{OPERATOR}} msg 3599). Blocks the
+        # agent from Edit/Write/git-staging its own mission files (the same
+        # STRUCTURAL_PATH_GLOBS the push-time credential-helper lock enforces),
+        # with a deny-reason that routes it to propose a PR instead. The guard
+        # script is root-owned at /opt so the agent can't tamper with it.
+        "PreToolUse": [
+            {
+                "matcher": "Edit|Write|Bash|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 /opt/bubble-mission-guard/mission-file-guard.py",
+                        "timeout": 10000,
+                    }
+                ],
+            }
+        ],
     },
 }
 
