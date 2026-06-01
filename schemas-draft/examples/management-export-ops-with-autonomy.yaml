@@ -1,0 +1,35 @@
+# Positive example: an ops dept's management-export.yaml that exercises
+# the NEW v3 optional `autonomy_readiness` field. Layer 4 writes this when
+# it has accumulated enough shadow-autonomy data to make a recommendation.
+# Per Notion §"Shadow autonomy" + Layer 4 mission line 467.
+dept: maya
+date: "2026-05-20"
+status: warning
+last_successful_layer: 4
+open_gates: 3
+open_exceptions: 0
+top_kpis:
+  outreach_volume: 12
+  reply_rate: 0.18
+  negative_reply_rate: 0.02
+  human_edit_rate: 0.41
+needs_management_attention:
+  - id: maya-attn-001
+    kind: mandate_clarification
+    priority: medium
+    summary: "Tone guidance ambiguous on cold-vs-warm inbound boundary; need Tony arbitrage."
+links:
+  risk_kpis: outputs/2026-05-20/4/risk-kpis.yaml
+  risk_brief: outputs/2026-05-20/4/risk-brief.md
+  gates: queues/gates/
+autonomy_readiness:
+  window_days: 14
+  action_classes:
+    - gate_policy_id: prospect_dm
+      would_have_auto_approved: 42
+      human_approved: 38
+      human_modified: 3
+      human_rejected: 1
+      divergence_rate: 0.09
+      kpi_status: green
+      ready_for_mode: auto_with_veto_window

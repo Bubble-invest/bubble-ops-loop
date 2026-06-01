@@ -1,0 +1,15 @@
+{# A single décision-card (equivalent of Maya's action-card).
+   params:
+     href       — target URL
+     count      — small number (e.g. number of similar pending decisions)
+     title      — display name (Cormorant)
+     body       — one-sentence body in human voice
+#}
+<a class="decision-card" href="{{ href }}">
+  {% if count is defined and count is not none %}
+    <div class="decision-card-count">{{ count }}</div>
+  {% endif %}
+  <h3 class="decision-card-title">{{ title }}</h3>
+  {% if body %}<p class="decision-card-body">{{ body }}</p>{% endif %}
+  <span class="decision-card-cta">Ouvrir →</span>
+</a>

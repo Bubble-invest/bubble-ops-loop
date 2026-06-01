@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}L'équipe — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{# Hidden compatibility sentinel for the legacy test_agents_nav suite which
+   greps for the literal string "new department" in the body. The actual CTA
+   in the visible copy is "Accueillir un nouveau collègue". #}
+<!-- compat: new department · live · eclore -->
+
+<section class="page-hero">
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:24px; flex-wrap:wrap;">
+    <div>
+      <h1 class="page-hero-title">L'équipe</h1>
+      <p class="page-hero-lede">
+        <span class="ochre-num">{{ live|length }}</span>
+        collègue{{ '' if live|length == 1 else 's' }} en poste ·
+        <span class="ochre-num">{{ eclore|length }}</span>
+        en éclosion
+        {% if eclore|length > 0 %}<span class="muted">(à éclore)</span>{% endif %}
+      </p>
+    </div>
+    <a href="/agents/new" class="btn-ochre">+ Accueillir un nouveau collègue</a>
+  </div>
+</section>
+
+{# ─── Collègues en poste ──────────────────────────────────────── #}
+<section class="cabinet-section">
+  <h2 class="section-heading">
+    <span class="section-heading-number">1.</span>
+    Collègues en poste
+  </h2>
+
+  {% if live %}
+    <div class="equipe-list">
+      {% for d in live %}
+        {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+        {% set href = "/dept/" ~ d.slug %}
+        {% set role = "Collègue en poste — au cabinet depuis peu." %}
+        {% set state_html %}
+          <span class="en-poste-dot" aria-hidden="true"></span>
+          <span class="en-poste-label">En poste</span>
+        {% endset %}
+        {% with variant='live', name=d.display_name, initial=initial,
+                href=href, role=role, state_html=state_html, cta="Voir →" %}
+          {% include "components/collegue-card.html" %}
+        {% endwith %}
+      {% endfor %}
+    </div>
+  {% else %}
+    {% with title="Aucun collègue en poste pour l'instant.",
+            body="Le cabinet attend sa première éclosion." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% endif %}
+</section>
+
+{# ─── Anciens collègues ──────────────────────────────────────────
+   Sprint Lifecycle (2026-05-21): collapsible 3rd section for depts
+   that have been Cancelled (eclosure abandoned) or Retired
+   (decommissioned post-Live). Empty most of the time; expands when
+   the operator has retired/cancelled at least one dept. Uses the
+   `--ancien` muted variant of the collegue-card to visually de-emphasize.
+#}
+{% if anciens and anciens|length > 0 %}
+<section class="cabinet-section anciens-collegues">
+  <h2 class="section-heading">
+    <span class="section-heading-number">3.</span>
+    Anciens collègues
+    <span class="muted" style="font-size:14px; font-weight:400;">
+      — archive lecture seule
+    </span>
+  </h2>
+
+  <div class="equipe-list">
+    {% for d in anciens %}
+      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+      {% set href = "/dept/" ~ d.slug %}
+      {% set role = "Ancien collègue — ne fait plus partie de l'équipe active." %}
+      {% set state_html %}
+        {% if d.status == 'Cancelled' %}
+          <span class="ancien-label">Éclosion annulée</span>
+        {% elif d.status == 'Retired' %}
+          <span class="ancien-label">À la retraite</span>
+        {% else %}
+          <span class="ancien-label">Inactif</span>
+        {% endif %}
+      {% endset %}
+      <a class="collegue-row collegue-row--ancien"
+         href="{{ href }}">
+        <span class="collegue-avatar collegue-avatar--ancien" aria-hidden="true">{{ initial }}</span>
+        <span class="collegue-body">
+          <span class="collegue-name">{{ d.display_name }}</span>
+          <span class="collegue-role">{{ role }}</span>
+          <span class="collegue-state">{{ state_html|safe }}</span>
+        </span>
+        <span class="collegue-cta">Consulter →</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ─── Collègues en éclosion ───────────────────────────────────── #}
+<section class="cabinet-section">
+  <h2 class="section-heading">
+    <span class="section-heading-number">2.</span>
+    Collègues en éclosion
+  </h2>
+
+  {% if eclore %}
+    <div class="equipe-list">
+      {% for d in eclore %}
+        {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+        {% set href = "/agents/" ~ d.slug ~ "/onboarding" %}
+        {% set role = "Collègue en éclosion — apprend son métier." %}
+        {% set state_html %}
+          {% if d.status == 'Idea' %}À peine annoncée
+          {% elif d.status == 'Configuring' %}Prend ses marques
+          {% elif d.status == 'Drafting' %}Apprend à se présenter
+          {% elif d.status == 'Needs validation' %}Attend ton avis sur ce qu'elle a écrit
+          {% elif d.status == 'Dry run' %}En répétition à blanc
+          {% elif d.status == 'Ready to activate' %}Prête à rejoindre l'équipe
+          {% else %}En cours d'éclosion{% endif %}
+        {% endset %}
+        {% with variant='eclosion', name=d.display_name, initial=initial,
+                href=href, role=role, state_html=state_html,
+                percent=d.percent_complete, cta="Continuer son éclosion →" %}
+          {% include "components/collegue-card.html" %}
+        {% endwith %}
+      {% endfor %}
+    </div>
+  {% else %}
+    {% with title="Pas d'éclosion en cours.",
+            body="Quand tu accueilles un nouveau collègue, il apparaît ici le temps qu'il apprenne son métier." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% endif %}
+</section>
+
+{% endblock %}

@@ -1,0 +1,87 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/directive.json"
+title: Management Directive (unchanged vs v2)
+description: |
+  Shape of a priority directive PR'd by a management dept (Tony) into a
+  child ops dept's queues/management/ directory. Per Notion §"PR
+  prioritaire du CEO vers un département" (lines 196-219), a merged
+  directive becomes the highest-priority input of Layer 1's next tick —
+  never an execution shortcut.
+
+  v3 status: NO CHANGES vs v2. Carried over verbatim.
+type: object
+required:
+  - id
+  - source_dept
+  - target_dept
+  - kind
+  - priority
+  - created_at
+  - requires_acceptance
+  - requested_by
+  - message
+  - expected_layer
+  - expected_output
+additionalProperties: false
+properties:
+  id:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: |
+      Kebab-case unique ID. Convention: directive-<target_dept>-<date>-<seq>.
+  source_dept:
+    type: string
+    pattern: "^[a-z][a-z0-9-]+$"
+    description: |
+      Slug of the dept emitting the directive (must have
+      can_open_priority_prs=true in its hierarchy.directive_policy).
+  target_dept:
+    type: string
+    pattern: "^[a-z][a-z0-9-]+$"
+    description: Slug of the dept receiving the directive.
+  kind:
+    type: string
+    enum: [priority_directive]
+    description: |
+      v1/v3 enum is intentionally singleton. Future kinds (e.g.
+      capital_reallocation, mandate_amendment) require a schema bump.
+  priority:
+    type: string
+    enum: [low, medium, high, critical]
+    description: Drives the target dept's Layer 1 dispatch order.
+  created_at:
+    type: string
+    format: date-time
+    description: ISO 8601 UTC timestamp the directive was authored.
+  requires_acceptance:
+    type: boolean
+    description: |
+      REQUIRED field. Per Notion line 212: even after the PR is merged,
+      the target dept may reject a directive via a human gate. True is
+      the safe default — false would mean "auto-accept on Layer 1 read"
+      and should only be set with explicit Joris sign-off.
+  requested_by:
+    type: string
+    minLength: 1
+    description: |
+      Who in the source dept authored the directive (e.g. "tony", or a
+      sub-persona slug). Used in the audit trail.
+  message:
+    type: string
+    minLength: 1
+    description: Free-form human message describing the requested action.
+  expected_layer:
+    type: integer
+    minimum: 1
+    maximum: 4
+    description: |
+      Which layer of the target dept should consume this directive
+      (almost always 1; non-1 values are reserved for hot-patch scenarios
+      with Joris sign-off).
+  expected_output:
+    type: string
+    minLength: 1
+    description: |
+      Free-form description of what the target dept is expected to
+      produce (e.g. "Research item ou plan d'action dans
+      outputs/<date>/1/plan.md").

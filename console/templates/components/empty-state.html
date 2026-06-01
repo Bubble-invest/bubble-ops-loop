@@ -1,0 +1,24 @@
+{# Serene "L'équipe travaille en silence" empty-state.
+   Pattern + SVG copied from Maya webapp/templates/components/empty-state.html
+   (read-only reference), recolored ochre/sage. #}
+<section class="serene-empty">
+  <svg class="serene-empty-illustration" viewBox="0 0 120 80" aria-hidden="true">
+    {# Ink-line horizon — two strokes (ochre + sage) + one ink dot. #}
+    <path d="M 10 50 Q 60 35 110 50" stroke="#b8804a" stroke-width="1.5"
+          fill="none" opacity="0.7"/>
+    <path d="M 10 60 Q 60 55 110 60" stroke="#7a8b7e" stroke-width="1"
+          fill="none" opacity="0.5"/>
+    <circle cx="60" cy="44" r="3" fill="#1a2b4a"/>
+  </svg>
+  <h3 class="serene-empty-title">{{ title or "Personne ne te demande rien." }}</h3>
+  <p class="serene-empty-body">{{ body or "L'équipe travaille en silence." }}</p>
+  {# Optional CTA — set cta_href + cta_label to render an action button.
+     Used by the empty-team state on home (Joris msg 3044, 2026-05-24)
+     so the operator can hire the first colleague without first
+     navigating to /agents. #}
+  {% if cta_href and cta_label %}
+    <p style="margin-top:18px;">
+      <a href="{{ cta_href }}" class="btn-ochre">{{ cta_label }} →</a>
+    </p>
+  {% endif %}
+</section>

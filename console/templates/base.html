@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Bubble — Cabinet d'éclosion{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  {# Bureau de Cadre: Cormorant Garamond (display) + Source Sans 3 (body)
+     + JetBrains Mono (parcimonieux pour code/slugs). No Inter, no Roboto. #}
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/style.css?v=2026-05-21-bureau-cadre">
+
+  <meta name="theme-color" content="#faf7f2">
+  <style>
+    :root { --paper: #faf7f2; --ink: #1a2b4a; --ochre: #b8804a; }
+    /* Inline papier crème background before stylesheet loads. */
+    html, body { background: #faf7f2; }
+  </style>
+
+  <script src="https://unpkg.com/htmx.org@1.9.12"
+          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+          crossorigin="anonymous"></script>
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+
+  {# ─── Top bar (cabinet) ───────────────────────────────────────── #}
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand">
+        <span class="brand-name">Bubble.</span>
+        <span class="brand-sub">Cabinet d'éclosion</span>
+      </a>
+      <nav class="topnav" aria-label="Navigation cabinet">
+        <a href="/">Le matin</a>
+        <a href="/agents">L'équipe</a>
+        <a href="/health">Carnet de bord</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="cabinet-footer">
+    Cabinet d'éclosion — chaque arrivée passe par ce registre.
+  </footer>
+
+</body>
+</html>

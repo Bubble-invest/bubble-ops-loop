@@ -1,0 +1,16 @@
+{# A group of pending gates sharing a (dept, kind) tuple, rendered as
+   a single décision-card. Context:
+     col   — column dict (dept + gates + gate_groups)
+     grp   — one group dict: {kind, kind_label, gates: [...], count: N}
+   Used only when count >= 2. For count == 1 see partials/kanban_card.html. #}
+<a class="decision-card"
+   href="/dept/{{ col.dept.slug }}">
+  <div class="decision-card-count">{{ grp.count }}</div>
+  <h3 class="decision-card-title">
+    {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre — {{ col.dept.display_name }}
+  </h3>
+  <p class="decision-card-body">
+    {{ grp.kind_label|capitalize_fr }} · {{ grp.count }} en attente.
+  </p>
+  <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
+</a>

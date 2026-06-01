@@ -1,0 +1,228 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/management-export.json"
+title: Management Export v3
+description: |
+  Compact daily summary written by every dept at
+  outputs/<YYYY-MM-DD>/management-export.yaml. Consumed by Tony's Layer 1
+  (and, for principal, Joris/Jade via the console). MUST forbid additional
+  properties so depts cannot smuggle raw artifacts, secrets, or ad-hoc
+  fields past the management boundary. Source: Notion §"Management
+  exports" (lines 172-194).
+
+  v3 change: NEW OPTIONAL `autonomy_readiness:` field. Layer 4 writes it
+  when it has accumulated enough shadow-autonomy data to recommend
+  raising a gate_policy out of manual_required (Notion §"Shadow autonomy"
+  + Layer 4 mission line 467).
+
+  v3.1 change (Joris msg 2676, 2026-05-20, post Step-9 manual L4 run):
+  TWO RELAXATIONS based on the shape Layer 4 naturally produced on the
+  bubble-ops-fixture's first manual run:
+    (a) `needs_management_attention[]` items accept EITHER an object
+        ({id,kind,priority,summary} — preferred, console-renderable) OR
+        a plain string (degraded, rendered as a generic note). Strings
+        are what an agent fresh-writes; objects are what a structured
+        skill emits. Both stay valid.
+    (b) `links` switches from additionalProperties:false to true. The
+        canonical risk_kpis/risk_brief/gates triplet stays documented,
+        but Layer 4 may surface extra navigation hints (layer1_summary,
+        open_gate, improvements, etc.) the console will render as
+        secondary links.
+  The ROOT level stays strict (additionalProperties:false) so a dept
+  cannot smuggle ad-hoc fields past Tony's import boundary. The negative
+  test management-export-string-attention-with-root-leak.yaml pins this
+  invariant.
+type: object
+required:
+  - dept
+  - date
+  - status
+  - last_successful_layer
+  - open_gates
+  - open_exceptions
+  - top_kpis
+  - needs_management_attention
+  - links
+additionalProperties: false
+properties:
+  dept:
+    type: string
+    pattern: "^[a-z][a-z0-9-]+$"
+    description: Kebab-case slug of the dept publishing this export.
+  date:
+    type: string
+    format: date
+    description: ISO 8601 date (YYYY-MM-DD) the export covers.
+  status:
+    type: string
+    enum: [clean, warning, red]
+    description: |
+      Top-line health colour. clean = nothing to action, warning = open
+      items but no breach, red = mandate breach or critical incident.
+  last_successful_layer:
+    type: integer
+    minimum: 1
+    maximum: 4
+    description: Highest layer that completed a successful run on `date`.
+  open_gates:
+    type: integer
+    minimum: 0
+    description: Count of unresolved items under queues/gates/.
+  open_exceptions:
+    type: integer
+    minimum: 0
+    description: |
+      Count of unresolved exceptions (e.g. broker reconciliation breaks
+      for Ben). Stored in the dept's domain ledger when one exists.
+  top_kpis:
+    type: object
+    description: |
+      Dept-specific KPI snapshot. additionalProperties allowed because
+      every dept publishes a different KPI shape (Ben:
+      nav_status/exec_status/...; Maya: outreach_volume/reply_rate/...).
+      Per-dept KPI schemas live in the dept's own templates/schemas/ in
+      later steps, not here.
+    additionalProperties: true
+  needs_management_attention:
+    type: array
+    description: |
+      Items where the dept is requesting management input or escalation.
+      Empty list when nothing needs attention. v3.1: accepts EITHER the
+      preferred object form (renderable as a console card with priority
+      pill) OR a plain string (degraded, rendered as a generic note).
+    items:
+      oneOf:
+        - type: string
+          minLength: 1
+          description: |
+            Degraded form — a free-form note. Console renders with
+            `kind: note, priority: medium` defaults. Use this when the
+            agent has not (yet) classified the item; prefer the object
+            form whenever an `id`, `kind`, and `priority` are known.
+        - type: object
+          required: [id, kind, priority, summary]
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              pattern: "^[a-z0-9][a-z0-9-]*$"
+              description: Kebab-case ID of the item needing attention.
+            kind:
+              type: string
+              minLength: 1
+              description: |
+                Free-form kind label (capital_allocation, mandate_change,
+                ...). Not enum-locked at the export layer; the directive
+                schema tightens this downstream.
+            priority:
+              type: string
+              enum: [low, medium, high, critical]
+            summary:
+              type: string
+              minLength: 1
+              description: One-line human-readable summary for the console card.
+  links:
+    type: object
+    description: |
+      Pointers from the export back to the underlying artifacts. The
+      three canonical keys (risk_kpis / risk_brief / gates) are
+      documented and remain conventional, but v3.1 allows additional
+      named keys (layer1_summary, open_gate, improvements, ...) so
+      Layer 4 can surface navigation hints the console will render as
+      secondary links. Every value must still be a non-empty string
+      path or URL. The root-level boundary stays strict — only `links`
+      relaxes.
+    additionalProperties:
+      type: string
+      minLength: 1
+    properties:
+      risk_kpis:
+        type: string
+        minLength: 1
+        description: Path or URL to the matching outputs/<date>/4/risk-kpis.yaml.
+      risk_brief:
+        type: string
+        minLength: 1
+        description: Path or URL to the matching outputs/<date>/4/risk-brief.md.
+      gates:
+        type: string
+        minLength: 1
+        description: Path or URL to the queues/gates/ directory (or filtered view).
+
+  # --------------------------------------------------------------------------
+  # autonomy_readiness — NEW v3 (OPTIONAL). Layer 4 writes it when shadow
+  # autonomy has accumulated enough signal to recommend raising a policy.
+  # --------------------------------------------------------------------------
+  autonomy_readiness:
+    type: object
+    description: |
+      Shadow-autonomy deltas accumulated over a rolling window. Per Notion
+      §"Shadow autonomy" lines 433-438: Layer 4 compares what the agent
+      would have auto-approved vs what the human actually approved /
+      modified / rejected, plus KPI status, over 14 or 30 days.
+    required: [window_days, action_classes]
+    additionalProperties: false
+    properties:
+      window_days:
+        type: integer
+        enum: [14, 30]
+        description: |
+          Rolling window the readiness snapshot covers. 14 = early signal;
+          30 = stable signal. Anything else (7, 60, ...) is rejected to
+          keep the cross-dept dashboard comparable.
+      action_classes:
+        type: array
+        items:
+          type: object
+          required:
+            - gate_policy_id
+            - would_have_auto_approved
+            - human_approved
+            - human_modified
+            - human_rejected
+            - divergence_rate
+            - kpi_status
+            - ready_for_mode
+          additionalProperties: false
+          properties:
+            gate_policy_id:
+              type: string
+              minLength: 1
+              description: |
+                Links to dept.yaml::gate_policies.<id>. The same string
+                that appears on every gate-item of this class.
+            would_have_auto_approved:
+              type: integer
+              minimum: 0
+            human_approved:
+              type: integer
+              minimum: 0
+            human_modified:
+              type: integer
+              minimum: 0
+            human_rejected:
+              type: integer
+              minimum: 0
+            divergence_rate:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: |
+                Fraction of decisions where the shadow recommendation did
+                not match the human action (rejected + modified). Used as
+                the primary gate-raise blocker.
+            kpi_status:
+              type: string
+              enum: [green, yellow, red]
+              description: |
+                Status of the kpi_guardrail_set referenced by the policy.
+                Anything other than `green` blocks the recommendation.
+            ready_for_mode:
+              type: string
+              enum:
+                - auto_with_veto_window
+                - auto_if_policy_passed
+                - none
+              description: |
+                The mode Layer 4 recommends. `none` = not ready yet (keep
+                the policy at its current mode). The other two are valid
+                upgrade targets per the 5-mode doctrine.

@@ -1,0 +1,74 @@
+# =====================================================================
+# management-policy.template.yaml — token-broker actor policy for a
+# MANAGEMENT department (Tony, future management depts).
+# =====================================================================
+# Source-of-truth: Notion v4 §"Management / Tony" (lines 645-678).
+#
+# Use this template when bootstrapping a management dept that has CHILDREN
+# (= one or more ops leaves it can read + open priority PRs against).
+#
+# Replace placeholders:
+#   <DEPT_SLUG>     → kebab-case slug of THIS management dept
+#                     (e.g. `tony`, `cto`, `cfo`)
+#   <CHILD_SLUG_*>  → slugs of each child ops dept
+#                     (e.g. ben, maya, miranda, eliot)
+#
+# Action class coverage:
+#   - runtime_read       → own repo + every child's repo (read scoped to
+#                          KPIs / briefs / mgmt-export / gates / improvements
+#                          via read_paths). Notion v4 says management
+#                          NEVER reads raw artifacts.
+#   - runtime_write_own  → own repo only, runtime paths
+#   - open_priority_pr   → ALLOWED against any child, target
+#                          queues/management/** only
+#   - settings_pr        → ALLOWED against own_repo
+#
+# Anti-footgun reminders:
+#   1. `read_paths` is a STRICT subset of `read.repos × paths`. Do NOT
+#      let management read children's raw outputs (`outputs/*/{1,2,3}/`)
+#      — only Layer 4 outputs (`outputs/*/4/`) + the bubble-up
+#      `management-export.yaml`.
+#   2. Adding `bubble-shared-wiki` to `read:` is fine for management;
+#      they read it for context.
+#   3. PR target_paths MUST be `queues/management/**` — Tony's priority
+#      directive shape (Notion v4 §"PR prioritaire du CEO vers un
+#      département").
+# =====================================================================
+
+github_access:
+  actor: ops-loop-<DEPT_SLUG>
+  own_repo: bubble-ops-<DEPT_SLUG>
+
+  read:
+    - bubble-ops-<DEPT_SLUG>
+    - bubble-shared-wiki
+    - bubble-ops-<CHILD_SLUG_1>
+    - bubble-ops-<CHILD_SLUG_2>
+    # Add one line per child dept. Empty list = no children = use
+    # ops-leaf-policy.template.yaml instead of this one.
+
+  read_paths:
+    # Management only sees the bubble-up Layer 4 artifacts + cross-dept
+    # gate/improvement queues. NEVER raw artifacts (Notion v4 §"Hiérarchie
+    # & visibilité cross-dept" callout "Règle de sécurité").
+    - outputs/*/4/risk-kpis.yaml
+    - outputs/*/4/risk-brief.md
+    - outputs/*/management-export.yaml
+    - queues/gates/**
+    - queues/improvements/**
+
+  write:
+    - repo: bubble-ops-<DEPT_SLUG>
+      allowed_paths:
+        - outputs/**
+        - queues/**
+        - inbox/**
+      mode: direct_runtime_commit
+
+  pull_requests:
+    can_open_to:
+      - bubble-ops-<CHILD_SLUG_1>
+      - bubble-ops-<CHILD_SLUG_2>
+      # One per child. Keep this list synced with `read:` children.
+    target_paths:
+      - queues/management/**     # the priority-directive path

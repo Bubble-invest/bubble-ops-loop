@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Bonjour Joris — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+{# ─── Hero greeting ───────────────────────────────────────────── #}
+<section class="page-hero">
+  <h1 class="page-hero-title">Bonjour Joris. Voici où en est l'équipe aujourd'hui.</h1>
+  <p class="page-hero-lede">
+    <span class="ochre-num">{{ total_gates }}</span>
+    décision{{ '' if total_gates == 1 else 's' }} qu'on attend de toi ·
+    <span class="ochre-num">{{ eclore_count }}</span>
+    collègue{{ '' if eclore_count == 1 else 's' }} en éclosion ·
+    le reste tourne en silence.
+  </p>
+</section>
+
+{# ─── Section 1 — Décisions qu'on attend de toi ───────────────── #}
+<section class="cabinet-section" aria-labelledby="decisions-heading">
+  <h2 id="decisions-heading" class="section-heading">
+    <span class="section-heading-number">1.</span>
+    Décisions qu'on attend de toi
+  </h2>
+
+  {% if total_gates == 0 %}
+    {% with title="Personne ne te demande rien.",
+            body="L'équipe travaille en silence." %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% else %}
+    <div class="decisions-grid">
+      {% for col in columns %}
+        {% for grp in col.gate_groups %}
+          {% if grp.count == 1 %}
+            {% set g = grp.gates[0] %}
+            {% include "partials/kanban_card.html" %}
+          {% else %}
+            {% include "partials/decision_group_card.html" %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{# ─── Section 2 — L'équipe ────────────────────────────────────── #}
+<section class="cabinet-section" aria-labelledby="equipe-heading">
+  <h2 id="equipe-heading" class="section-heading">
+    <span class="section-heading-number">2.</span>
+    L'équipe
+  </h2>
+
+  {% if not columns %}
+    {% with title="L'équipe n'a pas encore de membres.",
+            body="Commence par accueillir ton premier collègue.",
+            cta_href="/agents/new",
+            cta_label="Accueillir ton premier collègue" %}
+      {% include "components/empty-state.html" %}
+    {% endwith %}
+  {% else %}
+    <div class="equipe-list">
+    {% for col in columns %}
+      {% set d = col.dept %}
+      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+      {% if d.is_live %}
+        {% set href = "/dept/" ~ d.slug %}
+        {% set role = "Collègue en poste — gère ses missions au quotidien." %}
+        {% set state_html %}
+          <span class="en-poste-dot" aria-hidden="true"></span>
+          <span class="en-poste-label">En poste</span>
+          {% if col.gate_count > 0 %}
+            · attend {{ col.gate_count }} décision{{ '' if col.gate_count == 1 else 's' }} de toi
+          {% else %}
+            · tout est calme de son côté
+          {% endif %}
+        {% endset %}
+        {% with variant='live', name=d.display_name, initial=initial,
+                href=href, role=role, state_html=state_html, cta="Voir →" %}
+          {% include "components/collegue-card.html" %}
+        {% endwith %}
+      {% else %}
+        {% set href = "/agents/" ~ d.slug ~ "/onboarding" %}
+        {% set role = "Collègue en éclosion — apprend son métier." %}
+        {% set state_html %}
+          {% if d.status == 'Idea' %}À peine annoncée
+          {% elif d.status == 'Configuring' %}Prend ses marques
+          {% elif d.status == 'Drafting' %}Apprend à se présenter
+          {% elif d.status == 'Needs validation' %}Attend ton avis sur ce qu'elle a écrit
+          {% elif d.status == 'Dry run' %}En répétition à blanc
+          {% elif d.status == 'Ready to activate' %}Prête à rejoindre l'équipe
+          {% else %}En cours d'éclosion{% endif %}
+        {% endset %}
+        {% with variant='eclosion', name=d.display_name, initial=initial,
+                href=href, role=role, state_html=state_html,
+                percent=d.percent_complete, cta="Continuer son éclosion →" %}
+          {% include "components/collegue-card.html" %}
+        {% endwith %}
+      {% endif %}
+    {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{# ─── Section 3 — Cette semaine en bref ───────────────────────── #}
+<section class="cabinet-section" aria-labelledby="semaine-heading">
+  <h2 id="semaine-heading" class="section-heading">
+    <span class="section-heading-number">3.</span>
+    Cette semaine en bref
+  </h2>
+  <div class="kpi-grid">
+    {% with value=total_gates,
+            label="Décisions en attente",
+            note="Ce que l'équipe te demande en ce moment." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=live_count,
+            label="Collègues en poste",
+            note="Membres actifs de l'équipe." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=eclore_count,
+            label="Arrivées en préparation",
+            note="Collègues qui terminent leur éclosion." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+  </div>
+</section>
+
+<p>
+  <a href="/health" class="discreet-link">Voir le carnet de bord détaillé →</a>
+</p>
+
+{% endblock %}

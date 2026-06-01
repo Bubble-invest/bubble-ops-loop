@@ -1,0 +1,17 @@
+[Unit]
+Description=Trigger ops-loop-fixture heartbeat watchdog every 40 min
+Documentation=https://github.com/vdk888/bubble-ops-loop/blob/main/scripts/loop-watchdog.sh
+
+[Timer]
+# 2× the /loop 20-min cadence — the conservative "missed two ticks" alert.
+OnUnitActiveSec=40min
+# Run 2 min after boot so we don't false-alarm during the first tick window.
+OnBootSec=2min
+# Add a small random jitter so multiple Morty timers don't fire on the
+# same second (defensive against future watchdogs sharing a tick).
+RandomizedDelaySec=30s
+Unit=ops-loop-watchdog.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

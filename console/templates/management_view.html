@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Vue management — {{ dept.display_name }}{% endblock %}
+
+{% block content %}
+<div class="management-view">
+  <h1 class="page-title">Vue management — {{ dept.display_name }}</h1>
+  <p class="subtitle">
+    Agrégation cross-dept · {{ children|length }} département(s) enfant(s) ·
+    {{ total_open_gates }} gate(s) en attente
+    {% if stale_children %}
+      · <span class="stale-warning">{{ stale_children|length }} en retard</span>
+    {% endif %}
+  </p>
+
+  <div class="kanban-board">
+    {% for child in children %}
+    <div class="kanban-column {% if child.staleness_days > 0 %}stale{% endif %}">
+      <div class="kanban-header">
+        <h2 class="child-slug">{{ child.slug }}</h2>
+        {% if child.staleness_days == 0 %}
+          <span class="badge fresh">Aujourd'hui</span>
+        {% elif child.staleness_days < 9999 %}
+          <span class="badge stale">{{ child.staleness_days }} jour(s) de retard</span>
+        {% else %}
+          <span class="badge missing">Aucun output</span>
+        {% endif %}
+      </div>
+
+      <div class="kanban-body">
+
+        {# Management export status block #}
+        {% if child.management_export %}
+        <div class="kpi-block status-{{ child.management_export.get('status', 'unknown') }}">
+          <strong>Statut :</strong> {{ child.management_export.get('status', '—') }}<br>
+          <strong>Dernier layer :</strong> {{ child.management_export.get('last_successful_layer', '—') }}<br>
+          <strong>Gates ouvertes :</strong> {{ child.management_export.get('open_gates', '—') }}<br>
+          <strong>Exceptions :</strong> {{ child.management_export.get('open_exceptions', '—') }}
+        </div>
+        {% else %}
+        <div class="kpi-block status-missing">
+          <em>management-export.yaml absent{% if child.last_seen_at %} (dernier vu : {{ child.last_seen_at }}){% endif %}</em>
+        </div>
+        {% endif %}
+
+        {# Risk KPIs #}
+        {% if child.risk_kpis %}
+        <div class="risk-kpis-block">
+          <strong>KPIs Layer-4 :</strong>
+          <ul class="kpi-list">
+            {% for k, v in child.risk_kpis.items() %}
+            {% if k not in ('dept', 'date') %}
+            <li><code>{{ k }}</code> : {{ v }}</li>
+            {% endif %}
+            {% endfor %}
+          </ul>
+        </div>
+        {% else %}
+        <div class="risk-kpis-block missing">
+          <em>risk-kpis.yaml absent</em>
+        </div>
+        {% endif %}
+
+        {# Pending gates #}
+        <div class="gates-block">
+          <strong>Gates en attente ({{ child.pending_gates|length }}) :</strong>
+          {% if child.pending_gates %}
+          <ul class="gate-list">
+            {% for gate in child.pending_gates %}
+            <li class="gate-item">
+              <code>{{ gate.get('id', '—') }}</code>
+              {% if gate.get('kind') %}
+              <span class="gate-kind">{{ gate.get('kind') }}</span>
+              {% endif %}
+              {% if gate.get('status') %}
+              <span class="gate-status">{{ gate.get('status') }}</span>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <em>Aucune gate en attente.</em>
+          {% endif %}
+        </div>
+
+        {# Staleness info #}
+        {% if child.staleness_days > 0 %}
+        <div class="staleness-info">
+          <strong>Données en retard :</strong>
+          {% if child.last_seen_at %}
+            dernier output Layer-4 le {{ child.last_seen_at }}
+            ({{ child.staleness_days }} jour(s) de retard)
+          {% else %}
+            aucun output Layer-4 connu.
+          {% endif %}
+        </div>
+        {% endif %}
+
+      </div>{# /.kanban-body #}
+    </div>{# /.kanban-column #}
+    {% else %}
+    <p class="no-children">Ce département de management n'a aucun enfant configuré.</p>
+    {% endfor %}
+  </div>{# /.kanban-board #}
+
+</div>{# /.management-view #}
+{% endblock %}

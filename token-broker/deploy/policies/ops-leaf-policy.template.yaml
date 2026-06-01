@@ -1,0 +1,47 @@
+# =====================================================================
+# ops-leaf-policy.template.yaml — token-broker actor policy for an
+# OPS-LEAF department (Maya, Ben, Miranda, Eliot, future ops depts).
+# =====================================================================
+# Source-of-truth: Notion v4 §"Ops department standard" (lines 624-644).
+#
+# Use this template when bootstrapping a new ops-leaf dept. Replace every
+# <DEPT_SLUG> placeholder with the dept's kebab-case slug (must match the
+# `department.slug` field in the dept's dept.yaml).
+#
+# Action class coverage:
+#   - runtime_read       → repo allow-list under `read:` and `read_paths:`
+#   - runtime_write_own  → repo + path allow-list under `write:`
+#   - open_priority_pr   → DISALLOWED for ops leaves (no children → no
+#                          target_paths)
+#   - settings_pr        → ALLOWED only against own_repo (broker enforces
+#                          structural-path check)
+#
+# Anti-footgun reminders:
+#   1. Never add a dept's own repo to `pull_requests.can_open_to` —
+#      structural changes use direct settings_pr against own_repo, not
+#      cross-dept PRs.
+#   2. `allowed_paths` MUST be `outputs/**, queues/**, inbox/**` only.
+#      Adding structural paths here will be REJECTED by the broker's
+#      _is_structural() check at mint time.
+#   3. Shared wiki goes in `read:` only — never `write:` (writes happen
+#      via the cloud-wiki-sync cron, not via dept tokens).
+# =====================================================================
+
+github_access:
+  actor: ops-loop-<DEPT_SLUG>
+  own_repo: bubble-ops-<DEPT_SLUG>
+
+  read:
+    - bubble-ops-<DEPT_SLUG>
+    - bubble-shared-wiki
+
+  write:
+    - repo: bubble-ops-<DEPT_SLUG>
+      allowed_paths:
+        - outputs/**       # all 4 layers write here
+        - queues/**        # research/, gates/, improvements/, management/
+        - inbox/**         # decisions/, notifications/
+      mode: direct_runtime_commit
+
+  pull_requests:
+    can_open_to: []        # ops leaves never open cross-dept PRs

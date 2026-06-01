@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}{{ slug }} commence son éclosion — Cabinet d'éclosion{% endblock %}
+{% block content %}
+
+<header class="dept-header">
+  <h1 class="dept-title">
+    {% if ok %}
+      {{ slug }} commence son éclosion
+    {% else %}
+      L'accueil de {{ slug }} a échoué
+    {% endif %}
+  </h1>
+  <p class="dept-subtitle">
+    {% if ok %}
+      Le cabinet a déjà créé son bureau. Pendant qu'il s'installe, suis son arrivée ci-dessous.
+    {% else %}
+      Voici ce que le cabinet a tenté de faire en coulisses.
+    {% endif %}
+  </p>
+</header>
+
+{% if not ok %}
+  <section class="cabinet-section">
+    <div class="lettre-card">
+      <pre>{{ output }}</pre>
+    </div>
+  </section>
+{% endif %}
+
+{% if ok and install_url %}
+  <section class="cabinet-section">
+    <div class="lettre-card" style="padding:24px 28px; background:#fdf6e8; border:1px solid #d4a64a;">
+      <h2 class="serene-empty-title" style="margin:0 0 12px 0;">Étape suivante — autoriser GitHub</h2>
+      <p style="margin:0 0 16px 0; line-height:1.55;">
+        Pour que <strong>{{ display_name or slug }}</strong> puisse travailler dans son
+        propre repo, GitHub a besoin de ton accord. Un clic — l'App
+        <code>bubble-ops-bot</code> va te demander à quel repo lui donner accès,
+        et créera <code>bubble-ops-{{ slug }}</code> si nécessaire.
+      </p>
+      <p style="margin:0 0 0 0;">
+        <a href="{{ install_url }}" class="btn-ochre" target="_blank" rel="noopener">
+          Continuer sur GitHub (nouvel onglet) →
+        </a>
+      </p>
+      <p class="cabinet-field-hint" style="margin-top:14px; font-size:0.85em;">
+        Après ton autorisation, GitHub te ramènera ici automatiquement et
+        l'éclosure démarrera. Si tu fermes cet onglet, la session reste valide
+        15&nbsp;min : tu peux y revenir tant que tu ne quittes pas Safari.
+      </p>
+      <!-- state token for cabinet-ready tests + browser inspection -->
+      <input type="hidden" name="state" value="{{ state }}">
+    </div>
+  </section>
+{% endif %}
+
+{% if ok and stream_url %}
+  <section class="cabinet-section" data-eclosure-stream-host>
+    <h2 class="serene-empty-title" style="margin-bottom:14px;">Son installation, en direct</h2>
+    <ol id="eclosure-progress" class="cabinet-progress-list">
+      <li data-step="start"            class="progress-step pending">⏳ <span class="step-label">Préparation</span></li>
+      <li data-step="sops_done"        class="progress-step pending">⏳ <span class="step-label">Coffre-fort de ses secrets</span></li>
+      <li data-step="systemd_installed" class="progress-step pending">⏳ <span class="step-label">Bureau systemd posé</span></li>
+      <li data-step="service_started"  class="progress-step pending">⏳ <span class="step-label">Premier réveil de l'agent</span></li>
+      <li data-step="gh_app_done"      class="progress-step pending">⏳ <span class="step-label">Liaison GitHub</span></li>
+      <li data-step="done"             class="progress-step pending">⏳ <span class="step-label">Tout est prêt — il devrait te pinger sur Telegram</span></li>
+    </ol>
+    <p id="eclosure-status" class="cabinet-field-hint" style="margin-top:18px;">
+      Connexion au flux en cours…
+    </p>
+
+    <div id="eclosure-github-fallback" hidden style="margin-top:18px; padding:14px 18px; border:1px solid #d4a64a; background:#fdf6e8; border-radius:8px;">
+      <strong>⚠️ Liaison GitHub manuelle requise</strong>
+      <p style="margin:6px 0 0 0; font-size:0.92em;">
+        Le cabinet n'a pas pu attacher l'App <code>bubble-ops-bot</code> au repo
+        <code>bubble-ops-{{ slug }}</code> automatiquement (scope manquant).
+        Ouvre <a href="https://github.com/settings/installations" target="_blank">github.com/settings/installations</a>
+        → configurer <code>bubble-ops-bot</code> → ajoute <code>bubble-ops-{{ slug }}</code>.
+        Tant que ce n'est pas fait, l'agent ne pourra pas commiter ses étapes d'éclosion.
+      </p>
+    </div>
+  </section>
+
+  <script>
+    (function() {
+      const slug = {{ slug | tojson }};
+      const streamUrl = {{ stream_url | tojson }};
+      const statusEl = document.getElementById('eclosure-status');
+      const ghFallback = document.getElementById('eclosure-github-fallback');
+
+      function markStep(kind, label) {
+        const li = document.querySelector(`#eclosure-progress li[data-step="${kind}"]`);
+        if (!li) return;
+        li.classList.remove('pending');
+        li.classList.add('done');
+        const labelSpan = li.querySelector('.step-label');
+        // Replace the leading ⏳ with ✓
+        const html = li.innerHTML.replace(/^⏳/, '✓');
+        li.innerHTML = html;
+        if (label && labelSpan) labelSpan.textContent = label;
+      }
+
+      const es = new EventSource(streamUrl);
+      es.addEventListener('connected', () => {
+        statusEl.textContent = 'Connexion établie — l\'éclosion démarre.';
+      });
+      es.addEventListener('progress', (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          const kind = payload.kind;
+          if (kind === 'gh_app_done') {
+            markStep(kind);
+            if (payload.ok === false) {
+              ghFallback.hidden = false;
+            }
+          } else if (kind === 'done') {
+            markStep('done');
+            statusEl.textContent = `${slug} t'attend maintenant sur Telegram. Premier message dans quelques secondes.`;
+            es.close();
+          } else if (kind === 'error') {
+            statusEl.textContent = `⚠️ Erreur à l'étape ${payload.step || '?'} : ${payload.message || ''}`;
+            statusEl.style.color = '#a04040';
+          } else {
+            markStep(kind);
+          }
+        } catch (e) {
+          console.error('SSE parse error', e);
+        }
+      });
+      es.addEventListener('timeout', () => {
+        statusEl.textContent = 'Le flux d\'éclosion s\'est interrompu (timeout). Recharge la page pour reprendre.';
+        es.close();
+      });
+      es.addEventListener('close', () => es.close());
+      es.onerror = () => {
+        statusEl.textContent = 'Connexion au flux interrompue. Recharge si l\'éclosion ne se termine pas.';
+      };
+    })();
+  </script>
+{% endif %}
+
+<div style="display:flex; gap:14px; align-items:center; margin-top:24px;">
+  {# "Continuer son éclosion" only makes sense AFTER the GitHub-App
+     callback has fired (i.e. when stream_url is set + the dept actually
+     exists on disk). Pre-callback (install_url present), the dept
+     hasn't been scaffolded yet — clicking through to /onboarding
+     would 404 (caught msg 3071, 2026-05-24). #}
+  {% if ok and stream_url %}
+    <a href="/agents/{{ slug }}/onboarding" class="btn-ochre">
+      Continuer son éclosion →
+    </a>
+  {% endif %}
+  <a href="/agents" class="btn-ghost">Retour à l'équipe</a>
+</div>
+
+{% endblock %}

@@ -1,0 +1,66 @@
+# systemd unit TEMPLATE — bubble-token-broker (oneshot CLI mode, v1)
+#
+# v1 is a oneshot CLI: each `git push` workflow calls
+#     /opt/bubble-token-broker/bin/bubble-token-broker mint ...
+# and consumes the printed token in a single shell session. No long-lived
+# daemon yet (Notion v4 §"Token broker Morty" doesn't require one).
+#
+# This unit template exists for the FUTURE daemon mode (v2). For v1, the
+# CLI is invoked directly by ops-loop-<dept>.service ExecStartPre / wrapper
+# scripts; you do NOT need to enable this unit.
+#
+# Install:
+#   sudo install -m 0644 bubble-token-broker.service.template \
+#        /etc/systemd/system/bubble-token-broker@.service
+#   sudo systemctl daemon-reload
+#
+# Invoke (oneshot, per-dept):
+#   sudo systemctl start bubble-token-broker@fixture.service
+#
+# Replace ${DEPT}, ${ACTION}, ${REPO} via drop-in or wrapper.
+
+[Unit]
+Description=Bubble GitHub App token broker (oneshot mint, dept=%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# SOPS age key (root-readable only). Path matches Morty's existing convention.
+Environment=SOPS_AGE_KEY_FILE=/etc/age/key.txt
+
+# Static App credentials live in /etc/bubble/secrets.sops.env (SOPS-encrypted).
+# Decrypt at start, never write the plaintext anywhere — load into the
+# service's environment directly via a credential drop.
+ExecStartPre=/usr/bin/sops --decrypt /etc/bubble/secrets.sops.env > /run/bubble-token-broker.env
+# Above writes to a TMPFS-backed /run; clean up after.
+EnvironmentFile=/run/bubble-token-broker.env
+
+# Run the broker. The PEM path is in the env file
+# (GITHUB_APP_PRIVATE_KEY_PATH=/srv/bubble-secrets/...sops.pem); the broker
+# itself calls `sops --decrypt` on it and consumes stdout in memory.
+ExecStart=/opt/bubble-token-broker/bin/bubble-token-broker mint \
+    --dept %i \
+    --action runtime_write_own \
+    --repo bubble-ops-%i \
+    --audit-log /var/log/bubble-token-broker/audit.jsonl
+
+# Cleanup: shred the decrypted env file immediately
+ExecStopPost=/usr/bin/shred -u /run/bubble-token-broker.env
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ReadWritePaths=/var/log/bubble-token-broker /run
+
+[Install]
+# Do NOT enable; this is an on-demand template. ops-loop-<dept>.service
+# triggers it imperatively when a mint is needed.

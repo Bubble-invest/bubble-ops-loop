@@ -1,0 +1,19 @@
+[Unit]
+Description=Bubble Invest — Restic backup timer (every 6h)
+Documentation=file:///root/bubble-ops-loop/docs/BACKUP-STRATEGY.md
+
+[Timer]
+# Toutes les 6 heures, à la minute pile (00:00, 06:00, 12:00, 18:00 UTC).
+OnCalendar=*-*-* 00/6:00:00
+
+# Si Morty était en panne au moment du tick, rattraper au reboot.
+Persistent=true
+
+# Petit jitter pour éviter que tous les timers du système ne tirent
+# exactement à la même seconde (Hetzner, voisins de rack, etc.).
+RandomizedDelaySec=300
+
+Unit=bubble-restic-backup.service
+
+[Install]
+WantedBy=timers.target

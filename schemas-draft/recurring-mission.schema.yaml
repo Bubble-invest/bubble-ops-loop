@@ -1,0 +1,101 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/recurring-mission.json"
+title: Recurring Mission (single mission file)
+description: |
+  Shape of a single recurring mission. May appear either:
+    (a) inline as an entry of dept.yaml::recurring_missions[] (sub-schema
+        kept in sync inside dept.schema.yaml), or
+    (b) standalone under missions/<id>.yaml in a dept repo (per Notion v3
+        repo skeleton line 528 — "missions/ recurring missions qui
+        remplacent les anciens crons").
+  Source: Notion v3 dump /tmp/notion_final.txt lines 287-294 (basic shape)
+  and 338-372 (Maya examples). Cadence pattern enumerated in v3 spec.
+type: object
+required: [id, layer, cadence, description, output_queue, creates]
+additionalProperties: false
+properties:
+  id:
+    type: string
+    pattern: "^[a-z][a-z0-9_]*$"
+    description: snake_case unique identifier within the dept.
+  layer:
+    type: integer
+    enum: [1, 2, 3, 4]
+    description: |
+      Layer that owns this mission. In v3 all examples are layer=1
+      (Layer 1 materializes recurring missions into queue items) but
+      we leave the field open in case future layers acquire their own
+      recurring duties.
+  cadence:
+    type: string
+    pattern: "^(daily|weekly|hourly|every_\\d+h|every_\\d+m|cron:.+)$"
+    description: |
+      Documented cadence patterns:
+        daily          — once per UTC day at `time:`
+        weekly         — once per UTC week on `day:` at `time:`
+        hourly         — top of every UTC hour
+        every_<N>h     — every N hours (e.g. every_2h)
+        every_<N>m     — every N minutes (e.g. every_30m)
+        cron:<expr>    — 5-field cron expression (escape hatch)
+  time:
+    type: string
+    pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
+    description: |
+      HH:MM Paris-local time. REQUIRED when cadence ∈ {daily, weekly}.
+  day:
+    type: string
+    enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+    description: REQUIRED when cadence = weekly. Lowercase English day name.
+  active_hours:
+    type: string
+    pattern: "^([01]\\d|2[0-3]):[0-5]\\d-([01]\\d|2[0-3]):[0-5]\\d$"
+    description: |
+      HH:MM-HH:MM Paris-local window. Applicable when cadence is sub-daily
+      (hourly / every_Nh / every_Nm) to suppress firing outside business
+      hours.
+  description:
+    type: string
+    minLength: 10
+    description: One-sentence human description of what the mission does.
+  input_sources:
+    type: array
+    items: { type: string, minLength: 1 }
+    uniqueItems: true
+    description: |
+      Free-form dept-domain-specific source labels (e.g. crm, linkedin,
+      news_search). Not enum-locked because each dept adds its own.
+  output_queue:
+    type: string
+    pattern: "^queues/.+/?$"
+    description: |
+      Filesystem path inside the dept repo where materialized queue items
+      land. MUST start with "queues/" so they get picked up by the
+      standard Layer 2 scan.
+  creates:
+    type: array
+    items: { type: string, minLength: 1 }
+    minItems: 1
+    uniqueItems: true
+    description: |
+      Queue-item `kind:` values this mission produces. At least one.
+      Consumers (Layer 2 subagents) dispatch on this.
+  gate_policy_id:
+    type: string
+    minLength: 1
+    description: |
+      Optional link to a `gate_policies.<id>` key in the owning dept.yaml.
+      Set when items produced by this mission will eventually need a
+      domain gate at Layer 2 → 3 (e.g. prospect_dm).
+allOf:
+  # If cadence is daily, `time` is required.
+  - if:
+      properties: { cadence: { const: daily } }
+      required: [cadence]
+    then:
+      required: [time]
+  # If cadence is weekly, both `time` and `day` are required.
+  - if:
+      properties: { cadence: { const: weekly } }
+      required: [cadence]
+    then:
+      required: [time, day]

@@ -1,0 +1,30 @@
+# NEGATIVE CASE — must be REJECTED by dept.schema.yaml
+# Rule broken: `recurring_missions:` is REQUIRED on every dept (it MAY be
+# an empty list for management depts, but the key itself must exist). This
+# file omits it entirely, which would let a dept silently skip the v3
+# missions-replace-crons doctrine.
+department:
+  slug: noncompliant
+  level: ops
+  mandate: "Dept that forgot to declare its recurring missions block."
+layers:
+  subscribed: [1, 2, 3, 4]
+# recurring_missions: MISSING ON PURPOSE
+skills: {}
+tools: []
+gate_policies: {}
+hierarchy:
+  level: ops
+  parent: null
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+optional_domain_ledger: null

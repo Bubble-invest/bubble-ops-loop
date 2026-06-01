@@ -1,0 +1,18 @@
+{# A single pending gate (group-of-one), rendered as a décision-card.
+   Context: `col` is the column dict (dept + gates) and `g` is the gate dict.
+   For groups of 2+, see `partials/decision_group_card.html`.
+
+   Polish E2 (msg 2709, Bureau-de-Cadre smoke): the body is pure French
+   prose — no gate-id, no enum slug. The id appears only on the gate
+   detail page (/gate/<dept>/<id>) as a discreet slug-ref badge. #}
+<a class="decision-card"
+   href="/gate/{{ col.dept.slug }}/{{ g.id }}">
+  <div class="decision-card-count">1</div>
+  <h3 class="decision-card-title">
+    1 décision à prendre — {{ col.dept.display_name }}
+  </h3>
+  <p class="decision-card-body">
+    {{ g.kind|humanize_kind|capitalize_fr }} à prendre — risque {{ g.risk_level|humanize_risk }}.
+  </p>
+  <span class="decision-card-cta">Ouvrir →</span>
+</a>

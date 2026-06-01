@@ -1,0 +1,40 @@
+{# Cérémonie d'arrivée — HTMX fragment.
+   Rendered by `POST /agents/<slug>/activate` (without ?confirm=1 = preview).
+   With ?confirm=1, the same endpoint promotes the dry-run lettre to a real
+   PR (the equivalent of "envoyer la lettre" to the rest of the team). #}
+<div class="activation-preview" data-slug="{{ slug }}">
+  <h2 class="carnet-section-title" style="font-size:28px; margin-bottom:8px;">
+    Cérémonie d'arrivée de {{ display_name }}
+  </h2>
+
+  {% if is_preview %}
+    <p class="muted" style="margin:0 0 18px; max-width:640px;">
+      Voici la lettre qu'on s'apprête à envoyer à l'équipe pour officialiser
+      son arrivée. Relis avant d'envoyer.
+    </p>
+  {% else %}
+    <p class="muted" style="color: var(--sage); margin:0 0 18px;">
+      La lettre est partie — {{ display_name }} a officiellement rejoint l'équipe.
+    </p>
+  {% endif %}
+
+  <div class="lettre-card">
+    <pre>{{ pr_body }}</pre>
+  </div>
+
+  {% if is_preview %}
+    <div style="display:flex; gap:14px; align-items:center;">
+      <button class="btn-ochre"
+              hx-post="/agents/{{ slug }}/activate?confirm=1"
+              hx-target=".activation-preview"
+              hx-swap="outerHTML">
+        Envoyer la lettre
+      </button>
+      <a href="/agents/{{ slug }}/onboarding" class="btn-ghost">Annuler</a>
+    </div>
+  {% else %}
+    <div style="display:flex; gap:14px; align-items:center;">
+      <a href="/agents" class="btn-ghost">Retour à l'équipe</a>
+    </div>
+  {% endif %}
+</div>

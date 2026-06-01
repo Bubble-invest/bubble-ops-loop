@@ -1,0 +1,55 @@
+# =====================================================================
+# console-policy.template.yaml — token-broker actor policy for the
+# BUBBLE-OPS-CONSOLE (Joris's human-in-the-loop UI; can act on ANY dept).
+# =====================================================================
+# Source-of-truth: Notion v4 §"Console" (lines 679-694).
+#
+# The console is Joris's web UI. It writes:
+#   - gate approve/reject/modify decisions  → inbox/decisions/**
+#   - new gates raised manually from chat   → queues/gates/**
+#
+# in ANY bubble-ops-* repo. It also has the unique privilege of opening
+# settings_pr against any dept (used when Joris promotes a dept's
+# autonomy mode, swaps a skill, etc.).
+#
+# Action class coverage:
+#   - runtime_read       → ALL bubble-ops-* repos (read for display)
+#   - runtime_write_own  → ALL bubble-ops-* repos, runtime decision +
+#                          gate paths only
+#   - open_priority_pr   → DISALLOWED for console (console is not in the
+#                          management chain; directives flow Tony→child,
+#                          not console→child)
+#   - settings_pr        → ALLOWED against any bubble-ops-* repo
+#                          (can_open_settings_pr: true)
+#
+# Anti-footgun reminders:
+#   1. The wildcard `bubble-ops-*` repo pattern is a CROSS-DEPT power.
+#      Audit Layer 4 must flag any anomalous write rate from this actor.
+#   2. `actor` here is `bubble-ops-console` (NOT `ops-loop-console`) —
+#      there is no /loop running for the console; it's a synchronous web
+#      service.
+#   3. There are NO placeholders in this template — it ships as-is.
+#      Future-multi-tenant scenarios (multiple consoles) would copy this
+#      file with the actor renamed.
+# =====================================================================
+
+github_access:
+  actor: bubble-ops-console
+  # NO own_repo — console doesn't have a "home" dept repo. It writes
+  # into every dept's repo via the wildcard below.
+
+  read:
+    - "bubble-ops-*"           # wildcard: any bubble-ops-* repo
+    - bubble-shared-wiki
+
+  write:
+    - repo: "bubble-ops-*"     # wildcard repo match (broker uses fnmatch)
+      allowed_paths:
+        - inbox/decisions/**   # Joris approves/rejects/modifies gates here
+        - queues/gates/**      # console can raise a gate manually too
+      mode: direct_runtime_commit
+
+  pull_requests:
+    can_open_settings_pr: true # the only actor with this privilege
+    # No `can_open_to` — settings_pr handles cross-repo writes; no need
+    # for priority-directive PRs (Tony does those, not console).

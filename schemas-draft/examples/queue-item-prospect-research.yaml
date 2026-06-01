@@ -1,0 +1,18 @@
+# Positive example: a queue item produced by Layer 1 for Layer 2 to consume.
+# Verbatim from Notion v3 dump /tmp/notion_final.txt lines 376-390 (the
+# Maya "Exemple de queue item généré par Layer 1" block).
+# Exercises: kind=prospect_research (domain extension, NOT in v1 internal enum).
+id: prospect-jean-dupont-2026-05-20
+kind: prospect_research
+source_layer: 1
+target_layer: 2
+priority: high
+created_at: "2026-05-20T07:05:00Z"
+payload:
+  prospect_id: jean_dupont
+  company: Acme
+  reason: "Prospect chaud + nouvelle levée de fonds détectée + pas de réponse depuis 9 jours"
+  requested_outputs:
+    - short_research_brief
+    - dm_angle
+    - followup_recommendation

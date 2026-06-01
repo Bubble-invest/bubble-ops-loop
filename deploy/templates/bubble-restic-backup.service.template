@@ -1,0 +1,67 @@
+[Unit]
+Description=Bubble Invest — Restic backup (Morty → /var/backups/bubble-restic)
+Documentation=file:///root/bubble-ops-loop/docs/BACKUP-STRATEGY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Repository = local pour la phase 1. À migrer vers Backblaze B2 ou
+# Hetzner Storage Box dès que les credentials sont fournis (cf.
+# docs/BACKUP-STRATEGY.md, section « TODO : passage off-site »).
+Environment=RESTIC_REPOSITORY=/var/backups/bubble-restic
+Environment=RESTIC_PASSWORD_FILE=/etc/bubble/restic-password
+# Cache local pour les opérations restic (chunking, dédup).
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
+
+# Exécution unique. Restic backup est idempotent : ne sauvegarde que les
+# blocs qui ont changé depuis le snapshot précédent.
+#
+# Chemins sauvegardés (cf. sprint sécurité 2026-05-21) :
+#   /etc/age                              -- la clé root de la chaîne SOPS
+#   /etc/bubble                           -- secrets.sops.env, restic-password
+#   /srv/bubble-secrets                   -- github-app-bubble-ops-bot.private-key.sops.pem
+#   /home/claude/.claude/agent-memory     -- mémoire persistante des agents
+#   /home/claude/.claude/projects         -- transcripts JSONL des sessions
+#   /home/claude/agents                   -- working clones par dept (état runtime du jour)
+#
+# Exclusions (déjà ailleurs ou inutiles) :
+#   .cache/        -- cache, régénérable
+#   *.pyc          -- bytecode compilé
+#   __pycache__/   -- bytecode Python
+#   .git/objects/  -- déjà sur GitHub
+ExecStart=/usr/bin/restic backup \
+    --tag bubble-morty \
+    --tag scheduled \
+    --exclude='.cache' \
+    --exclude='*.pyc' \
+    --exclude='__pycache__' \
+    --exclude='.git/objects' \
+    --exclude-caches \
+    --one-file-system \
+    /etc/age \
+    /etc/bubble \
+    /srv/bubble-secrets \
+    /home/claude/.claude/agent-memory \
+    /home/claude/.claude/projects \
+    /home/claude/agents
+
+# Limite la pression mémoire/CPU pendant les heures de prod.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Loguer dans le journal systemd pour journalctl -u.
+StandardOutput=journal
+StandardError=journal
+
+# Verrou : pas deux backups en parallèle.
+ExecStartPre=/bin/sh -c 'test ! -f /var/lock/bubble-restic-backup.lock'
+ExecStartPre=/bin/touch /var/lock/bubble-restic-backup.lock
+ExecStopPost=/bin/rm -f /var/lock/bubble-restic-backup.lock
+
+[Install]
+WantedBy=multi-user.target

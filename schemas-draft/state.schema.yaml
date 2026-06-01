@@ -1,0 +1,280 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v1/state.json"
+title: Onboarding state (onboarding/STATE.yaml) v1
+description: |
+  Tracks the progress of a department through the 7-step UX onboarding
+  flow defined in Notion v5 §"UX - Agent Nursery / Department Onboarding"
+  (`/tmp/notion_final.txt` lines 734-977).
+
+  Lives at `<dept-repo-root>/onboarding/STATE.yaml`. Read + written by:
+    - `scripts/bootstrap-dept.sh` (creates it empty at status=Idea)
+    - `scripts/validate-step.sh` (appends a validated_step + commit row)
+    - `scripts/activate-dept.sh` (verifies all 6 work-steps validated +
+      status=Ready to activate before opening the PR)
+    - the `department-onboarding-guide` skill (UX-1)
+
+  The 7 statuses are the same as Notion v5 lines 794-801 (verbatim).
+  The validated_steps[] enum has 6 entries (the 7th step "activation" is
+  what activate-dept.sh performs and is reflected via status transition
+  Ready to activate -> Live, not via a validated_steps row).
+
+type: object
+required:
+  - schema_version
+  - slug
+  - display_name
+  - owner
+  - created_at
+  - status
+  - validated_steps
+  - last_updated_at
+  - commits
+additionalProperties: false
+
+properties:
+  schema_version:
+    type: integer
+    enum: [1]
+    description: Schema version. Bump when structural change.
+  slug:
+    type: string
+    pattern: "^[a-z][a-z0-9-]+$"
+    description: Department slug (kebab-case). Matches dept.yaml::department.slug.
+  display_name:
+    type: string
+    minLength: 1
+    description: Human-readable dept name (e.g. "Miranda").
+  owner:
+    type: string
+    minLength: 1
+    description: Human owner of the dept (e.g. "joris").
+  created_at:
+    type: string
+    format: date-time
+    description: ISO-8601 UTC timestamp of repo bootstrap.
+  status:
+    type: string
+    enum:
+      - Idea
+      - Configuring
+      - Drafting
+      - Needs validation
+      - Dry run
+      - Ready to activate
+      - Live
+      - Cancelled
+      - Retired
+    description: |
+      Onboarding lifecycle status. The original 7 values come from Notion v5
+      lines 794-801. Transitions among them are strict-linear (per UX-1
+      state_machine.py), except an explicit reset (operator-triggered) when
+      an upstream step is invalidated.
+
+      Sprint Lifecycle (2026-05-21) extends the enum with 2 terminal values:
+        Cancelled — set by scripts/cancel-eclosion.sh when an eclosure is
+                    abandoned BEFORE reaching Live (pre-Live abandonment).
+                    Pairs with optional `cancelled_at` field.
+        Retired   — set by scripts/retire-dept.sh when a Live dept is
+                    decommissioned (post-Live retirement). Pairs with
+                    optional `retired_at` + `retired_reason` fields.
+      Both are terminal — there is no automated path out (a re-eclosure
+      starts from a fresh slug).
+  validated_steps:
+    type: array
+    uniqueItems: true
+    items:
+      type: string
+      enum:
+        - mandate
+        - missions
+        - layers
+        - skills_tools
+        - gates_kpis
+        - dry_run
+    description: |
+      Steps the operator has explicitly validated. The 7th step "activation"
+      is NOT in this list - it is what activate-dept.sh performs and is
+      reflected by the status flip Ready to activate -> Live.
+  last_updated_at:
+    type: string
+    format: date-time
+    description: ISO-8601 UTC timestamp of the last write to this file.
+  cancelled_at:
+    type: string
+    format: date-time
+    description: |
+      ISO-8601 UTC timestamp at which scripts/cancel-eclosion.sh marked
+      this dept Cancelled. Optional — present iff status == "Cancelled".
+      Sprint Lifecycle (2026-05-21).
+  retired_at:
+    type: string
+    format: date-time
+    description: |
+      ISO-8601 UTC timestamp at which scripts/retire-dept.sh marked this
+      dept Retired. Optional — present iff status == "Retired".
+      Sprint Lifecycle (2026-05-21).
+  retired_reason:
+    type: string
+    minLength: 1
+    description: |
+      Free-form operator-supplied reason for retirement (e.g. "Maya v2
+      supersedes this dept"). Optional — present iff status == "Retired".
+      Sprint Lifecycle (2026-05-21).
+  last_validated_by:
+    type: string
+    minLength: 1
+    description: |
+      Slug/name of the operator who validated the most recent step.
+      Optional - absent until at least one step is validated.
+  commits:
+    type: array
+    items:
+      type: object
+      required: [step, commit_sha, validated_at]
+      additionalProperties: false
+      properties:
+        step:
+          type: string
+          enum:
+            - mandate
+            - missions
+            - layers
+            - skills_tools
+            - gates_kpis
+            - dry_run
+        commit_sha:
+          type: string
+          pattern: "^[0-9a-f]{7,40}$"
+          description: Git short or full SHA of the validation commit.
+        validated_at:
+          type: string
+          format: date-time
+        validated_by:
+          type: string
+          minLength: 1
+    description: |
+      One row per validated step, recording the git commit that captured
+      the validation. Append-only; never rewritten in-place.
+  step_interactions:
+    type: array
+    items:
+      type: object
+      required: [step, action, ts]
+      additionalProperties: false
+      properties:
+        step:
+          type: string
+          enum:
+            - mandate
+            - missions
+            - layers
+            - skills_tools
+            - gates_kpis
+            - dry_run
+            - activation
+        action:
+          type: string
+          enum:
+            - approve
+            - edit
+            - refine
+          description: |
+            One of the 3 operator actions Notion v5 lines 826-828 mandates
+            at every step: [Approve] [Edit] [Ask agent to refine].
+        ts:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp of the action.
+        operator_text:
+          type: string
+          minLength: 1
+          description: |
+            For action=edit: the operator's rewritten text.
+            For action=refine: the operator's short reason ("too long",
+            "missing forbidden list", etc.).
+            Absent for action=approve.
+    description: |
+      Append-only audit trail of every [Approve / Edit / Refine] action
+      the operator takes at any step. Distinct from `commits` (which
+      records validation milestones). Optional field — older STATE.yaml
+      files without it remain valid.
+  step_progress:
+    type: object
+    description: |
+      Per-step sub-iteration tracking for the conversational onboarding
+      flow (Refonte #1 of 3, 2026-05-21).
+
+      Distinct from `validated_steps` (all-or-nothing per step) — this
+      tracks WHICH sub-artifacts inside a step the operator has already
+      validated (e.g. mission #1 of N approved, currently drafting #2),
+      and WHAT the agent is currently waiting on.
+
+      Keys are step ids (`mandate`, `missions`, `layers`, `skills_tools`,
+      `gates_kpis`, `dry_run`, `activation`); values describe the
+      progress on that step. Optional + additive — pre-Refonte STATE.yaml
+      files without this field remain valid.
+    additionalProperties:
+      type: object
+      required:
+        - sub_artifacts_validated
+        - current_substep
+        - current_status
+      additionalProperties: false
+      properties:
+        sub_artifacts_validated:
+          type: array
+          description: |
+            Append-only list of sub-artifacts already approved within
+            this step. Order = chronological. Each entry records the
+            slug-ish id, the artifact type, and the validation ts.
+          items:
+            type: object
+            required: [id, type, validated_at]
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+                minLength: 1
+              type:
+                type: string
+                minLength: 1
+                description: |
+                  Logical sub-artifact type (e.g. `mandate_sentence`,
+                  `clarifications`, `recurring_mission`, `layer_focus`,
+                  `skill`, `tool`, `gate_policy`). Free-form so each
+                  step's runner can define its own taxonomy without a
+                  schema bump.
+              validated_at:
+                type: string
+                format: date-time
+        current_substep:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [type, draft_payload]
+              additionalProperties: false
+              properties:
+                type:
+                  type: string
+                  minLength: 1
+                draft_payload:
+                  description: |
+                    The in-flight draft the agent is currently asking the
+                    operator about. Free-form payload (dict, string,
+                    list); validated by each step's runner, not here.
+          description: |
+            What the agent is currently working on within this step.
+            null = nothing in flight (between sub-iterations or after a
+            full validation). object = a draft awaiting operator
+            validation / edit / refine.
+        current_status:
+          type: string
+          enum:
+            - drafting
+            - awaiting_validation
+            - validated
+          description: |
+            Where this step stands overall:
+              drafting             — agent is composing the next prompt
+              awaiting_validation  — operator is reading / answering
+              validated            — step done, all sub-artifacts captured

@@ -1,0 +1,472 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/dept.json"
+title: Department (dept.yaml) v3
+description: |
+  Canonical shape of every bubble-ops-* department's dept.yaml.
+  Source: Notion page "bubble-ops-loop — Architecture finale simplifiée"
+  (id 366cfc52-0644-81dc-a58a-e2a41e79e11a), section "Gates levables &
+  missions récurrentes" (last edited 2026-05-20T15:04 UTC). This v3
+  supersedes v1 (backed up at schemas-draft.bak-v1-20260520-1505/).
+  Three structural changes vs v1:
+    1) root uses `department:` wrapper (was: flat `name:`)
+    2) `recurring_missions:` replaces ad-hoc per-dept crons
+    3) `gate_policies:` declares the 5-mode autonomy doctrine
+  hierarchy + optional_domain_ledger remain siblings of `department:` at
+  root (Joris-confirmed canonical layout — flag for post-validation).
+type: object
+required:
+  - department
+  - layers
+  - recurring_missions
+  - skills
+  - tools
+  - gate_policies
+  - hierarchy
+  - optional_domain_ledger
+additionalProperties: false
+properties:
+
+  # --------------------------------------------------------------------------
+  # department — identity wrapper (NEW in v3, replaces flat top-level fields)
+  # --------------------------------------------------------------------------
+  department:
+    type: object
+    required: [slug, level, mandate]
+    additionalProperties: false
+    properties:
+      slug:
+        type: string
+        pattern: "^[a-z][a-z0-9-]+$"
+        description: Kebab-case dept slug. Matches the GitHub repo suffix bubble-ops-<slug>.
+      display_name:
+        type: string
+        minLength: 1
+        description: |
+          Optional human-readable display name surfaced in the console / front-end
+          (Notion v5 lines 813-825). Falls back to capitalised `slug` if omitted.
+          Added in v3.1 (Notion v5 UX-1 onboarding skill). Optional for
+          back-compat with v3 fixtures that don't set it.
+      level:
+        type: string
+        enum: [ops, management, principal]
+        description: |
+          ops = leaf dept (Ben, Maya, Miranda, Eliot). management = aggregator
+          (Tony). principal = root (Joris/Jade — gates critiques uniquement).
+          Mirrors hierarchy.level; the two MUST agree (cross-check is a Step-1
+          fixture-load runtime check, not a JSON-schema constraint).
+      status:
+        type: string
+        enum:
+          - onboarding
+          - live
+          - paused
+          - retired
+          - cancelled
+        description: |
+          Lifecycle status of the dept (Notion v5 line 818). Added in v3.1
+          for the agent-nursery / onboarding flow; extended in Sprint
+          Lifecycle (2026-05-21) with `cancelled` for pre-Live abandonment.
+          Status semantics:
+            onboarding -- dept exists technically but not yet live; UX-1 skill
+                          drives this through the 7-step eclosure.
+            live       -- dept is in production; cloud routines pick it up and
+                          /loop runs in tmux.
+            paused     -- dept temporarily disabled (e.g. KPI degradation
+                          triggered a freeze).
+            retired    -- dept decommissioned post-Live; repo kept for audit
+                          only. Set by scripts/retire-dept.sh.
+            cancelled  -- eclosure abandoned BEFORE reaching live. Repo is
+                          GitHub-archived. Set by scripts/cancel-eclosion.sh.
+          OPTIONAL for back-compat: when absent, treated as `live` by consumers
+          (existing v3 fixtures that pre-date v3.1 don't have to be updated).
+      mandate:
+        type: string
+        minLength: 10
+        description: |
+          One-line mandate sentence. Long-form mandate stays at MANDATE.md
+          in the dept's repo; this field is the short summary surfaced in
+          the console and CEO digests.
+      owner:
+        type: string
+        minLength: 1
+        description: |
+          Slug / name of the human owner of this dept (Notion v5 line 820).
+          Optional; falls back to "joris" by convention if absent.
+      forbidden:
+        type: array
+        items: { type: string, minLength: 1 }
+        uniqueItems: true
+        description: |
+          Free-form list of things the dept must NEVER do (Notion v5 lines
+          821-824). Surfaced in CEO digests and read by Layer 4
+          mandate-guardian for audit. Optional.
+
+  # --------------------------------------------------------------------------
+  # layers — which OODA layers this dept participates in
+  # --------------------------------------------------------------------------
+  layers:
+    type: object
+    required: [subscribed]
+    additionalProperties: false
+    properties:
+      subscribed:
+        type: array
+        items:
+          type: integer
+          enum: [1, 2, 3, 4]
+        minItems: 1
+        maxItems: 4
+        uniqueItems: true
+        description: |
+          Which OODA layers this dept participates in. Cloud Routines
+          auto-detect via this field (see Notion §"Auto-détection des
+          nouveaux départements").
+
+  # --------------------------------------------------------------------------
+  # recurring_missions — NEW v3, replaces crons-as-mini-apps
+  # --------------------------------------------------------------------------
+  recurring_missions:
+    type: array
+    description: |
+      Declarative list of recurring missions read by Layer 1 at each tick
+      and materialized into queue items. MAY be empty for management depts
+      (Tony) that have no autonomous data-refresh duties — but the key
+      itself MUST be present (the absence is a footgun).
+    items:
+      # Inline by-value structural sub-schema. Matches
+      # recurring-mission.schema.yaml (the standalone form used for
+      # missions stored under missions/*.yaml). Kept in sync manually until
+      # we wire $ref resolution in the validator.
+      type: object
+      required: [id, layer, cadence, description, output_queue, creates]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z][a-z0-9_]*$"
+          description: snake_case unique identifier within the dept.
+        layer:
+          type: integer
+          enum: [1, 2, 3, 4]
+          description: |
+            Layer that owns this mission. In v3 all examples are layer=1
+            (Layer 1 materializes recurring missions into queue items) but
+            we leave the field open in case future layers acquire their
+            own recurring duties.
+        cadence:
+          type: string
+          pattern: "^(daily|weekly|hourly|every_\\d+h|every_\\d+m|cron:.+)$"
+          description: |
+            Documented cadence patterns:
+              daily          — once per UTC day at `time:`
+              weekly         — once per UTC week on `day:` at `time:`
+              hourly         — top of every UTC hour
+              every_<N>h     — every N hours (e.g. every_2h)
+              every_<N>m     — every N minutes (e.g. every_30m)
+              cron:<expr>    — 5-field cron expression (escape hatch)
+        time:
+          type: string
+          pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
+          description: |
+            HH:MM Paris-local time. REQUIRED when cadence ∈ {daily, weekly}.
+            Cross-check is enforced via the allOf rule below.
+        day:
+          type: string
+          enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+          description: REQUIRED when cadence = weekly. Lowercase English day name.
+        active_hours:
+          type: string
+          pattern: "^([01]\\d|2[0-3]):[0-5]\\d-([01]\\d|2[0-3]):[0-5]\\d$"
+          description: |
+            HH:MM-HH:MM Paris-local window. Applicable when cadence is
+            sub-daily (hourly / every_Nh / every_Nm) to suppress firing
+            outside business hours.
+        description:
+          type: string
+          minLength: 10
+          description: One-sentence human description of what the mission does.
+        input_sources:
+          type: array
+          items: { type: string, minLength: 1 }
+          uniqueItems: true
+          description: |
+            Free-form dept-domain-specific source labels (e.g. crm,
+            linkedin, news_search). Not enum-locked because each dept
+            adds its own.
+        output_queue:
+          type: string
+          pattern: "^queues/.+/?$"
+          description: |
+            Filesystem path inside the dept repo where materialized queue
+            items land. MUST start with "queues/" so they get picked up
+            by the standard Layer 2 scan.
+        creates:
+          type: array
+          items: { type: string, minLength: 1 }
+          minItems: 1
+          uniqueItems: true
+          description: |
+            Queue-item `kind:` values this mission produces. At least one.
+            Consumers (Layer 2 subagents) dispatch on this.
+        gate_policy_id:
+          type: string
+          minLength: 1
+          description: |
+            Optional link to a `gate_policies.<id>` key in this dept.yaml.
+            Set when items produced by this mission will eventually need
+            a domain gate at Layer 2 → 3 (e.g. prospect_dm).
+      allOf:
+        # If cadence is daily, `time` is required.
+        - if:
+            properties: { cadence: { const: daily } }
+            required: [cadence]
+          then:
+            required: [time]
+        # If cadence is weekly, both `time` and `day` are required.
+        - if:
+            properties: { cadence: { const: weekly } }
+            required: [cadence]
+          then:
+            required: [time, day]
+
+  # --------------------------------------------------------------------------
+  # skills — per-layer skill slugs
+  # --------------------------------------------------------------------------
+  skills:
+    type: object
+    description: |
+      Optional per-layer skill manifests. Each value is an array of skill
+      slugs (kebab-case). Empty / missing layer keys are allowed — a dept
+      may not subscribe to all 4 layers.
+    additionalProperties: false
+    properties:
+      layer_1: { type: array, items: { type: string, minLength: 1 }, uniqueItems: true }
+      layer_2: { type: array, items: { type: string, minLength: 1 }, uniqueItems: true }
+      layer_3: { type: array, items: { type: string, minLength: 1 }, uniqueItems: true }
+      layer_4: { type: array, items: { type: string, minLength: 1 }, uniqueItems: true }
+
+  # --------------------------------------------------------------------------
+  # tools — flat list of tool slugs available to this dept
+  # --------------------------------------------------------------------------
+  tools:
+    type: array
+    items: { type: string, minLength: 1 }
+    uniqueItems: true
+    description: |
+      Tool slugs (kebab-case). Tools are deterministic functions per
+      Notion §"Skill vs tool" — they live in tools/<slug>/ in the dept
+      repo or are symlinked from a shared pool.
+
+  # --------------------------------------------------------------------------
+  # gate_policies — NEW v3, the 5-mode autonomy doctrine declared per
+  # gated-action class. Arbitrary keys (the policy ids) -> policy objects.
+  # --------------------------------------------------------------------------
+  gate_policies:
+    type: object
+    description: |
+      Map of `<policy_id>` -> policy object. policy_id is the same string
+      that appears in gate-item.yaml::gate_policy_id when a gate of that
+      class is emitted. Empty object is allowed (e.g. management depts
+      with no domain-gated actions of their own).
+    additionalProperties:
+      type: object
+      required:
+        - current_mode
+        - eligible_future_modes
+        - authorization_band
+        - kpi_guardrail_set
+      additionalProperties: false
+      properties:
+        current_mode:
+          type: string
+          enum:
+            - manual_required
+            - manual_unless_policy_passed
+            - auto_if_policy_passed
+            - auto_with_veto_window
+            - disabled
+          description: |
+            One of the 5 autonomy modes. v1 is always `manual_required`;
+            later versions may raise. KPI degradation triggers automatic
+            downgrade back to manual_required (Notion line 265).
+        eligible_future_modes:
+          type: array
+          items:
+            type: string
+            enum:
+              - manual_required
+              - manual_unless_policy_passed
+              - auto_if_policy_passed
+              - auto_with_veto_window
+              - disabled
+          uniqueItems: true
+          description: |
+            Subset of the 5 modes this policy MAY be raised to once shadow
+            autonomy + KPIs prove safe. Authoritative whitelist — the
+            console refuses to raise a policy outside this set.
+        authorization_band:
+          type: string
+          minLength: 1
+          description: |
+            Slug of the authorization band (dept-domain-specific) that
+            defines WHICH instances of this action class are eligible for
+            autonomy. E.g. maya_warm_prospect_band scopes prospect_dm to
+            warm prospects only.
+        kpi_guardrail_set:
+          type: string
+          minLength: 1
+          description: |
+            Slug of the KPI set whose degradation triggers automatic
+            downgrade. E.g. maya_dm_quality_kpis includes reply_rate,
+            negative_reply_rate, human_edit_rate, tone_breaches.
+
+  # --------------------------------------------------------------------------
+  # hierarchy — STRICT shape (additionalProperties: false), v2 carried over
+  # --------------------------------------------------------------------------
+  hierarchy:
+    type: object
+    description: |
+      Position of this dept in the org tree + what it is allowed to read
+      from its children. Mandatory for every dept. See Notion §"Hiérarchie
+      & visibilité cross-dept".
+    required: [level, parent, children, visibility, directive_policy]
+    additionalProperties: false
+    properties:
+      level:
+        type: string
+        enum: [ops, management, principal]
+      parent:
+        anyOf:
+          - { type: string, pattern: "^[a-z][a-z0-9-]+$" }
+          - { type: "null" }
+      children:
+        type: array
+        items:
+          type: string
+          pattern: "^[a-z][a-z0-9-]+$"
+        uniqueItems: true
+      visibility:
+        type: object
+        required:
+          - read_outputs
+          - read_risk_kpis
+          - read_risk_briefs
+          - read_raw_artifacts
+          - read_secrets
+        additionalProperties: false
+        properties:
+          read_outputs:
+            type: array
+            items:
+              type: string
+              pattern: "^[a-z][a-z0-9-]+$"
+            uniqueItems: true
+            description: |
+              List of child dept slugs whose Layer-4 bubble-up outputs this
+              dept may read. For management depts: typically all direct children
+              (e.g. [ben, maya, miranda, eliot]). Per Notion §"Hiérarchie &
+              visibilité cross-dept": slugs only, not full repo paths.
+          read_paths:
+            type: array
+            items:
+              type: string
+              minLength: 1
+            default: []
+            description: |
+              Explicit glob whitelist of paths within each read_outputs child
+              repo that this dept is allowed to read. No enum restriction —
+              custom management depts may define narrower or broader sets.
+              Canonical 5 values for standard management depts (per Notion §1.1
+              "Ce que le CEO lit" and management-policy.template.yaml):
+                outputs/*/4/risk-kpis.yaml
+                outputs/*/4/risk-brief.md
+                outputs/*/management-export.yaml
+                queues/gates/**
+                queues/improvements/**
+              OPTIONAL — ops-leaf depts legitimately omit this field (default: []).
+              Enforcement: broker policy.py::enforce("runtime_read") + bubble-git-guard.
+          read_risk_kpis:
+            type: boolean
+            default: true
+            description: |
+              Whether this dept may read children's risk-kpis.yaml artifacts.
+              Per Notion §"Scope dept.yaml pour un département management":
+              default true for management depts.
+          read_risk_briefs:
+            type: boolean
+            default: true
+            description: |
+              Whether this dept may read children's risk-brief.md artifacts.
+              Per Notion: default true for management depts.
+          read_raw_artifacts:
+            type: boolean
+            default: false
+            description: |
+              Whether this dept may read children's raw outputs (Layers 1–3).
+              Per Notion §1.1 callout "Règle de sécurité": Tony NEVER reads
+              raw artifacts. Default false; should remain false for all depts.
+          read_secrets:
+            type: boolean
+            const: false
+            description: |
+              Hardcoded false — no dept may read another dept's secrets.
+              SOPS+age keys are tmpfs-scoped per Notion §"belt + suspenders".
+      directive_policy:
+        type: object
+        required: [can_open_priority_prs, target_queue, requires_human_gate_for]
+        additionalProperties: false
+        properties:
+          can_open_priority_prs: { type: boolean }
+          target_queue:
+            anyOf:
+              - { type: string, minLength: 1 }
+              - { type: "null" }
+          requires_human_gate_for:
+            type: array
+            items: { type: string, minLength: 1 }
+            uniqueItems: true
+
+  # --------------------------------------------------------------------------
+  # layer_1 — optional per-dept knob for STEP C.0 (Layer-1 dispatch).
+  # Added 2026-05-24 per Joris msg 3129: Layer 1 fires only when all other
+  # layers are idle AND each has completed ≥ N rounds since L1's last fire.
+  # N is configurable per dept here; defaults to 1 when the block is absent.
+  # The block itself is OPTIONAL — pre-existing dept.yaml files continue to
+  # validate without it.
+  # --------------------------------------------------------------------------
+  layer_1:
+    type: object
+    additionalProperties: false
+    properties:
+      fire_after_rounds:
+        type: integer
+        minimum: 1
+        default: 1
+        description: |
+          Round-counter threshold for STEP C.0 (Layer-1 idle gate). Layer 1
+          fires only when each of L2/L3/L4 has completed ≥ this many rounds
+          since L1's last fire. Lower = more frequent L1 wake-ups (risk of
+          flooding queues). Higher = sparser data-refresh (risk of stale
+          context). Default 1 — matches Joris's "1 or configurable"
+          phrasing. Consumed by scripts/lib/dispatch_helpers.py::
+          layer_1_gate_satisfied.
+
+  # --------------------------------------------------------------------------
+  # optional_domain_ledger — slot present from day 1 even when value is null
+  # --------------------------------------------------------------------------
+  optional_domain_ledger:
+    description: |
+      null for filesystem-only depts (Maya, Tony in v1, fixture). Object
+      when the dept needs transactional truth (Ben/family office SQLite).
+    oneOf:
+      - type: "null"
+      - type: object
+        required: [kind, path]
+        additionalProperties: true
+        properties:
+          kind:
+            type: string
+            enum: [sqlite, postgres]
+          path:
+            type: string
+            minLength: 1

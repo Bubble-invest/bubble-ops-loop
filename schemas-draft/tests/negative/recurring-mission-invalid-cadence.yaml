@@ -1,0 +1,12 @@
+# NEGATIVE CASE — must be REJECTED by recurring-mission.schema.yaml
+# Rule broken: `cadence` must match the documented pattern
+#   ^(daily|weekly|hourly|every_\d+h|every_\d+m|cron:.+)$
+# "sometimes" is free-form English and would defeat the whole point of
+# Layer 1 materializing missions on a deterministic schedule.
+id: bad_mission
+layer: 1
+cadence: sometimes
+description: "A mission with a bogus cadence value."
+output_queue: queues/research/
+creates:
+  - bad_task

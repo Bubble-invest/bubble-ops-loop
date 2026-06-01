@@ -1,0 +1,66 @@
+# Example: Maya, fully onboarded (status: live).
+# Mirrors schemas-draft/examples/dept-ops-maya.yaml with the v3.1 fields added
+# (display_name, status, owner). Used by the onboarding skill as a reference
+# for what a sales-prospection dept looks like end-of-Step-7.
+
+department:
+  slug: maya
+  display_name: Maya
+  level: ops
+  status: live
+  mandate: "Prospection, suivi prospects, preparation de messages et maintien CRM."
+  owner: joris
+  forbidden:
+    - envoyer un DM sans validation humaine en v1
+    - referencer client nominativement sans accord ecrit
+
+layers:
+  subscribed: [1, 2, 3, 4]
+
+recurring_missions:
+  - id: hot_prospect_news_refresh
+    layer: 1
+    cadence: daily
+    time: "07:00"
+    description: "Chercher du nouveau sur les prospects chauds."
+    input_sources: [crm, linkedin, company_websites, news_search]
+    output_queue: queues/research/
+    creates: [prospect_research_task]
+    gate_policy_id: prospect_dm
+
+skills:
+  layer_1: [crm-refresh, prospect-signal-scanner, inbox-followup-scanner]
+  layer_2: [prospect-researcher, dm-drafter, followup-planner]
+  layer_3: [message-sender, crm-updater]
+  layer_4: [sales-quality-auditor, conversion-reviewer]
+
+tools:
+  - linkedin-reader
+  - gmail-reader
+  - notion-crm
+  - apollo-api
+  - telegram-reporter
+
+gate_policies:
+  prospect_dm:
+    current_mode: manual_required
+    eligible_future_modes: [auto_with_veto_window, auto_if_policy_passed]
+    authorization_band: maya_warm_prospect_band
+    kpi_guardrail_set: maya_dm_quality_kpis
+
+hierarchy:
+  level: ops
+  parent: tony
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+
+optional_domain_ledger: null

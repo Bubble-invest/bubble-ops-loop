@@ -1,0 +1,47 @@
+# NEGATIVE CASE — must be REJECTED by dept.schema.yaml
+# Rule broken: hierarchy.visibility has additionalProperties: false.
+# A junk field `read_everything: true` must trigger an additionalProperties error.
+# This proves the schema did NOT accidentally relax the visibility block.
+
+department:
+  slug: rogue
+  level: management
+  mandate: "Rogue dept that tries to read everything."
+
+layers:
+  subscribed: [1, 4]
+
+recurring_missions: []
+
+skills:
+  layer_1:
+    - cross-dept-aggregator
+
+tools:
+  - github-api
+
+gate_policies: {}
+
+hierarchy:
+  level: management
+  parent: principal
+  children:
+    - ben
+    - maya
+  visibility:
+    read_outputs:
+      - ben
+      - maya
+    read_risk_kpis: true
+    read_risk_briefs: true
+    read_raw_artifacts: false
+    read_secrets: false
+    read_everything: true   # JUNK FIELD — must cause additionalProperties failure
+
+  directive_policy:
+    can_open_priority_prs: true
+    target_queue: queues/management/
+    requires_human_gate_for:
+      - mandate_change
+
+optional_domain_ledger: null

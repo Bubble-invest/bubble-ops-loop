@@ -1,0 +1,37 @@
+[Unit]
+Description=ops-loop-fixture heartbeat freshness watchdog
+Documentation=https://github.com/vdk888/bubble-ops-loop/blob/main/scripts/loop-watchdog.sh
+After=network-online.target ops-loop-fixture.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# Reads /run/claude-agent-fixture/env (mode 0400 claude:claude) — must be root
+# to read it, but never writes any state. Telegram POST is best-effort.
+ExecStart=/opt/bubble-watchdog/loop-watchdog.sh
+
+# Hardening: filesystem read-only except for /run + /tmp + heartbeat path.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Network restricted to api.telegram.org via egress filter would be ideal;
+# for MVP we rely on the script's single curl call.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Log to journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ops-loop-watchdog
+
+# Never exit non-zero into systemd's failure tracker (we want the timer to
+# keep firing even if Telegram is down). Script's exit 4 is "alert send
+# failed" which is informational, not a unit-level failure.
+SuccessExitStatus=0 2 3 4

@@ -1,0 +1,15 @@
+# Positive example: a queue item of kind=management_directive.
+# Generated when a Tony directive PR is merged into a child dept's
+# queues/management/ and read by Layer 1 at the next tick.
+# Uses the v1 internal-kind enum to prove backwards-compat is preserved.
+id: directive-ben-2026-05-20-001
+kind: management_directive
+source_layer: null   # originated outside the OODA chain (Tony PR)
+target_layer: 1
+priority: high
+created_at: "2026-05-20T14:00:00Z"
+payload:
+  directive_id: directive-ben-2026-05-20-001
+  source_dept: tony
+  message: "Revoir l'exposition crypto et produire 2 scénarios de réduction."
+  expected_output: "Research item ou plan d'action dans outputs/<date>/1/plan.md"

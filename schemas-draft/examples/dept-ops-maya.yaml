@@ -1,0 +1,102 @@
+# Positive example: Maya, full Notion v3 shape.
+# Mirrors the verbatim Notion v3 dump at /tmp/notion_final.txt lines 278-373
+# (the "Ce qui se définit à la création d'un département" + "Exemple Maya"
+# blocks). Hierarchy + optional_domain_ledger are siblings of `department:`
+# per Joris-confirmed canonical layout.
+
+department:
+  slug: maya
+  level: ops
+  mandate: "Prospection, suivi prospects, préparation de messages et maintien CRM"
+
+layers:
+  subscribed: [1, 2, 3, 4]
+
+recurring_missions:
+  - id: hot_prospect_news_refresh
+    layer: 1
+    cadence: daily
+    time: "07:00"
+    description: "Chercher du nouveau sur les prospects chauds"
+    input_sources:
+      - crm
+      - linkedin
+      - company_websites
+      - news_search
+    output_queue: queues/research/
+    creates:
+      - prospect_research_task
+    gate_policy_id: prospect_dm
+
+  - id: pending_followup_scan
+    layer: 1
+    cadence: every_2h
+    active_hours: "08:00-18:00"
+    description: "Identifier les prospects qui nécessitent un follow-up"
+    input_sources:
+      - crm
+      - sent_messages
+      - inbox_replies
+    output_queue: queues/research/
+    creates:
+      - followup_draft_task
+    gate_policy_id: prospect_dm
+
+  - id: dormant_prospect_reactivation
+    layer: 1
+    cadence: weekly
+    day: friday
+    time: "09:00"   # required-with-weekly per schema (Notion sample omitted it; we hard-default to 09:00 Paris)
+    description: "Identifier les prospects dormants à réactiver"
+    output_queue: queues/research/
+    creates:
+      - reactivation_idea_task
+
+skills:
+  layer_1:
+    - crm-refresh
+    - prospect-signal-scanner
+    - inbox-followup-scanner
+  layer_2:
+    - prospect-researcher
+    - dm-drafter
+    - followup-planner
+  layer_3:
+    - message-sender
+    - crm-updater
+  layer_4:
+    - sales-quality-auditor
+    - conversion-reviewer
+
+tools:
+  - linkedin-reader
+  - gmail-reader
+  - notion-crm
+  - apollo-api
+  - telegram-reporter
+
+gate_policies:
+  prospect_dm:
+    current_mode: manual_required
+    eligible_future_modes:
+      - auto_with_veto_window
+      - auto_if_policy_passed
+    authorization_band: maya_warm_prospect_band
+    kpi_guardrail_set: maya_dm_quality_kpis
+
+hierarchy:
+  level: ops
+  parent: tony
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+
+optional_domain_ledger: null

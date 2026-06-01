@@ -1,0 +1,73 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v3/queue-item.json"
+title: Queue Item v3
+description: |
+  Shape of every YAML file dropped under queues/research/, queues/improvements/,
+  queues/management/, or any other queue subdir consumed by a layer subagent.
+  Source: Notion §"Contrats minimaux à standardiser - Queue item" (lines 100-110)
+  AND v3 examples (Maya prospect-research queue item, line 376-390).
+  Note: queues/gates/ uses gate-item.schema.yaml, NOT this schema.
+
+  v3 change: `kind` is now extensible. v1 internal enum
+  (research / management_directive / improvement / exec_retry) is preserved
+  for backwards-compat; PLUS dept-domain kinds (prospect_research_task,
+  followup_draft_task, reactivation_idea_task, trade_idea,
+  content_draft_task, ...) PLUS a free-form snake_case pattern fallback
+  so missions can declare their own task kinds without a schema bump.
+type: object
+required: [id, kind, source_layer, target_layer, priority, created_at, payload]
+additionalProperties: false
+properties:
+  id:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: Kebab-case unique identifier. Convention is <kind>-<dept>-<date>-<seq>.
+  kind:
+    type: string
+    description: |
+      Queue-item flavour. v3 is extensible: a documented enum of known
+      kinds OR a snake_case pattern fallback (^[a-z][a-z_]+$). Note:
+      kebab-case is reserved for the `id:` field; `kind:` is snake_case
+      so it matches the recurring-mission `creates:` strings 1:1.
+
+      The enum below is non-authoritative documentation — the actual
+      schema constraint is the pattern (anyOf with pattern alone is
+      sufficient since every enum entry already matches the pattern).
+      Listed enum values:
+        v1 internal: research, management_directive, improvement, exec_retry
+        v3 documented domain: prospect_research_task, prospect_research,
+          followup_draft_task, reactivation_idea_task, trade_idea,
+          content_draft_task
+      Consumers MUST tolerate unknown kinds (skip + log) per the Notion
+      v3 doctrine that crons-as-mini-apps are an anti-pattern.
+    pattern: "^[a-z][a-z_]+$"
+  source_layer:
+    description: |
+      Layer that produced this item (1..4), or null when the item
+      originated outside the OODA chain (e.g. a management directive PR'd
+      by Tony).
+    anyOf:
+      - { type: integer, minimum: 1, maximum: 4 }
+      - { type: "null" }
+  target_layer:
+    type: integer
+    minimum: 1
+    maximum: 4
+    description: Layer expected to consume this item on its next tick.
+  priority:
+    type: string
+    enum: [low, medium, high, critical]
+    description: |
+      Drives subagent dispatch order. critical jumps the queue and can
+      trigger a Telegram ping even when digest_mode is on.
+  created_at:
+    type: string
+    format: date-time
+    description: ISO 8601 UTC timestamp when the queue item was created.
+  payload:
+    type: object
+    description: |
+      Kind-specific contents. v3 keeps the inner shape permissive so each
+      consumer (skill or subagent) owns its own contract; future versions
+      may split per-kind schemas.
+    additionalProperties: true

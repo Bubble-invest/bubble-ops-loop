@@ -1,0 +1,40 @@
+# /etc/systemd/system/bubble-cache-sync.service
+# Bubble Ops — repo cache sync service (GAP 5, 2026-05-23).
+# Triggered by bubble-cache-sync.timer (every 10 min).
+# Keeps /srv/bubble-ops/repos/ up to date with GitHub.
+#
+# Purpose (per Notion §"Le filesystem local de Morty"):
+#   Tony's Layer-1 reads child repo artifacts from /srv/bubble-ops/repos/
+#   (local clones). This service keeps those clones fresh. GitHub remains
+#   the canonical source; Morty is a working copy / cache runtime.
+#
+# Design:
+#   - Runs as claude user (no root at runtime).
+#   - Reads env from /run/claude-agent-fixture/env (pre-decrypted by
+#     ops-loop-fixture.service ExecStartPre) for broker credentials.
+#   - Token is minted fresh per repo per run; never written to disk.
+#   - Remote URL is cleaned to unauthenticated form after each git op.
+[Unit]
+Description=Bubble Ops repo cache sync (bubble-cache-sync)
+After=network-online.target ops-loop-fixture.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+
+# Pre-decrypted env from the fixture service (available while fixture runs).
+# The broker uses BUBBLE_BROKER_PEM_PATH + GITHUB_APP_ID + installation IDs.
+EnvironmentFile=-/run/claude-agent-fixture/env
+
+# Point broker to the pre-decrypted fixture PEM (no SOPS at sync time).
+Environment=BUBBLE_BROKER_PEM_PATH=/run/bubble-fixture/pem
+
+ExecStart=/usr/local/bin/bubble-cache-sync.sh
+
+# Logs captured by journald (supplement the script's own log file at
+# /var/log/bubble-cache-sync/sync-<date>.log).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bubble-cache-sync

@@ -1,0 +1,75 @@
+{
+  "_doc": "Per-dept permission-isolation surface for {{ display_name }} ({{ level }}). The TRUE isolation boundary is the systemd unit (ops-loop-{{ slug }}.service: own SOPS EnvironmentFile /run/claude-agent-{{ slug }}/env, own WorkingDirectory, own cgroup) + the sops-guard stdout wrapper. This settings.json adds the in-process layer: enabled skills/plugins, the SessionStart hook, model, dept-scoped env, and tool allow/deny lists. The unit launches `claude --dangerously-skip-permissions`, so interactive permission PROMPTS are suppressed; permissions.deny is still honoured (deny wins), and enabledSkills/enabledPlugins/hooks/env/model still apply. Cross-dept reads/writes are hard-denied to prevent exfiltration. Secrets are referenced by name only — values live in /run/claude-agent-{{ slug }}/env (SOPS-decrypted, 0400).",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(//home/claude/agents/bubble-ops-{{ slug }}/**)",
+      "Read(//home/claude/.claude/agent-memory/shared-wiki/**)",
+      "Write(//home/claude/agents/bubble-ops-{{ slug }}/**)",
+      "Edit(//home/claude/agents/bubble-ops-{{ slug }}/**)",
+      "Bash(python3 //home/claude/agents/bubble-ops-{{ slug }}/tools/*:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git pull:*)",
+      "Bash(/opt/bubble-git-guard/bin/bubble-git-guard:*)"
+    ],
+    "deny": [
+{% for other in other_dept_slugs %}
+      "Read(//home/claude/agents/bubble-ops-{{ other }}/**)",
+      "Write(//home/claude/agents/bubble-ops-{{ other }}/**)",
+      "Read(//run/claude-agent-{{ other }}/**)",
+{% endfor %}
+      "Read(//home/claude/agents/maya/**)",
+      "Read(//home/claude/agents/morty/**)",
+      "Read(//etc/bubble/**)",
+      "Read(//etc/age/**)",
+      "Read(//srv/bubble-secrets/**)",
+      "Read(//home/claude/.ssh/**)",
+      "Write(//home/claude/agents/maya/**)",
+      "Write(//home/claude/agents/morty/**)",
+      "Write(//etc/**)",
+      "Write(//tmp/**)",
+      "Bash(sudo:*)",
+      "Bash(git push:*)",
+      "Bash(scp:*)",
+      "Bash(rsync:*)",
+      "Bash(sops --decrypt:*)",
+      "Bash(cat //run/claude-agent-*/env:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "telegram@claude-plugins-official": true
+  },
+  "enableAllProjectMcpServers": false,
+  "enabledSkills": [
+{% for s in enabled_skills %}
+    "{{ s }}"{% if not loop.last %},{% endif %}
+
+{% endfor %}
+  ],
+  "model": "{{ model }}",
+  "env": {
+    "BUBBLE_DEPT": "{{ slug }}",
+    "BUBBLE_DEPT_ROOT": "/home/claude/agents/bubble-ops-{{ slug }}",
+    "BUBBLE_DEPT_LEVEL": "{{ level }}",
+    "TELEGRAM_STATE_DIR": "/home/claude/.claude/channels/telegram-{{ slug }}"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/claude/agents/bubble-ops-{{ slug }}/.claude/hooks/session-start.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

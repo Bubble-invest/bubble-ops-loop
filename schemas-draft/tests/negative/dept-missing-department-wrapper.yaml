@@ -1,0 +1,27 @@
+# NEGATIVE CASE — must be REJECTED by dept.schema.yaml
+# Rule broken: v3 mandates a `department:` wrapper at root (with slug/level/
+# mandate). This file uses the v1-style flat `name:` field instead, which
+# is the most-likely silent-migration footgun. Schema must reject hard.
+name: rogue-dept
+mandate_url: "https://github.com/vdk888/bubble-ops-rogue/blob/main/MANDATE.md"
+layers:
+  subscribed: [1, 2, 3, 4]
+recurring_missions: []
+skills: {}
+tools: []
+gate_policies: {}
+hierarchy:
+  level: ops
+  parent: null
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+optional_domain_ledger: null

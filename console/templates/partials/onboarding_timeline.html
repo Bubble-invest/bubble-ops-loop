@@ -1,0 +1,47 @@
+{# Phase G3 — timeline fragment.
+   Polled every Ns by the parent onboarding page. Must NOT include <html>
+   or <body> tags. Reads from STATE.yaml on every request (no cache).
+
+   Re-uses the human-step labels + status phrasing from the main onboarding
+   page so the polled render matches the initial render exactly. #}
+{% set human_steps = {
+  "mandate":      ("Sa charte de mission",                  "On écrit ensemble en une phrase ce pourquoi elle est là."),
+  "missions":     ("Ce qu'elle fera chaque jour",           "On décide les rendez-vous récurrents qui rythment ses journées."),
+  "layers":       ("Ses 4 moments de la journée",           "Le matin, la recherche, l'exécution, le débrief du soir."),
+  "skills_tools": ("Ce qu'elle saura faire",                "Les compétences et outils qu'on lui confie."),
+  "gates_kpis":   ("Les décisions qu'elle pourra prendre",  "Ce qu'elle gère seule, et ce sur quoi elle vient te chercher."),
+  "dry_run":      ("Sa répétition à blanc",                 "Une journée type, simulée bout-en-bout avant le vrai début."),
+  "activation":   ("Sa cérémonie d'arrivée",                "On l'annonce officiellement à l'équipe."),
+} %}
+<ol class="etapes-timeline">
+  {% for step in checklist %}
+    {% set human = human_steps.get(step.step_id, (step.label, '')) %}
+    <li class="etape"
+        data-step="{{ step.step_id }}"
+        data-step-num="{{ step.num }}"
+        data-status="{{ step.status }}">
+      <h4 class="etape-nom">{{ step.num }}. {{ human[0] }}</h4>
+      {% if human[1] %}<p class="etape-desc">{{ human[1] }}</p>{% endif %}
+      <span class="etape-state">
+        {% if step.status == 'validated' %}
+          fait — étape validée
+        {% elif step.status == 'in_progress' %}
+          en cours, c'est là qu'on en est
+        {% else %}
+          à venir
+        {% endif %}
+      </span>
+      {# Sprint Maya-blocker Fix 2 (2026-05-21): surface the in-flight
+         sub-phase from STATE.yaml::step_progress.<step>.current_substep.
+         Only rendered for the in-progress step that has a known
+         substep.type — generic / unknown substeps fall back to the muted
+         "étape en cours." line, which we suppress here to avoid noise. #}
+      {% if step.status == 'in_progress' and step.current_substep %}
+        {% set _sub_prose = humanize_substep(step.current_substep) %}
+        {% if _sub_prose %}
+          <p class="etape-substep">{{ _sub_prose }}</p>
+        {% endif %}
+      {% endif %}
+    </li>
+  {% endfor %}
+</ol>

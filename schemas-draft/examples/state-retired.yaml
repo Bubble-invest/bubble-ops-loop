@@ -1,0 +1,26 @@
+# Positive example for state.schema.yaml (Sprint Lifecycle terminal #2).
+# A Live dept that was decommissioned with dignity: status=Retired +
+# retired_at + retired_reason. Set by scripts/retire-dept.sh.
+schema_version: 1
+slug: miranda
+display_name: Miranda
+owner: joris
+created_at: "2026-05-20T19:30:00Z"
+status: Retired
+validated_steps:
+  - mandate
+  - missions
+  - layers
+  - skills_tools
+  - gates_kpis
+  - dry_run
+last_updated_at: "2026-05-21T11:00:00Z"
+retired_at: "2026-05-21T11:00:00Z"
+retired_reason: "Maya v2 supersedes this dept"
+commits:
+  - step: mandate
+    commit_sha: abc1234
+    validated_at: "2026-05-20T19:33:00Z"
+  - step: missions
+    commit_sha: def5678
+    validated_at: "2026-05-20T19:44:00Z"

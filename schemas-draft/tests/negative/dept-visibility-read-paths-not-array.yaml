@@ -1,0 +1,60 @@
+# NEGATIVE CASE — must be REJECTED by dept.schema.yaml
+# Rule broken: read_paths must be an array of strings. Passing a bare string
+# ("outputs/4/**") must fail type validation.
+
+department:
+  slug: tony
+  level: management
+  mandate: "Aggregator across ops depts; produces priority directives; arbitrates cross-dept conflicts."
+
+layers:
+  subscribed: [1, 4]
+
+recurring_missions: []
+
+skills:
+  layer_1:
+    - cross-dept-aggregator
+  layer_4:
+    - directive-quality-auditor
+
+tools:
+  - github-api
+  - telegram-reporter
+
+gate_policies:
+  priority_directive:
+    current_mode: manual_required
+    eligible_future_modes:
+      - auto_if_policy_passed
+    authorization_band: tony_low_risk_directive_band
+    kpi_guardrail_set: tony_directive_quality_kpis
+
+hierarchy:
+  level: management
+  parent: principal
+  children:
+    - ben
+    - maya
+    - miranda
+    - eliot
+  visibility:
+    read_outputs:
+      - ben
+      - maya
+      - miranda
+      - eliot
+    read_paths: "outputs/4/**"   # WRONG TYPE — must be array, not string
+    read_risk_kpis: true
+    read_risk_briefs: true
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: true
+    target_queue: queues/management/
+    requires_human_gate_for:
+      - mandate_change
+      - capital_allocation
+      - live_execution
+
+optional_domain_ledger: null

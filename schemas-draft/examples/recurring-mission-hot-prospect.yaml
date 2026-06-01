@@ -1,0 +1,17 @@
+# Positive example: a daily recurring mission with explicit time.
+# Verbatim from Notion v3 dump /tmp/notion_final.txt lines 338-350 (the
+# Maya "hot_prospect_news_refresh" example).
+id: hot_prospect_news_refresh
+layer: 1
+cadence: daily
+time: "07:00"
+description: "Chercher du nouveau sur les prospects chauds"
+input_sources:
+  - crm
+  - linkedin
+  - company_websites
+  - news_search
+output_queue: queues/research/
+creates:
+  - prospect_research_task
+gate_policy_id: prospect_dm

@@ -1,0 +1,14 @@
+# DRY-RUN ARTIFACT — Ben-shape (trade idea) fake queue item.
+# Notion v5 lines 925-946. NEVER promote to production.
+id: dryrun-trade-idea-001
+kind: trade_idea
+source_layer: 1
+target_layer: 2
+priority: low
+created_at: "2026-05-20T00:00:00Z"
+payload:
+  ticker: FAKE
+  side: buy
+  size_pct: 0.01
+  reason: "Synthetic trade idea for dry-run round-trip. Not for execution."
+  fake: true

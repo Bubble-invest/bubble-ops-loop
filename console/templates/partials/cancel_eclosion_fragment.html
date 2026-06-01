@@ -1,0 +1,25 @@
+{# Sprint Lifecycle — HTMX fragment returned by POST /agents/<slug>/cancel-eclosion.
+   Shown inline below the "Annuler l'éclosion" button on the dept's onboarding page.
+#}
+<div class="lifecycle-result lifecycle-result--cancelled">
+  <h3 class="lifecycle-result-title">
+    Éclosion annulée — {{ display_name }}
+  </h3>
+  <p class="lifecycle-result-body">
+    L'éclosion de <strong>{{ display_name }}</strong> a été annulée.
+    Le service Morty a été désactivé, et le dépôt GitHub a été archivé
+    (l'historique reste consultable).
+  </p>
+  <h4 class="lifecycle-result-subtitle">
+    Dernière étape à faire à la main (BotFather)
+  </h4>
+  <p class="lifecycle-result-note">
+    Telegram ne permet pas la suppression automatique d'un bot. Suis ces
+    étapes dans Telegram :
+  </p>
+  <ol class="lifecycle-result-steps">
+    {% for line in operator_instructions %}
+      <li>{{ line }}</li>
+    {% endfor %}
+  </ol>
+</div>

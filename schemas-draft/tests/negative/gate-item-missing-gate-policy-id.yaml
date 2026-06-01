@@ -1,0 +1,20 @@
+# NEGATIVE CASE — must be REJECTED by gate-item.schema.yaml
+# Rule broken: when `kind` is a DOMAIN kind (prospect_dm / prospect_followup /
+# trade_order / content_publish / domain:*), `gate_policy_id` AND
+# `authorization_band_id` are both REQUIRED so the gate can be traced
+# back to a configured policy. This file uses kind=prospect_dm but omits
+# gate_policy_id, which would orphan the gate from its policy.
+id: dm-orphan-001
+kind: prospect_dm
+source_layer: 2
+target_layer: 3
+risk_level: medium
+requires_human: true
+# gate_policy_id: MISSING ON PURPOSE
+authorization_band_id: maya_warm_prospect_band
+current_mode: manual_required
+future_eligible_modes:
+  - auto_with_veto_window
+actions:
+  - approve
+  - reject

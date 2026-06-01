@@ -1,0 +1,53 @@
+# Positive example: management-export.yaml using the RELAXED shape (v3.1).
+#
+# Joris directive (Telegram msg 2676, 2026-05-20): "Ok pour la step 9 tu peux
+# assouplir." → we accept two real-world patterns emitted by Layer 4 on
+# bubble-ops-fixture's first manual L4 run (2026-05-20):
+#
+#   1. `needs_management_attention[]` items as plain strings instead of
+#      {id,kind,priority,summary} objects. Strings are what an agent
+#      naturally produces in a fresh writeup; the object form remains
+#      preferred and stays valid (see management-export-ops-with-autonomy.yaml).
+#
+#   2. `links.*` permitting additional named keys beyond the canonical
+#      risk_kpis / risk_brief / gates triplet. Layer 4 wanted to surface
+#      layer1_summary, layer2_summary, open_gate, improvements — all
+#      useful console navigation hints. `additionalProperties` flips to
+#      true ONLY for `links`; the root stays strict (no smuggling of
+#      arbitrary fields at the dept boundary).
+#
+# Notion §"Management exports" lines 169-192 stay the source of truth: the
+# OBJECT form for needs_management_attention is what Tony's console will
+# render with priority pills. Strings degrade gracefully (rendered as
+# `kind: note, priority: medium`).
+dept: fixture
+date: "2026-05-20"
+status: warning
+last_successful_layer: 4
+open_gates: 1
+open_exceptions: 0
+
+top_kpis:
+  nav_status: warning
+  exec_status: clean
+  risk_status: warning
+  stale_runs: 0
+  loop_ticks_observed: 3
+  loop_ticks_target: 60
+  commits_today: 10
+  commits_target: 30
+  mandate_breaches: 0
+  gates_created_today: 1
+
+needs_management_attention:
+  - "Open gate gate-roundtrip-test-001 requires human approval to unblock Layer 3"
+  - "Loop ticks 3/60 target: day-1 bootstrap gap"
+  - "Layer 4 first run was manual — confirm /loop cron registered for L4"
+
+links:
+  risk_brief: "outputs/2026-05-20/4/risk-brief.md"
+  risk_kpis: "outputs/2026-05-20/4/risk-kpis.yaml"
+  layer1_summary: "outputs/2026-05-20/1/summary.md"
+  layer2_summary: "outputs/2026-05-20/2/summary.md"
+  open_gate: "queues/gates/gate-roundtrip-test-001.yaml"
+  improvements: "queues/improvements/"

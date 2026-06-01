@@ -1,0 +1,13 @@
+# NEGATIVE CASE — must be REJECTED by queue-item.schema.yaml
+# Rule broken: `priority` is REQUIRED on every queue item — it drives
+# Layer 1/2 dispatch order and "critical" jump-the-queue behaviour.
+# Allowing items without priority would create non-deterministic Layer 2
+# scheduling.
+id: research-noprio-001
+kind: research
+source_layer: 1
+target_layer: 2
+# priority: MISSING ON PURPOSE
+created_at: "2026-05-20T08:00:00Z"
+payload:
+  question: "why am I being dispatched in unknown order?"
