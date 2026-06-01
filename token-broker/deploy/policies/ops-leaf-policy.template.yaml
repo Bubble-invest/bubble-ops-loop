@@ -38,9 +38,16 @@ github_access:
   write:
     - repo: bubble-ops-<DEPT_SLUG>
       allowed_paths:
-        - outputs/**       # all 4 layers write here
-        - queues/**        # research/, gates/, improvements/, management/
-        - inbox/**         # decisions/, notifications/
+        - outputs/**          # all 4 layers write here
+        - queues/**           # research/, gates/, improvements/, management/
+        - inbox/**            # decisions/, notifications/
+        - WORKING_MEMORY.md   # transient topics / current focus (Part A, 2026-06-01).
+                              # THE place the agent records ad-hoc, time-bound items
+                              # (e.g. "watch SpaceX IPO") instead of editing its
+                              # mission files. Mission files (layers/**, missions/**,
+                              # dept.yaml, skills/**, ...) are structural -> agent
+                              # CANNOT push them (mission-file lock); only Joris/Jade
+                              # via merged PR.
       mode: direct_runtime_commit
 
   pull_requests:

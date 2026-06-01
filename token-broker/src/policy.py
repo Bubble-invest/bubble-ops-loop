@@ -29,8 +29,24 @@ import yaml
 
 # Patterns that are considered "structural" — these are always settings_pr
 # territory regardless of allowed_paths. Per Notion v4 line 622.
+#
+# These are the MISSION-DEFINITION files: an agent may NOT push them directly
+# (the box-side credential helper mints a read-only token when it detects any of
+# these in an un-pushed delta). They change only via a PR Joris/Jade merges.
+# Governance fix 2026-06-01 (Joris msg 3582) ADDED the top-level dept mission
+# entry-points (CLAUDE.md, MANDATE.md, skills_manifest.yaml, config.yaml,
+# gate_policy.yaml) — the original list missed them, which is exactly how Tony
+# was able to bake the transient "IPO Watch" topic into layers/1/PROMPT.md.
+# NB: top-level CLAUDE.md is the dept's mission entry-point on the box (NOT
+# .claude/CLAUDE.md). whiteboard.yaml and WORKING_MEMORY.md are deliberately
+# ABSENT — they are writable runtime/working-memory state.
 STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "dept.yaml",
+    "CLAUDE.md",            # dept mission entry-point (top-level on the box)
+    "MANDATE.md",           # dept doctrine
+    "skills_manifest.yaml",  # declares which skills the dept runs
+    "config.yaml",          # dept config (Maya)
+    "gate_policy.yaml",     # autonomy/gate boundaries
     "layers/**",
     ".claude/agents/**",
     ".claude/settings.json",
