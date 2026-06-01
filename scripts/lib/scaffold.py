@@ -394,6 +394,14 @@ Une fois activé (onboarding terminé), je roule un `/loop` toutes les 20 min.
 **STEP E** — commit+push via `bubble-git-guard push --action runtime_write_own`.
 
 **STEP F** — notifier Joris sur Telegram si une gate a été créée ce tick.
+Le message DOIT être actionnable (pas un vague « j'ai créé une gate ») :
+  - une ligne par décision : *qui / quoi* (ex: « DM Tier 1 pour Jean Dupont (Acme) — angle V2 »),
+  - **le lien cockpit direct** pour qu'il valide en un tap depuis son téléphone :
+    `https://joris-cx33.tail408dcc.ts.net:8443/dept/{slug}`
+    (ou le lien de la gate précise : `…/gate/{slug}/<gate_id>`).
+  - si plusieurs gates le même tick : un seul message groupé (N décisions + le lien),
+    pas un message par gate.
+Pas de gate créée ce tick = pas de message (silence).
 
 ## Quand je suis bloqué
 
@@ -701,7 +709,16 @@ chaque tâche de Moment à un subagent stateless via Agent. Les subagents
    (sauf si Moment 4 a déjà push lui-même par artifact, voir layers/4/PROMPT.md).
 
 6. Notifier Joris sur Telegram si une gate a été créée ce tick OU si un
-   subagent a échoué après retries épuisés (étape 3e).
+   subagent a échoué après retries épuisés (étape 3e). Le message DOIT
+   être **actionnable** :
+   - une ligne par décision : *qui / quoi* (ex: « DM Tier 1 pour Jean
+     Dupont (Acme) — angle V2 »),
+   - **le lien cockpit direct** pour valider en un tap depuis le
+     téléphone : `https://joris-cx33.tail408dcc.ts.net:8443/dept/{slug}`
+     (ou le lien de la gate précise `…/gate/{slug}/<gate_id>`),
+   - plusieurs gates le même tick → UN seul message groupé (N décisions
+     + le lien), pas un message par gate.
+   Pas de gate créée = pas de message.
 
 **Helpers Python disponibles** (`scripts/lib/dispatch_helpers.py`) :
 `decide_dispatch`, `read_last_run`, `write_last_run`, `read_round_counter`,
