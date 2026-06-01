@@ -39,6 +39,28 @@
   </div>
 </div>
 
+{# ─── Projets en cours (Joris msg 1193) ───────────────────────────
+   Read from <workspace>/workspace/projects/*/STATUS.md. #}
+<section style="margin-bottom:32px;">
+  <h2 class="section-title" style="margin:0 0 10px;">Projets en cours</h2>
+  {% if projects %}
+    <div class="concierge-projects">
+      {% for p in projects %}
+        <div class="proj-card">
+          <div class="proj-title">{{ p.title }}</div>
+          {% if p.status_line %}<div class="proj-status">{{ p.status_line }}</div>{% endif %}
+          <div class="proj-slug">{{ p.slug }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted-italic" style="font-size:13px; margin:0;">
+      Aucun projet pour l'instant — ils apparaîtront ici dès qu'un dossier
+      avec un STATUS.md est ouvert dans l'atelier.
+    </p>
+  {% endif %}
+</section>
+
 {# ─── Live session view ───────────────────────────────────────────
    The raw terminal is discarded (script → /dev/null), so we tail the
    session transcript instead — and render it cleanly: messages as prose,
@@ -68,6 +90,12 @@
 
 <style>
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+  .concierge-projects { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+  .proj-card { border:1px solid var(--line); border-left:3px solid var(--ochre);
+    border-radius:6px; padding:13px 16px; background:var(--paper); }
+  .proj-title { font-family:var(--font-display); font-weight:600; font-size:16px; color:var(--ink); }
+  .proj-status { font-size:13px; color:var(--body-soft); margin-top:4px; line-height:1.45; }
+  .proj-slug { font-family:var(--font-mono); font-size:11px; color:var(--body-muted); margin-top:8px; }
 </style>
 
 <p style="margin-top:24px;">

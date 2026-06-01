@@ -60,6 +60,67 @@ def _workspace(name: str, agents_root: str) -> str:
     return os.path.join(agents_root, name)
 
 
+@dataclass
+class ProjectCard:
+    """One working project surfaced on a concierge's page (Joris msg 1193).
+
+    Read from <workspace>/workspace/projects/<slug>/STATUS.md — the same
+    async status file the concierge keeps for the CEO."""
+    slug: str
+    title: str
+    status_line: str        # one-line current state (the **État** line)
+    has_status: bool = True
+
+
+def _parse_status(path: str, slug: str) -> "ProjectCard":
+    """Pull a title (first H1) + a one-line state from a STATUS.md."""
+    title, state = slug, ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ProjectCard(slug=slug, title=slug, status_line="", has_status=False)
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith("# ") and title == slug:
+            title = s[2:].strip().removeprefix("STATUS —").removeprefix("STATUS -").strip() or slug
+        # First bold **État…** line, or first bold line, is the state summary.
+        if not state and s.startswith("**"):
+            state = s.replace("*", "").strip()
+    if not state:
+        for ln in lines:
+            s = ln.strip()
+            if s and not s.startswith("#"):
+                state = s
+                break
+    if len(state) > 160:
+        state = state[:157] + "…"
+    return ProjectCard(slug=slug, title=title, status_line=state)
+
+
+def list_projects(name: str, agents_root: str = "/home/claude/agents") -> List["ProjectCard"]:
+    """Working projects for a concierge: each subdir of
+    <workspace>/workspace/projects/ that has a STATUS.md. Newest first by
+    STATUS.md mtime. [] if the concierge has no projects dir."""
+    ws = _workspace(name, agents_root)
+    proj_dir = os.path.join(ws, "workspace", "projects")
+    if not os.path.isdir(proj_dir):
+        return []
+    cards: List[tuple] = []
+    for entry in os.listdir(proj_dir):
+        d = os.path.join(proj_dir, entry)
+        status = os.path.join(d, "STATUS.md")
+        if not (os.path.isdir(d) and os.path.isfile(status)):
+            continue
+        try:
+            mtime = os.path.getmtime(status)
+        except OSError:
+            mtime = 0.0
+        cards.append((mtime, _parse_status(status, entry)))
+    cards.sort(key=lambda c: c[0], reverse=True)
+    return [c for _, c in cards]
+
+
 def list_concierges(agents_root: str = "/home/claude/agents") -> List[ConciergeSummary]:
     out: List[ConciergeSummary] = []
     for name in CONCIERGES:
