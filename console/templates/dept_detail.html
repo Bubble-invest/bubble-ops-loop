@@ -466,4 +466,28 @@
 </section>
 {% endif %}
 
+{# Session en direct — live view of this dept's agent (same feed as the
+   concierges). Raw PTY is discarded (script -> /dev/null), so we tail the
+   session transcript. Newest-first; HTMX re-fetches every 5s. #}
+<section style="margin-top:32px;">
+  <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
+    <h2 class="section-title" style="margin:0;">Session en direct</h2>
+    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
+      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
+      live &middot; rafraichi toutes les 5 s
+    </span>
+  </div>
+  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
+    Ce que {{ dept.display_name }} fait en ce moment &mdash; messages et
+    actions, le plus recent en haut.
+  </p>
+  <div id="dept-session"
+       hx-get="/dept/{{ dept.slug }}/session"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
+  </div>
+</section>
+<style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
+
 {% endblock %}

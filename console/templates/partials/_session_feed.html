@@ -1,0 +1,47 @@
+{# Shared live-session feed — used by concierge + dept pages.
+   Turns rendered NEWEST FIRST so the latest activity is always at the top
+   (no scroll-to-bottom needed; fixes the refresh-jumps-up bug). Messages
+   render as prose; tool actions as compact one-line chips. `name` = the
+   agent's display name for attribution. #}
+{% if not turns %}
+  <p class="muted-italic" style="font-size:13px;">
+    Pas d'activité récente — la session est silencieuse.
+  </p>
+{% else %}
+  <div class="agent-feed"
+       style="font-size:13.5px; line-height:1.55;
+              background: var(--paper); border:1px solid var(--line);
+              border-radius:4px; padding:14px 16px; max-height:520px;
+              overflow-y:auto;">
+    {% for t in turns|reverse %}
+      {% set tstime = t.ts[11:16] if t.ts|length >= 16 else t.ts %}
+      {% if t.kind == 'tool' %}
+        <div class="feed-tool"
+             style="display:flex; align-items:baseline; gap:8px;
+                    margin:3px 0; color: var(--body-soft); font-size:12px;">
+          <span style="font-variant-numeric:tabular-nums; opacity:.55;">{{ tstime }}</span>
+          <span style="font-family: var(--font-mono); background: var(--paper-soft);
+                       border:1px solid var(--line); border-radius:3px;
+                       padding:0 6px; font-size:11px; color: var(--ink);
+                       flex:0 0 auto;">{{ t.tool_name }}</span>
+          {% if t.detail %}
+            <span style="font-family: var(--font-mono); opacity:.7;
+                         overflow:hidden; text-overflow:ellipsis;
+                         white-space:nowrap;">{{ t.detail }}</span>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="feed-message"
+             style="margin:11px 0; padding-left:12px;
+                    border-left:3px solid {{ '#c9962e' if t.role == 'assistant' else 'var(--line)' }};">
+          <div style="font-size:11px; color: var(--body-soft); margin-bottom:3px;">
+            <span style="font-variant-numeric:tabular-nums;">{{ tstime }}</span>
+            ·
+            <b style="color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">{{ name|capitalize if t.role == 'assistant' else 'opérateur' }}</b>
+          </div>
+          <div style="color: var(--ink); white-space:pre-wrap;">{{ t.text }}</div>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+{% endif %}
