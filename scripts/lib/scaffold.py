@@ -29,6 +29,7 @@ if str(_HERE) not in sys.path:
 
 from skill_lib.templates import render_template  # noqa: E402
 import state_yaml  # noqa: E402
+from layer_templates import render_layer_prompt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +48,6 @@ ONBOARDING_STEP_DIRS = [
 
 GITKEEP_DIRS = [
     "missions",
-    "layers/1",
-    "layers/2",
-    "layers/3",
-    "layers/4",
     "subagents",
     "skills",
     "tools",
@@ -1072,6 +1069,14 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     # 6. .gitkeep dirs.
     for d in GITKEEP_DIRS:
         write_with_dirs(root / d / ".gitkeep", "")
+
+    # 7. Canonical layer PROMPT.md ({{OPERATOR}} 2026-06-01: layers are templated,
+    #    not empty; L4 includes the Notion logbook step).
+    for _n in (1, 2, 3, 4):
+        write_with_dirs(
+            root / "layers" / str(_n) / "PROMPT.md",
+            render_layer_prompt(_n, slug, display_name),
+        )
 
     # 7. tests/run.sh stub (executable).
     write_with_dirs(root / "tests" / "run.sh", TESTS_RUN_SH, executable=True)
