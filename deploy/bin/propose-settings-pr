@@ -28,17 +28,38 @@
 # So the structural write + commit happen INSIDE this helper, and the guard
 # stays FULLY fail-closed (the agent never Edits the structural file directly).
 #
-# SANDBOX NOTE (verified 2026-06-02 — see LOOP-FIX-BUILD.md)
+# SANDBOX NOTE (verified end-to-end 2026-06-02 — see LOOP-FIX-BUILD.md)
 # ---------------------------------------------------------
 # This helper runs INSIDE the bwrap userns jail (Bash + all children are
-# sandboxed). Both `bubble-git-guard push` and `bubble-gh pr create` shell out
-# to `sudo -n /usr/local/bin/bubble-gh-credential-helper.sh`. The PUSH chain is
-# PROVEN to survive the jail via `allowUnsandboxedCommands: true` (maya canary,
-# commit fa5acb3). `bubble-gh pr create` is the SAME sudo->cred-helper path but
-# is NOT YET PROVEN under the sandbox. If pr-create fails under the jail, the
-# Rick-only fallback is to add "/usr/local/bin/bubble-gh *" to
-# sandbox.excludedCommands in /etc/claude-code/managed-settings.json (creating
-# the key — live has none). Do NOT make that edit speculatively.
+# sandboxed). The settings_pr broker mint (bubble-git-guard push -> broker)
+# AND `bubble-gh pr create` both reach `sudo -n` chokepoints:
+#   - broker mint: --broker = bubble-broker-mint-settings.sh -> `sudo -n`
+#     bubble-broker-mint-settings-root.sh (root reads /etc/age/key.txt, mints).
+#   - pr create:  bubble-gh -> `sudo -n` bubble-gh-credential-helper.sh.
+# Inside the jail `sudo` CANNOT escalate ("no new privileges" + /etc/sudo.conf
+# owned by the userns-mapped nobody). `allowUnsandboxedCommands: true` does NOT
+# auto-retry this whole helper (it branches+commits OK in-jail, then the nested
+# sudo fails deep inside — the runtime sees a normal non-zero exit, not an
+# interceptable sandbox denial). VERIFIED 2026-06-02: with no excludedCommands
+# the run fails at "broker mint failed: sudo ... no new privileges".
+#
+# THE FIX (Rick-only managed-settings edit, MINIMAL + verified):
+#   Add EXACTLY ONE entry to sandbox.excludedCommands in
+#   /etc/claude-code/managed-settings.json (live currently has NO such key):
+#       "/usr/local/bin/propose-settings-pr *"
+#   With that single exclusion the whole helper runs unsandboxed; ALL its
+#   children (guard -> mint shim -> sudo -> root wrapper -> broker; and
+#   bubble-gh -> sudo -> cred-helper) inherit the unsandboxed context. PROVEN
+#   end-to-end on a clean vdk888/bubble-ops-fixture clone via a sandboxed
+#   `claude -p`: PR_URL emitted, real PR opened (then closed). Broader sets
+#   (sudo */bubble-gh */bubble-git-guard *) also work but are unnecessary — the
+#   single helper exclusion is the tightest sufficient grant.
+#
+# FIXTURE/OWNER CAVEAT: the fixture repo lives at vdk888/bubble-ops-fixture, but
+# this helper defaults GH_OWNER=Bubble-invest (correct for real depts maya/
+# tony/cgp). For the fixture, the caller must set BUBBLE_GH_OWNER=vdk888 so
+# `bubble-gh pr create --repo vdk888/bubble-ops-fixture` resolves. Real depts
+# need no override.
 #
 # ARG CONTRACT
 # ------------
@@ -98,7 +119,15 @@ PROG="propose-settings-pr"
 POLICY_PY="${BUBBLE_BROKER_POLICY_PY:-/opt/bubble-token-broker/src/policy.py}"
 GIT_GUARD="${BUBBLE_GIT_GUARD:-bubble-git-guard}"
 GH="${BUBBLE_GH:-bubble-gh}"
-BROKER_BIN="${BUBBLE_BROKER_BIN:-/opt/bubble-token-broker/bin/bubble-token-broker}"
+# BROKER for the guarded settings_pr push. DEFAULT = the WS5 sudo->root mint
+# shim (bubble-broker-mint-settings.sh), NOT the bare broker: the broker mint
+# needs root to read /etc/age/key.txt (0400 root) to decrypt the GitHub App PEM,
+# plus the non-secret APP_ID + per-dept INSTALLATION_ID. The shim self-elevates
+# via `sudo -n` to the root-owned wrapper which provisions all three (mirrors the
+# bubble-gh-credential-helper.sh chokepoint). The bare broker as `claude` fails
+# with "Missing GITHUB_APP_ID" / sops-guard-blocked decrypt. Tests override via
+# BUBBLE_BROKER_BIN to inject a stub.
+BROKER_BIN="${BUBBLE_BROKER_BIN:-/usr/local/bin/bubble-broker-mint-settings.sh}"
 POLICY_DIR="${BUBBLE_POLICY_DIR:-/opt/bubble-token-broker/deploy/policies}"
 GH_OWNER="${BUBBLE_GH_OWNER:-Bubble-invest}"
 PYTHON="${PYTHON:-python3}"
@@ -239,12 +268,11 @@ echo "${PROG}: structural paths: ${REL_PATHS[*]}" >&2
 
 # --- create the branch from current HEAD ------------------------------------
 git -C "$REPO_ROOT" checkout -b "$BRANCH" >&2
-# Set upstream to origin/main so the git-guard's staged-path detection
-# (`git diff @{upstream}..HEAD`) reports EXACTLY our one structural commit,
-# not the whole branch history (the no-upstream fallback over-reports paths).
-if git -C "$REPO_ROOT" rev-parse --verify --quiet "origin/${BASE}" >/dev/null; then
-  git -C "$REPO_ROOT" branch --set-upstream-to="origin/${BASE}" "$BRANCH" >&2 || true
-fi
+# DO NOT set the branch upstream here: under the OS-sandbox .git/config is a
+# READ-ONLY bind-mount, so `git branch --set-upstream-to` fails with EBUSY.
+# Instead we pass BUBBLE_GUARD_DIFF_BASE=origin/<base> to the guard below, so
+# its staged-path detection diffs origin/<base>..HEAD explicitly (no upstream
+# needed) and reports EXACTLY our one structural commit.
 
 # --- apply the supplied change ----------------------------------------------
 if [[ -n "$PATCH" ]]; then
@@ -314,13 +342,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   { printf 'GUARD_CMD'; printf ' %q' "$GIT_GUARD" "${GUARD_ARGS[@]}"; printf '\n'; }
   { printf 'GH_CMD';    printf ' %q' "$GH" "${GH_ARGS[@]}";          printf '\n'; }
   # Also run the guard in ITS dry-run mode so policy is exercised end-to-end.
-  "$GIT_GUARD" "${GUARD_ARGS[@]}" --dry-run >&2 || die "guarded push dry-run FAILED policy check (see above)."
+  BUBBLE_GUARD_DIFF_BASE="origin/${BASE}" "$GIT_GUARD" "${GUARD_ARGS[@]}" --dry-run >&2 || die "guarded push dry-run FAILED policy check (see above)."
   echo "PR_URL=DRY_RUN"
   exit 0
 fi
 
 # --- live: guarded push, then PR create -------------------------------------
-"$GIT_GUARD" "${GUARD_ARGS[@]}" >&2 || die "guarded push FAILED (see git-guard output above)."
+BUBBLE_GUARD_DIFF_BASE="origin/${BASE}" "$GIT_GUARD" "${GUARD_ARGS[@]}" >&2 || die "guarded push FAILED (see git-guard output above)."
 
 PR_URL="$("$GH" "${GH_ARGS[@]}")"
 [[ -n "$PR_URL" ]] || die "bubble-gh pr create returned no URL."

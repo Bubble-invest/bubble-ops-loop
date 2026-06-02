@@ -1,0 +1,13 @@
+# /etc/sudoers.d/bubble-broker-mint
+# WS5 settings_pr broker-mint grant (Rick R&D, 2026-06-02).
+#
+# Lets the `claude` user run the ROOT-owned settings_pr broker-mint wrapper,
+# which needs root to read /etc/age/key.txt (0400 root) to decrypt the
+# SOPS-encrypted GitHub App private key. Mirrors the existing
+# /etc/sudoers.d/bubble-cred grant for bubble-gh-credential-helper.sh.
+#
+# Scope is intentionally minimal: ONE exact binary, no args wildcard, no
+# environment passthrough. The wrapper itself hard-pins --action=settings_pr,
+# allow-lists --dept/--action/--repo/--paths, and refuses anything else — so
+# even with this grant the claude user cannot mint an arbitrary token.
+claude ALL=(root) NOPASSWD: /usr/local/bin/bubble-broker-mint-settings-root.sh

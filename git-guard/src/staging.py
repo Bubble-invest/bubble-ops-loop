@@ -113,6 +113,22 @@ def _unpushed_commit_paths(repo_dir: Path) -> List[str]:
          `git log --name-only --pretty=format: HEAD` to cover the entire
          branch history — fail-CLOSED by being inclusive.
     """
+    # Attempt 0: explicit base override (BUBBLE_GUARD_DIFF_BASE, e.g. "origin/main").
+    # This lets a caller diff against a known ref WITHOUT relying on a configured
+    # upstream — needed under the OS-sandbox, which bind-mounts .git/config READ-ONLY
+    # so `git branch --set-upstream-to` (the usual way to make @{upstream} resolve)
+    # fails with EBUSY. The base must be a valid rev; if it doesn't resolve we fall
+    # through to the upstream/log attempts (fail-closed inclusive).
+    import os as _os
+    _base = _os.environ.get("BUBBLE_GUARD_DIFF_BASE", "").strip()
+    if _base:
+        _verify = _run_git(repo_dir, "rev-parse", "--verify", "--quiet", _base)
+        if _verify.returncode == 0:
+            proc = _run_git(repo_dir, "diff", f"{_base}..HEAD", "--name-only", "-z")
+            if proc.returncode == 0:
+                return [p for p in proc.stdout.split("\x00") if p]
+        # base didn't resolve / diff failed → fall through (inclusive)
+
     # Attempt 1: upstream-aware diff
     proc = _run_git(repo_dir, "diff", "@{upstream}..HEAD", "--name-only", "-z")
     if proc.returncode == 0:
