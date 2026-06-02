@@ -21,7 +21,8 @@ rebuilt or a new tenant box is provisioned.
 | 3 | Loop liveness watchdog (alerts) | `scripts/ops-loop-watchdog.{service,timer}` + `scripts/loop-watchdog.sh` | yes | Telegram alert on stale heartbeat. |
 | 4 | **Loop BACKUP execution** | **`scripts/install-loop-backup.sh`** | **yes** | **Twice-daily (08:00+14:00 Paris) backup tick for any dead/parked dept loop. The safety net.** |
 | 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. |
-| 6 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
+| 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
+| 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
 
 ## Loop backup (step 4) — what it is
 

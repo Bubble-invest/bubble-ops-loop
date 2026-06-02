@@ -1,0 +1,39 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": true,
+    "filesystem": {
+      "denyRead": [
+        "/etc/age",
+        "/srv/bubble-secrets",
+        "/etc/bubble",
+        "/run/claude-agent",
+        "/run/gws-tony",
+        "/root",
+        "/home/claude/.ssh"
+      ],
+      "allowWrite": [
+        "/home/claude/.bun",
+        "/home/claude/.claude/plugins/cache",
+        "/home/claude/.claude/channels"
+      ]
+    },
+    "network": {
+      "allowManagedDomainsOnly": false,
+      "allowedDomains": [
+        "api.anthropic.com",
+        "api.telegram.org",
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "registry.npmjs.org",
+        "*.notion.so",
+        "api.notion.com",
+        "www.data.gouv.fr"
+      ]
+    }
+  }
+}
