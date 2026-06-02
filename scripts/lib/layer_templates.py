@@ -3,12 +3,12 @@
 Every ops-loop dept runs the same 4-moment day, so the scaffold ships a
 canonical PROMPT.md per layer instead of empty dirs ({{OPERATOR}} 2026-06-01):
 
-  L1 — Le matin       : data update (pull state, prepare the day, surface a
+  L1 — The morning   : data update (pull state, prepare the day, surface a
                         short worklist)
-  L2 — La recherche   : research & qualification (process one research-queue
+  L2 — The research  : research & qualification (process one research-queue
                         item → produce its artifact / gate)
-  L3 — L'exécution    : action (execute one validated decision)
-  L4 — Le débrief     : reviewing (audit the day, write artifacts, AND the
+  L3 — The execution : action (execute one validated decision)
+  L4 — The debrief   : reviewing (audit the day, write artifacts, AND the
                         daily Notion logbook entry)
 
 The templates carry the shared skeleton (stateless-subagent framing,
@@ -21,14 +21,14 @@ dept inherits it.
 """
 from __future__ import annotations
 
-_COMMON_HEADER = """Tu es un subagent **stateless** spawné par la session principale de \
-{display_name}. Tu n'as pas accès à son contexte ni à Telegram — tu \
-communiques uniquement via les fichiers que tu écris sur disque et les \
-commits. Tu meurs après ton run."""
+_COMMON_HEADER = """You are a **stateless** subagent spawned by the main session of \
+{display_name}. You have no access to its context or to Telegram — you \
+communicate only via the files you write to disk and the \
+commits. You die after your run."""
 
-_IDEMPOTENCE = """## Première action obligatoire (STEP 1 — idempotence)
+_IDEMPOTENCE = """## First mandatory action (STEP 1 — idempotence)
 
-Écris **immédiatement** `outputs/<today>/{n}/.last-run` (ISO-8601 tz-aware) :
+Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601 tz-aware):
 
 ```python
 from scripts.lib.dispatch_helpers import write_last_run
@@ -37,203 +37,203 @@ write_last_run(Path("outputs/<today>/{n}"))
 ```
 """
 
-_ROUND_COUNTER = """## Dernière action obligatoire (STEP — round counter)
+_ROUND_COUNTER = """## Last mandatory action (STEP — round counter)
 
-Incrémente `outputs/<today>/round_counter.json[{n}] += 1` puis commit+push \
-via `bubble-git-guard push --action runtime_write_own` (sauf si un artefact \
-a déjà push)."""
+Increment `outputs/<today>/round_counter.json[{n}] += 1` then commit+push \
+via `bubble-git-guard push --action runtime_write_own` (unless an artifact \
+already pushed)."""
 
 
-_L1 = """# Moment 1 — Le matin (Layer 1 — mise à jour des données)
+_L1 = """# Moment 1 — The morning (Layer 1 — data update)
 
 """ + _COMMON_HEADER + """
 
-## Pourquoi on t'a appelé
+## Why you were called
 
-Le main t'a spawné au tick courant pour **préparer la journée** : rafraîchir \
-l'état, repérer ce qui a bougé depuis hier, et surfacer une courte worklist \
-priorisée pour la journée de {display_name}.
+The main session spawned you at the current tick to **prepare the day**: refresh \
+the state, spot what has moved since yesterday, and surface a short prioritized \
+worklist for {display_name}'s day.
 
 ## Required reads at start (STEP 0)
 
-1. `../CLAUDE.md` + `../MANDATE.md` — qui tu es, ton périmètre
-2. `../dept.yaml` — missions récurrentes + sources de données
+1. `../CLAUDE.md` + `../MANDATE.md` — who you are, your scope
+2. `../dept.yaml` — recurring missions + data sources
 3. {l1_sources}
 
-## Première action obligatoire (STEP 1 — idempotence)
+## First mandatory action (STEP 1 — idempotence)
 
-Écris **immédiatement** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
 
-## Ton travail (STEP 2 — mise à jour + briefing)
+## Your work (STEP 2 — update + briefing)
 
 {l1_work}
 
-Produis `outputs/<today>/1/morning_briefing.md` (markdown propre, lisible en \
-30 sec, voix Bureau-de-Cadre) : ce qui a bougé, les priorités du jour, et au \
-plus **une** question stratégique pour {{OPERATOR}}/{{OPERATOR_2}} s'il y en a une vraie. \
-Matérialise les items de worklist dans `queues/research/` pour que L2 les \
-traite. Écris aussi `outputs/<today>/1/summary.md` (3-5 lignes).
+Produce `outputs/<today>/1/morning_briefing.md` (clean markdown, readable in \
+30 sec, executive-office voice): what moved, the day's priorities, and at \
+most **one** strategic question for {{OPERATOR}}/{{OPERATOR_2}} if there is a real one. \
+Materialize the worklist items in `queues/research/` so that L2 processes \
+them. Also write `outputs/<today>/1/summary.md` (3-5 lines).
 
-## Voix + audience
+## Voice + audience
 
-`morning_briefing.md` / `summary.md` : français, voix Bureau-de-Cadre, \
-lisible par {{OPERATOR}}/{{OPERATOR_2}} dans le cockpit (`/dept/{slug}`). Pas de jargon nu.
+`morning_briefing.md` / `summary.md`: English, executive-office voice, \
+readable by {{OPERATOR}}/{{OPERATOR_2}} in the cockpit (`/dept/{slug}`). No bare jargon.
 """
 
 
-_L2 = """# Moment 2 — La recherche & qualification (Layer 2 — recherche)
+_L2 = """# Moment 2 — Research & qualification (Layer 2 — research)
 
 """ + _COMMON_HEADER + """
 
-## Pourquoi on t'a appelé
+## Why you were called
 
-La session principale a vu **un** item dans `queues/research/` (STEP C.2 du \
-/loop) et t'a spawné avec son chemin. **Tu traites UN SEUL item** ; s'il y en \
-a plusieurs, le main spawn plusieurs subagents en parallèle.
+The main session saw **one** item in `queues/research/` (STEP C.2 of the \
+/loop) and spawned you with its path. **You process A SINGLE item**; if there \
+are several, the main session spawns several subagents in parallel.
 
 ## Required reads at start (STEP 0)
 
 1. `../CLAUDE.md` + `../MANDATE.md`
-2. `../dept.yaml` — pour le contexte missions/gates
-3. Ton item de queue (chemin passé en task description)
+2. `../dept.yaml` — for the missions/gates context
+3. Your queue item (path passed in the task description)
 4. {l2_sources}
 
-## Première action obligatoire (STEP 1 — idempotence)
+## First mandatory action (STEP 1 — idempotence)
 
-Écris **immédiatement** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
 
-## Ton travail (STEP 2 — traiter l'item → produire son artefact)
+## Your work (STEP 2 — process the item → produce its artifact)
 
 {l2_work}
 
-Si ton travail aboutit à une décision qui attend un humain, **crée une gate** \
-dans `queues/gates/<kind>-<slug>-<date>.yaml` (schéma : `id`, `kind`, `slug`, \
+If your work leads to a decision awaiting a human, **create a gate** \
+in `queues/gates/<kind>-<slug>-<date>.yaml` (schema: `id`, `kind`, `slug`, \
 `risk_level`, `requires_human: true`, `current_mode`, `gate_policy_id`, \
-`actions: [approve, reject, modify, defer]`, `summary` actionnable, + le \
-contenu de la décision). Logge dans `logs.jsonl`.
+`actions: [approve, reject, modify, defer]`, actionable `summary`, + the \
+content of the decision). Log in `logs.jsonl`.
 
-## Voix + audience
+## Voice + audience
 
-Tout ce que tu écris pour un humain : voix Bureau-de-Cadre, français.
+Everything you write for a human: executive-office voice, English.
 """
 
 
-_L3 = """# Moment 3 — L'exécution (Layer 3 — action)
+_L3 = """# Moment 3 — The execution (Layer 3 — action)
 
 """ + _COMMON_HEADER + """
 
-## Pourquoi on t'a appelé
+## Why you were called
 
-Le main a vu **une** décision validée dans `inbox/decisions/` (STEP C.3 du \
-/loop) — une gate approuvée par {{OPERATOR}}/{{OPERATOR_2}}, prête à exécuter. Tu exécutes \
-**une** décision puis tu meurs.
+The main session saw **one** validated decision in `inbox/decisions/` (STEP C.3 of the \
+/loop) — a gate approved by {{OPERATOR}}/{{OPERATOR_2}}, ready to execute. You execute \
+**one** decision then you die.
 
-## Pre-flight obligatoire (STEP 0bis — garde-fous)
+## Mandatory pre-flight (STEP 0bis — guard-rails)
 
-Avant d'écrire ton `.last-run`, vérifie les garde-fous applicables \
-(`../policies/gates.yaml` : kill-switch, quiet-hours, quotas, action-policy). \
-Si un garde-fou bloque → ABORT, log la raison, la décision reste dans \
-`inbox/decisions/` pour plus tard.
+Before writing your `.last-run`, check the applicable guard-rails \
+(`../policies/gates.yaml`: kill-switch, quiet-hours, quotas, action-policy). \
+If a guard-rail blocks → ABORT, log the reason, the decision stays in \
+`inbox/decisions/` for later.
 
 ## Required reads at start (STEP 0)
 
 1. `../CLAUDE.md` + `../MANDATE.md` + `../policies/gates.yaml`
-2. Ton item d'inbox (la décision validée à exécuter)
+2. Your inbox item (the validated decision to execute)
 3. {l3_sources}
 
-## Première action obligatoire (STEP 1 — idempotence)
+## First mandatory action (STEP 1 — idempotence)
 
-Écris **immédiatement** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
 
-## Ton travail (STEP 2 — exécuter la décision)
+## Your work (STEP 2 — execute the decision)
 
 {l3_work}
 
-Après exécution réussie : déplace l'item vers `inbox/decisions/.processed/` \
-(pour qu'un futur tick ne le re-traite pas) et logge dans `logs.jsonl`. En cas \
-d'échec après retries : laisse l'item + ajoute `<id>.error` avec la raison, \
-le main escalade à {{OPERATOR}}.
+After successful execution: move the item to `inbox/decisions/.processed/` \
+(so a future tick does not re-process it) and log in `logs.jsonl`. In case \
+of failure after retries: leave the item + add `<id>.error` with the reason, \
+the main session escalates to {{OPERATOR}}.
 
-## Voix + audience
+## Voice + audience
 
-Actions concrètes ; traces factuelles dans `logs.jsonl` + `summary.md`.
+Concrete actions; factual traces in `logs.jsonl` + `summary.md`.
 """
 
 
-_L4 = """# Moment 4 — Le débrief du soir (Layer 4 — revue)
+_L4 = """# Moment 4 — The evening debrief (Layer 4 — review)
 
 """ + _COMMON_HEADER + """
 
-## Pourquoi on t'a appelé
+## Why you were called
 
-Le main a vu que **22h00 UTC ≤ maintenant < 22h30 UTC** ET \
-`outputs/<today>/4/.last-run` n'existe pas encore (STEP C.1 du /loop). C'est \
-l'audit quotidien obligatoire — tu tournes **une fois par jour**, à la fin de \
-la journée. Pas de parallélisme : tu fais tout le débrief en un run.
+The main session saw that **22:00 UTC ≤ now < 22:30 UTC** AND \
+`outputs/<today>/4/.last-run` does not exist yet (STEP C.1 of the /loop). This is \
+the mandatory daily audit — you run **once per day**, at the end of \
+the day. No parallelism: you do the whole debrief in one run.
 
-## Required reads at start (STEP 0) — exhaustif
+## Required reads at start (STEP 0) — exhaustive
 
 1. `../CLAUDE.md` + `../MANDATE.md` + `../dept.yaml` + `../policies/`
-2. **Tous** les outputs L1/L2/L3 du jour : \
+2. **All** the day's L1/L2/L3 outputs: \
 `outputs/<today>/{{1,2,3}}/{{summary.md,logs.jsonl}}`
 3. {l4_sources}
 
-## Ton travail (STEP 2) — artefacts du jour
+## Your work (STEP 2) — the day's artifacts
 
-Produis les artefacts canoniques de revue (force-commit-push après chacun) :
+Produce the canonical review artifacts (force-commit-push after each one):
 
-1. `outputs/<today>/4/risk-brief.md` — brief narratif du jour : volumes, \
-incidents, points qui attendent {{OPERATOR}}, actions de demain. {l4_brief}
-2. `outputs/<today>/4/management-export.yaml` — export pour Tony (format \
+1. `outputs/<today>/4/risk-brief.md` — the day's narrative brief: volumes, \
+incidents, points awaiting {{OPERATOR}}, tomorrow's actions. {l4_brief}
+2. `outputs/<today>/4/management-export.yaml` — export for Tony (format \
 `schemas-draft/management-export.schema.yaml`).
 {l4_extra}
 
-## STEP 3 — Le logbook du jour (Notion, OBLIGATOIRE)
+## STEP 3 — The day's logbook (Notion, MANDATORY)
 
-Après les artefacts, écris **une** entrée de logbook honnête dans le carnet \
-partagé "Agent Logbook" (Notion). C'est le journal narratif de l'équipe — \
-même esprit que les entrées de `main` (une histoire courte et factuelle du \
-jour, pas un statut sec). Deux casquettes :
+After the artifacts, write **one** honest logbook entry in the shared \
+"Agent Logbook" notebook (Notion). It is the team's narrative journal — \
+same spirit as the `main` entries (a short, factual story of the \
+day, not a dry status). Two hats:
 
-- **Archiviste** (mécanique) : relis tes outputs du jour (L1-L4) + ce que tu \
-  as réellement fait. Compose un `Résumé` (titre court, accrocheur mais vrai) \
-  et un `Contenu` (5-12 lignes, passé, factuel, voix Bureau-de-Cadre).
-- **Observateur** (jugement) : si quelque chose dans la journée mérite \
-  l'attention de {{OPERATOR}}/{{OPERATOR_2}} demain, dis-le dans le contenu. Silencieux les \
-  jours de routine, porteur de signal quand il y a du réel. Pas de KPI \
-  placeholder, pas de regex à mots-clefs — c'est ton jugement (principe \
-  Bubble : l'intelligence est dans l'agent).
+- **Archivist** (mechanical): re-read your day's outputs (L1-L4) + what you \
+  actually did. Compose a `Summary` (short title, catchy but true) \
+  and a `Content` (5-12 lines, past tense, factual, executive-office voice).
+- **Observer** (judgment): if something in the day deserves \
+  {{OPERATOR}}/{{OPERATOR_2}}'s attention tomorrow, say it in the content. Silent on \
+  routine days, signal-bearing when there is something real. No placeholder \
+  KPI, no keyword regex — it's your judgment (Bubble \
+  principle: the intelligence is in the agent).
 
-Écris via la lib partagée (le slug `{slug}` part dans la colonne Agent) :
+Write via the shared lib (the slug `{slug}` goes in the Agent column):
 
 ```bash
 LOGBOOK_AGENT_ID={slug} NOTION_API_KEY="$NOTION_API_KEY" \\
   python3 ../../scripts/lib/notion_logbook.py write \\
-    --title "<ton Résumé>" --body "<ton Contenu>" \\
+    --title "<your Summary>" --body "<your Content>" \\
     --tags {slug} --for joris,jade --date <today>
 ```
 
-Si `NOTION_API_KEY` n'est pas dans l'env, la lib skip proprement (pas de \
-crash) — logge `logbook: skipped (no key)` et continue. Une entrée par jour.
+If `NOTION_API_KEY` is not in the env, the lib skips cleanly (no \
+crash) — log `logbook: skipped (no key)` and continue. One entry per day.
 
 """ + _ROUND_COUNTER.replace("{n}", "4") + """
 
-## Voix + audience
+## Voice + audience
 
-`risk-brief.md` + l'entrée logbook : français, voix Bureau-de-Cadre, lisible \
-par {{OPERATOR}}/{{OPERATOR_2}}. Le logbook est public dans l'équipe (carnet partagé).
+`risk-brief.md` + the logbook entry: English, executive-office voice, readable \
+by {{OPERATOR}}/{{OPERATOR_2}}. The logbook is public within the team (shared notebook).
 """
 
 
 # Per-layer placeholder defaults (the onboarding agent refines these per dept).
 _DEFAULTS = {
-    "l1_sources": "les sources de données propres au département (voir dept.yaml::input_sources)",
-    "l1_work": "Rafraîchis l'état depuis tes sources, repère les mouvements de la veille, et construis la worklist du jour.",
-    "l2_sources": "les sources de recherche du département (voir dept.yaml::input_sources)",
-    "l2_work": "Traite l'item selon son `kind` (voir dept.yaml::missions) et produis son artefact.",
-    "l3_sources": "les outils/skills d'exécution du département",
-    "l3_work": "Exécute la décision selon son `kind` (voir dept.yaml::missions), avec les garde-fous.",
-    "l4_sources": "les KPIs du jour (voir policies/kpis.yaml si présent) + les changements d'état du jour",
+    "l1_sources": "the data sources specific to the department (see dept.yaml::input_sources)",
+    "l1_work": "Refresh the state from your sources, spot the previous day's movements, and build the day's worklist.",
+    "l2_sources": "the department's research sources (see dept.yaml::input_sources)",
+    "l2_work": "Process the item according to its `kind` (see dept.yaml::missions) and produce its artifact.",
+    "l3_sources": "the department's execution tools/skills",
+    "l3_work": "Execute the decision according to its `kind` (see dept.yaml::missions), with the guard-rails.",
+    "l4_sources": "the day's KPIs (see policies/kpis.yaml if present) + the day's state changes",
     "l4_brief": "",
     "l4_extra": "",
 }
@@ -249,10 +249,10 @@ def render_layer_prompt(n: int, slug: str, display_name: str,
     if overrides:
         fields.update(overrides)
     fields.update(slug=slug, display_name=display_name, n=n)
-    # The L1 idempotence block is shared; inject it after the "Pourquoi" for
+    # The L1 idempotence block is shared; inject it after the "Why" for
     # layers that don't already embed STEP 1. Keep simple: append per-layer.
     text = body.format(**fields)
-    # Insert the idempotence block right before "## Ton travail" for L1-L3
+    # Insert the idempotence block right before "## Your work" for L1-L3
     # (L4 has its own ordering). For simplicity it's already implied by the
     # shared dispatch protocol in CLAUDE.md; templates reference STEP 1.
     return text
