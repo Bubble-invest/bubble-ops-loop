@@ -389,18 +389,27 @@ def test_template_dispatch_behavior_still_complete():
     import dispatch_helpers as dh
     from datetime import datetime, timezone
 
+    _ran = datetime(2026, 5, 25, 5, 0, tzinfo=timezone.utc)
+
     def _ctx(**overrides):
         base = {
             "now_utc": datetime(2026, 5, 25, 10, 0, tzinfo=timezone.utc),
             "has_research_items": False,
             "has_inbox_decisions": False,
             "layer_4_last_run_today": None,
+            # Canonical default for these BEHAVIOR cases: L1 has already run
+            # today, so the daily floor is satisfied and we exercise the
+            # cycle-gate / priority branches (not the floor).
+            "layer_1_last_run_today": _ran,
             "round_counter": {},
+            "layer_1_baseline_counter": {},
             "fire_after_rounds": 1,
         }
         base.update(overrides)
         return base
 
+    # daily floor — L1 has NOT run today → fires L1 even with empty queues
+    assert dh.decide_dispatch(_ctx(layer_1_last_run_today=None)) == "layer_1"
     # L4 window (22:00-22:30 UTC, no .last-run today yet)
     assert dh.decide_dispatch(_ctx(
         now_utc=datetime(2026, 5, 25, 22, 5, tzinfo=timezone.utc),
@@ -409,13 +418,15 @@ def test_template_dispatch_behavior_still_complete():
     assert dh.decide_dispatch(_ctx(has_research_items=True)) == "layer_2"
     # L3 — inbox decisions
     assert dh.decide_dispatch(_ctx(has_inbox_decisions=True)) == "layer_3"
-    # L1 — all idle + round_counter gate satisfied (L4 already ran today)
+    # L1 — already ran today, but a full cycle (L2/L3/L4 each advanced past the
+    # baseline) completed → re-fire.
     assert dh.decide_dispatch(_ctx(
         layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
                                           tzinfo=timezone.utc),
         round_counter={"2": 1, "3": 1, "4": 1},
+        layer_1_baseline_counter={},
     )) == "layer_1"
-    # heartbeat — all idle, L1 gate not satisfied (counters at 0)
+    # heartbeat — already ran today, no fresh cycle (counters at 0)
     assert dh.decide_dispatch(_ctx(
         layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
                                           tzinfo=timezone.utc),
@@ -432,21 +443,30 @@ def test_template_dispatch_behavior_still_complete():
 # must describe.
 # ============================================================================
 
+_L1_RAN = datetime(2026, 5, 24, 5, 0, tzinfo=timezone.utc)
+
+
 def _ctx(now_utc, has_research=False, has_decisions=False,
-         l4_last_run=None, rounds=None, fire_after_rounds=1):
+         l4_last_run=None, rounds=None, fire_after_rounds=1,
+         l1_last_run=_L1_RAN, l1_baseline=None):
     return {
         "now_utc": now_utc,
         "has_research_items": has_research,
         "has_inbox_decisions": has_decisions,
         "layer_4_last_run_today": l4_last_run,
+        # Default: L1 already ran today so these cases exercise the cycle gate
+        # (the daily floor is covered separately).
+        "layer_1_last_run_today": l1_last_run,
         "round_counter": rounds or {},
+        "layer_1_baseline_counter": l1_baseline or {},
         "fire_after_rounds": fire_after_rounds,
     }
 
 
 def test_layer_1_fires_when_all_other_layers_idle_and_rounds_satisfied():
-    """The canonical C.0 win condition: no research, no decisions, outside
-    L4 window, and L2/L3/L4 have each done ≥ N rounds."""
+    """The canonical C.0 win condition: L1 already ran today, no research, no
+    decisions, outside L4 window, and L2/L3/L4 have each done ≥ N rounds since
+    L1's baseline → a fresh cycle re-fires L1."""
     now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris, NOT L4 window
     ctx = _ctx(now, has_research=False, has_decisions=False,
                l4_last_run=None,
@@ -454,6 +474,14 @@ def test_layer_1_fires_when_all_other_layers_idle_and_rounds_satisfied():
                fire_after_rounds=1)
     decision = dispatch_helpers.decide_dispatch(ctx)
     assert decision == "layer_1"
+
+
+def test_layer_1_daily_floor_fires_when_not_run_today():
+    """Canonical daily floor: L1 has NOT run today → fires even with empty
+    queues and zero rounds (Joris 2026-06-01: at least once per day)."""
+    now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
+    ctx = _ctx(now, l1_last_run=None, rounds={})
+    assert dispatch_helpers.decide_dispatch(ctx) == "layer_1"
 
 
 def test_layer_1_does_not_fire_when_research_queue_has_items():
@@ -486,11 +514,13 @@ def test_layer_1_does_not_fire_in_l4_window():
 
 
 def test_layer_1_does_not_fire_when_rounds_not_satisfied():
-    """Even if all C.1/C.2/C.3 are false, L1 still won't fire until the
-    round-counter threshold is met — the gate Joris described."""
+    """Once L1 has run today (daily floor satisfied), it won't re-fire until the
+    other layers complete a fresh cycle — the gate Joris described. Here L1 ran
+    today and no other layer advanced → heartbeat (NOT another layer_1)."""
     now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=False, has_decisions=False,
                l4_last_run=None,
+               l1_last_run=_L1_RAN,
                rounds={"2": 0, "3": 0, "4": 0},
                fire_after_rounds=1)
     decision = dispatch_helpers.decide_dispatch(ctx)
