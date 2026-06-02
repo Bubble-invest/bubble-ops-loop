@@ -29,16 +29,67 @@ DEPTS=(${BUBBLE_BACKUP_DEPTS:-maya tony cgp})
 STALE_AFTER_SEC="${BUBBLE_BACKUP_STALE_SEC:-5400}"   # 90 min
 BUDGET_USD="${BUBBLE_BACKUP_BUDGET_USD:-3.00}"
 MODEL="${BUBBLE_BACKUP_MODEL:-sonnet}"
+# The claude binary. Overridable (BUBBLE_BACKUP_CLAUDE_BIN) so the test harness
+# can substitute a stub and exercise the run-branch WITHOUT spending a real tick.
+CLAUDE_BIN="${BUBBLE_BACKUP_CLAUDE_BIN:-/usr/bin/claude}"
 REPO_ROOT="${BUBBLE_OPS_LOOP_ROOT:-/home/claude/bubble-ops-loop}"
 PY="${REPO_ROOT}/venv/bin/python"
-LOCK_DIR="/run/lock"
-DRY_RUN="${BUBBLE_BACKUP_DRY_RUN:-0}"
+# Per-dept workdir base + flock dir. Overridable (BUBBLE_BACKUP_AGENTS_ROOT /
+# BUBBLE_BACKUP_LOCK_DIR) so the test harness can run hermetically inside a
+# tmpdir; production defaults are unchanged.
+AGENTS_ROOT="${BUBBLE_BACKUP_AGENTS_ROOT:-/home/claude/agents}"
+LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
+
+# ── DRY_RUN resolution (footgun fix) ────────────────────────────────────────
+# Historical incident: someone set `DRY_RUN=1` expecting the safety net to no-op,
+# but the script only honored `BUBBLE_BACKUP_DRY_RUN` — so `DRY_RUN` was silently
+# ignored and 3 real backup ticks fired (cgp exited 1). Accept BOTH names now.
+#
+# Precedence: the canonical `BUBBLE_BACKUP_DRY_RUN`, if SET (even to 0), wins —
+# it is the explicit, namespaced knob. Only when the canonical var is UNSET do
+# we honor the bare `DRY_RUN` that people actually type. The effective state +
+# its source are logged LOUDLY on startup (see below) so an ignored knob can
+# never again pass silently.
+if [[ -n "${BUBBLE_BACKUP_DRY_RUN+x}" ]]; then
+    DRY_RUN="${BUBBLE_BACKUP_DRY_RUN}"
+    DRY_RUN_SOURCE="BUBBLE_BACKUP_DRY_RUN"
+elif [[ -n "${DRY_RUN+x}" ]]; then
+    DRY_RUN="${DRY_RUN}"
+    DRY_RUN_SOURCE="DRY_RUN"
+else
+    DRY_RUN="0"
+    DRY_RUN_SOURCE="default"
+fi
+# Normalize: treat anything other than an explicit truthy value as 0, so a
+# stray `DRY_RUN=yes`/`true` still means "don't run" (fail-safe toward dry).
+case "${DRY_RUN,,}" in
+    1|true|yes|on) DRY_RUN="1" ;;
+    *)             DRY_RUN="0" ;;
+esac
+
 # Event log the cockpit reads to surface this safety net in the front end
 # (Joris msg 1171). Keep in sync with console.settings.BACKUP_LOG_PATH.
 BACKUP_LOG="${BUBBLE_BACKUP_LOG:-${REPO_ROOT}/state/loop-backup.jsonl}"
 
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(TS)] [loop-backup] $*"; }
+
+# LOUD startup banner: which dry-run knob won, and the resolved 0/1. This is
+# the antidote to the historical "DRY_RUN=1 was ignored" footgun — the effective
+# state is always on the record.
+log "DRY_RUN resolved to $DRY_RUN from $DRY_RUN_SOURCE"
+# If the canonical var is unset but SOME other DRY_RUN*-ish env var is set
+# (e.g. a typo like DRYRUN or BACKUP_DRY_RUN), warn — a near-miss knob that is
+# NOT being honored should never pass silently again.
+if [[ "$DRY_RUN_SOURCE" != "BUBBLE_BACKUP_DRY_RUN" ]]; then
+    while IFS= read -r _dr_var; do
+        case "$_dr_var" in
+            BUBBLE_BACKUP_DRY_RUN|DRY_RUN_SOURCE) continue ;;  # canonical / our own
+            DRY_RUN) [[ "$DRY_RUN_SOURCE" == "DRY_RUN" ]] && continue ;;  # already honored
+        esac
+        log "WARN: env var '$_dr_var' looks dry-run-ish but is NOT honored — use BUBBLE_BACKUP_DRY_RUN (or DRY_RUN)."
+    done < <(compgen -v | grep -i 'dry.*run' || true)
+fi
 
 # Append one event to the cockpit log. Never fatal — a logging failure must
 # not abort the safety net itself.
@@ -55,6 +106,60 @@ ev = format_event(
     exit_code=int(exit_code) if exit_code not in ("", "None") else None,
 )
 append_event(path, ev)
+PYEOF
+}
+
+# ── Notify-on-fire ──────────────────────────────────────────────────────────
+# When the safety net ACTUALLY RUNS a backup tick for a dept (NOT on a skip /
+# fresh loop), ping Joris on Telegram so he knows a primary loop was down and
+# the net caught it. Rides the SAME shared send path as WS3's per-layer pings:
+# the promoted, dept-agnostic `scripts/lib/notify.py` TelegramBackend (direct
+# api.telegram.org POST, reads TELEGRAM_BOT_TOKEN from env, per-channel failure
+# isolation). We deliberately do NOT use WS3's `notify_layer_fired` because its
+# message shape is layer-specific (`🔁 <dept> · L<N> fired`); this is a distinct
+# safety-net event (`🛟`).
+#
+# Recipient: Joris's Telegram chat_id. tony/cgp have no config.yaml (only maya
+# does), so we can't lean on per-dept `resolve_recipients`; the backup net pings
+# ONE human (Joris) regardless of dept. chat_id is overridable via
+# BUBBLE_BACKUP_TELEGRAM_CHAT_ID (default = Joris, confirmed msg 1946).
+#
+# TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
+# envfile (which carries it) before invoking this. Never fatal: a notify failure
+# must not abort the safety net (mirrors emit_event's posture).
+BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-6532205130}"
+
+notify_backup_fired() {
+    local slug="$1" age="${2:-}" exit_code="${3:-}"
+    local age_h
+    if [[ -n "$age" && "$age" != "None" ]]; then
+        age_h="$(( age / 60 ))m"
+    else
+        age_h="unknown"
+    fi
+    local msg="🛟 backup tick fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+
+    # Test seam: a stub command can capture the would-be send without HTTP.
+    if [[ -n "${BUBBLE_BACKUP_NOTIFY_CMD:-}" ]]; then
+        "${BUBBLE_BACKUP_NOTIFY_CMD}" "$slug" "$BACKUP_CHAT_ID" "$msg" \
+            || log "$slug: warn — notify stub failed"
+        return 0
+    fi
+
+    "$PY" - "$BACKUP_CHAT_ID" "$msg" <<'PYEOF' || log "$slug: warn — could not send backup-fired Telegram ping"
+import sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.notify import TelegramBackend, NotificationPayload
+chat_id, msg = sys.argv[1], sys.argv[2]
+receipt = TelegramBackend({}).send(
+    NotificationPayload(subject=msg, markdown_body="",
+                        metadata={"kind": "backup_fired"}),
+    chat_id,
+)
+if not receipt.success:
+    # Non-zero so the bash caller logs a warn line (but never aborts).
+    sys.stderr.write(f"backup-fired ping not delivered: {receipt.error}\n")
+    sys.exit(1)
 PYEOF
 }
 
@@ -85,7 +190,7 @@ run_backup_tick() {
     exec 9>"$lock"
     if ! flock -n 9; then
         log "$slug: lock held (a tick is already running) — skipping backup"
-        return 0
+        return 99   # sentinel: skipped (no tick ran) → caller must NOT notify
     fi
 
     log "$slug: running ONE backup tick (model=$MODEL budget=\$$BUDGET_USD)"
@@ -98,7 +203,7 @@ run_backup_tick() {
         [[ -f "$envfile" ]] && . "$envfile"
         set +a
         cd "$workdir" || exit 1
-        /usr/bin/claude \
+        "$CLAUDE_BIN" \
             --print \
             --no-session-persistence \
             --setting-sources user \
@@ -117,7 +222,7 @@ run_backup_tick() {
 
 OVERALL=0
 for slug in "${DEPTS[@]}"; do
-    workdir="/home/claude/agents/bubble-ops-${slug}"
+    workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
     envfile="/run/claude-agent-${slug}/env"
     if [[ ! -d "$workdir" ]]; then
         log "$slug: SKIP — workdir $workdir not found"
@@ -150,12 +255,28 @@ PYEOF
         emit_event "$slug" "skip" "DRY_RUN — would run a backup tick ($reason)" "$age"
         continue
     fi
-    if run_backup_tick "$slug" "$workdir" "$envfile"; then
-        emit_event "$slug" "run" "$reason" "$age" 0
-    else
-        OVERALL=1
-        emit_event "$slug" "run" "$reason" "$age" 1
+    tick_exit=0
+    run_backup_tick "$slug" "$workdir" "$envfile" || tick_exit=$?
+    if [[ "$tick_exit" == "99" ]]; then
+        # Lock held by a concurrent (live) tick → no backup tick ran. Record a
+        # skip and do NOT ping — nothing fired.
+        emit_event "$slug" "skip" "lock held (concurrent tick) — $reason" "$age"
+        continue
     fi
+    emit_event "$slug" "run" "$reason" "$age" "$tick_exit"
+    [[ "$tick_exit" == "0" ]] || OVERALL=1
+    # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
+    # dept in DEPTS, both success and failure exit). Source the dept env in a
+    # subshell so TELEGRAM_BOT_TOKEN is available to the send without leaking
+    # across depts. Skips/lock-held are handled by `continue` above → no ping
+    # on a fresh/healthy loop.
+    (
+        set -a
+        # shellcheck disable=SC1090
+        [[ -f "$envfile" ]] && . "$envfile"
+        set +a
+        notify_backup_fired "$slug" "$age" "$tick_exit"
+    )
 done
 
 log "done (depts=${DEPTS[*]})"
