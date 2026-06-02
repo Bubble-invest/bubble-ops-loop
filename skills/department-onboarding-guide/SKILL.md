@@ -363,7 +363,7 @@ Run all three checks before flipping STATE to `Live`:
 #### Check A — Import smoke
 ```bash
 cd /home/claude/agents/bubble-ops-<slug>
-python3 -c "from scripts.lib.dispatch_helpers import write_last_run, validate_layer_output, increment_round_counter, force_commit_and_push, decide_dispatch; print('OK')"
+python3 -c "from scripts.lib.dispatch_helpers import write_last_run, validate_layer_output, increment_round_counter, force_commit_and_push, decide_dispatch, build_dispatch_ctx, write_l1_baseline, read_l1_baseline; print('OK')"
 ```
 If this raises `ModuleNotFoundError`: vendor `dispatch_helpers.py` from the loop:
 ```bash
@@ -438,6 +438,37 @@ are present (see `shared/systems/vps-agent-sandbox` in the wiki).
 > `excludedCommands` entry in a dept's project settings punches a hole in that
 > dept's OWN jail. Keep dept sandbox arrays minimal and justified; the booleans
 > (`enabled`, `failIfUnavailable`) are locked by managed and need no dept action.
+
+
+#### Check F — Dispatch canonical + per-layer notify wiring (so the L1 fix + notifications stay default)
+
+The dept's `scripts/lib/dispatch_helpers.py` MUST be byte-identical to the framework
+canonical (bootstrap-dept.sh vendors it, but verify — a stale copy reintroduces the
+L1-floods-every-tick bug Tony hit live, session ebb03972 2026-06-02):
+```bash
+cd /home/claude/agents/bubble-ops-<slug>
+# 1. drift check against canonical (exit non-zero = drifted → re-sync):
+bash /home/claude/bubble-ops-loop/scripts/sync-dispatch-lib.sh --check --depts="<slug>"
+# 2. regression guard — build_dispatch_ctx MUST emit the two L1 keys, else L1
+#    re-dispatches on every quiet tick (the ebb03972 bug):
+python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx; c=build_dispatch_ctx('.'); assert 'layer_1_last_run_today' in c and 'layer_1_baseline_counter' in c, 'STALE dispatch_helpers — re-sync from canonical'; print('dispatch OK')"
+```
+If drifted: `bash /home/claude/bubble-ops-loop/scripts/sync-dispatch-lib.sh --depts="<slug>"`.
+
+**L1 PROMPT must call `write_l1_baseline`** (after `increment_round_counter(..., layer=1)`)
+so C.0's cycle-gate re-fires L1 only after a fresh L2/L3/L4 cycle:
+```bash
+grep -n "write_l1_baseline" layers/1/PROMPT.md   # expect ≥1 match
+```
+
+**Per-layer-fire notifications (optional but recommended — framework provides them):**
+the framework ships `scripts/lib/notify.py` (email + Telegram) + `loop_notify.py`. To get
+a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) should:
+- at STEP 3c (after `validate_layer_output` ok) call `notify_layer_fired(dept, N, summary_path, config=...)`
+  for N∈{1,4} (immediate), and accumulate `layer_fires={"2":n,"3":n}` for L2/L3;
+- at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
+Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
+`config.yaml` yet, the helpers default to Joris's chat_id. (tony/cgp still need a config.yaml.)
 
 ## Status state machine
 
