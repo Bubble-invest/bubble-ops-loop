@@ -196,10 +196,10 @@ def test_operating_states_telegram_is_the_channel_to_joris():
     can't silently regress + so future depts inherit it."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops(slug="maya"))
     low = out.lower()
-    assert "canal vers joris" in low, "missing the explicit 'mon canal vers Joris' directive"
+    assert "channel to joris" in low, "missing the explicit 'my channel to Joris' directive"
     assert "@bubbleopsmaya_bot" in out, "the channel directive must name the dept's Telegram bot"
     # must convey 'always via Telegram' + 'transcript doesn't reach him'
-    assert "toujours par là" in low or "toujours par la" in low
+    assert "always through there" in low
     assert "transcript" in low
 
 
@@ -208,8 +208,8 @@ def test_operating_keeps_karpathy_garde_fous():
     verifiable / scope) are evergreen — must be reused verbatim."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
     body_lower = out.lower()
-    markers = ["karpathy", "réfléchir", "simplicité",
-               "chirurgical", "vérifiable", "périmètre"]
+    markers = ["karpathy", "think before acting", "simplicity first",
+               "surgical", "verifiable", "scope"]
     found = [m for m in markers if m in body_lower]
     assert len(found) >= 4, (
         f"garde-fous section incomplete. Found {found}, expected at "
@@ -261,10 +261,10 @@ def test_operating_drops_eclosion_7_step_flow():
     body_lower = out.lower()
     # Most distinctive markers from CLAUDE_MD_TEMPLATE's éclosion section
     forbidden = [
-        "7 étapes d'éclosion",
+        "the 7 hatching steps",
         "department-onboarding-guide",
-        "ma mission actuelle",  # éclosion driver's mission line
-        "m'éclôre moi-même",
+        "my current mission",  # éclosion driver's mission line
+        "hatch myself into the team",
         "queued-prompts/initial.md",
         "announce_current_step",
     ]
@@ -304,10 +304,10 @@ def test_operating_for_ops_does_not_mention_children_section():
     dy = _make_dept_yaml_ops()
     out = scaffold.render_claude_md_operating(dy)
     # The management-style children header should not appear for ops.
-    assert "supervise" not in out.lower() or "supervisée" in out.lower(), (
-        # we allow phrasing like "je suis supervisée par Joris" — the
-        # forbidden one is "je supervise les départements suivants"
-        "ops dept must not have the management 'je supervise' section"
+    assert "i supervise" not in out.lower(), (
+        # the forbidden one is the management section
+        # "I supervise the following departments"
+        "ops dept must not have the management 'I supervise' section"
     )
 
 
@@ -327,7 +327,7 @@ def test_operating_loop_section_is_concise():
     (msg 3160 — short + declarative)."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
     import re
-    m = re.search(r"## Mon protocole /loop.*?(?=\n## )", out, re.DOTALL)
+    m = re.search(r"## My /loop protocol.*?(?=\n## )", out, re.DOTALL)
     assert m, "operating CLAUDE.md must have a /loop protocol section"
     loop_block = m.group(0)
     n_lines = loop_block.count("\n")
