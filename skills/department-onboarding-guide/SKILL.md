@@ -409,6 +409,36 @@ activation. A tool advertised `active` that still emits `noop_shim`, a layer
 PROMPT.md python block that `TypeError`s on exec, or a SKILL.md that documents a
 non-importable module are all caught here — not in production.
 
+
+#### Check E — OS sandbox engaged (Layer B — auto-inherited, but VERIFY)
+
+New depts inherit the OS sandbox **automatically** from box-wide
+`/etc/claude-code/managed-settings.json` — there is nothing to install per-dept,
+and the dept cannot disable it (managed `enabled`/`failIfUnavailable` are
+un-overridable). But verify it actually engaged after first start, because
+behavioural write/curl probes LIE (the escape-hatch + unlocked domains cause
+false negatives). The reliable signal is the **user-namespace comparison**:
+
+```bash
+# host userns:
+readlink /proc/self/ns/user                       # e.g. user:[4026531837]
+# what the dept's SANDBOXED bash sees (run as the claude user, in the dept cwd):
+cd /home/claude/agents/bubble-ops-<slug>
+claude --model "opus[1m]" --dangerously-skip-permissions --print \
+  "Use the Bash tool to run exactly: readlink /proc/self/ns/user"
+```
+If the dept reports a **different** `user:[...]` than the host → ENGAGED (bwrap
+jail active). Same value as host → NOT engaged: STOP, do not declare Live, check
+that `bwrap`/`socat`/`@anthropic-ai/sandbox-runtime` + the AppArmor `bwrap` profile
+are present (see `shared/systems/vps-agent-sandbox` in the wiki).
+
+> **Do NOT widen the sandbox in the dept's project `.claude/settings.json`.** The
+> sandbox arrays — `allowWrite`, `allowedDomains`, `excludedCommands` — MERGE
+> across managed + project (depts can add, not remove). A broad `allowWrite` or an
+> `excludedCommands` entry in a dept's project settings punches a hole in that
+> dept's OWN jail. Keep dept sandbox arrays minimal and justified; the booleans
+> (`enabled`, `failIfUnavailable`) are locked by managed and need no dept action.
+
 ## Status state machine
 
 7 statuses, strict linear progression (Notion v5 lines 794-801):
