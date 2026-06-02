@@ -21,6 +21,44 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SKILL_ROOT="$PROJECT_ROOT/skills/department-onboarding-guide"
 
 # -----------------------------------------------------------------------------
+# WS2 hook — vendor the CANONICAL dispatch_helpers.py (+ sibling dispatch tests)
+# into a freshly-scaffolded dept clone, so new depts start byte-identical to the
+# framework instead of inheriting a stale template. Without this, scaffold.py
+# references scripts/lib/dispatch_helpers.py in the generated CLAUDE.md but never
+# materializes it (the drift bug WS1/WS2 close). Decision (plan): vendored-at-
+# scaffold + sync-script, NO git-submodule.
+#
+# Idempotent, additive, and SILENT-SAFE: if the canonical is missing it WARNS but
+# does not abort the bootstrap (the sync-script can heal later).
+# -----------------------------------------------------------------------------
+vendor_canonical_dispatch_lib() {
+  local target="$1"
+  local canon_lib="$PROJECT_ROOT/scripts/lib/dispatch_helpers.py"
+  local canon_tests="$PROJECT_ROOT/scripts/lib/tests"
+  # Sibling dispatch test files that travel WITH dispatch_helpers.py (kept in
+  # sync with scripts/sync-dispatch-lib.sh's DISPATCH_TEST_FILES list).
+  local dispatch_test_files=(
+    "test_build_dispatch_ctx.py"
+    "test_dispatch_layer1_daily.py"
+    "test_dispatch_retry_and_push.py"
+    "test_layer1_data_sources.py"
+    "test_loop_dispatch_layer1.py"
+  )
+  if [[ ! -f "$canon_lib" ]]; then
+    echo "[bootstrap] WARN: canonical dispatch_helpers.py not found at $canon_lib — new dept will be UNSYNCED; run scripts/sync-dispatch-lib.sh to heal." >&2
+    return 0
+  fi
+  mkdir -p "$target/scripts/lib/tests"
+  cp -f "$canon_lib" "$target/scripts/lib/dispatch_helpers.py"
+  [[ -f "$canon_tests/__init__.py" ]] && cp -f "$canon_tests/__init__.py" "$target/scripts/lib/tests/__init__.py" || : > "$target/scripts/lib/tests/__init__.py"
+  local tf
+  for tf in "${dispatch_test_files[@]}"; do
+    [[ -f "$canon_tests/$tf" ]] && cp -f "$canon_tests/$tf" "$target/scripts/lib/tests/$tf"
+  done
+  echo "[bootstrap] vendored canonical dispatch_helpers.py (md5 $(md5sum "$canon_lib" | awk '{print $1}')) into $target/scripts/lib/" >&2
+}
+
+# -----------------------------------------------------------------------------
 # usage()
 # -----------------------------------------------------------------------------
 usage() {
@@ -223,6 +261,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   python3 "$SCRIPT_DIR/lib/scaffold.py" "${_scaffold_args[@]}"
 
+  # WS2: vendor the canonical dispatch_helpers.py + sibling tests so the
+  # rendered dry-run tree is already in sync with the framework.
+  vendor_canonical_dispatch_lib "$CLONE_DIR"
+
   # Telegram bot handle convention: strip dashes from the slug.
   # (Both SLUG_COMPACT and BOT_HANDLE were already computed above for the
   # length pre-flight, so we just reuse them with the @ prefix.)
@@ -408,6 +450,11 @@ if [[ -n "$CHILDREN" ]]; then
   _scaffold_args+=(--children="$CHILDREN")
 fi
 python3 "$SCRIPT_DIR/lib/scaffold.py" "${_scaffold_args[@]}"
+
+# WS2: vendor the canonical dispatch_helpers.py + sibling tests BEFORE the
+# initial commit, so the new dept's first commit already carries the in-sync
+# dispatch lib (no stale-template drift). Healed later by sync-dispatch-lib.sh.
+vendor_canonical_dispatch_lib "$CLONE_DIR"
 
 # -----------------------------------------------------------------------------
 # Step 5: initial commit.
