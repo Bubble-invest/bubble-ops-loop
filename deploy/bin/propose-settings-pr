@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# =============================================================================
+# propose-settings-pr — sanctioned self-improvement path for a dept agent.
+# =============================================================================
+#
+# WS5 of the loop-fix plan (~/.claude/plans/wondrous-weaving-rabbit.md).
+# Owner: Rick (R&D). Install target: /usr/local/bin/propose-settings-pr
+# (ROOT-OWNED, mode 0755). Invoked by a dept agent via the Bash tool.
+#
+# THE PROBLEM IT SOLVES
+# ---------------------
+# Two governance layers shipped 2026-06-01 are jointly contradictory:
+#   (1) push-time lock: a structural `git push` -> read-only token -> 403 (good).
+#   (2) in-session mission-guard hook (/opt/bubble-mission-guard/
+#       mission-file-guard.py) DENIES every Edit/Write/git-add/git-commit of a
+#       structural path, with NO branch awareness — so an agent cannot even
+#       STAGE a structural diff onto a PR branch, yet the deny text says
+#       "propose-le en PR".
+# The sanctioned `bubble-git-guard push --action settings_pr` path WORKS (the
+# broker mints contents:write + pull_requests:write for the agent's OWN repo);
+# only the local staging is blocked.
+#
+# THE FIX (option B)
+# ------------------
+# This is a ROOT-OWNED helper. The mission-guard only inspects Edit / Write /
+# NotebookEdit / `git add|commit|mv|rm` TOOL CALLS — an opaque root script
+# invoked as `propose-settings-pr ...` (argv[0] != "git") is OUTSIDE its scope.
+# So the structural write + commit happen INSIDE this helper, and the guard
+# stays FULLY fail-closed (the agent never Edits the structural file directly).
+#
+# SANDBOX NOTE (verified 2026-06-02 — see LOOP-FIX-BUILD.md)
+# ---------------------------------------------------------
+# This helper runs INSIDE the bwrap userns jail (Bash + all children are
+# sandboxed). Both `bubble-git-guard push` and `bubble-gh pr create` shell out
+# to `sudo -n /usr/local/bin/bubble-gh-credential-helper.sh`. The PUSH chain is
+# PROVEN to survive the jail via `allowUnsandboxedCommands: true` (maya canary,
+# commit fa5acb3). `bubble-gh pr create` is the SAME sudo->cred-helper path but
+# is NOT YET PROVEN under the sandbox. If pr-create fails under the jail, the
+# Rick-only fallback is to add "/usr/local/bin/bubble-gh *" to
+# sandbox.excludedCommands in /etc/claude-code/managed-settings.json (creating
+# the key — live has none). Do NOT make that edit speculatively.
+#
+# ARG CONTRACT
+# ------------
+#   --paths <p1> [<p2> ...]   one or more structural files (repo-relative or
+#                             absolute-under-cwd) to change. REQUIRED.
+#   --justification "<text>"  REQUIRED, non-empty. Goes into commit msg + PR body
+#                             + broker audit trail.
+#   --topic <slug>            short slug for the branch name. REQUIRED.
+#   --content-from <path>     OPTIONAL. A single source file whose contents
+#                             replace the (single) --paths target. Use for a
+#                             whole-file rewrite.
+#   --patch <path>            OPTIONAL. A unified diff to `git apply`. Mutually
+#                             exclusive with --content-from. Use for surgical
+#                             multi-file edits.
+#   --repo-dir <path>         OPTIONAL. Working tree (default: cwd). The agent's
+#                             OWN repo is derived from this tree's origin remote.
+#   --base <branch>           OPTIONAL. PR base (default: main). REFUSED if not
+#                             "main" is allowed; targeting main as the *branch to
+#                             write* is refused (see validation).
+#   --dry-run                 OPTIONAL. Do everything EXCEPT the live push and PR
+#                             create; print the exact bubble-git-guard +
+#                             bubble-gh invocations. (Used by the test harness.)
+#
+# Exactly one change source is required: either --content-from, or --patch, or
+# the file already differs in the working tree (pre-applied by the caller — but
+# the caller cannot pre-Edit a structural file because of the guard, so in
+# practice --content-from / --patch is how the change arrives).
+#
+# VALIDATION RULES ENFORCED (fail-closed, REFUSE on any violation)
+#   R1. --justification present and non-empty (after trim).
+#   R2. --topic present and non-empty; sanitized to [a-z0-9-].
+#   R3. at least one --paths entry.
+#   R4. repo-dir is a git work tree whose origin remote is bubble-ops-<slug>
+#       (derive slug+repo; REFUSE if it does not look like an own dept repo).
+#   R5. EVERY target path resolves INSIDE repo-dir (no cross-repo, no ../ escape,
+#       no absolute path outside the tree).
+#   R6. EVERY target path is STRUCTURAL per the broker's STRUCTURAL_PATH_GLOBS
+#       (single source: /opt/bubble-token-broker/src/policy.py `_is_structural`).
+#       A non-structural path is REFUSED (those go via runtime_write_own, not a
+#       settings PR).
+#   R7. We never write to / target the `main` branch directly: the change lands
+#       on a fresh `settings/<topic>-<utc-ts>` branch; base is main (PR target).
+#
+# EMITTED ON SUCCESS
+#   PR_URL=<https://github.com/Bubble-invest/bubble-ops-<slug>/pull/N>
+#   (single parseable line on stdout for the WS3 notify path to pick up.)
+#
+# Idempotent-ish: re-running creates a NEW timestamped branch — harmless.
+# =============================================================================
+
+set -euo pipefail
+umask 077
+
+PROG="propose-settings-pr"
+
+# --- overridable tool locations (tests inject stubs on PATH / via env) -------
+POLICY_PY="${BUBBLE_BROKER_POLICY_PY:-/opt/bubble-token-broker/src/policy.py}"
+GIT_GUARD="${BUBBLE_GIT_GUARD:-bubble-git-guard}"
+GH="${BUBBLE_GH:-bubble-gh}"
+BROKER_BIN="${BUBBLE_BROKER_BIN:-/opt/bubble-token-broker/bin/bubble-token-broker}"
+POLICY_DIR="${BUBBLE_POLICY_DIR:-/opt/bubble-token-broker/deploy/policies}"
+GH_OWNER="${BUBBLE_GH_OWNER:-Bubble-invest}"
+PYTHON="${PYTHON:-python3}"
+
+die() { echo "${PROG}: ERROR: $*" >&2; exit 1; }
+
+# --- arg parse ---------------------------------------------------------------
+PATHS=()
+JUSTIFICATION=""
+TOPIC=""
+CONTENT_FROM=""
+PATCH=""
+REPO_DIR="$(pwd)"
+BASE="main"
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --paths)
+      shift
+      # consume until next --flag
+      while [[ $# -gt 0 && "$1" != --* ]]; do PATHS+=("$1"); shift; done
+      ;;
+    --justification) JUSTIFICATION="${2:-}"; shift 2 ;;
+    --topic)         TOPIC="${2:-}"; shift 2 ;;
+    --content-from)  CONTENT_FROM="${2:-}"; shift 2 ;;
+    --patch)         PATCH="${2:-}"; shift 2 ;;
+    --repo-dir)      REPO_DIR="${2:-}"; shift 2 ;;
+    --base)          BASE="${2:-}"; shift 2 ;;
+    --dry-run)       DRY_RUN=1; shift ;;
+    -h|--help)       sed -n '2,90p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+# --- R1: justification -------------------------------------------------------
+JUST_TRIM="$(printf '%s' "$JUSTIFICATION" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+[[ -n "$JUST_TRIM" ]] || die "--justification is REQUIRED and must be non-empty (it goes into the PR body + broker audit trail)."
+
+# --- R2: topic ---------------------------------------------------------------
+[[ -n "$TOPIC" ]] || die "--topic is REQUIRED (used for the settings/<topic>-<ts> branch name)."
+TOPIC_SLUG="$(printf '%s' "$TOPIC" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-//' -e 's/-$//')"
+[[ -n "$TOPIC_SLUG" ]] || die "--topic produced an empty slug after sanitization."
+
+# --- R3: paths present -------------------------------------------------------
+[[ ${#PATHS[@]} -ge 1 ]] || die "at least one --paths entry is REQUIRED."
+
+# --- mutually exclusive change sources --------------------------------------
+if [[ -n "$CONTENT_FROM" && -n "$PATCH" ]]; then
+  die "--content-from and --patch are mutually exclusive."
+fi
+if [[ -n "$CONTENT_FROM" && ${#PATHS[@]} -ne 1 ]]; then
+  die "--content-from rewrites a SINGLE file; pass exactly one --paths entry."
+fi
+[[ -z "$CONTENT_FROM" || -f "$CONTENT_FROM" ]] || die "--content-from file not found: $CONTENT_FROM"
+[[ -z "$PATCH" || -f "$PATCH" ]] || die "--patch file not found: $PATCH"
+
+# --- R4: derive slug + repo from the OWN tree's origin remote ----------------
+#   (replicates dispatch_helpers.resolve_push_target — isolation-safe: the
+#    target repo is READ from the tree we were asked to act on, never hardcoded)
+[[ -d "$REPO_DIR" ]] || die "--repo-dir does not exist: $REPO_DIR"
+if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  die "--repo-dir is not inside a git work tree: $REPO_DIR"
+fi
+REPO_ROOT="$(git -C "$REPO_DIR" rev-parse --show-toplevel)"
+ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
+[[ -n "$ORIGIN_URL" ]] || die "no 'origin' remote in $REPO_DIR — cannot derive the dept repo."
+# parse bubble-ops-<slug> (optionally .git) at the tail
+if [[ "$ORIGIN_URL" =~ (bubble-ops-([A-Za-z0-9_-]+?))(\.git)?$ ]]; then
+  REPO_NAME="${BASH_REMATCH[1]}"
+  SLUG="${BASH_REMATCH[2]}"
+else
+  die "origin remote ($ORIGIN_URL) is not a bubble-ops-<slug> repo — refusing (own-repo only)."
+fi
+
+POLICY_FILE="${POLICY_DIR}/${SLUG}-policy.yaml"
+[[ -f "$POLICY_FILE" ]] || die "no broker policy for dept '${SLUG}' at ${POLICY_FILE} — refusing (the guarded push would fail)."
+
+# --- R5 + R6: each path is inside the repo AND structural --------------------
+# Normalize every path to repo-relative, then run the SINGLE-SOURCE structural
+# check from the broker policy.py.
+[[ -f "$POLICY_PY" ]] || die "broker policy.py not found at $POLICY_PY (needed for the structural-path check / single source)."
+
+REL_PATHS=()
+for p in "${PATHS[@]}"; do
+  # Resolve to an absolute path. For an existing file, realpath -e; for a
+  # not-yet-existing target (new structural file), resolve against repo root.
+  if [[ "$p" = /* ]]; then
+    abs="$p"
+  else
+    abs="${REPO_ROOT}/${p}"
+  fi
+  # canonicalize without requiring existence (handles ../ escapes)
+  abs_canon="$($PYTHON - "$abs" <<'PYEOF'
+import os, sys
+print(os.path.normpath(os.path.abspath(sys.argv[1])))
+PYEOF
+)"
+  root_canon="$($PYTHON - "$REPO_ROOT" <<'PYEOF'
+import os, sys
+print(os.path.normpath(os.path.abspath(sys.argv[1])))
+PYEOF
+)"
+  # R5: must be strictly inside repo root
+  case "$abs_canon" in
+    "$root_canon"/*) : ;;
+    *) die "path '$p' resolves OUTSIDE the dept repo ($root_canon) — cross-repo / escape REFUSED." ;;
+  esac
+  rel="${abs_canon#"$root_canon"/}"
+  REL_PATHS+=("$rel")
+
+  # R6: structural check via the broker's own _is_structural (single source).
+  # NB: register in sys.modules BEFORE exec_module so @dataclass in policy.py can
+  # resolve cls.__module__ (mirrors mission-file-guard.py's loader).
+  is_struct="$($PYTHON - "$POLICY_PY" "$rel" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("bubble_broker_policy", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["bubble_broker_policy"] = mod
+spec.loader.exec_module(mod)
+print("1" if mod._is_structural(sys.argv[2]) else "0")
+PYEOF
+)"
+  [[ "$is_struct" == "1" ]] || die "path '$rel' is NOT structural (per broker STRUCTURAL_PATH_GLOBS) — a settings PR is only for structural files; use runtime_write_own for runtime paths. REFUSED."
+done
+
+# --- R7: base must be main; we never write onto main directly ----------------
+[[ "$BASE" == "main" ]] || die "--base must be 'main' (settings PRs target the dept's main branch). Got: $BASE"
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+BRANCH="settings/${TOPIC_SLUG}-${TS}"
+if [[ "$BRANCH" == "main" || "$BRANCH" == "$BASE" ]]; then
+  die "computed branch collides with base — refusing."
+fi
+
+echo "${PROG}: dept=${SLUG} repo=${REPO_NAME} branch=${BRANCH} base=${BASE}" >&2
+echo "${PROG}: structural paths: ${REL_PATHS[*]}" >&2
+
+# --- create the branch from current HEAD ------------------------------------
+git -C "$REPO_ROOT" checkout -b "$BRANCH" >&2
+# Set upstream to origin/main so the git-guard's staged-path detection
+# (`git diff @{upstream}..HEAD`) reports EXACTLY our one structural commit,
+# not the whole branch history (the no-upstream fallback over-reports paths).
+if git -C "$REPO_ROOT" rev-parse --verify --quiet "origin/${BASE}" >/dev/null; then
+  git -C "$REPO_ROOT" branch --set-upstream-to="origin/${BASE}" "$BRANCH" >&2 || true
+fi
+
+# --- apply the supplied change ----------------------------------------------
+if [[ -n "$PATCH" ]]; then
+  git -C "$REPO_ROOT" apply --index "$PATCH" >&2
+elif [[ -n "$CONTENT_FROM" ]]; then
+  dest="${REPO_ROOT}/${REL_PATHS[0]}"
+  mkdir -p "$(dirname "$dest")"
+  cp "$CONTENT_FROM" "$dest"
+  git -C "$REPO_ROOT" add -- "${REL_PATHS[0]}" >&2
+else
+  # No explicit source: stage whatever already differs at the named paths.
+  # (Allows a caller that produced the diff some other root-side way.)
+  git -C "$REPO_ROOT" add -- "${REL_PATHS[@]}" >&2
+fi
+
+# Refuse to proceed if NONE of the named structural paths actually changed.
+# Scope the emptiness check to REL_PATHS so unrelated pre-existing staged work
+# is neither required nor counted.
+if git -C "$REPO_ROOT" diff --cached --quiet -- "${REL_PATHS[@]}"; then
+  die "no staged changes at the named paths after applying the supplied content/patch — nothing to propose."
+fi
+
+# --- commit (root), justification in the message -----------------------------
+COMMIT_MSG="settings(${SLUG}): ${TOPIC_SLUG}
+
+Justification: ${JUST_TRIM}
+
+Proposed via propose-settings-pr (WS5). Structural paths:
+$(printf '  - %s\n' "${REL_PATHS[@]}")
+A human ({{OPERATOR}}/{{OPERATOR_2}}) merges this PR; the mission-guard never fired."
+# PATHSPEC-LIMITED commit: only the named structural paths land in this commit,
+# regardless of what else is in the index (a settings PR must contain ONLY the
+# proposed structural change — the WS5 smoke caught the blanket-commit bug).
+git -C "$REPO_ROOT" -c user.name="ops-loop-${SLUG}" \
+    -c user.email="ops-loop-${SLUG}@bubble.invest" \
+    commit -m "$COMMIT_MSG" -- "${REL_PATHS[@]}" >&2
+
+# --- build the guarded-push + PR invocations ---------------------------------
+GUARD_ARGS=(
+  push
+  --dept "$SLUG"
+  --action settings_pr
+  --repo "$REPO_NAME"
+  --repo-dir "$REPO_ROOT"
+  --policy "$POLICY_FILE"
+  --broker "$BROKER_BIN"
+  --remote origin
+  --ref "$BRANCH"
+)
+
+PR_TITLE="settings(${SLUG}): ${TOPIC_SLUG}"
+PR_BODY="$(printf 'Automated settings PR opened via propose-settings-pr (WS5).\n\nDept: %s\nBranch: %s\nStructural paths:\n%s\n\n## Justification\n%s\n\nA human ({{OPERATOR}}/{{OPERATOR_2}}) must merge. The in-session mission-guard never fired — the structural write+commit happened inside the root-owned helper.\n' \
+  "$SLUG" "$BRANCH" "$(printf '  - %s\n' "${REL_PATHS[@]}")" "$JUST_TRIM")"
+
+GH_ARGS=(
+  pr create
+  --repo "${GH_OWNER}/${REPO_NAME}"
+  --base "$BASE"
+  --head "$BRANCH"
+  --title "$PR_TITLE"
+  --body "$PR_BODY"
+)
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "[dry-run] would run guarded push + PR create; no network, no token mint." >&2
+  # Emit the EXACT invocations (one token per line, NUL-safe-ish) for tests.
+  { printf 'GUARD_CMD'; printf ' %q' "$GIT_GUARD" "${GUARD_ARGS[@]}"; printf '\n'; }
+  { printf 'GH_CMD';    printf ' %q' "$GH" "${GH_ARGS[@]}";          printf '\n'; }
+  # Also run the guard in ITS dry-run mode so policy is exercised end-to-end.
+  "$GIT_GUARD" "${GUARD_ARGS[@]}" --dry-run >&2 || die "guarded push dry-run FAILED policy check (see above)."
+  echo "PR_URL=DRY_RUN"
+  exit 0
+fi
+
+# --- live: guarded push, then PR create -------------------------------------
+"$GIT_GUARD" "${GUARD_ARGS[@]}" >&2 || die "guarded push FAILED (see git-guard output above)."
+
+PR_URL="$("$GH" "${GH_ARGS[@]}")"
+[[ -n "$PR_URL" ]] || die "bubble-gh pr create returned no URL."
+
+# Single parseable line for the WS3 notify path.
+echo "PR_URL=${PR_URL}"

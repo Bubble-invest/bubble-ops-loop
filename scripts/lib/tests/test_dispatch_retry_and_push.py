@@ -169,11 +169,40 @@ def test_force_commit_and_push_noop_when_nothing_staged(tmp_path, monkeypatch):
     assert not any("bubble-git-guard" in " ".join(c) for c in calls), calls
 
 
+def _arm_guard_doctrine_path(monkeypatch):
+    """Make the canonical force_commit_and_push take its DOCTRINE branch:
+    guard binary present + dept slug resolvable + per-dept policy present.
+
+    The canonical (Tony) force_commit_and_push gates the guarded push on
+    `resolve_push_target()` yielding a slug AND the guard binary AND the
+    per-dept policy file existing — otherwise it falls through to the
+    credential-helper / bare-push fallbacks. The OLD framework helper pushed
+    via bubble-git-guard unconditionally; these tests assert the guarded path
+    is still taken when its prerequisites are met."""
+    import shutil
+    from pathlib import Path as _P
+
+    monkeypatch.setattr(dh, "resolve_push_target",
+                        lambda repo_dir: ("tony", "bubble-ops-tony"))
+    monkeypatch.setattr(shutil, "which",
+                        lambda name: "/usr/local/bin/bubble-git-guard")
+    # Policy file existence check: only the per-dept policy must read present.
+    _real_exists = _P.exists
+
+    def _fake_exists(self):
+        if str(self).endswith("tony-policy.yaml"):
+            return True
+        return _real_exists(self)
+
+    monkeypatch.setattr(_P, "exists", _fake_exists)
+
+
 def test_force_commit_and_push_invokes_bubble_git_guard_when_dirty(
     tmp_path, monkeypatch,
 ):
     """Happy path: dirty tree → add + commit + bubble-git-guard push."""
     import subprocess
+    _arm_guard_doctrine_path(monkeypatch)
     calls = []
 
     def fake_run(cmd, **kw):
@@ -203,6 +232,7 @@ def test_force_commit_and_push_returns_error_on_push_failure(
 ):
     """If bubble-git-guard push returns non-zero, helper returns (False, err)."""
     import subprocess
+    _arm_guard_doctrine_path(monkeypatch)
     call_log = []
 
     def fake_run(cmd, **kw):
