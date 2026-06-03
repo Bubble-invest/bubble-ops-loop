@@ -470,6 +470,43 @@ a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) s
 Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
 `config.yaml` yet, the helpers default to Joris's chat_id. (tony/cgp still need a config.yaml.)
 
+#### Check F — Service-start prerequisites (MANDATORY for a MANUAL deploy)
+
+The console éclosure flow sets these up automatically. If you deploy a dept BY HAND
+(clone → systemd unit → start, e.g. Ben 2026-06-03), three prerequisites are easy to
+miss — each leaves the service `active` but the **Telegram poller never starts** (no
+`bun server.ts` child, no `bot.pid`), so the agent can't receive DMs and sits idle.
+Symptom: you message the bot and get no reply; `pstree -p <MainPID> | grep bun` is empty.
+
+1. **Folder trust** — Claude Code shows *"Do you trust the files in this folder?"* on
+   first run in a new dir. The headless `claude` **hangs at this prompt forever** (even
+   with `--dangerously-skip-permissions`; pty decode shows repeated `trust?`), so it
+   never reaches poller start. FIX (as the agent OS-user):
+   ```bash
+   python3 - <<'PY'
+   import json; f="/home/<user>/.claude.json"; d=json.load(open(f))
+   p="/home/<user>/agents/bubble-ops-<slug>"
+   d["projects"].setdefault(p,{})["hasTrustDialogAccepted"]=True
+   json.dump(d, open(f,"w"), indent=2)
+   PY
+   ```
+   Every existing dept has `hasTrustDialogAccepted: True`; a fresh manual clone does not.
+
+2. **Per-channel `.env`** — the telegram plugin (`server.ts`) reads its token from
+   `$TELEGRAM_STATE_DIR/.env` (= `~/.claude/channels/telegram-<slug>/.env`), **NOT** from
+   the systemd EnvironmentFile. The unit's `TELEGRAM_BOT_TOKEN` feeds the *agent*; the
+   *poller* needs the channel `.env`. Create it (mode 600, agent-owned) with
+   `TELEGRAM_BOT_TOKEN=<token>`, alongside `access.json` (allowlist) + an `approved/` dir.
+
+3. **Dept `.venv`** — if the dept ships pandas/numpy/etc tools (e.g. Ben — unlike the
+   stdlib-only depts), provision a `.venv` from `requirements.txt` at the workdir and
+   wire the tool invocations at it (`FUND_PYTHON`/venv python). The VPS system python has
+   no scientific stack.
+
+Verify after start: `cat ~/.claude/channels/telegram-<slug>/bot.pid` (present = poller up);
+`curl .../getWebhookInfo` shows `pending_update_count` + `last_error` WITHOUT consuming
+updates (never `getUpdates` — it steals the agent's pending messages). `NRestarts=0` = clean.
+
 ## Status state machine
 
 7 statuses, strict linear progression (Notion v5 lines 794-801):
