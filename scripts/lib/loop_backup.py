@@ -23,10 +23,18 @@ import re
 from typing import List, Optional
 
 
-# An ISO-8601 UTC timestamp at the start of a heartbeat line, e.g.
-# "2026-06-01T07:35:33Z tick ...". Used as a more precise liveness signal
-# than file mtime (which a git checkout/rsync could bump).
-_ISO_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
+# An ISO-8601 UTC timestamp at the start of a heartbeat line. Used as a more
+# precise liveness signal than file mtime (which a git checkout/rsync could
+# bump). Accepts BOTH canonical forms agents emit in the wild:
+#   "2026-06-01T07:35:33Z tick ..."                 (hand-built, Z suffix)
+#   "2026-06-02T13:30:35.931407+00:00 tick ..."     (datetime.isoformat())
+# Bug 2026-06-04: the old regex required a literal Z, so the microsecond/offset
+# form never matched → latest_heartbeat_epoch silently fell back to file mtime
+# → a frozen-date loop read as FALSE-FRESH on the cockpit (masking staleness —
+# the exact failure this function's mtime-avoidance was meant to prevent).
+_ISO_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
+)
 
 
 def backup_decision(
@@ -105,8 +113,13 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
                 text = fh.read()
             matches = _ISO_RE.findall(text)
             if matches:
-                dt = _dt.datetime.strptime(matches[-1], "%Y-%m-%dT%H:%M:%S")
-                ts_epoch = dt.replace(tzinfo=_dt.timezone.utc).timestamp()
+                # Normalise trailing Z → +00:00 so fromisoformat() (3.9) accepts
+                # both the "...SSZ" and "...SS.ffffff+00:00" forms agents emit.
+                raw = matches[-1].replace("Z", "+00:00")
+                dt = _dt.datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_dt.timezone.utc)
+                ts_epoch = dt.timestamp()
         except OSError:
             ts_epoch = None
         if ts_epoch is None:

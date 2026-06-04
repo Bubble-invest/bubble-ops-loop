@@ -107,6 +107,64 @@ def _flip_claude_md_to_operating(repo_dir: Path, dept_doc: dict | None
         encoding="utf-8",
     )
 
+    # 3. INSTALL the operating SessionStart hook (BUG-HOOK fix, 2026-06-04).
+    # Stripping the onboarding hook is not enough: without an operating hook
+    # the agent wakes with no context and never re-observes outputs/<today>/.
+    # Maya ended activation with her SessionStart pointing at the deleted
+    # pre-rename path /home/claude/agents/<slug>/... → a dead no-op hook.
+    # Render the canonical operating hook from the onboarding-skill template
+    # and wire settings.json to the correct bubble-ops-<slug> path. Idempotent.
+    _install_operating_session_hook(repo_dir, dept_doc, settings_path)
+
+
+def _install_operating_session_hook(repo_dir: Path, dept_doc: dict | None,
+                                    settings_path: Path) -> None:
+    """Render the operating session-start.sh from the canonical isolation
+    template and point settings.json's SessionStart at it. Best-effort:
+    never raises into the activation flow (logs + returns on any issue)."""
+    if dept_doc is None:
+        return
+    dept = (dept_doc.get("department", {}) or {})
+    slug = dept.get("slug")
+    if not slug:
+        return
+    display_name = dept.get("display_name", slug.capitalize())
+    level = dept.get("level", "ops")
+    try:
+        _skill_lib = str(_SKILL_ROOT / "skill_lib")
+        if _skill_lib not in sys.path:
+            sys.path.insert(0, _skill_lib)
+        from isolation_scaffold import _render  # canonical Jinja renderer
+    except Exception:
+        return  # skill_lib not importable in this context — skip silently
+    ctx = {"slug": slug, "display_name": display_name, "level": level}
+    try:
+        hook_body = _render("session-start.sh.template", ctx)
+    except Exception:
+        return
+    hooks_dir = repo_dir / ".claude" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_file = hooks_dir / "session-start.sh"
+    hook_file.write_text(hook_body, encoding="utf-8")
+    hook_file.chmod(0o755)
+
+    # Wire settings.json SessionStart → this hook's canonical absolute path.
+    canonical_cmd = f"/home/claude/agents/bubble-ops-{slug}/.claude/hooks/session-start.sh"
+    try:
+        import json as _json
+        data = _json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    hooks = data.get("hooks", {}) or {}
+    hooks["SessionStart"] = [{
+        "hooks": [{"type": "command", "command": canonical_cmd}],
+    }]
+    data["hooks"] = hooks
+    settings_path.write_text(
+        _json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
 
 def _git(repo_dir: Path, *args: str, check: bool = True
          ) -> subprocess.CompletedProcess:

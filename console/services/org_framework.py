@@ -72,19 +72,38 @@ def build() -> Dict[str, Any]:
     }
 
 
-def _dept_status(pulse_alive: bool, layer_rows: List[Any]) -> str:
-    """Roll a dept's live signals into one status for the graph node.
+# Pulse-age thresholds for tiered status. Loop ticks every ~20 min; silent
+# under WARN_SEC is amber (might just be between ticks / briefly parked),
+# silent over WARN_SEC is red (genuinely dead).
+_PULSE_WARN_SEC = 90 * 60        # 90 min — matches morty_reader._STALE_PULSE_SEC
+_PULSE_ALERT_SEC = 24 * 3600     # 24 h — clearly dead, not just a gap
 
-    - "alert"  : loop silent OR any layer stale (the red signal the meeting
-                 asked for — "alertes rouges si layer non exécuté").
-    - "warn"   : loop alive but a layer is merely behind (none flagged stale
-                 here yet — reserved; currently folds into ok/alert).
-    - "ok"     : loop alive and no stale layer.
+
+def _dept_status(pulse_alive: bool, pulse_age_sec, layer_rows: List[Any]) -> str:
+    """Roll a dept's live signals into ONE tiered status for the node.
+
+    Grading (so red keeps meaning "look now", not "everything"):
+    - "alert" : loop silent > 24 h, OR a layer that HAS run before is now
+                stale (regressed). These are real problems.
+    - "warn"  : loop silent but recently (< 24 h) — amber, keep an eye.
+    - "ok"    : loop alive (ticked within the warn window) and no regressed layer.
+
+    A layer that has simply NEVER run (never_run=True) is NOT counted as a
+    problem here — in Phase 1 (human-approved) Layer 3 legitimately never
+    fires until a gate is approved. Never-run renders as a neutral idle badge,
+    not red. (Bug surfaced by the flowchart 2026-06-04: every dept showed red
+    L3 forever because never-run was conflated with stale.)
     """
-    any_stale = any(r.is_stale for r in layer_rows)
-    if not pulse_alive or any_stale:
+    # A "regressed" layer ran at least once and has since gone stale.
+    regressed = any((not r.never_run) and r.is_stale for r in layer_rows)
+    if regressed:
         return "alert"
-    return "ok"
+    if pulse_alive:
+        return "ok"
+    # loop silent: grade by how long
+    if pulse_age_sec is not None and pulse_age_sec > _PULSE_ALERT_SEC:
+        return "alert"
+    return "warn"
 
 
 def build_graph() -> Dict[str, Any]:
@@ -124,18 +143,23 @@ def build_graph() -> Dict[str, Any]:
     def _dept_node(d, kind: str, tier: int) -> Dict[str, Any]:
         p = pulse.get(d.slug)
         alive = bool(p and p.alive)
+        age_sec = p.age_sec if p else None
         lrows = rows_by_dept.get(d.slug, [])
         return {
             "id": f"dept:{d.slug}", "kind": kind, "tier": tier,
             "title": d.display_name, "role": "Département management" if kind == "mgmt" else None,
             "slug": d.slug, "href": f"/dept/{d.slug}",
-            "status": _dept_status(alive, lrows),
+            "status": _dept_status(alive, age_sec, lrows),
             "pulse": {
                 "alive": alive,
                 "age_human": (p.age_human if p else "") or "",
             },
             "layers": [
-                {"num": r.layer, "stale": r.is_stale,
+                {"num": r.layer,
+                 # three states: ok | idle (never run) | stale (ran, now overdue)
+                 "state": ("idle" if r.never_run
+                           else "stale" if r.is_stale else "ok"),
+                 "stale": r.is_stale, "never_run": r.never_run,
                  "age_human": r.age_human, "last": r.last_success_iso}
                 for r in sorted(lrows, key=lambda x: x.layer)
             ],
