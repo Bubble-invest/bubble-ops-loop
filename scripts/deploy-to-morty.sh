@@ -98,10 +98,14 @@ REMOTE_UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
 # docs/ARCHITECTURE.md §1, docs/OPERATOR-GUIDE.md, Phase-G smoke test).
 REMOTE_REPO_PATH="/home/claude/agents/${SLUG}"
 
-# Substitute placeholders (DEPT_SLUG, TELEGRAM_STATE_DIR, ENV_FILE).
+# Substitute placeholders (DEPT_SLUG, DEPT_SLUG_UPPER, TELEGRAM_STATE_DIR, ENV_FILE).
+# DEPT_SLUG_UPPER = slug upper-cased with '-'→'_' — matches the broker's
+# GITHUB_APP_INSTALLATION_ID_<DEPT> env-var naming (cli.py::_resolve_installation_id).
 # Use sed with `|` delimiter since paths contain `/`.
+SLUG_UPPER=$(printf '%s' "${SLUG}" | tr '[:lower:]-' '[:upper:]_')
 rendered=$(
   sed \
+    -e "s|\${DEPT_SLUG_UPPER}|${SLUG_UPPER}|g" \
     -e "s|\${DEPT_SLUG}|${SLUG}|g" \
     -e "s|\${TELEGRAM_STATE_DIR}|${TELEGRAM_STATE_DIR}|g" \
     -e "s|\${ENV_FILE}|${ENV_FILE}|g" \

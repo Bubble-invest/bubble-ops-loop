@@ -70,7 +70,11 @@ User=claude
 Group=claude
 WorkingDirectory=/home/claude/agents/${DEPT_SLUG}
 
-Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+# /opt/bubble-token-broker/bin is PREPENDED so git-guard's default broker lookup
+# (`bubble-token-broker`, resolved via PATH) finds the binary — it lives there,
+# not in a standard PATH dir. Without this: "broker binary not found" (blocker #2
+# of the 2026-06-04 runtime-push outage).
+Environment=PATH=/opt/bubble-token-broker/bin:/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
 Environment=BUBBLE_DEPT=${DEPT_SLUG}
 Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
 
@@ -90,6 +94,13 @@ Environment=GITHUB_APP_PRIVATE_KEY_PATH=/run/bubble-${DEPT_SLUG}/pem
 # id, leaving tony/ben/maya unable to push (commits stranded for days,
 # 2026-06-04). Static + public → safe to bake into the unit template.
 Environment=GITHUB_APP_ID=3782718
+# GITHUB_APP_INSTALLATION_ID_<DEPT>: the Bubble-invest org install id (135214360,
+# from the working credential-helper). Broker `cli.py::_resolve_installation_id`
+# reads GITHUB_APP_INSTALLATION_ID_${DEPT_SLUG^^} (dashes→underscores) and raises
+# "Could not resolve installation ID" without it (blocker #3 of the 2026-06-04
+# outage). Public, not a secret. NOTE: the var NAME is dept-suffixed — the
+# renderer must upper-case ${DEPT_SLUG} and replace '-' with '_'.
+Environment=GITHUB_APP_INSTALLATION_ID_${DEPT_SLUG_UPPER}=135214360
 Environment=BUBBLE_BROKER_JOURNAL=on
 
 # Tmpfs runtime dir with per-dept isolation (mirrors morty's pattern).
