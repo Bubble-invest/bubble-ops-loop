@@ -1,0 +1,203 @@
+{# ── Org-framework flowchart — interactive React Flow graph ───────────────
+   Replaces the former static sections 2 (hiérarchie), 3 (4 moments) and 4
+   (deux rails). Data: GET /health/graph.json (org_framework.build_graph()).
+
+   Stack note: this app already loads frontend libs via CDN (Tailwind, HTMX,
+   Google Fonts — see deploy/README.md "Stack"). React Flow follows the same
+   no-build-pipeline pattern via UMD bundles. If the CDN or JS fails, the
+   <noscript> + #org-flow-fallback degrade to a plain link, so the live page
+   never goes blank. #}
+
+<section class="cabinet-section" aria-labelledby="fw-graph-heading">
+  <h2 id="fw-graph-heading" class="section-heading">
+    <span class="section-heading-number">2.</span>
+    Le cadre — comment l'organisation est câblée
+  </h2>
+  <p class="fw-loop-intro">
+    Le Principal donne des directives (PR) et reçoit les KPIs ; chaque
+    département répète la même boucle OODA (les 4 moments). Une arête ou un
+    nœud en <span class="fw-legend-swatch fw-legend-swatch--alert"></span>
+    rouge signale une boucle silencieuse ou un layer non exécuté. Cliquez un
+    nœud pour ouvrir sa fiche.
+  </p>
+
+  <div class="fw-legend" aria-hidden="true">
+    <span><span class="fw-legend-swatch fw-legend-swatch--ok"></span> à jour</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--alert"></span> silence / layer manquant</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--unknown"></span> pas de télémétrie (Mac local)</span>
+  </div>
+
+  <div id="org-flow" class="org-flow" role="img"
+       aria-label="Schéma interactif de l'organisation des agents">
+    <div id="org-flow-fallback" class="org-flow-fallback">
+      Chargement du schéma…
+    </div>
+  </div>
+  <noscript>
+    <p class="muted-italic">
+      Le schéma interactif nécessite JavaScript. Les mêmes données sont
+      lisibles dans le tableau « Activité en direct » ci-dessus.
+    </p>
+  </noscript>
+</section>
+
+{# React + React Flow UMD bundles (CDN, no build step) #}
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<link href="https://unpkg.com/reactflow@11/dist/style.css" rel="stylesheet">
+<script src="https://unpkg.com/reactflow@11/dist/umd/index.js" crossorigin></script>
+
+<script>
+(function () {
+  "use strict";
+  var mount = document.getElementById("org-flow");
+  var fallback = document.getElementById("org-flow-fallback");
+
+  function fail(msg) {
+    if (fallback) {
+      fallback.textContent = msg ||
+        "Schéma indisponible — voir le tableau « Activité en direct ».";
+      fallback.classList.add("org-flow-fallback--error");
+    }
+  }
+
+  if (!window.React || !window.ReactDOM || !window.ReactFlow) {
+    return fail("Le schéma n'a pas pu charger (CDN bloqué). " +
+                "Les données restent dans le tableau ci-dessus.");
+  }
+
+  var h = React.createElement;
+  var RF = window.ReactFlow;
+  var ReactFlowComp = RF.ReactFlow || RF.default;
+
+  // ── Layout: simple deterministic tiered layout (no dagre dep needed) ──
+  // tier 0 Principal · 1 Management · 2 Ops + Concierges · 3 Mac local
+  var TIER_Y = { 0: 0, 1: 170, 2: 360, 3: 560 };
+  var COL_W = 250;
+
+  function layout(graphNodes) {
+    var byTier = {};
+    graphNodes.forEach(function (n) {
+      var t = n.tier == null ? 2 : n.tier;
+      (byTier[t] = byTier[t] || []).push(n);
+    });
+    var pos = {};
+    Object.keys(byTier).forEach(function (t) {
+      var row = byTier[t];
+      var total = row.length;
+      row.forEach(function (n, i) {
+        var x = (i - (total - 1) / 2) * COL_W;
+        pos[n.id] = { x: x, y: TIER_Y[t] != null ? TIER_Y[t] : 360 };
+      });
+    });
+    return pos;
+  }
+
+  function layersBadge(layers) {
+    if (!layers || !layers.length) return "";
+    return layers.map(function (L) {
+      return '<span class="fw-rf-layer fw-rf-layer--' +
+        (L.stale ? "stale" : "ok") + '" title="Layer ' + L.num +
+        (L.last ? " · " + L.age_human : " · jamais") + '">' + L.num + "</span>";
+    }).join("");
+  }
+
+  // Custom node renderer: an editorial card matching the cabinet palette.
+  function cardHtml(n) {
+    var parts = [];
+    if (n.role) parts.push('<span class="fw-rf-role">' + n.role + "</span>");
+    parts.push('<span class="fw-rf-name">' + (n.title || "") + "</span>");
+    if (n.slug) parts.push('<span class="fw-rf-slug">/' + n.slug + "</span>");
+    if (n.kind === "ops" || n.kind === "mgmt") {
+      var pulse = n.pulse || {};
+      parts.push('<span class="fw-rf-pulse fw-rf-pulse--' +
+        (pulse.alive ? "alive" : "silent") + '">' +
+        (pulse.alive ? "boucle active" : "boucle silencieuse") +
+        (pulse.age_human ? " · " + pulse.age_human : "") + "</span>");
+      parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers) + "</span>");
+    } else if (n.note) {
+      parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+    }
+    return parts.join("");
+  }
+
+  function NodeCard(props) {
+    var d = props.data;
+    return h("div", {
+      className: "fw-rf-card fw-rf-card--" + d.kind + " fw-rf-card--status-" + d.status,
+      onClick: function () { if (d.href) window.location.href = d.href; },
+      style: { cursor: d.href ? "pointer" : "default" },
+      dangerouslySetInnerHTML: { __html: cardHtml(d) },
+    },
+    // React Flow needs handles for edges to attach
+    h(RF.Handle, { type: "target", position: RF.Position.Top, style: { opacity: 0 } }),
+    h(RF.Handle, { type: "source", position: RF.Position.Bottom, style: { opacity: 0 } }));
+  }
+
+  var nodeTypes = { card: NodeCard };
+
+  function toFlow(graph) {
+    var pos = layout(graph.nodes);
+    var nodes = graph.nodes.map(function (n) {
+      return { id: n.id, type: "card", position: pos[n.id] || { x: 0, y: 0 }, data: n };
+    });
+    var edges = graph.edges.map(function (e) {
+      var isKpi = e.kind === "kpi";
+      return {
+        id: e.id, source: e.source, target: e.target,
+        label: e.label || "",
+        animated: e.kind === "directive",
+        type: "smoothstep",
+        className: "fw-rf-edge fw-rf-edge--" + e.kind,
+        labelStyle: { fontFamily: "var(--font-mono)", fontSize: 10, fill: "var(--ochre-deep)" },
+        labelBgStyle: { fill: "var(--paper)", fillOpacity: 0.85 },
+        style: {
+          stroke: isKpi ? "var(--sage)" : "var(--ochre)",
+          strokeWidth: 1.4,
+          strokeDasharray: isKpi ? "4 3" : undefined,
+        },
+        markerEnd: { type: RF.MarkerType.ArrowClosed,
+                     color: isKpi ? "var(--sage)" : "var(--ochre)" },
+      };
+    });
+    return { nodes: nodes, edges: edges };
+  }
+
+  function App(props) {
+    var flow = props.flow;
+    return h("div", { className: "org-flow-canvas" },
+      h(ReactFlowComp, {
+        nodes: flow.nodes, edges: flow.edges, nodeTypes: nodeTypes,
+        fitView: true, fitViewOptions: { padding: 0.18 },
+        proOptions: { hideAttribution: true },
+        nodesDraggable: false, nodesConnectable: false, elementsSelectable: true,
+        minZoom: 0.4, maxZoom: 1.5,
+      },
+        h(RF.Background, { gap: 22, size: 1, color: "rgba(184,128,74,0.10)" }),
+        h(RF.Controls, { showInteractive: false })
+      )
+    );
+  }
+
+  var root = null;
+  function render(graph) {
+    var flow = toFlow(graph);
+    if (!flow.nodes.length) return fail("Aucun département à afficher pour l'instant.");
+    mount.classList.add("org-flow--ready");
+    if (fallback) fallback.style.display = "none";
+    if (!root) root = ReactDOM.createRoot(mount);
+    root.render(h(App, { flow: flow }));
+  }
+
+  function load() {
+    fetch("/health/graph.json", { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(render)
+      .catch(function (err) { fail("Schéma indisponible (" + err.message + ")."); });
+  }
+
+  load();
+  // Refresh status colours every 60s without a full page reload.
+  setInterval(load, 60000);
+})();
+</script>

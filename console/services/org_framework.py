@@ -1,10 +1,14 @@
 """
 org_framework.py — the organisation framework data for the cockpit.
 
-{{OPERATOR}} msg 1183 → 1188 (2026-06-01): a simple flowchart of how the org works
+{{OPERATOR}} msg 1183 → 1188 (2026-06-01): a flowchart of how the org works
 (concierges, departments, layers), shown INSIDE the Carnet de bord page (not
-a separate page). This service builds the data; the partial
-partials/_org_framework.html draws it.
+a separate page). This service builds the data.
+
+- build()       → legacy dict for any server-rendered consumers.
+- build_graph() → nodes/edges/rails for the interactive React Flow chart
+                  (2026-06-04); served as JSON by GET /health/graph.json and
+                  drawn client-side by partials/_org_flow.html.
 
 Shape from the Notion "bubble-ops-loop — Architecture finale simplifiée" page:
     Principal ({{OPERATOR}}·{{OPERATOR_2}}) → Management dept → Ops depts,  + Concierges beside.
@@ -12,9 +16,9 @@ Every department runs the same 4-moment OODA day (the layers).
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from console.services import concierge_reader, dept_registry, github_reader
+from console.services import concierge_reader, dept_registry, github_reader, morty_reader
 
 # The 4 layers (OODA "moments") every department runs each day. Mirrors
 # loop_history.MOMENT_NAMES + the Notion architecture page.
@@ -23,6 +27,18 @@ LAYERS = [
     {"num": 2, "name": "La recherche", "ooda": "Research", "what": "analyse, prépare les décisions"},
     {"num": 3, "name": "L'exécution", "ooda": "Exec", "what": "agit sur ce qui est validé"},
     {"num": 4, "name": "Le débrief du soir", "ooda": "Risk", "what": "audit, risques, améliorations"},
+]
+
+# Mac-local agents from the Notion architecture wishlist (hub §10 / meeting
+# 2026-06-03). The console has no telemetry for these yet — they don't phone
+# home — so they appear as static nodes flagged `telemetry: false`. A
+# follow-up (see STATUS / FOLLOWUP-local-agents-phonehome) will wire their
+# heartbeats via the SPEC-015 phone-home pattern, after which build_graph()
+# can fold real status in the same way it does for VPS depts.
+LOCAL_AGENTS = [
+    {"id": "rick", "name": "Rick", "role": "R&D / Dev", "host": "Mac local"},
+    {"id": "tony-local", "name": "Tony (local)", "role": "Management — 2e instance", "host": "Mac local"},
+    {"id": "miranda", "name": "Miranda", "role": "ChromeTab + images", "host": "Mac de {{OPERATOR_2}}"},
 ]
 
 
@@ -53,4 +69,137 @@ def build() -> Dict[str, Any]:
         "ops": ops,
         "concierges": concierges,
         "layers": LAYERS,
+    }
+
+
+def _dept_status(pulse_alive: bool, layer_rows: List[Any]) -> str:
+    """Roll a dept's live signals into one status for the graph node.
+
+    - "alert"  : loop silent OR any layer stale (the red signal the meeting
+                 asked for — "alertes rouges si layer non exécuté").
+    - "warn"   : loop alive but a layer is merely behind (none flagged stale
+                 here yet — reserved; currently folds into ok/alert).
+    - "ok"     : loop alive and no stale layer.
+    """
+    any_stale = any(r.is_stale for r in layer_rows)
+    if not pulse_alive or any_stale:
+        return "alert"
+    return "ok"
+
+
+def build_graph() -> Dict[str, Any]:
+    """Build a semantic node/edge graph of the whole org for the cockpit.
+
+    Returns plain JSON-able dicts (NOT React Flow internals): the client
+    template owns layout + rendering. Each node carries `kind`, `status`,
+    and a `href` (when clickable); each edge carries `kind` + `label`.
+
+    Live status comes from the same source as the Carnet table: per-dept
+    loop pulse + per-(dept×layer) freshness via morty_reader. The structure
+    (Principal → Management → Ops, concierges aside, Mac-local tier, the
+    4-layer loop, the two rails) is the fixed framework from the Notion
+    "bubble-ops-loop — Architecture finale simplifiée" page.
+    """
+    live = dept_registry.live_departments()
+    management = [d for d in live if _level(d.slug) == "management"]
+    ops = [d for d in live if _level(d.slug) != "management"]
+    slugs = [d.slug for d in live]
+
+    pulse = morty_reader.loop_pulse(slugs)
+    rows = morty_reader.per_dept_layer_heartbeats(slugs)
+    rows_by_dept: Dict[str, List[Any]] = {}
+    for r in rows:
+        rows_by_dept.setdefault(r.dept, []).append(r)
+
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+
+    # ── Principal ──────────────────────────────────────────────────────
+    nodes.append({
+        "id": "principal", "kind": "principal", "tier": 0,
+        "title": "{{OPERATOR}} · {{OPERATOR_2}}", "role": "Principal",
+        "note": "gates critiques · mandats · capital", "status": "ok",
+    })
+
+    def _dept_node(d, kind: str, tier: int) -> Dict[str, Any]:
+        p = pulse.get(d.slug)
+        alive = bool(p and p.alive)
+        lrows = rows_by_dept.get(d.slug, [])
+        return {
+            "id": f"dept:{d.slug}", "kind": kind, "tier": tier,
+            "title": d.display_name, "role": "Département management" if kind == "mgmt" else None,
+            "slug": d.slug, "href": f"/dept/{d.slug}",
+            "status": _dept_status(alive, lrows),
+            "pulse": {
+                "alive": alive,
+                "age_human": (p.age_human if p else "") or "",
+            },
+            "layers": [
+                {"num": r.layer, "stale": r.is_stale,
+                 "age_human": r.age_human, "last": r.last_success_iso}
+                for r in sorted(lrows, key=lambda x: x.layer)
+            ],
+        }
+
+    # ── Management tier ────────────────────────────────────────────────
+    mgmt_ids: List[str] = []
+    for d in management:
+        n = _dept_node(d, "mgmt", 1)
+        nodes.append(n)
+        mgmt_ids.append(n["id"])
+        # Principal ⇄ management: directives down, exports/KPIs up.
+        edges.append({"id": f"e:principal-{n['id']}", "source": "principal",
+                      "target": n["id"], "kind": "directive",
+                      "label": "directives (PR)"})
+        edges.append({"id": f"e:{n['id']}-principal", "source": n["id"],
+                      "target": "principal", "kind": "kpi",
+                      "label": "exports + KPIs"})
+
+    # ── Ops tier ───────────────────────────────────────────────────────
+    parent_ids = mgmt_ids or ["principal"]
+    for d in ops:
+        n = _dept_node(d, "ops", 2)
+        nodes.append(n)
+        for pid in parent_ids:
+            edges.append({"id": f"e:{pid}-{n['id']}", "source": pid,
+                          "target": n["id"], "kind": "directive",
+                          "label": "directives (PR)"})
+            edges.append({"id": f"e:{n['id']}-{pid}", "source": n["id"],
+                          "target": pid, "kind": "kpi",
+                          "label": "KPIs (Layer 4)"})
+
+    # ── Concierges (beside, no autonomous loop) ────────────────────────
+    for c in (concierge_reader.get_concierge(name) for name in concierge_reader.CONCIERGES):
+        if c is None:
+            continue
+        svc = (getattr(c, "metadata", {}) or {}).get("service_status", "")
+        nodes.append({
+            "id": f"concierge:{c.name}", "kind": "concierge", "tier": 2,
+            "title": c.name.capitalize(), "role": "Concierge",
+            "note": "assistant réactif · pas de boucle autonome",
+            "href": f"/concierge/{c.name}",
+            "status": "ok" if svc in ("", "active", "running") else "warn",
+        })
+
+    # ── Mac-local agents (static — no telemetry yet) ───────────────────
+    for a in LOCAL_AGENTS:
+        nodes.append({
+            "id": f"local:{a['id']}", "kind": "local", "tier": 3,
+            "title": a["name"], "role": a["role"], "note": a["host"],
+            "status": "unknown", "telemetry": False,
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "layers": LAYERS,
+        "rails": [
+            {"id": "engine", "kind": "engine", "title": "Moteur principal",
+             "body": "/loop en continu — un par département. À chaque tick : "
+                     "regarde les files, agit, ou bat silencieusement du cœur."},
+            {"id": "net", "kind": "net", "title": "Filet de sécurité",
+             "body": "Sauvegarde planifiée (08:00 + 14:00) + routines cloud "
+                     "quotidiennes. Si une boucle meurt, le filet exécute un "
+                     "tick à sa place."},
+        ],
     }
