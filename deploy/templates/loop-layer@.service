@@ -1,0 +1,21 @@
+[Unit]
+Description=ops-loop Layer %i FLOOR — run OODA Layer %i for every stale eligible dept
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+# Don't run while the box is still booting agents.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+WorkingDirectory=/home/claude
+Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+# NO BUBBLE_BACKUP_DEPTS here — the dept set is auto-discovered at runtime
+# (glob /home/claude/agents/bubble-ops-*), so a NEW dept is picked up with
+# zero per-dept config. Only the global knobs live here.
+Environment=BUBBLE_BACKUP_STALE_SEC=5400
+Environment=BUBBLE_BACKUP_MODEL=sonnet
+Environment=BUBBLE_BACKUP_BUDGET_USD=3.00
+# %i is the instance number (1..4) → the forced OODA layer.
+ExecStart=/home/claude/bubble-ops-loop/scripts/loop-backup.sh --layer %i
+# A layer tick can spawn a subagent; give it room but cap it.
+TimeoutStartSec=1800
