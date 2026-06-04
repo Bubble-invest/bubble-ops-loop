@@ -535,9 +535,37 @@ Symptom: you message the bot and get no reply; `pstree -p <MainPID> | grep bun` 
    wire the tool invocations at it (`FUND_PYTHON`/venv python). The VPS system python has
    no scientific stack.
 
+4. **Telegram liveness watchdog** — a manual deploy installs `ops-loop-<slug>.service`
+   but **NOT** the per-dept watchdog (`deploy-to-morty.sh` does not render it; the watchdog
+   stack is hand-cloned per dept). Without it, a wedged loop goes silent with no alert —
+   exactly the gap that left Ben unmonitored after 2026-06-03. Clone an existing dept's
+   stack (maya/tony are byte-identical modulo slug) — FOUR artifacts:
+   ```bash
+   # As root on the box. Source dept = maya; target = <slug>.
+   sed 's/maya/<slug>/g' /home/claude/scripts/telegram-watchdog-maya.sh \
+     | install -o claude -g claude -m 0755 /dev/stdin /home/claude/scripts/telegram-watchdog-<slug>.sh
+   sed 's/maya/<slug>/g' /etc/systemd/system/telegram-watchdog-maya.service \
+     | install -o root -g root -m 0644 /dev/stdin /etc/systemd/system/telegram-watchdog-<slug>.service
+   sed 's/maya/<slug>/g' /etc/systemd/system/telegram-watchdog-maya.timer \
+     | install -o root -g root -m 0644 /dev/stdin /etc/systemd/system/telegram-watchdog-<slug>.timer
+   # sudoers: VALIDATE with visudo BEFORE install (a bad drop-in locks sudo)
+   sed 's/maya/<slug>/g' /etc/sudoers.d/claude-telegram-watchdog-maya > /tmp/wd-sudoers
+   visudo -cf /tmp/wd-sudoers && install -o root -g root -m 0440 /tmp/wd-sudoers /etc/sudoers.d/claude-telegram-watchdog-<slug>; rm -f /tmp/wd-sudoers
+   systemctl daemon-reload && systemctl enable --now telegram-watchdog-<slug>.timer
+   ```
+   The `.sh` MUST be mode `0755` — systemd fails `203/EXEC` on a non-executable ExecStart
+   (a deploy that writes the script without `+x` silences the watchdog; see
+   [[shared/systems/vps-telegram-watchdog]]). The pyinfra renderer self-heals mode, but a
+   hand-clone does not — so always `test -x` after.
+   NB: a watchdog is only for depts that **have a loop**. Concierges with no loop (morty)
+   and intentionally-disabled depts (cgp) get NO watchdog — installing one produces 5-min
+   false-alarm ticks.
+
 Verify after start: `cat ~/.claude/channels/telegram-<slug>/bot.pid` (present = poller up);
 `curl .../getWebhookInfo` shows `pending_update_count` + `last_error` WITHOUT consuming
 updates (never `getUpdates` — it steals the agent's pending messages). `NRestarts=0` = clean.
+Watchdog: `systemctl is-active telegram-watchdog-<slug>.timer` = `active`, `is-enabled` =
+`enabled`, and `test -x /home/claude/scripts/telegram-watchdog-<slug>.sh`.
 
 ## Status state machine
 
