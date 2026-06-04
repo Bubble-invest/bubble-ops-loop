@@ -685,6 +685,7 @@ each Moment task to a stateless subagent via Agent. The subagents
    a placeholder dict, otherwise it falls back to `heartbeat` and Moments 2/3 never
    fire) and returns `layer_1`/`2`/`3`/`4`/`heartbeat`:
    `python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+   `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
 3. If the decision ≠ `heartbeat` — spawn + verify each subagent:
    - Read `layers/<N>/PROMPT.md` (the Moment's instruction sheet).

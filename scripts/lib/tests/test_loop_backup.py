@@ -170,3 +170,50 @@ def test_latest_per_dept_keeps_most_recent():
     latest = latest_per_dept(events)
     assert latest["maya"]["reason"] == "b"     # second maya event wins
     assert latest["tony"]["reason"] == "c"
+
+
+# ── Regression: heartbeat timestamp parser accepts both wire formats ──────
+# Bug 2026-06-04: _ISO_RE required a literal "Z", so the datetime.isoformat()
+# form ("...SS.ffffff+00:00") never matched and latest_heartbeat_epoch fell
+# back to file mtime — making a frozen-date loop read as false-fresh.
+
+def test_latest_heartbeat_parses_microsecond_offset_form(tmp_path):
+    from scripts.lib.loop_backup import latest_heartbeat_epoch
+    import datetime as _dt
+    d = tmp_path / "2026-06-02"
+    d.mkdir()
+    # Maya-style line (microseconds + +00:00 offset, no trailing Z)
+    (d / "heartbeat.log").write_text(
+        "2026-06-02T13:30:35.931407+00:00 tick L2 OK\n", encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    assert ep is not None
+    # Must be the IN-FILE time (stale), NOT the fresh file mtime.
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert (got.year, got.month, got.day, got.hour) == (2026, 6, 2, 13)
+
+
+def test_latest_heartbeat_parses_z_suffix_form(tmp_path):
+    from scripts.lib.loop_backup import latest_heartbeat_epoch
+    import datetime as _dt
+    d = tmp_path / "2026-06-04"
+    d.mkdir()
+    (d / "heartbeat.log").write_text(
+        "2026-06-04T08:40:28Z tick ok\n", encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert (got.year, got.month, got.day, got.hour) == (2026, 6, 4, 8)
+
+
+def test_latest_heartbeat_picks_newest_across_formats(tmp_path):
+    """Mixed-format files: the newest real timestamp wins (not mtime)."""
+    from scripts.lib.loop_backup import latest_heartbeat_epoch
+    import datetime as _dt
+    (tmp_path / "2026-06-02").mkdir()
+    (tmp_path / "2026-06-02" / "heartbeat.log").write_text(
+        "2026-06-02T13:30:35.931407+00:00 tick\n", encoding="utf-8")
+    (tmp_path / "2026-06-04").mkdir()
+    (tmp_path / "2026-06-04" / "heartbeat.log").write_text(
+        "2026-06-04T08:40:28Z tick\n", encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert got.day == 4

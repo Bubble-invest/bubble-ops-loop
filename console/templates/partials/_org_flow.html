@@ -15,15 +15,19 @@
   </h2>
   <p class="fw-loop-intro">
     Le Principal donne des directives (PR) et reçoit les KPIs ; chaque
-    département répète la même boucle OODA (les 4 moments). Une arête ou un
-    nœud en <span class="fw-legend-swatch fw-legend-swatch--alert"></span>
-    rouge signale une boucle silencieuse ou un layer non exécuté. Cliquez un
-    nœud pour ouvrir sa fiche.
+    département répète la même boucle OODA (les 4 moments, badges 1-2-3-4).
+    Un nœud passe en <span class="fw-legend-swatch fw-legend-swatch--alert"></span>
+    rouge quand sa boucle est muette depuis &gt; 24 h ou qu'un layer
+    déjà actif a régressé ; en <span class="fw-legend-swatch fw-legend-swatch--warn"></span>
+    ambre pour un silence récent. Un layer jamais lancé reste neutre (au
+    repos), pas en alerte. Cliquez un nœud pour ouvrir sa fiche.
   </p>
 
   <div class="fw-legend" aria-hidden="true">
-    <span><span class="fw-legend-swatch fw-legend-swatch--ok"></span> à jour</span>
-    <span><span class="fw-legend-swatch fw-legend-swatch--alert"></span> silence / layer manquant</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--ok"></span> à jour (boucle active)</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--warn"></span> silence récent (&lt; 24 h)</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--alert"></span> alerte (silence &gt; 24 h ou layer régressé)</span>
+    <span><span class="fw-legend-swatch fw-legend-swatch--idle"></span> layer au repos (jamais exécuté)</span>
     <span><span class="fw-legend-swatch fw-legend-swatch--unknown"></span> pas de télémétrie (Mac local)</span>
   </div>
 
@@ -96,9 +100,14 @@
   function layersBadge(layers) {
     if (!layers || !layers.length) return "";
     return layers.map(function (L) {
-      return '<span class="fw-rf-layer fw-rf-layer--' +
-        (L.stale ? "stale" : "ok") + '" title="Layer ' + L.num +
-        (L.last ? " · " + L.age_human : " · jamais") + '">' + L.num + "</span>";
+      // state: ok (green) | idle (neutral, not-yet-run) | stale (red, regressed)
+      var state = L.state || (L.stale ? "stale" : "ok");
+      var tip = "Layer " + L.num + " — " +
+        (state === "idle" ? "jamais exécuté (au repos)"
+         : state === "stale" ? "en retard · " + (L.age_human || "")
+         : "à jour · " + (L.age_human || ""));
+      return '<span class="fw-rf-layer fw-rf-layer--' + state +
+        '" title="' + tip + '">' + L.num + "</span>";
     }).join("");
   }
 
