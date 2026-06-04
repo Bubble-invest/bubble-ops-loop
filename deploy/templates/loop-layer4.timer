@@ -1,0 +1,15 @@
+[Unit]
+Description=Fire ops-loop Layer 4 (Act) floor daily at 19:00 Europe/Paris
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+Unit=loop-layer@4.service
+# 19:00 Europe/Paris — systemd handles CET/CEST automatically.
+OnCalendar=*-*-* 19:00:00 Europe/Paris
+# If the box was off/asleep at fire time, run as soon as it's back.
+Persistent=true
+# Small deterministic jitter so it doesn't collide with other top-of-hour jobs.
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -1,31 +1,82 @@
 #!/usr/bin/env bash
-# loop-backup.sh — twice-daily BACKUP execution for ops-loop depts.
+# loop-backup.sh — daily LAYER-FLOOR + safety-net execution for ops-loop depts.
 #
-# Why (Joris 2026-06-01): each dept runs a persistent `/loop` session. If
-# that session dies for ANY reason (auth lapse, crash, OOM, parked after a
-# restart, …) the dept silently stops working while systemd still says
-# "active". This is a SAFETY NET, independent of the live loop: it fires on
-# a schedule, and for each dept either
-#   - SKIPS (the live loop is healthy — recent heartbeat), or
-#   - runs ONE dispatch tick via `claude -p` (the loop is dead/parked).
+# Why (Joris 2026-06-01 → 2026-06-04): each dept runs a persistent `/loop`
+# session. If that session dies for ANY reason (auth lapse, crash, OOM, parked
+# after a restart, …) the dept silently stops working while systemd still says
+# "active". This script is the FLOOR + SAFETY NET, independent of the live loop.
+#
+# Two modes:
+#
+#   1. LAYER-FLOOR mode  (`--layer N`, N in 1..4):
+#      Run ITS OODA layer (L1/L2/L3/L4) for EVERY eligible dept that is STALE.
+#      Four cron units (loop-layer1..4.timer) each invoke this with their layer
+#      at a fixed time (L1 07:00, L2 12:00, L3 16:00, L4 19:00 Europe/Paris) so
+#      every layer fires >=1x/day per dept even if the live /loop is dead. The
+#      forced layer bypasses decide_dispatch — the tick prompt instructs the
+#      dept to run Layer N per its CLAUDE.md protocol step 3.
+#
+#   2. GENERIC mode  (no `--layer`):
+#      The original behavior — run ONE decide_dispatch tick (the dispatcher
+#      picks the layer, almost always L1) for each stale dept. Kept for
+#      backward-compat / a pure "loop fully dead" net.
+#
+# In BOTH modes, for each dept it either
+#   - SKIPS (the live loop is healthy — recent heartbeat → no double-tick), or
+#   - runs ONE tick via `claude -p` (the loop is dead/parked).
 #
 # It is NOT a second loop and NOT a re-arm. One tick, then exit. A flock
 # mutex guarantees the backup tick never overlaps a live tick, so the
 # dept's queue is never double-processed.
 #
+# Dept set: auto-discovered at RUNTIME by globbing $AGENTS_ROOT/bubble-ops-*
+# (no hardcoded list — a NEW dept is picked up with ZERO config). A discovered
+# dept is SKIPPED unless its `ops-loop-<slug>.service` exists AND is enabled
+# (so paused depts like cgp and the test fixture are not ticked), and — in
+# layer-floor mode — unless it has a `layers/<N>/PROMPT.md` for the forced
+# layer. `BUBBLE_BACKUP_DEPTS="maya tony"` overrides discovery (for tests).
+#
 # Deploy: part of the bubble-ops-loop install package (see deploy/ +
 # scripts/install-loop-backup.sh). Runs as the `claude` user via the
-# loop-backup.timer (08:00 + 14:00 Europe/Paris).
+# loop-layer{1,2,3,4}.timer units.
 #
 # Per-dept requirements (already true for live depts):
 #   - WorkingDirectory   = /home/claude/agents/bubble-ops-<slug>
 #   - env file           = /run/claude-agent-<slug>/env  (has CLAUDE_CODE_OAUTH_TOKEN)
 #   - outputs/<date>/heartbeat.log  (the liveness signal)
+#   - ops-loop-<slug>.service        (enabled = live dept)
+#   - layers/<N>/PROMPT.md           (the per-layer mission, floor mode)
 
 set -euo pipefail
 
-# Depts to back up. Override with BUBBLE_BACKUP_DEPTS="maya tony" for testing.
-DEPTS=(${BUBBLE_BACKUP_DEPTS:-maya tony cgp})
+# ── arg parse: --layer N ─────────────────────────────────────────────────────
+# When given, force OODA layer N (1..4) — bypass decide_dispatch and instruct
+# the dept to run Layer N per its CLAUDE.md protocol. When omitted, FORCE_LAYER
+# stays empty and the generic decide_dispatch tick runs (original behavior).
+FORCE_LAYER=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --layer)
+            FORCE_LAYER="${2:-}"
+            shift 2 || { echo "ERR: --layer needs an argument (1-4)" >&2; exit 2; }
+            ;;
+        --layer=*)
+            FORCE_LAYER="${1#--layer=}"
+            shift
+            ;;
+        *)
+            echo "ERR: unknown argument '$1' (only --layer N is supported)" >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ -n "$FORCE_LAYER" && ! "$FORCE_LAYER" =~ ^[1-4]$ ]]; then
+    echo "ERR: --layer must be 1, 2, 3 or 4 (got '$FORCE_LAYER')" >&2
+    exit 2
+fi
+
+# Depts to back up. UNSET/empty → auto-discover (glob $AGENTS_ROOT/bubble-ops-*).
+# Override with BUBBLE_BACKUP_DEPTS="maya tony" for testing / pinning a subset.
 STALE_AFTER_SEC="${BUBBLE_BACKUP_STALE_SEC:-5400}"   # 90 min
 BUDGET_USD="${BUBBLE_BACKUP_BUDGET_USD:-3.00}"
 MODEL="${BUBBLE_BACKUP_MODEL:-sonnet}"
@@ -34,11 +85,19 @@ MODEL="${BUBBLE_BACKUP_MODEL:-sonnet}"
 CLAUDE_BIN="${BUBBLE_BACKUP_CLAUDE_BIN:-/usr/bin/claude}"
 REPO_ROOT="${BUBBLE_OPS_LOOP_ROOT:-/home/claude/bubble-ops-loop}"
 PY="${REPO_ROOT}/venv/bin/python"
+
+# Holds the most recent backup tick's work summary (final assistant message,
+# extracted from the claude --output-format json envelope) so the caller can
+# relay it to Telegram. Reset per dept by run_backup_tick. Init for set -u.
+LAST_TICK_SUMMARY=""
 # Per-dept workdir base + flock dir. Overridable (BUBBLE_BACKUP_AGENTS_ROOT /
 # BUBBLE_BACKUP_LOCK_DIR) so the test harness can run hermetically inside a
 # tmpdir; production defaults are unchanged.
 AGENTS_ROOT="${BUBBLE_BACKUP_AGENTS_ROOT:-/home/claude/agents}"
 LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
+# systemctl, overridable so the test harness can stub `is-enabled` without a
+# real systemd (BUBBLE_BACKUP_SYSTEMCTL="$STUB"). Default = the real binary.
+SYSTEMCTL="${BUBBLE_BACKUP_SYSTEMCTL:-systemctl}"
 
 # ── DRY_RUN resolution (footgun fix) ────────────────────────────────────────
 # Historical incident: someone set `DRY_RUN=1` expecting the safety net to no-op,
@@ -74,9 +133,17 @@ BACKUP_LOG="${BUBBLE_BACKUP_LOG:-${REPO_ROOT}/state/loop-backup.jsonl}"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(TS)] [loop-backup] $*"; }
 
-# LOUD startup banner: which dry-run knob won, and the resolved 0/1. This is
-# the antidote to the historical "DRY_RUN=1 was ignored" footgun — the effective
-# state is always on the record.
+# LOUD startup banner: the run mode (floor L<N> vs generic) + which dry-run knob
+# won + the resolved 0/1. The mode line makes a misfiring cron unit obvious in
+# the journal; the dry-run line is the antidote to the historical "DRY_RUN=1 was
+# ignored" footgun — the effective state is always on the record.
+if [[ -n "$FORCE_LAYER" ]]; then
+    MODE_LABEL="layer-${FORCE_LAYER}"
+    log "MODE: layer-floor — forcing Layer $FORCE_LAYER for every eligible dept"
+else
+    MODE_LABEL="generic-dispatch"
+    log "MODE: generic — decide_dispatch picks the layer per dept"
+fi
 log "DRY_RUN resolved to $DRY_RUN from $DRY_RUN_SOURCE"
 # If the canonical var is unset but SOME other DRY_RUN*-ish env var is set
 # (e.g. a typo like DRYRUN or BACKUP_DRY_RUN), warn — a near-miss knob that is
@@ -90,6 +157,49 @@ if [[ "$DRY_RUN_SOURCE" != "BUBBLE_BACKUP_DRY_RUN" ]]; then
         log "WARN: env var '$_dr_var' looks dry-run-ish but is NOT honored — use BUBBLE_BACKUP_DRY_RUN (or DRY_RUN)."
     done < <(compgen -v | grep -i 'dry.*run' || true)
 fi
+
+# ── Dept discovery + eligibility ─────────────────────────────────────────────
+# discover_depts: when BUBBLE_BACKUP_DEPTS is unset/empty, the dept set is the
+# basenames (minus the bubble-ops- prefix) of $AGENTS_ROOT/bubble-ops-* dirs.
+# When BUBBLE_BACKUP_DEPTS is set, it wins verbatim (test / pin override).
+discover_depts() {
+    if [[ -n "${BUBBLE_BACKUP_DEPTS:-}" ]]; then
+        printf '%s\n' ${BUBBLE_BACKUP_DEPTS}
+        return 0
+    fi
+    local d slug
+    for d in "${AGENTS_ROOT}"/bubble-ops-*; do
+        [[ -d "$d" ]] || continue          # no match → glob stays literal; -d guards it
+        slug="$(basename "$d")"
+        slug="${slug#bubble-ops-}"
+        printf '%s\n' "$slug"
+    done
+}
+
+# dept_eligible <slug>: is this dept a LIVE, tickable dept?
+#   - its ops-loop-<slug>.service must EXIST and be ENABLED (so paused depts
+#     like cgp and the disabled test fixture are skipped); `is-enabled` exits 0
+#     only for enabled, 1 for disabled, 4/non-zero for not-found.
+#   - in layer-floor mode, it must have layers/<FORCE_LAYER>/PROMPT.md (so a
+#     dept that doesn't run that layer — e.g. a fixture missing layer 1 — is
+#     skipped rather than handed a missing-mission tick).
+# Prints a skip-reason to stdout and returns 1 when ineligible; returns 0 (no
+# output) when eligible.
+dept_eligible() {
+    local slug="$1"
+    if ! "$SYSTEMCTL" is-enabled "ops-loop-${slug}.service" >/dev/null 2>&1; then
+        echo "service ops-loop-${slug}.service not enabled (paused/absent)"
+        return 1
+    fi
+    if [[ -n "$FORCE_LAYER" ]]; then
+        local prompt="${AGENTS_ROOT}/bubble-ops-${slug}/layers/${FORCE_LAYER}/PROMPT.md"
+        if [[ ! -f "$prompt" ]]; then
+            echo "no layers/${FORCE_LAYER}/PROMPT.md (dept doesn't run L${FORCE_LAYER})"
+            return 1
+        fi
+    fi
+    return 0
+}
 
 # Append one event to the cockpit log. Never fatal — a logging failure must
 # not abort the safety net itself.
@@ -130,14 +240,24 @@ PYEOF
 BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-6532205130}"
 
 notify_backup_fired() {
-    local slug="$1" age="${2:-}" exit_code="${3:-}"
+    local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}"
     local age_h
     if [[ -n "$age" && "$age" != "None" ]]; then
         age_h="$(( age / 60 ))m"
     else
         age_h="unknown"
     fi
-    local msg="🛟 backup tick fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+    # Floor mode names the layer that fired; generic mode keeps the original
+    # bare line. Either way the prefix stays 🛟 so the cockpit/console keys off it.
+    local what="backup tick"
+    [[ -n "$FORCE_LAYER" ]] && what="L${FORCE_LAYER} floor tick"
+    local msg="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+    # Append the tick's work summary so Joris sees WHAT the layer mission did,
+    # not just that the net fired. Empty summary (parse failed / heartbeat with
+    # no text) falls back to the bare line above.
+    if [[ -n "$summary" && "$summary" != "None" ]]; then
+        msg="${msg}"$'\n\n'"${summary}"
+    fi
 
     # Test seam: a stub command can capture the would-be send without HTTP.
     if [[ -n "${BUBBLE_BACKUP_NOTIFY_CMD:-}" ]]; then
@@ -146,13 +266,19 @@ notify_backup_fired() {
         return 0
     fi
 
-    "$PY" - "$BACKUP_CHAT_ID" "$msg" <<'PYEOF' || log "$slug: warn — could not send backup-fired Telegram ping"
+    # The python sender takes subject + body separately and re-joins; pass the
+    # bare fired-line as the subject and the tick summary as the body.
+    local fired_line="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+    "$PY" - "$BACKUP_CHAT_ID" "$fired_line" "$summary" <<'PYEOF' || log "$slug: warn — could not send backup-fired Telegram ping"
 import sys
 sys.path.insert(0, "/home/claude/bubble-ops-loop")
 from scripts.lib.notify import TelegramBackend, NotificationPayload
-chat_id, msg = sys.argv[1], sys.argv[2]
+chat_id, subject = sys.argv[1], sys.argv[2]
+body = sys.argv[3] if len(sys.argv) > 3 else ""
+if body in ("", "None"):
+    body = ""
 receipt = TelegramBackend({}).send(
-    NotificationPayload(subject=msg, markdown_body="",
+    NotificationPayload(subject=subject, markdown_body=body,
                         metadata={"kind": "backup_fired"}),
     chat_id,
 )
@@ -163,20 +289,61 @@ if not receipt.success:
 PYEOF
 }
 
-# The single-tick prompt. Explicitly ONE tick, no /loop.
-read -r -d '' TICK_PROMPT <<'PROMPT' || true
+# ── Tick prompt ──────────────────────────────────────────────────────────────
+# Two shapes. In layer-floor mode the prompt FORCES Layer N (no decide_dispatch);
+# in generic mode it runs the dispatcher's choice. Both end with the concise
+# report the wrapper relays to Joris on Telegram.
+build_tick_prompt() {
+    if [[ -n "$FORCE_LAYER" ]]; then
+        cat <<PROMPT
+You are running as the daily Layer ${FORCE_LAYER} FLOOR tick (one of four
+per-layer cron units that guarantee each OODA layer fires at least once a
+day even if your persistent /loop is down or parked).
+
+Run Layer ${FORCE_LAYER} NOW, per your CLAUDE.md operating protocol step 3:
+git pull; read layers/${FORCE_LAYER}/PROMPT.md; spawn the Layer ${FORCE_LAYER}
+subagent(s); VERIFY their output; validate; commit+push. Do NOT run
+decide_dispatch and do NOT run any other layer — this tick is Layer
+${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then STOP. Do NOT
+start a /loop.
+
+Do NOT send your own Telegram message — the backup wrapper relays your
+final message to Joris automatically. Instead, END your turn with a
+concise report (max ~6 lines) the wrapper will forward verbatim:
+  • Confirm you ran Layer ${FORCE_LAYER}.
+  • What the layer mission actually DID — the concrete result/output
+    (e.g. "scored 4 prospects, 1 promoted to draft"; "no new signals";
+    "risk check: 2 positions flagged"). Be specific, not "ran L${FORCE_LAYER}".
+  • Any gate created or subagent failure (and what it needs from Joris).
+  • If there was nothing for this layer to do, say so in one line and why.
+PROMPT
+    else
+        cat <<'PROMPT'
 You are running as a BACKUP tick because your persistent /loop appears
 to have stopped. Execute EXACTLY ONE dispatch tick per your CLAUDE.md
 operating protocol — git pull, decide_dispatch, spawn the chosen layer
-subagent (if any), validate its output, commit+push, and notify Joris on
-Telegram only if a gate was created or a subagent failed. Then STOP. Do
-NOT start a /loop. Do NOT run more than one tick. If decide_dispatch
-returns heartbeat, just write the heartbeat line and exit.
+subagent (if any), validate its output, commit+push. Then STOP. Do
+NOT start a /loop. Do NOT run more than one tick.
+
+Do NOT send your own Telegram message — the backup wrapper relays your
+final message to Joris automatically. Instead, END your turn with a
+concise report (max ~6 lines) the wrapper will forward verbatim:
+  • Which layer dispatch chose (L1/L2/L3/L4 or heartbeat).
+  • What the layer mission actually DID — the concrete result/output
+    (e.g. "scored 4 prospects, 1 promoted to draft"; "no new signals";
+    "risk check: 2 positions flagged"). Be specific, not "ran L2".
+  • Any gate created or subagent failure (and what it needs from Joris).
+  • If decide_dispatch returned heartbeat: say so in one line and why
+    (e.g. "queues empty, L1 already ran today").
 PROMPT
+    fi
+}
+TICK_PROMPT="$(build_tick_prompt)"
 
 run_backup_tick() {
     local slug="$1" workdir="$2" envfile="$3"
     local lock="${LOCK_DIR}/ops-loop-${slug}.tick.lock"
+    LAST_TICK_SUMMARY=""   # reset so a parse miss never relays a prior dept's summary
 
     if [[ "$DRY_RUN" == "1" ]]; then
         log "$slug: DRY_RUN — would run one backup tick (lock=$lock)"
@@ -215,17 +382,64 @@ run_backup_tick() {
     ) >"$runlog" 2>&1
     local exit=$?
     log "$slug: backup tick exit=$exit"
+    # Extract the tick's final assistant message (the work summary) from the
+    # `claude --output-format json` envelope so the caller can relay it to
+    # Telegram. Never fatal — a parse failure just yields an empty summary and
+    # the notify falls back to the bare fired-line. Stored in a module global
+    # because the function already uses its return code for the exit status.
+    LAST_TICK_SUMMARY="$(
+        "$PY" - "$runlog" <<'PYEOF' 2>/dev/null || true
+import sys, json
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
+    # The JSON envelope is the last well-formed object in the stream; --print
+    # --output-format json emits a single top-level object, but tolerate any
+    # leading log noise by scanning from the last '{'.
+    obj = None
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        start = raw.rfind('{"type"')
+        if start == -1:
+            start = raw.find("{")
+        if start != -1:
+            obj = json.loads(raw[start:])
+    text = ""
+    if isinstance(obj, dict):
+        text = obj.get("result") or ""
+    print(text.strip()[:1500])
+except Exception:
+    pass
+PYEOF
+    )"
     rm -f "$runlog"
     flock -u 9 || true
     return $exit
 }
 
 OVERALL=0
+mapfile -t DEPTS < <(discover_depts)
+if [[ -n "${BUBBLE_BACKUP_DEPTS:-}" ]]; then
+    log "depts (override): ${DEPTS[*]:-<none>}"
+else
+    log "depts (auto-discovered from ${AGENTS_ROOT}/bubble-ops-*): ${DEPTS[*]:-<none>}"
+fi
+
 for slug in "${DEPTS[@]}"; do
+    [[ -n "$slug" ]] || continue
     workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
     envfile="/run/claude-agent-${slug}/env"
     if [[ ! -d "$workdir" ]]; then
         log "$slug: SKIP — workdir $workdir not found"
+        continue
+    fi
+    # Eligibility gate: enabled service (+ layer prompt in floor mode). A skip
+    # here is a structural skip (not a freshness skip) — record it so a paused/
+    # layerless dept is visible in the cockpit, but do NOT ping.
+    if ! elig_reason="$(dept_eligible "$slug")"; then
+        log "$slug: SKIP — $elig_reason"
+        emit_event "$slug" "skip" "$elig_reason"
         continue
     fi
     # Pure decision (heartbeat freshness). Emits action, reason, age_sec
@@ -275,9 +489,9 @@ PYEOF
         # shellcheck disable=SC1090
         [[ -f "$envfile" ]] && . "$envfile"
         set +a
-        notify_backup_fired "$slug" "$age" "$tick_exit"
+        notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
     )
 done
 
-log "done (depts=${DEPTS[*]})"
+log "done (mode=${MODE_LABEL} depts=${DEPTS[*]:-<none>})"
 exit $OVERALL
