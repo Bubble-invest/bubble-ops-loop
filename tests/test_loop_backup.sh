@@ -1,26 +1,43 @@
 #!/usr/bin/env bash
 # =============================================================================
-# test_loop_backup.sh — WS4 bash harness for loop-backup.sh (TDD).
+# test_loop_backup.sh — bash harness for loop-backup.sh (TDD).
 #
-# Covers the two WS4 changes to scripts/loop-backup.sh:
+# Covers, in order:
 #
 #   A. DRY_RUN footgun fix — the script must honor BOTH `BUBBLE_BACKUP_DRY_RUN`
 #      AND the bare `DRY_RUN` people actually type, resolve a sane precedence,
 #      and LOG IT LOUDLY on startup ("DRY_RUN resolved to <0|1> from <var>").
-#      Red->green proof: the PRE-WS4 script (scripts/loop-backup.sh.orig, if
-#      present) IGNORES `DRY_RUN` → still spends a tick → test RED; the fixed
-#      script honors it → test GREEN.
 #
 #   B. Notify-on-fire — when a backup tick ACTUALLY RUNS for a dept (stale /
 #      missing heartbeat), the script pings {{OPERATOR}} ONCE on Telegram; on a fresh
-#      (healthy) loop it must NOT ping. The Telegram send + the claude tick are
-#      stubbed (no live HTTP, no real `claude -p`): BUBBLE_BACKUP_NOTIFY_CMD
-#      captures the would-be ping, BUBBLE_BACKUP_CLAUDE_BIN is a no-op stub.
+#      (healthy) loop it must NOT ping. Telegram send + claude tick are stubbed.
+#
+#   C. DRY_RUN behavioral proof — with a STALE dept and bare DRY_RUN=1 the
+#      FIXED script runs NO claude tick and sends NO ping.
+#
+#   D. --layer N (4-layer floor) — `--layer N` forces Layer N into the tick
+#      prompt (bypassing decide_dispatch) and tags the fired-ping as an
+#      "L<N> floor tick".
+#
+#   E. Auto-discovery — when BUBBLE_BACKUP_DEPTS is UNSET, depts are discovered
+#      by globbing $AGENTS_ROOT/bubble-ops-*; the discovered set drives the run.
+#
+#   F. Eligibility — a dept whose ops-loop-<slug>.service is NOT enabled
+#      (disabled or absent) is SKIPPED (structural skip, no tick, no ping).
+#
+#   G. Per-layer eligibility — in --layer N mode, a dept WITHOUT
+#      layers/N/PROMPT.md is SKIPPED (no missing-mission tick).
+#
+#   H. Result-relay (B5) under --layer — the work-summary parsed from the
+#      claude --output-format json envelope is still appended to the ping when
+#      a forced-layer tick runs.
 #
 # Hermetic: fake dept workdirs with controlled heartbeat fixtures under a
-# tmpdir; LOCK_DIR + BACKUP_LOG redirected into the tmpdir. Uses the REAL
-# repo venv python + the REAL scripts/lib/loop_backup.py decision logic (so the
-# freshness gate is exercised for real). No live Telegram, no live claude.
+# tmpdir; LOCK_DIR + BACKUP_LOG redirected into the tmpdir; `claude`,
+# `systemctl` and the Telegram send are ALL stubbed (no live HTTP, no real
+# `claude -p`, no real systemd). Uses the REAL repo venv python + the REAL
+# scripts/lib/loop_backup.py decision logic (so the freshness gate is exercised
+# for real).
 #
 # Run:  bash tests/test_loop_backup.sh
 #       bash tests/test_loop_backup.sh -v     # verbose (show script stderr/out)
@@ -33,7 +50,7 @@ VERBOSE=0
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${BUBBLE_OPS_LOOP_ROOT:-$(cd "$HERE/.." && pwd)}"
 SCRIPT="${SCRIPT:-$REPO_ROOT/scripts/loop-backup.sh}"
-ORIG_SCRIPT="${ORIG_SCRIPT:-$REPO_ROOT/scripts/loop-backup.sh.orig}"  # pre-WS4 (optional)
+ORIG_SCRIPT="${ORIG_SCRIPT:-$REPO_ROOT/scripts/loop-backup.sh.orig}"  # pre-fix (optional)
 PY="${BUBBLE_OPS_LOOP_PY:-$REPO_ROOT/venv/bin/python}"
 
 [[ -f "$SCRIPT" ]] || { echo "FATAL: script not found: $SCRIPT"; exit 2; }
@@ -48,14 +65,22 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ── stubs ────────────────────────────────────────────────────────────────────
 # claude stub: a no-op that succeeds, so the run-branch completes WITHOUT a real
-# tick. Records each invocation so we can assert a tick "ran".
+# tick. Records each invocation (and dumps its argv) so we can assert a tick
+# "ran" AND inspect the TICK_PROMPT the script handed it (used by the --layer
+# tests to prove "run Layer N" is in the prompt).
 CLAUDE_STUB="$WORK/claude-stub.sh"
 CLAUDE_LOG="$WORK/claude-invocations.log"
+CLAUDE_ARGS="$WORK/claude-last-args.txt"
 : > "$CLAUDE_LOG"
 cat > "$CLAUDE_STUB" <<EOF
 #!/usr/bin/env bash
 echo "CLAUDE_STUB_RAN" >> "$CLAUDE_LOG"
-echo '{"result":"stub ok"}'
+# Persist the full argv (last invocation wins) so a test can grep the prompt.
+printf '%s\n' "\$@" > "$CLAUDE_ARGS"
+# Emit a realistic --output-format json envelope so the result-relay parser has
+# a 'result' to extract (used by the H result-relay test). Overridable via
+# CLAUDE_STUB_RESULT so a test can inject a specific work summary.
+echo "{\"type\":\"result\",\"result\":\"\${CLAUDE_STUB_RESULT:-stub ok}\"}"
 exit 0
 EOF
 chmod +x "$CLAUDE_STUB"
@@ -66,11 +91,39 @@ NOTIFY_LOG="$WORK/notify.log"
 : > "$NOTIFY_LOG"
 cat > "$NOTIFY_STUB" <<EOF
 #!/usr/bin/env bash
-# args: slug chat_id msg
-printf '%s\t%s\t%s\n' "\$1" "\$2" "\$3" >> "$NOTIFY_LOG"
+# args: slug chat_id msg.  The msg can be multi-line (fired-line + summary);
+# collapse newlines to \\n so each ping stays one log line (assertions grep it).
+slug="\$1"; chat="\$2"; shift 2; msg="\$*"
+printf '%s\t%s\t%s\n' "\$slug" "\$chat" "\${msg//\$'\n'/\\\\n}" >> "$NOTIFY_LOG"
 exit 0
 EOF
 chmod +x "$NOTIFY_STUB"
+
+# systemctl stub: emulate `systemctl is-enabled ops-loop-<slug>.service`.
+# A dept is "enabled" iff its slug is listed in $ENABLED_DEPTS (space-sep,
+# read from the file $ENABLED_FILE so each test can rewrite it). Anything else
+# → exit 1 (disabled) / the real `is-enabled` would exit 4 for not-found; both
+# are non-zero, which is all the script's eligibility gate checks.
+SYSTEMCTL_STUB="$WORK/systemctl-stub.sh"
+ENABLED_FILE="$WORK/enabled-depts.txt"
+: > "$ENABLED_FILE"
+cat > "$SYSTEMCTL_STUB" <<EOF
+#!/usr/bin/env bash
+# Expected call: systemctl is-enabled ops-loop-<slug>.service
+if [[ "\$1" == "is-enabled" ]]; then
+    unit="\$2"                       # ops-loop-<slug>.service
+    slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
+    enabled="\$(cat "$ENABLED_FILE" 2>/dev/null || true)"
+    for e in \$enabled; do
+        if [[ "\$e" == "\$slug" ]]; then echo "enabled"; exit 0; fi
+    done
+    echo "disabled"; exit 1
+fi
+exit 0
+EOF
+chmod +x "$SYSTEMCTL_STUB"
+
+set_enabled() { printf '%s\n' "$*" > "$ENABLED_FILE"; }   # mark these slugs enabled
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
 # Build a fake dept workdir at $AGENTS_ROOT/bubble-ops-<slug> with a heartbeat
@@ -95,6 +148,19 @@ make_dept() {
     touch -d "@$(( $(date -u +%s) - age ))" "$hb"
 }
 
+make_layer() {
+    # make_layer <slug> <N>  → create layers/<N>/PROMPT.md for the dept.
+    local slug="$1" n="$2"
+    local dir="$AGENTS_ROOT/bubble-ops-$slug/layers/$n"
+    mkdir -p "$dir"
+    echo "Layer $n mission for $slug." > "$dir/PROMPT.md"
+}
+
+reset_fixtures() {
+    rm -rf "$AGENTS_ROOT"; mkdir -p "$AGENTS_ROOT"
+    : > "$ENABLED_FILE"
+}
+
 # Common env to point the script entirely inside the tmpdir.
 common_env() {
     export BUBBLE_OPS_LOOP_ROOT="$REPO_ROOT"           # real venv + lib
@@ -105,14 +171,15 @@ common_env() {
     export BUBBLE_BACKUP_TELEGRAM_CHAT_ID="9999"       # deterministic recipient
     export BUBBLE_BACKUP_AGENTS_ROOT="$AGENTS_ROOT"    # fake dept workdirs (tmp)
     export BUBBLE_BACKUP_LOCK_DIR="$WORK/lock"         # flock dir → tmp
+    export BUBBLE_BACKUP_SYSTEMCTL="$SYSTEMCTL_STUB"   # stub is-enabled
+    unset CLAUDE_STUB_RESULT
     mkdir -p "$WORK/lock"
 }
 
 OUT=""; ERR=""; ALL=""; RC=0
 run_script() {
-    # run_script <script_path>. Runs in the CURRENT shell (not a subshell) so
-    # captured OUT/ERR/ALL/RC are visible to the assertions. Callers set/unset
-    # the DRY_RUN env vars around the call themselves.
+    # run_script <script_path> [args...]. Runs in the CURRENT shell (not a
+    # subshell) so captured OUT/ERR/ALL/RC are visible to the assertions.
     local script="$1"; shift
     if [[ $VERBOSE == 1 ]]; then
         bash "$script" "$@" > "$WORK/out" 2> >(tee "$WORK/err" >&2); RC=$?
@@ -125,16 +192,16 @@ $ERR"
 }
 
 # Set the two dry-run env vars for ONE run, then restore. Usage:
-#   with_dryrun "<BUBBLE_BACKUP_DRY_RUN or -unset->" "<DRY_RUN or -unset->" SCRIPT
+#   with_dryrun "<BUBBLE_BACKUP_DRY_RUN or -unset->" "<DRY_RUN or -unset->" SCRIPT [args...]
 with_dryrun() {
-    local canon="$1" bare="$2" script="$3"
+    local canon="$1" bare="$2" script="$3"; shift 3
     if [[ "$canon" == "-unset-" ]]; then unset BUBBLE_BACKUP_DRY_RUN; else export BUBBLE_BACKUP_DRY_RUN="$canon"; fi
     if [[ "$bare"  == "-unset-" ]]; then unset DRY_RUN;               else export DRY_RUN="$bare"; fi
-    run_script "$script"
+    run_script "$script" "$@"
     unset BUBBLE_BACKUP_DRY_RUN DRY_RUN
 }
 
-echo "== WS4 loop-backup.sh tests =="
+echo "== loop-backup.sh tests =="
 
 # =============================================================================
 # A. DRY_RUN footgun — resolution + loud log + precedence
@@ -184,15 +251,13 @@ else
     bad "A5 expected truthy 'true' → 1; got: $ALL"
 fi
 
-# A6 (RED->GREEN proof): the PRE-WS4 script IGNORES bare DRY_RUN. Demonstrate
-# that the old behavior is different — old script has NO 'DRY_RUN resolved'
-# banner at all (the fix introduced it). Only runs if the .orig is present.
+# A6 (RED->GREEN proof): the PRE-fix script IGNORES bare DRY_RUN — no banner.
 if [[ -f "$ORIG_SCRIPT" ]]; then
     with_dryrun -unset- 1 "$ORIG_SCRIPT"
     if [[ "$ALL" != *"DRY_RUN resolved to"* ]]; then
-        ok "A6 RED->GREEN: pre-WS4 script has NO 'DRY_RUN resolved' banner (footgun present)"
+        ok "A6 RED->GREEN: pre-fix script has NO 'DRY_RUN resolved' banner (footgun present)"
     else
-        bad "A6 pre-WS4 script unexpectedly logged a DRY_RUN banner: $ALL"
+        bad "A6 pre-fix script unexpectedly logged a DRY_RUN banner: $ALL"
     fi
 else
     echo "  SKIP: A6 (no $ORIG_SCRIPT to prove red->green against)"
@@ -201,15 +266,18 @@ fi
 # =============================================================================
 # B. Notify-on-fire — one ping per STALE dept, none for FRESH depts.
 # =============================================================================
-# Hermetic: BUBBLE_BACKUP_AGENTS_ROOT shadows the dept workdir base into the
-# tmpdir; claude + Telegram are stubbed. We seed three depts:
+# Hermetic: fake dept workdirs in the tmpdir; claude + Telegram + systemctl
+# stubbed. The three depts must be ENABLED (set_enabled) so the eligibility
+# gate lets them through to the freshness gate.
 #   fresh  — heartbeat 10 min old (< 90m stale)  → SKIP  → no ping
 #   stale  — heartbeat 3h old      (> 90m stale)  → RUN   → one ping
 #   never  — no heartbeat at all                  → RUN   → one ping
+reset_fixtures
 common_env
 make_dept fresh 600
 make_dept stale 10800
 make_dept never none
+set_enabled fresh stale never
 export BUBBLE_BACKUP_DEPTS="fresh stale never"
 
 : > "$NOTIFY_LOG"
@@ -249,12 +317,13 @@ fi
 
 # =============================================================================
 # C. DRY_RUN footgun — BEHAVIORAL proof (the heart of the fix).
-# The historical incident: DRY_RUN=1 set, ignored, 3 REAL ticks fired. So the
-# decisive test is behavioral: with a STALE dept and bare DRY_RUN=1, the FIXED
-# script must run NO claude tick and send NO ping (it now honors the bare name).
+# With a STALE dept and bare DRY_RUN=1, the FIXED script must run NO claude
+# tick and send NO ping (it now honors the bare name).
 # =============================================================================
+reset_fixtures
 common_env
 make_dept stale 10800
+set_enabled stale
 export BUBBLE_BACKUP_DEPTS="stale"
 
 # C1 GREEN (fixed): bare DRY_RUN=1 SUPPRESSES the tick + the ping.
@@ -267,37 +336,228 @@ else
     bad "C1 fixed script ran a tick/ping under bare DRY_RUN=1; claude=$(cat "$CLAUDE_LOG") notify=$(cat "$NOTIFY_LOG")"
 fi
 
-# C2 RED (pre-WS4): the OLD script IGNORES bare DRY_RUN. It cannot use our
-# claude/agents stubs (it hardcodes those paths), so we prove the ignore via
-# the event log: the fixed script records a 'DRY_RUN — would run' SKIP event;
-# the old script, given ONLY bare DRY_RUN=1 (canonical unset), treats dry-run
-# as 0 and takes the RUN path (it would emit a 'run' decision, never the
-# 'DRY_RUN — would run' skip). We assert that divergence on the event log.
+# C2 RED->GREEN: the OLD script ignores bare DRY_RUN. Only runs if .orig present.
 if [[ -f "$ORIG_SCRIPT" ]]; then
-    # Fixed script: confirm it emits the dry-run skip event for the stale dept.
     : > "$WORK/loop-backup.jsonl"
     with_dryrun -unset- 1 "$SCRIPT"
     fixed_has_dryrun_skip=0
     grep -q 'DRY_RUN — would run' "$WORK/loop-backup.jsonl" 2>/dev/null && fixed_has_dryrun_skip=1
-
-    # Old script: point its event log into tmp (it honors BUBBLE_BACKUP_LOG),
-    # give it ONLY bare DRY_RUN=1. It will try the RUN path → reach the
-    # hardcoded /home/claude/agents workdir (absent here under our slug) → SKIP
-    # 'workdir not found', and crucially NEVER emit a 'DRY_RUN — would run'
-    # event, proving the bare DRY_RUN was IGNORED.
     : > "$WORK/loop-backup.jsonl"
     with_dryrun -unset- 1 "$ORIG_SCRIPT"
     old_has_dryrun_skip=0
     grep -q 'DRY_RUN — would run' "$WORK/loop-backup.jsonl" 2>/dev/null && old_has_dryrun_skip=1
-
     if [[ "$fixed_has_dryrun_skip" == "1" && "$old_has_dryrun_skip" == "0" ]]; then
-        ok "C2 RED->GREEN: bare DRY_RUN honored by fixed (dry-run skip event) but IGNORED by pre-WS4"
+        ok "C2 RED->GREEN: bare DRY_RUN honored by fixed (dry-run skip event) but IGNORED by pre-fix"
     else
         bad "C2 fixed_dryrun_skip=$fixed_has_dryrun_skip old_dryrun_skip=$old_has_dryrun_skip (expected 1/0)"
     fi
 else
     echo "  SKIP: C2 (no $ORIG_SCRIPT)"
 fi
+
+# =============================================================================
+# D. --layer N (4-layer floor): forces Layer N into the tick prompt and tags
+#    the fired ping as an "L<N> floor tick".
+# =============================================================================
+# A single stale dept WITH layer 2 present. Run --layer 2. Assert:
+#   (a) the claude stub was handed a TICK_PROMPT that says "Run Layer 2 NOW".
+#   (b) the fired ping is tagged "🛟 L2 floor tick fired for <slug>".
+#   (c) the startup banner announces layer-floor mode.
+reset_fixtures
+common_env
+make_dept d2 10800
+make_layer d2 2
+set_enabled d2
+export BUBBLE_BACKUP_DEPTS="d2"
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+
+# D1: the forced-layer prompt was passed to claude (the prompt is the last argv
+#     element of the stub; assert it forces Layer 2 and bans decide_dispatch).
+prompt="$(cat "$CLAUDE_ARGS" 2>/dev/null || true)"
+if grep -q 'Run Layer 2 NOW' "$CLAUDE_ARGS" 2>/dev/null \
+   && grep -q 'layers/2/PROMPT.md' "$CLAUDE_ARGS" 2>/dev/null \
+   && grep -q 'Do NOT run' "$CLAUDE_ARGS" 2>/dev/null; then
+    ok "D1 --layer 2 forces 'Run Layer 2 NOW' + reads layers/2/PROMPT.md + bans decide_dispatch in the prompt"
+else
+    bad "D1 forced-layer prompt missing/incorrect; claude args=$prompt"
+fi
+
+# D2: the fired ping is tagged as an L2 floor tick.
+if grep -q '🛟 L2 floor tick fired for d2 ' "$NOTIFY_LOG"; then
+    ok "D2 fired ping tagged '🛟 L2 floor tick fired for <slug>'"
+else
+    bad "D2 ping not tagged L2 floor; notify.log=$(cat "$NOTIFY_LOG")"
+fi
+
+# D3: startup banner announces layer-floor mode for the right layer.
+if [[ "$ALL" == *"MODE: layer-floor — forcing Layer 2"* ]]; then
+    ok "D3 startup banner announces 'MODE: layer-floor — forcing Layer 2'"
+else
+    bad "D3 missing layer-floor banner; got: $ALL"
+fi
+
+# D4: NO --layer → generic mode (decide_dispatch prompt, generic ping shape).
+reset_fixtures
+common_env
+make_dept d0 10800
+make_layer d0 1
+set_enabled d0
+export BUBBLE_BACKUP_DEPTS="d0"
+: > "$NOTIFY_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT"
+if grep -q 'decide_dispatch' "$CLAUDE_ARGS" 2>/dev/null \
+   && grep -q '🛟 backup tick fired for d0 ' "$NOTIFY_LOG"; then
+    ok "D4 no --layer → generic decide_dispatch prompt + 'backup tick' ping (back-compat)"
+else
+    bad "D4 generic mode broken; args=$(cat "$CLAUDE_ARGS"); notify=$(cat "$NOTIFY_LOG")"
+fi
+
+# D5: invalid --layer value is rejected (exit 2, no tick).
+reset_fixtures; common_env; : > "$CLAUDE_LOG"
+run_script "$SCRIPT" --layer 9
+if [[ "$RC" == "2" && "$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)" == "0" ]]; then
+    ok "D5 invalid '--layer 9' rejected (exit 2, no tick)"
+else
+    bad "D5 expected exit 2 + no tick; rc=$RC claude=$(cat "$CLAUDE_LOG")"
+fi
+
+# =============================================================================
+# E. Auto-discovery: BUBBLE_BACKUP_DEPTS UNSET → glob $AGENTS_ROOT/bubble-ops-*.
+# =============================================================================
+# Seed three dept dirs but DO NOT set BUBBLE_BACKUP_DEPTS. All enabled + have
+# layer 1. Two stale, one fresh. Run --layer 1. The discovered set must drive
+# the run: 2 ticks (the stale ones), and the discovery log line must name them.
+reset_fixtures
+common_env
+make_dept alpha 10800; make_layer alpha 1
+make_dept bravo 10800; make_layer bravo 1
+make_dept charlie 600; make_layer charlie 1   # fresh → skip
+set_enabled alpha bravo charlie
+unset BUBBLE_BACKUP_DEPTS                      # ← discovery path
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+
+# E1: discovery banner lists all three discovered slugs.
+if [[ "$ALL" == *"auto-discovered"* && "$ALL" == *"alpha"* && "$ALL" == *"bravo"* && "$ALL" == *"charlie"* ]]; then
+    ok "E1 auto-discovery names alpha/bravo/charlie from the glob (BUBBLE_BACKUP_DEPTS unset)"
+else
+    bad "E1 discovery banner missing depts; got: $ALL"
+fi
+
+# E2: exactly the two STALE discovered depts ran a tick (fresh charlie skipped).
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)"
+pinged="$(cut -f1 "$NOTIFY_LOG" | sort | tr '\n' ' ')"
+if [[ "$ran" == "2" && "$pinged" == "alpha bravo " ]]; then
+    ok "E2 discovered set drives the run: alpha+bravo ticked, fresh charlie skipped"
+else
+    bad "E2 expected 2 ticks {alpha,bravo}; ran=$ran pinged='$pinged'"
+fi
+
+# =============================================================================
+# F. Eligibility — disabled / absent service is SKIPPED (no tick, no ping).
+# =============================================================================
+# Two stale depts WITH layer 1; only 'live' is enabled. 'paused' is disabled,
+# 'ghost' has no service entry at all (stub returns disabled for both). Discover.
+reset_fixtures
+common_env
+make_dept live 10800;   make_layer live 1
+make_dept paused 10800; make_layer paused 1
+make_dept ghost 10800;  make_layer ghost 1
+set_enabled live                              # only 'live' enabled
+unset BUBBLE_BACKUP_DEPTS
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$WORK/loop-backup.jsonl"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+
+# F1: only 'live' ticked; paused + ghost skipped (no tick, no ping).
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)"
+pinged="$(cut -f1 "$NOTIFY_LOG" | sort | tr '\n' ' ')"
+if [[ "$ran" == "1" && "$pinged" == "live " ]]; then
+    ok "F1 disabled/absent service skipped: only 'live' ticked (paused+ghost skipped)"
+else
+    bad "F1 expected only live ticked; ran=$ran pinged='$pinged'"
+fi
+
+# F2: the skip is RECORDED as a structural skip event for paused + ghost.
+if grep -q '"slug": "paused"' "$WORK/loop-backup.jsonl" \
+   && grep -q 'not enabled' "$WORK/loop-backup.jsonl"; then
+    ok "F2 ineligible depts recorded as structural skip ('not enabled') in the event log"
+else
+    bad "F2 structural skip not logged; jsonl=$(cat "$WORK/loop-backup.jsonl")"
+fi
+
+# =============================================================================
+# G. Per-layer eligibility — in --layer N mode, a dept WITHOUT layers/N is
+#    SKIPPED (no missing-mission tick). Mirrors the live 'fixture' dept that has
+#    layers 2/3/4 but NOT 1.
+# =============================================================================
+reset_fixtures
+common_env
+make_dept hasL1 10800; make_layer hasL1 1; make_layer hasL1 2
+make_dept noL1  10800;                     make_layer noL1 2   # has L2, NOT L1
+set_enabled hasL1 noL1
+unset BUBBLE_BACKUP_DEPTS
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$WORK/loop-backup.jsonl"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+
+# G1: under --layer 1, only the dept WITH layers/1 ticks; the one without skips.
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)"
+pinged="$(cut -f1 "$NOTIFY_LOG" | sort | tr '\n' ' ')"
+if [[ "$ran" == "1" && "$pinged" == "hasL1 " ]]; then
+    ok "G1 --layer 1: dept without layers/1/PROMPT.md skipped (only hasL1 ticked)"
+else
+    bad "G1 expected only hasL1 ticked under --layer 1; ran=$ran pinged='$pinged'"
+fi
+
+# G2: the no-L1 skip names the missing layer in the event log.
+if grep -q '"slug": "noL1"' "$WORK/loop-backup.jsonl" \
+   && grep -q "doesn't run L1" "$WORK/loop-backup.jsonl"; then
+    ok "G2 missing-layer skip recorded ('doesn't run L1') in the event log"
+else
+    bad "G2 missing-layer skip not logged; jsonl=$(cat "$WORK/loop-backup.jsonl")"
+fi
+
+# G3: the SAME dept set under --layer 2 ticks BOTH (both have layer 2).
+reset_fixtures
+common_env
+make_dept hasL1 10800; make_layer hasL1 1; make_layer hasL1 2
+make_dept noL1  10800;                     make_layer noL1 2
+set_enabled hasL1 noL1
+unset BUBBLE_BACKUP_DEPTS
+: > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+if [[ "$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)" == "2" ]]; then
+    ok "G3 --layer 2: both depts (both have layers/2) tick — layer-specific gate, not a blanket skip"
+else
+    bad "G3 expected 2 ticks under --layer 2; got $(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)"
+fi
+
+# =============================================================================
+# H. Result-relay (B5) under --layer — the work summary from the claude json
+#    envelope is appended to the fired ping for a forced-layer tick.
+# =============================================================================
+reset_fixtures
+common_env
+make_dept relay 10800; make_layer relay 3
+set_enabled relay
+export BUBBLE_BACKUP_DEPTS="relay"
+export CLAUDE_STUB_RESULT="Ran L3. Risk check: 2 positions flagged, 1 gate opened."
+
+: > "$NOTIFY_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 3
+
+# H1: the ping carries BOTH the L3-floor fired-line AND the parsed work summary.
+if grep -q '🛟 L3 floor tick fired for relay ' "$NOTIFY_LOG" \
+   && grep -q 'Risk check: 2 positions flagged' "$NOTIFY_LOG"; then
+    ok "H1 result-relay under --layer 3: ping carries fired-line + parsed work summary"
+else
+    bad "H1 result-relay missing under --layer; notify.log=$(cat "$NOTIFY_LOG")"
+fi
+unset CLAUDE_STUB_RESULT
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
