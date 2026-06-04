@@ -1890,3 +1890,137 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
   .fw-loop { flex-direction: column; }
   .fw-arrow { transform: rotate(90deg); }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Org-framework — interactive React Flow graph (/health "Le cadre")
+   Added 2026-06-04. Replaces the static .fw-chart / .fw-loop / .fw-rails.
+   Palette: --paper / --ink / --ochre / --sage from :root above.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.org-flow {
+  position: relative;
+  width: 100%;
+  height: 620px;
+  margin: 12px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(184,128,74,0.03), transparent 60%),
+    var(--paper);
+  overflow: hidden;
+}
+.org-flow-canvas { width: 100%; height: 100%; }
+.org-flow-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--body-muted);
+}
+.org-flow-fallback--error { color: var(--ochre-deep); }
+
+/* Legend */
+.fw-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 4px 0 4px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--body-soft);
+}
+.fw-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.fw-legend-swatch {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+.fw-legend-swatch--ok      { background: var(--sage); }
+.fw-legend-swatch--alert   { background: #b4503f; }
+.fw-legend-swatch--unknown { background: var(--line); border: 1px dashed var(--body-muted); }
+
+/* ── Custom node card (matches .fw-node editorial look) ───────────────── */
+.fw-rf-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+  min-width: 190px;
+  max-width: 210px;
+  padding: 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(26,43,74,0.04);
+  transition: border-color .15s, box-shadow .15s, transform .1s;
+}
+.fw-rf-card:hover { box-shadow: 0 3px 12px rgba(26,43,74,0.10); transform: translateY(-1px); }
+
+.fw-rf-card--principal { background: #fdf6e8; border-color: var(--ochre-soft); }
+.fw-rf-card--mgmt      { border-color: var(--ochre-soft); border-top: 3px solid var(--ochre); }
+.fw-rf-card--ops       { min-width: 180px; }
+.fw-rf-card--concierge { background: var(--paper-soft); border-style: dashed; }
+.fw-rf-card--local     { background: var(--paper-soft); border-style: dotted; opacity: .9; }
+
+/* status accent: red left border when something is stale/silent */
+.fw-rf-card--status-alert { border-left: 3px solid #b4503f; }
+.fw-rf-card--status-ok    { }
+.fw-rf-card--status-warn  { border-left: 3px solid var(--ochre); }
+.fw-rf-card--status-unknown { }
+
+.fw-rf-role {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--body-muted);
+}
+.fw-rf-name { font-family: var(--font-display); font-size: 18px; font-weight: 600; color: var(--ink); line-height: 1.1; }
+.fw-rf-slug { font-family: var(--font-mono); font-size: 10.5px; color: var(--body-muted); }
+.fw-rf-note { font-size: 11.5px; color: var(--body-muted); }
+.fw-rf-pulse {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.fw-rf-pulse--alive  { color: var(--ochre-deep); }
+.fw-rf-pulse--silent { color: #b4503f; }
+
+/* per-layer 1-2-3-4 badges */
+.fw-rf-layers { display: inline-flex; gap: 4px; margin-top: 5px; }
+.fw-rf-layer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px; height: 17px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+}
+.fw-rf-layer--ok    { background: rgba(122,139,126,0.18); color: var(--ink-soft); }
+.fw-rf-layer--stale { background: rgba(180,80,63,0.16);  color: #b4503f; }
+
+/* React Flow chrome → cabinet palette */
+.org-flow .react-flow__controls { box-shadow: 0 1px 6px rgba(26,43,74,0.10); border-radius: 6px; }
+.org-flow .react-flow__controls-button {
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink);
+}
+.org-flow .react-flow__controls-button:hover { background: var(--paper-soft); }
+.org-flow .react-flow__edge-text { font-family: var(--font-mono); }
+
+@media (max-width: 720px) {
+  .org-flow { height: 480px; }
+  .fw-rf-card, .fw-rf-card--ops { min-width: 150px; max-width: 180px; padding: 10px 12px; }
+  .fw-rf-name { font-size: 16px; }
+}

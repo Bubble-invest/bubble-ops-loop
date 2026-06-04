@@ -4,13 +4,19 @@ test_carnet_framework.py — the org-framework flowchart on the Carnet de bord.
 Joris msg 1183 → 1188 (2026-06-01): a simple flowchart of how the org works
 (concierges, departments, layers) — shown INSIDE the Carnet de bord (/health)
 page, not on a separate page.
+
+2026-06-04: the static HTML chart was replaced by an interactive React Flow
+graph. The structure (hierarchy, 4 moments, two rails, concierges, local
+agents) now lives in the GET /health/graph.json payload that the client
+renders; the /health HTML carries the graph *container* + the live activity
+table. Tests assert against the right surface accordingly.
 """
 from __future__ import annotations
 
 from console.services import org_framework
 
 
-# ─── Service ─────────────────────────────────────────────────────────────
+# ─── Service: build() (legacy shape, still used elsewhere) ───────────────
 
 def test_build_returns_four_keys(client):
     fw = org_framework.build()
@@ -18,42 +24,75 @@ def test_build_returns_four_keys(client):
     assert len(fw["layers"]) == 4
 
 
+# ─── build_graph() via the JSON endpoint ─────────────────────────────────
+# NOTE: assert through GET /health/graph.json (the `client` fixture), not a
+# direct org_framework.build_graph() call. The `app` fixture re-imports the
+# console package with READ_FROM_DISK set; a module imported at test top-level
+# would read the wrong disk root. The endpoint uses the correctly-configured
+# module instance, so it reflects the fixture depts.
+
+def test_graph_endpoint_serves_json(client):
+    r = client.get("/health/graph.json")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    data = r.json()
+    assert set(data) >= {"nodes", "edges", "layers", "rails"}
+    assert len(data["layers"]) == 4
+
+
+def test_graph_endpoint_requires_auth(client_noauth):
+    r = client_noauth.get("/health/graph.json")
+    assert r.status_code in (401, 403)
+
+
+def test_graph_has_principal_and_no_dangling_edges(client):
+    g = client.get("/health/graph.json").json()
+    ids = {n["id"] for n in g["nodes"]}
+    assert "principal" in ids
+    for e in g["edges"]:
+        assert e["source"] in ids, f"dangling source {e['source']}"
+        assert e["target"] in ids, f"dangling target {e['target']}"
+
+
+def test_graph_includes_live_fixture_dept(client):
+    g = client.get("/health/graph.json").json()
+    node = next((n for n in g["nodes"] if n["id"] == "dept:fixture"), None)
+    assert node is not None, "live fixture dept should be a graph node"
+    assert node["href"] == "/dept/fixture"
+    assert len(node["layers"]) == 4
+    assert node["status"] in {"ok", "warn", "alert", "unknown"}
+
+
+def test_graph_includes_local_agents_without_telemetry(client):
+    g = client.get("/health/graph.json").json()
+    locals_ = [n for n in g["nodes"] if n["kind"] == "local"]
+    assert locals_, "Mac-local agents must be drawn (Notion wishlist)"
+    assert all(n.get("telemetry") is False for n in locals_)
+    assert {"rick", "miranda"} <= {n["id"].split(":", 1)[1] for n in locals_}
+
+
+def test_graph_two_rails(client):
+    g = client.get("/health/graph.json").json()
+    assert {"engine", "net"} <= {r["id"] for r in g["rails"]}
+
+
 # ─── On the Carnet de bord page ──────────────────────────────────────────
 
-def test_carnet_shows_hierarchy(client):
+def test_carnet_hosts_the_graph_container(client):
+    """The page carries the React Flow mount + fetches the graph JSON."""
     r = client.get("/health")
     body = r.text
     assert r.status_code == 200
-    assert "La hiérarchie" in body
-    assert "Principal" in body
-    assert "Joris" in body and "Jade" in body
-    assert "management" in body.lower() and "ops" in body.lower()
+    assert 'id="org-flow"' in body
+    assert "/health/graph.json" in body
+    # CDN React Flow bundle is referenced.
+    assert "reactflow" in body
 
 
-def test_carnet_lists_live_departments_in_chart(client):
-    """The fixture dept (Live) appears as a chart node linked to its page."""
+def test_carnet_graph_degrades_without_js(client):
+    """A <noscript> fallback points readers to the live table."""
     r = client.get("/health")
-    assert "Fixture" in r.text
-    assert "/dept/fixture" in r.text
-
-
-def test_carnet_shows_four_moments(client):
-    r = client.get("/health")
-    body = r.text
-    # "L'exécution" renders with an escaped apostrophe — match the stem.
-    for name in ["Le matin", "La recherche", "exécution", "Le débrief du soir"]:
-        assert name in body, f"missing layer: {name}"
-
-
-def test_carnet_mentions_concierges(client):
-    r = client.get("/health")
-    assert "concierge" in r.text.lower()
-
-
-def test_carnet_describes_two_rails(client):
-    r = client.get("/health")
-    body = r.text.lower()
-    assert "moteur" in body and "filet de sécurité" in body
+    assert "<noscript>" in r.text
 
 
 def test_no_separate_framework_page(client):
