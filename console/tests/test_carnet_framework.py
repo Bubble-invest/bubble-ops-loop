@@ -63,6 +63,37 @@ def test_graph_includes_live_fixture_dept(client):
     assert node["status"] in {"ok", "warn", "alert", "unknown"}
 
 
+def test_layers_have_tristate(client):
+    """Each layer reports state ok|idle|stale — never-run is idle, not stale."""
+    g = client.get("/health/graph.json").json()
+    dept_nodes = [n for n in g["nodes"] if n["kind"] in ("ops", "mgmt")]
+    assert dept_nodes, "expected at least one dept node"
+    for n in dept_nodes:
+        for L in n["layers"]:
+            assert L["state"] in {"ok", "idle", "stale"}
+            # idle == never_run; stale implies it ran before
+            if L["state"] == "idle":
+                assert L["never_run"] is True
+            if L["state"] == "stale":
+                assert L["never_run"] is False
+
+
+def test_never_run_layer_does_not_force_alert(client):
+    """A dept whose only 'problem' is a never-run layer must NOT be red.
+
+    Regression guard for the 2026-06-04 bug where every dept showed alert
+    forever because Phase-1 Layer 3 never runs."""
+    g = client.get("/health/graph.json").json()
+    for n in [x for x in g["nodes"] if x["kind"] in ("ops", "mgmt")]:
+        only_idle_problems = all(
+            (L["state"] != "stale") for L in n["layers"]
+        )
+        if only_idle_problems and n.get("pulse", {}).get("alive"):
+            assert n["status"] == "ok", (
+                f"{n['id']} has only idle layers + live loop but is {n['status']}"
+            )
+
+
 def test_graph_includes_local_agents_without_telemetry(client):
     g = client.get("/health/graph.json").json()
     locals_ = [n for n in g["nodes"] if n["kind"] == "local"]
