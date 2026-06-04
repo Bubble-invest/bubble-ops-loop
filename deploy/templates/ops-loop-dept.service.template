@@ -83,6 +83,13 @@ Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
 # tokens (Tony, Maya, Ben, etc.).
 Environment=BUBBLE_BROKER_PEM_PATH=/run/bubble-${DEPT_SLUG}/pem
 Environment=GITHUB_APP_PRIVATE_KEY_PATH=/run/bubble-${DEPT_SLUG}/pem
+# GITHUB_APP_ID: the bubble-ops-bot GitHub App id. NOT a secret (the broker's
+# own --help prints it as the example). The broker (`cli.py::_resolve_app_id`)
+# raises "Missing GITHUB_APP_ID env or --app-id" without it, so EVERY runtime
+# push fails the token mint — the G-4/GAP-10 fix added the PEM but forgot this
+# id, leaving tony/ben/maya unable to push (commits stranded for days,
+# 2026-06-04). Static + public → safe to bake into the unit template.
+Environment=GITHUB_APP_ID=3782718
 Environment=BUBBLE_BROKER_JOURNAL=on
 
 # Tmpfs runtime dir with per-dept isolation (mirrors morty's pattern).
