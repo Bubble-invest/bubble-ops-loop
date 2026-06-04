@@ -426,6 +426,24 @@ else
     log "depts (auto-discovered from ${AGENTS_ROOT}/bubble-ops-*): ${DEPTS[*]:-<none>}"
 fi
 
+# ── CEO directive dispatch (runs once per tick, BEFORE the per-dept loop) ─────
+# Deliver {{OPERATOR}}-approved directives from the manager dept's outbound queue into
+# the target children's queues/management/ inboxes. This is the ONLY actor that
+# crosses repo boundaries (the manager is isolated to its own repo). Pure
+# mechanical relay (NOT claude -p — template Ban #2). Gated: only directives with
+# approved_by=joris AND status=approved ship. Idempotent + never-fatal so it is
+# safe on every layer-floor moment. Disable with BUBBLE_DISPATCH_DIRECTIVES=0.
+if [[ "${BUBBLE_DISPATCH_DIRECTIVES:-1}" == "1" ]]; then
+    _dispatcher="$(dirname "${BASH_SOURCE[0]}")/dispatch_directives.py"
+    if [[ -f "$_dispatcher" ]]; then
+        log "dispatch: relaying approved CEO directives (manager=${BUBBLE_DISPATCH_MANAGER:-tony})"
+        python3 "$_dispatcher" \
+            --agents-root "$AGENTS_ROOT" \
+            --manager "${BUBBLE_DISPATCH_MANAGER:-tony}" \
+            ${DRY_RUN:+--dry-run} 2>&1 | while IFS= read -r _l; do log "$_l"; done || true
+    fi
+fi
+
 for slug in "${DEPTS[@]}"; do
     [[ -n "$slug" ]] || continue
     workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
