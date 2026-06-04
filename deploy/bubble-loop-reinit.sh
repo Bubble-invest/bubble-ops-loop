@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+# ============================================================================
+# DEPRECATED (2026-06-04) — superseded by the telegram-plugin BOOT RE-ARM.
+#
+# This script tried to re-arm a restarted dept's /loop by having the dept's
+# bot send a Telegram message. That can NEVER work: a bot's own OUTBOUND
+# message does not return as an INBOUND update (Telegram API), so no turn is
+# produced and the /loop stays dead while systemd still reports active.
+#
+# The working replacement injects ONE synthetic "boot" turn straight into
+# Claude via the same MCP channel notification a real inbound message uses
+# (bypassing Telegram entirely):
+#   - deploy/telegram-plugin/boot_rearm.ts        (the payload builder)
+#   - deploy/telegram-plugin/server.ts.boot-rearm.patch (the wiring)
+#   - scripts/install-boot-rearm.sh               (idempotent installer)
+#   - Environment=OPS_LOOP_BOOT_REARM=1 / OPS_LOOP_DEPT=<slug> in the unit.
+#
+# This file + its ExecStartPost in ops-loop-dept.service.template are kept as a
+# transitional belt-and-suspenders until every box is on a boot-rearm-patched
+# plugin; remove both once boot re-arm is confirmed live fleet-wide. The curl
+# below is harmless if it stays (Telegram just delivers a no-op chat message).
+# ============================================================================
+#
 # bubble-loop-reinit.sh — G-3 fix (GAP-10): trigger /loop re-registration
 # after ops-loop-<dept>.service starts (or restarts via Restart=on-failure).
 #

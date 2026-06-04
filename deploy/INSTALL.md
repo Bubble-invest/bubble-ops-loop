@@ -23,6 +23,36 @@ rebuilt or a new tenant box is provisioned.
 | 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. |
 | 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
 | 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
+| 8 | **`/loop` boot re-arm (telegram plugin)** | **`scripts/install-boot-rearm.sh`** | **yes** | **Patches the telegram channel plugin so a dept's `/loop` re-arms on poller startup after ANY restart (synthetic boot turn via MCP channel notification — supersedes `bubble-loop-reinit.sh`). Re-run after every deploy / plugin update (the plugin cache is volatile). Source-of-truth in `deploy/telegram-plugin/`. Restart depts after to load the patched plugin. Requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>` in the unit (in the template for new depts; drop-in for existing ones — see below). See `tests/test_boot_rearm_install.sh`.** |
+
+## /loop boot re-arm (step 8) — env for existing depts
+
+NEW depts inherit the boot-rearm env automatically: it is baked into
+`deploy/templates/ops-loop-dept.service.template`
+(`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`),
+substituted per-dept at scaffold/deploy time
+(`scripts/deploy-to-morty.sh`, `console/services/eclosure_launcher.py`).
+
+EXISTING live depts (tony, maya, cgp, claudette, …) were provisioned before
+this env existed, so their installed units lack it. Two ways to add it (Rick
+applies to live units; this installer never touches live units):
+
+- **Re-render + reinstall the unit** (preferred, keeps the unit in sync with
+  the template): `scripts/deploy-to-morty.sh --slug=<dept>` re-renders from the
+  template (now including the env) and reinstalls the unit, then
+  `daemon-reload` + restart.
+- **systemd drop-in** (surgical, no full re-render):
+
+      sudo systemctl edit ops-loop-<dept>.service
+      # add under [Service]:
+      #   Environment=OPS_LOOP_BOOT_REARM=1
+      #   Environment=OPS_LOOP_DEPT=<dept>
+      sudo systemctl daemon-reload
+      sudo systemctl restart ops-loop-<dept>.service
+
+The env alone does nothing until the plugin is patched
+(`scripts/install-boot-rearm.sh`) AND the dept is restarted so the patched
+plugin code loads.
 
 ## Loop layer FLOOR (step 4) — what it is
 

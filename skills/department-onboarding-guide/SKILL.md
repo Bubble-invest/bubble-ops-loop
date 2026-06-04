@@ -502,6 +502,35 @@ genuinely doesn't run that layer (e.g. a concierge), wrong for a full OODA dept.
 > The floor is "1 unit iterates N depts" by design — do **not** add a per-dept
 > backup/floor unit. Inheritance is the whole point.
 
+#### Check H — /loop boot re-arm (telegram plugin — auto-inherited, but VERIFY)
+
+New depts inherit `/loop` **boot re-arm automatically**: the unit template
+(`deploy/templates/ops-loop-dept.service.template`) bakes in
+`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`,
+substituted per-dept at deploy time. On poller startup the telegram channel
+plugin injects ONE synthetic "boot" turn straight into Claude via an MCP channel
+notification (bypassing Telegram), so the dept re-runs session-start + re-arms
+its `/loop` after ANY restart. This supersedes `bubble-loop-reinit.sh` (a bot's
+own outbound Telegram message never returns as an inbound update, so that never
+worked). The env does nothing until the plugin is patched on the box
+(`scripts/install-boot-rearm.sh`, INSTALL.md step 8) — a box-level install Rick
+runs once, not per-dept.
+
+Verify the new dept's unit carries the env (read-only):
+
+```bash
+systemctl show ops-loop-<slug>.service -p Environment | tr ' ' '\n' \
+  | grep -E 'OPS_LOOP_BOOT_REARM=1|OPS_LOOP_DEPT=<slug>'
+```
+Both lines must print. If they don't, the unit predates the env — re-render via
+`scripts/deploy-to-morty.sh --slug=<slug>` or add a `systemctl edit` drop-in
+(INSTALL.md step 8), then restart. The plugin must also be boot-rearm-patched
+(`grep -q bootRearmNotification` in the live `server.ts`); if not, run
+`scripts/install-boot-rearm.sh` and restart the dept.
+
+> Boot re-arm is "env in the unit + one box-level plugin patch" by design — do
+> **not** add per-dept re-arm scripting. Inheritance is the whole point.
+
 #### Check F — Service-start prerequisites (MANDATORY for a MANUAL deploy)
 
 The console éclosure flow sets these up automatically. If you deploy a dept BY HAND
