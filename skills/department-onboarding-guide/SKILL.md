@@ -469,6 +469,38 @@ a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) s
 - at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
 Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
 `config.yaml` yet, the helpers default to Joris's chat_id. (tony/cgp still need a config.yaml.)
+#### Check G — Layer floor coverage (4-cron floor — auto-inherited, but VERIFY)
+
+New depts inherit the **4-cron layer floor automatically** — there is NOTHING to
+install or configure per-dept. The floor is exactly four box-wide cron units
+(`loop-layer1..4.timer`, one per OODA layer, L1 07:00 / L2 12:00 / L3 16:00 /
+L4 19:00 Europe/Paris). Each fires its layer for EVERY eligible dept, discovered
+at runtime by globbing `/home/claude/agents/bubble-ops-*`. A new dept is picked
+up the moment its `ops-loop-<slug>.service` is **enabled** and it has
+`layers/N/PROMPT.md` for the layer in question. No new unit, no `BUBBLE_BACKUP_DEPTS`
+edit. (See `scripts/install-loop-backup.sh` + INSTALL.md step 4.)
+
+This is the daily FLOOR: it guarantees each layer fires ≥1×/day for the dept even
+if its live `/loop` dies (auth lapse, crash, parked). A heartbeat freshness gate
+skips the dept while its live loop is healthy (no double-tick); a `flock` mutex
+prevents a floor tick from overlapping a live tick.
+
+Verify the new dept is in scope (read-only, spends no tick):
+
+```bash
+cd /home/claude/bubble-ops-loop
+BUBBLE_BACKUP_DRY_RUN=1 BUBBLE_BACKUP_LOG=/tmp/floor-check.jsonl \
+  scripts/loop-backup.sh --layer 1 2>&1 | grep -E "auto-discovered|<slug>"
+rm -f /tmp/floor-check.jsonl
+```
+The `auto-discovered` line must list the new `<slug>`. If it shows
+`SKIP — service ops-loop-<slug>.service not enabled` the dept's loop service
+isn't enabled yet (expected until activation); if it's enabled but the layer is
+missing you'll see `no layers/N/PROMPT.md` — that's correct for a dept that
+genuinely doesn't run that layer (e.g. a concierge), wrong for a full OODA dept.
+
+> The floor is "1 unit iterates N depts" by design — do **not** add a per-dept
+> backup/floor unit. Inheritance is the whole point.
 
 #### Check F — Service-start prerequisites (MANDATORY for a MANUAL deploy)
 
