@@ -41,6 +41,8 @@ class LayerHeartbeat:
     last_success_iso: str    # "" if the layer never ran
     age_human: str           # "" if never; else "il y a 2 h" / "il y a 3 j"
     is_stale: bool           # never-run, or older than _STALE_LAYER_SEC
+    never_run: bool = False  # True iff the layer has no .last-run at all
+    age_sec: Optional[float] = None  # seconds since last run; None if never
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class LoopPulse:
     heartbeat_iso: str       # "" if no heartbeat ever
     age_human: str
     alive: bool              # heartbeat seen within _STALE_PULSE_SEC
+    age_sec: Optional[float] = None  # seconds since last heartbeat; None if never
 
 
 def _parse_iso(s: str) -> Optional[float]:
@@ -114,14 +117,15 @@ def per_dept_layer_heartbeats(
             if ts is None:
                 rows.append(LayerHeartbeat(
                     dept=dept, layer=layer, last_success_iso="",
-                    age_human="", is_stale=True))
+                    age_human="", is_stale=True, never_run=True, age_sec=None))
                 continue
             age = now - ts
             iso = _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime(
                 _ISO_FMT + "Z")
             rows.append(LayerHeartbeat(
                 dept=dept, layer=layer, last_success_iso=iso,
-                age_human=_age_human(age), is_stale=age > _STALE_LAYER_SEC))
+                age_human=_age_human(age), is_stale=age > _STALE_LAYER_SEC,
+                never_run=False, age_sec=age))
     return rows
 
 
@@ -137,12 +141,12 @@ def loop_pulse(
         hb = latest_heartbeat_epoch(str(root / "outputs")) if root is not None else None
         if hb is None:
             out[dept] = LoopPulse(dept=dept, heartbeat_iso="", age_human="",
-                                  alive=False)
+                                  alive=False, age_sec=None)
             continue
         age = now - hb
         iso = _dt.datetime.fromtimestamp(hb, _dt.timezone.utc).strftime(
             _ISO_FMT + "Z")
         out[dept] = LoopPulse(dept=dept, heartbeat_iso=iso,
                               age_human=_age_human(age),
-                              alive=age <= _STALE_PULSE_SEC)
+                              alive=age <= _STALE_PULSE_SEC, age_sec=age)
     return out

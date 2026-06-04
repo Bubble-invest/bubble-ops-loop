@@ -1942,7 +1942,9 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
   vertical-align: middle;
 }
 .fw-legend-swatch--ok      { background: var(--sage); }
+.fw-legend-swatch--warn    { background: var(--ochre); }
 .fw-legend-swatch--alert   { background: #b4503f; }
+.fw-legend-swatch--idle    { background: var(--line-soft); border: 1px solid var(--line); }
 .fw-legend-swatch--unknown { background: var(--line); border: 1px dashed var(--body-muted); }
 
 /* ── Custom node card (matches .fw-node editorial look) ───────────────── */
@@ -2010,6 +2012,8 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 }
 .fw-rf-layer--ok    { background: rgba(122,139,126,0.18); color: var(--ink-soft); }
 .fw-rf-layer--stale { background: rgba(180,80,63,0.16);  color: #b4503f; }
+/* never-run layer: neutral/at-rest, NOT an alarm (Phase 1 L3 legitimately idle) */
+.fw-rf-layer--idle  { background: var(--paper-edge); color: var(--body-muted); }
 
 /* React Flow chrome → cabinet palette */
 .org-flow .react-flow__controls { box-shadow: 0 1px 6px rgba(26,43,74,0.10); border-radius: 6px; }
