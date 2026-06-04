@@ -123,15 +123,19 @@
 
   function NodeCard(props) {
     var d = props.data;
+    // IMPORTANT: a single element cannot carry BOTH dangerouslySetInnerHTML
+    // and children (React throws, blanking the whole graph). So the card body
+    // (innerHTML) and the edge Handles live in SEPARATE sibling elements
+    // inside an outer wrapper.
     return h("div", {
-      className: "fw-rf-card fw-rf-card--" + d.kind + " fw-rf-card--status-" + d.status,
-      onClick: function () { if (d.href) window.location.href = d.href; },
-      style: { cursor: d.href ? "pointer" : "default" },
-      dangerouslySetInnerHTML: { __html: cardHtml(d) },
-    },
-    // React Flow needs handles for edges to attach
-    h(RF.Handle, { type: "target", position: RF.Position.Top, style: { opacity: 0 } }),
-    h(RF.Handle, { type: "source", position: RF.Position.Bottom, style: { opacity: 0 } }));
+        className: "fw-rf-card fw-rf-card--" + d.kind + " fw-rf-card--status-" + d.status,
+        onClick: function () { if (d.href) window.location.href = d.href; },
+        style: { cursor: d.href ? "pointer" : "default" },
+      },
+      h(RF.Handle, { type: "target", position: RF.Position.Top, style: { opacity: 0 } }),
+      h("div", { className: "fw-rf-body", dangerouslySetInnerHTML: { __html: cardHtml(d) } }),
+      h(RF.Handle, { type: "source", position: RF.Position.Bottom, style: { opacity: 0 } })
+    );
   }
 
   var nodeTypes = { card: NodeCard };
