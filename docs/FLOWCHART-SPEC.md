@@ -40,3 +40,29 @@ Root cause is threefold:
 - **Freshness watchdog is blind**: `scripts/loop-watchdog.sh` is HARDCODED to the prototype `fixture` dept (`HEARTBEAT=.../agents/fixture/...`) — never checks real depts. The watchdog that should've caught this is structurally blind. → make it per-dept.
 - Recovery: re-issue `/loop 20m` in each live session (recreates the state file); fix the fork-session/loop interaction; render per-dept freshness watchdogs.
 - The flowchart is currently the ONLY surface showing Ben/Tony loops are dead.
+
+## Systemic alignment map (2026-06-04) — fix template + re-apply to existing depts
+
+### BUG-DATE — source is the scaffold template (all depts inherit it)
+- `scripts/lib/scaffold.py::CLAUDE_MD_OPERATING_TEMPLATE` uses literal `<today>` placeholders in the /loop protocol (lines ~404, 695, 723, 762) — agent hand-substitutes from context → freezes.
+- `scripts/lib/dispatch_helpers.py::build_dispatch_ctx` computes `today`/`today_dir` (lines 411-412) but does NOT return them → agent can't use the deterministic date.
+- FIX ONCE (future depts): (1) return `today`+`today_dir` from build_dispatch_ctx; (2) rewrite template to "use the helper's today_dir; never type the date yourself".
+- RE-APPLY (existing): re-render CLAUDE.md for ben, maya, tony, cgp, fixture from fixed template.
+
+### BUG-HOOK — Maya only, but activation gap affects all future depts
+- Maya's `.claude/settings.json` SessionStart → `/home/claude/agents/maya/...` (DELETED pre-rename path) → no operating context at wake. Operating hook TEMPLATE is correct; activation never installs it.
+- `scripts/lib/activate_runner.py::_rewrite_claude_md_to_operating` only STRIPS the onboarding hook; never writes the operating session-start.sh / re-renders settings.json.
+- FIX ONCE (future depts): activation must render+write operating session-start.sh + settings.json from `skills/department-onboarding-guide/templates/isolation/`.
+- RE-APPLY (existing): fix Maya's settings.json path → bubble-ops-maya/...; re-render her hook.
+
+### Per-dept state
+| dept | hook | ralph state | last heartbeat | BUG-DATE | BUG-HOOK |
+|------|------|-------------|----------------|----------|----------|
+| ben  | operating ✓ | none | 2026-06-04 healthy | inherits (latent) | ok |
+| maya | BROKEN (deleted path) | none | frozen 2026-06-02 | ACTIVE | ACTIVE |
+| tony | operating ✓ | none | 2026-06-04 | inherits (latent) | ok |
+| cgp  | operating ✓ | none | 2026-06-03 (inactive) | inherits (latent) | ok |
+| fixture | operating ✓ | none | 2026-05-21 (test) | inherits (latent) | ok |
+
+### CONFLICT to resolve before touching live loops
+Wedge-agent said Ben/Tony dead = missing `ralph-loop.local.md`. Alignment-agent said its absence is EXPECTED (loop = systemd session + SessionStart hook, not ralph state). These contradict. Ben/Tony show 2026-06-04 heartbeats (3-4h old) — so loops ran today; "dead vs just-slow" is unresolved. DO NOT re-arm/restart live loops until reconciled.

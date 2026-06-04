@@ -412,6 +412,12 @@ def build_dispatch_ctx(
     today_dir = repo / "outputs" / today
     return {
         "now_utc": now_utc,
+        # Deterministic UTC date for THIS tick. The agent MUST use these for
+        # all outputs/<date>/ paths + the heartbeat, instead of hand-typing
+        # the date from context — that froze Maya's loop on 2026-06-02 while
+        # the real date was 2026-06-04 (see docs/FLOWCHART-SPEC.md BUG-DATE).
+        "today": today,
+        "today_dir": str(today_dir),
         "has_research_items": _queue_has_items(repo / "queues" / "research"),
         "has_inbox_decisions": _queue_has_items(repo / "queues" / "inbox" / "decisions"),
         "layer_4_last_run_today": read_last_run(today_dir / "4"),
