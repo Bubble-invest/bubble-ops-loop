@@ -824,6 +824,71 @@ def render_systemd_unit(slug: str) -> str:
     return text
 
 
+def render_broker_policy(slug: str, *, level: str = "ops",
+                         children: list | None = None) -> str:
+    """Render the token-broker actor policy (`<slug>-policy.yaml`) from the
+    CANONICAL template, so a new dept's runtime push allow-list is correct by
+    construction — never hand-copied from a stale fixture.
+
+    This closes the 2026-06-05 drift: maya/tony were hand-copied from
+    fixture-policy.yaml (which lacked WORKING_MEMORY.md) instead of rendered
+    from ops-leaf-policy.template.yaml (which has it), so their WORKING_MEMORY
+    writes 403'd every push. Rendering from the template here makes that
+    impossible for future depts.
+
+    - level='ops' (leaf): substitute every `<DEPT_SLUG>`.
+    - level='management': substitute `<DEPT_SLUG>` AND expand the
+      `<CHILD_SLUG_N>` placeholder lines into one real line per child (in both
+      the `read:` block and `pull_requests.can_open_to:`). A management dept
+      MUST have children; raises ValueError otherwise (matches the template's
+      own "empty list = use the leaf template" note).
+    """
+    children = children or []
+    pol_dir = _PROJECT_ROOT / "token-broker" / "deploy" / "policies"
+    if level == "management":
+        if not children:
+            raise ValueError(
+                "management dept needs children for its broker policy "
+                "(read: + pull_requests.can_open_to:); none given"
+            )
+        text = (pol_dir / "management-policy.template.yaml").read_text(encoding="utf-8")
+        text = text.replace("<DEPT_SLUG>", slug)
+        # Expand the two `<CHILD_SLUG_N>` placeholder blocks. The template ships
+        # two sample lines (CHILD_SLUG_1/2) in each of `read:` and
+        # `can_open_to:`; replace each sample line-pair with one real line per
+        # child, preserving the surrounding indentation.
+        out_lines: list[str] = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if stripped.startswith("- bubble-ops-<CHILD_SLUG_"):
+                indent = line[: len(line) - len(stripped)]
+                # Emit one line per child only on the FIRST sample line of a
+                # block; skip subsequent sample lines (CHILD_SLUG_2, ...).
+                if "<CHILD_SLUG_1>" in line:
+                    for c in children:
+                        out_lines.append(f"{indent}- bubble-ops-{c}\n")
+                # CHILD_SLUG_2+ sample lines are dropped (already expanded above)
+                continue
+            out_lines.append(line)
+        text = "".join(out_lines)
+    else:
+        text = (pol_dir / "ops-leaf-policy.template.yaml").read_text(encoding="utf-8")
+        text = text.replace("<DEPT_SLUG>", slug)
+    # Guard against unrendered placeholders in ACTIVE (non-comment) lines.
+    # Header-comment references like `#   <CHILD_SLUG_*> → ...` are docs and
+    # stay verbatim; only a live config line with a placeholder is a bug.
+    for ln in text.splitlines():
+        if ln.lstrip().startswith("#"):
+            continue
+        if "<DEPT_SLUG>" in ln or "<CHILD_SLUG_" in ln:
+            raise ValueError(
+                f"broker policy for {slug} still has an unrendered placeholder "
+                f"in an active line: {ln.strip()!r} — template shape changed; "
+                "update render_broker_policy()"
+            )
+    return text
+
+
 STEP_README = {
     "onboarding/1-mandate": (
         "Step 1 - Mandate\n"
@@ -1117,6 +1182,17 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     write_with_dirs(
         root / "deploy" / f"ops-loop-{slug}.service",
         render_systemd_unit(slug),
+    )
+
+    # 11. deploy/policies/<slug>-policy.yaml — token-broker actor policy,
+    #     rendered from the CANONICAL template (leaf or management) so the
+    #     runtime push allow-list is correct by construction. The operator
+    #     installs this to /opt/bubble-token-broker/deploy/policies/ at
+    #     activation. Closes the 2026-06-05 hand-copy drift (maya/tony lost
+    #     WORKING_MEMORY.md by copying the stale fixture).
+    write_with_dirs(
+        root / "deploy" / "policies" / f"{slug}-policy.yaml",
+        render_broker_policy(slug, level=level, children=children),
     )
 
 
