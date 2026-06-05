@@ -47,6 +47,30 @@ def test_scaffold_creates_queue_and_inbox_gitkeeps(scaffolded):
 
 
 # -------------------------------------------------------------------------
+# 1b) .gitignore — keeps runtime artifacts/secrets/vault out of the ops-repo
+#     so a stray non-allow-listed file never 403s the dept's runtime push
+#     (the 2026-06-05 ben/maya/tony push-block).
+# -------------------------------------------------------------------------
+def test_scaffold_creates_gitignore_with_push_guards(scaffolded):
+    dept_root, _ = scaffolded
+    slug = "newdept"  # matches the `scaffolded` fixture
+    gi = dept_root / ".gitignore"
+    assert gi.is_file(), "missing .gitignore"
+    content = gi.read_text()
+    # vault lives in its own repo, never tracked here (else it blocks pushes)
+    assert "vault/" in content
+    # stray runtime DBs at root must never be tracked (root paths aren't
+    # in the runtime_write_own allow-list)
+    assert "/*.sqlite" in content
+    # the .claude scheduled-tasks lock must never be tracked
+    assert ".claude/scheduled_tasks.lock" in content
+    # secrets / env never tracked
+    assert "*.sops.env" in content
+    # the vault note is parametrised to this dept's vault repo
+    assert f"bubble-{slug}-vault" in content
+
+
+# -------------------------------------------------------------------------
 # 2) .claude/settings.json — valid JSON, dept-scoped, deny-list isolates
 # -------------------------------------------------------------------------
 def test_scaffold_settings_json_valid_and_scoped(scaffolded):
