@@ -436,8 +436,78 @@
       '<p class="fw-detail-when">' + pulse + '</p>' +
       '<h4 class="fw-detail-h4">Les 4 moments</h4>' +
       '<dl class="fw-detail-rel">' + layers + '</dl>' +
-      (d.href ? '<p style="margin-top:14px;"><a href="' + esc(d.href) +
+      (d.slug ? '<p style="margin-top:12px;"><button type="button" ' +
+        'class="fw-detail-btn" data-dataflow="' + esc(d.slug) + '">' +
+        '⇄ Voir le flux de données (repos, sources)</button></p>' : "") +
+      (d.href ? '<p style="margin-top:8px;"><a href="' + esc(d.href) +
         '" class="fw-detail-link">Ouvrir la fiche complète →</a></p>' : ""));
+    // wire the data-flow button
+    var btn = panelBody.querySelector("[data-dataflow]");
+    if (btn) btn.addEventListener("click", function () {
+      openDataflow(btn.getAttribute("data-dataflow"), d.title);
+    });
+  }
+
+  // Per-dept data-flow — grounded in dept.yaml (reads/writes by layer).
+  var SRC_KIND_LABEL = { repo: "Repo", vault: "Vault", wiki: "Wiki partagé",
+    db: "Base de données", broker: "Broker", queue: "Queue (filesystem-bus)",
+    llm_ctx: "Contexte / mémoire", external: "Source externe" };
+
+  function _srcChips(list) {
+    if (!list || !list.length) return '<span class="muted">—</span>';
+    return list.map(function (s) {
+      return '<span class="fw-src fw-src--' + esc(s.kind) + '">' +
+        esc(s.label) + "</span>";
+    }).join(" ");
+  }
+
+  function openDataflow(slug, title) {
+    openPanel('<p class="fw-detail-loading">Chargement du flux…</p>');
+    fetch("/health/dataflow/" + encodeURIComponent(slug) + ".json",
+          { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (df) {
+        // repos this dept uses / can access (grounded git remotes)
+        var repos = (df.repos || []).map(function (rp) {
+          return '<li><span class="fw-src fw-src--' + esc(rp.kind) + '">' +
+            esc(rp.id) + '</span> <span class="muted">' + esc(rp.role) + '</span></li>';
+        }).join("");
+        // per-layer reads/writes
+        var byLayer = (df.layers || [])
+          .slice().sort(function (a, b) { return ("" + a.layer).localeCompare("" + b.layer); })
+          .map(function (L) {
+            return '<div class="fw-flow-layer">' +
+              '<div class="fw-flow-layer-h">Layer ' + esc(L.layer) +
+              ' <span class="muted">· ' + esc(L.name) + '</span></div>' +
+              '<div class="fw-flow-io"><span class="fw-flow-dir">lit ▸</span> ' +
+              _srcChips(L.reads) + '</div>' +
+              '<div class="fw-flow-io"><span class="fw-flow-dir">écrit ▸</span> ' +
+              _srcChips(L.writes) + '</div></div>';
+          }).join("");
+        openPanel(
+          '<button type="button" class="fw-detail-back" data-flow-back="' +
+            esc(slug) + '">← retour</button>' +
+          '<h3 class="fw-detail-title">' + esc(title || slug) + ' — flux de données</h3>' +
+          '<p class="fw-detail-sub">repos &amp; sources lus/écrits par mission, ' +
+          'd\'après <code>dept.yaml</code></p>' +
+          '<h4 class="fw-detail-h4">Repos / accès</h4>' +
+          '<ul class="fw-detail-arts">' + repos + '</ul>' +
+          '<h4 class="fw-detail-h4">Par layer</h4>' + byLayer);
+        var back = panelBody.querySelector("[data-flow-back]");
+        if (back) back.addEventListener("click", function () {
+          // re-open the node detail; cheapest is a graph refetch lookup
+          fetch("/health/graph.json", { credentials: "same-origin" })
+            .then(function (r) { return r.json(); })
+            .then(function (g) {
+              var n = (g.nodes || []).find(function (x) { return x.slug === slug; });
+              if (n) openNodeDetail(n);
+            });
+        });
+      })
+      .catch(function (err) {
+        openPanel('<p class="fw-detail-loading">Flux indisponible (' +
+                  esc(err.message) + ').</p>');
+      });
   }
 
   function openRailDetail(d) {
