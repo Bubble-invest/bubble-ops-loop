@@ -93,7 +93,7 @@
   var CONCIERGE_Y = 110;  // concierges: between Principal and Management
 
   function layout(graphNodes) {
-    var roles = { principal: [], mgmt: [], ops: [], concierge: [], local: [], rail: [] };
+    var roles = { principal: [], mgmt: [], ops: [], concierge: [], local: [], rail: [], repo: [] };
     graphNodes.forEach(function (n) {
       (roles[n.kind] || roles.ops).push(n);
     });
@@ -123,6 +123,23 @@
     var localX = COL_W * 1.4;  // just right of the centered Principal card
     roles.local.forEach(function (n, i) {
       pos[n.id] = { x: localX, y: ROW_Y.principal + i * 70 };
+    });
+
+    // GitHub repos sit just BELOW their owning dept (own repo + vault stacked);
+    // the shared-wiki repo is centered at the very bottom (all depts read it).
+    var REPO_Y = LOCAL_Y;          // a row below the ops/local band
+    var ownerCount = {};
+    roles.repo.forEach(function (n) {
+      if (n.id === "repo:shared-wiki") {
+        pos[n.id] = { x: 0, y: REPO_Y + 95 };   // centered, lowest
+        return;
+      }
+      var owner = n.owner_dept;
+      var op = owner && pos[owner];
+      var k = owner || n.id;
+      var i = ownerCount[k] = (ownerCount[k] || 0) + 1;
+      var bx = op ? op.x : 0;
+      pos[n.id] = { x: bx, y: REPO_Y + (i - 1) * 64 };  // stack own repo, then vault
     });
 
     // Rails ENCLOSE the whole org (transcript: "deux grandes flèches en
@@ -172,10 +189,12 @@
   // just enough context for the non-dept kinds.
   var KICKER = { principal: "Principal", mgmt: "Management",
                  concierge: "Concierge", local: "Mac local", rail: "Rail" };
+  var REPO_KICKER = { repo: "Repo GitHub", vault: "Vault", wiki: "Wiki partagé" };
 
   function cardHtml(n) {
     var parts = [];
-    var kick = KICKER[n.kind] || "";
+    var kick = n.kind === "repo" ? (REPO_KICKER[n.repo_kind] || "Repo")
+                                 : (KICKER[n.kind] || "");
     if (kick) parts.push('<span class="fw-rf-kicker">' + kick + "</span>");
     parts.push(
       '<span class="fw-rf-name"><span class="fw-rf-dot fw-rf-dot--' +
@@ -215,6 +234,12 @@
       if (d.kind === "ops" || d.kind === "mgmt") {
         ev.stopPropagation();
         openNodeDetail(d);
+        return;
+      }
+      // Repo: open the GitHub repo in a new tab.
+      if (d.kind === "repo" && d.href) {
+        ev.stopPropagation();
+        window.open(d.href, "_blank", "noopener");
         return;
       }
       if (d.href) window.location.href = d.href;
@@ -271,11 +296,13 @@
     });
     // No permanent labels (declutter). `link` = bidirectional parent↔child
     // (arrow on BOTH ends); concierge_io = quiet dashed, muted.
-    var EDGE_COLOR = { link: "var(--ochre)", concierge_io: "var(--sage)" };
+    var EDGE_COLOR = { link: "var(--ochre)", concierge_io: "var(--sage)",
+                       repo_link: "var(--ink-soft)" };
     var edges = graph.edges.map(function (e) {
       var color = EDGE_COLOR[e.kind] || "var(--ochre)";
       var isLink = e.kind === "link";
       var isConc = e.kind === "concierge_io";
+      var isRepo = e.kind === "repo_link";
       var arrow = { type: RF.MarkerType.ArrowClosed, color: color, width: 14, height: 14 };
       return {
         id: e.id, source: e.source, target: e.target,
@@ -285,16 +312,15 @@
         style: {
           stroke: color,
           // concierge "reaches every dept" edges are kept VERY faint by default
-          // (a soft web), so 2×N of them don't re-clutter; CSS brightens them
-          // when their concierge node is hovered/selected.
-          strokeWidth: isConc ? 0.8 : (isLink ? 1.3 : 1),
-          strokeOpacity: isConc ? 0.28 : 1,
-          strokeDasharray: isConc ? "2 4" : undefined,
+          // (a soft web); repo links are quiet too (subordinate to the spine).
+          strokeWidth: isConc ? 0.8 : (isLink ? 1.3 : isRepo ? 1 : 1),
+          strokeOpacity: isConc ? 0.28 : (isRepo ? 0.55 : 1),
+          strokeDasharray: isConc ? "2 4" : (isRepo ? "1 3" : undefined),
         },
         // bidirectional arrows for the parent↔child links; a single small
-        // arrowhead (into the dept) for the concierge "acts on" edges.
+        // arrowhead for concierge/repo edges (into the target).
         markerStart: isLink ? arrow : undefined,
-        markerEnd: isConc
+        markerEnd: (isConc || isRepo)
           ? { type: RF.MarkerType.Arrow, color: color, width: 11, height: 11 }
           : arrow,
         data: { kind: e.kind, relation: e.relation || null },
