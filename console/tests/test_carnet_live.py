@@ -110,6 +110,34 @@ def test_pulse_none_when_no_heartbeat(disk_root):
     assert pulse["cgp"].heartbeat_iso == "" and pulse["cgp"].alive is False
 
 
+def test_pulse_alive_on_fresh_dispatch_despite_stale_heartbeat(disk_root):
+    """The 2026-06-05 silent-failure bug: a dept doing real work writes
+    `.last-run` on dispatch ticks but heartbeat.log ONLY on idle ticks. So a
+    busy loop has a stale heartbeat.log while being perfectly alive. Liveness
+    must use the newest of (heartbeat, any .last-run) — else the console shows
+    an actively-working loop as DEAD (ben: 17h heartbeat, 97min L3 .last-run)."""
+    repo = _dept(disk_root, "ben")
+    _heartbeat(repo, "2026-05-31", "2026-05-31T19:00:00Z")     # ~17h stale
+    _last_run(repo, "2026-06-01", 3, "2026-06-01T11:40:00Z")   # 20 min ago (fresh L3)
+    pulse = morty_reader.loop_pulse(["ben"], now_epoch=NOW)
+    assert pulse["ben"].alive is True, (
+        "a fresh dispatch .last-run must count as loop liveness even when "
+        "heartbeat.log is stale (busy loop = no idle heartbeat lines)"
+    )
+    # the pulse timestamp should be the FRESH last-run, not the stale heartbeat
+    assert pulse["ben"].heartbeat_iso == "2026-06-01T11:40:00Z"
+
+
+def test_pulse_stale_when_both_heartbeat_and_dispatch_old(disk_root):
+    """If BOTH heartbeat and every .last-run are old, the loop really is
+    parked → still flagged stale (no false-green from the new logic)."""
+    repo = _dept(disk_root, "tony")
+    _heartbeat(repo, "2026-05-30", "2026-05-30T06:00:00Z")     # ~2.25 days
+    _last_run(repo, "2026-05-30", 1, "2026-05-30T06:00:00Z")   # ~2.25 days
+    pulse = morty_reader.loop_pulse(["tony"], now_epoch=NOW)
+    assert pulse["tony"].alive is False
+
+
 # ─── Route rendering ─────────────────────────────────────────────────────
 
 def test_health_page_renders_live_pulse(client, fixture_root):
