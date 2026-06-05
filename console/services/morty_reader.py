@@ -133,18 +133,39 @@ def loop_pulse(
     depts: List[str],
     now_epoch: Optional[float] = None,
 ) -> Dict[str, LoopPulse]:
-    """Dept-level loop liveness from the heartbeat log — {slug: LoopPulse}."""
+    """Dept-level loop liveness — {slug: LoopPulse}.
+
+    Liveness = the NEWEST of (a) the heartbeat.log timestamp AND (b) the newest
+    per-layer `.last-run` across all layers. A dept writes heartbeat.log only on
+    an IDLE tick (decision=heartbeat); on a DISPATCH tick (L1/L2/L3/L4) it writes
+    `.last-run` + round_counter but NOT a heartbeat line. So a busy dept that
+    keeps dispatching has a STALE heartbeat.log while being perfectly alive —
+    keying liveness off heartbeat.log alone shows an actively-working loop as
+    DEAD (the 2026-06-05 silent-failure bug: ben red-flagged at 17h heartbeat
+    while he'd just ticked L3 97 min ago). Both signals mean "the loop ran", so
+    we take their max.
+    """
     now = now_epoch if now_epoch is not None else time.time()
     out: Dict[str, LoopPulse] = {}
     for dept in depts:
         root = repo_path(dept)
-        hb = latest_heartbeat_epoch(str(root / "outputs")) if root is not None else None
-        if hb is None:
+        outputs = str(root / "outputs") if root is not None else ""
+        hb = latest_heartbeat_epoch(outputs) if outputs else None
+        # newest dispatch-tick signal across all layers
+        last_run = None
+        if outputs:
+            for _layer in (1, 2, 3, 4):
+                lr = _newest_layer_last_run(outputs, _layer)
+                if lr is not None and (last_run is None or lr > last_run):
+                    last_run = lr
+        # loop is alive if EITHER signal is recent
+        pulse_ts = max((t for t in (hb, last_run) if t is not None), default=None)
+        if pulse_ts is None:
             out[dept] = LoopPulse(dept=dept, heartbeat_iso="", age_human="",
                                   alive=False, age_sec=None)
             continue
-        age = now - hb
-        iso = _dt.datetime.fromtimestamp(hb, _dt.timezone.utc).strftime(
+        age = now - pulse_ts
+        iso = _dt.datetime.fromtimestamp(pulse_ts, _dt.timezone.utc).strftime(
             _ISO_FMT + "Z")
         out[dept] = LoopPulse(dept=dept, heartbeat_iso=iso,
                               age_human=_age_human(age),
