@@ -2089,3 +2089,12 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 }
 .fw-rf-card--rail .fw-rf-name { color: var(--sage); }
 .fw-rf-card--rail .fw-rf-role { color: var(--sage-soft); }
+
+/* Concierge "acts on every dept" edges: faint web by default, brighten on hover. */
+.org-flow .react-flow__edge.fw-rf-edge--concierge_io:hover .react-flow__edge-path {
+  stroke-opacity: 0.9 !important;
+  stroke-width: 1.4 !important;
+}
+/* Concierge node card: distinct cross-cutting look (sits above the org). */
+.fw-rf-card--concierge { border-color: var(--sage-soft); }
+.fw-rf-card--concierge .fw-rf-kicker { color: var(--sage); }
