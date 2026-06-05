@@ -251,3 +251,28 @@ def test_dataflow_classifies_sources():
 
 def test_dataflow_requires_auth(client_noauth):
     assert client_noauth.get("/health/dataflow/fixture.json").status_code in (401, 403)
+
+
+# ─── GitHub repo nodes on the main graph ─────────────────────────────────
+
+def test_graph_has_repo_nodes_and_links(client):
+    """Each dept's GitHub repo appears as a node, linked from the dept;
+    a single shared-wiki node is read by all. Grounded in real remotes."""
+    g = client.get("/health/graph.json").json()
+    repos = [n for n in g["nodes"] if n["kind"] == "repo"]
+    assert repos, "expected GitHub repo nodes on the graph"
+    repo_ids = {n["id"] for n in repos}
+    # the fixture dept's own repo + the shared wiki
+    assert "repo:bubble-ops-fixture" in repo_ids
+    assert "repo:shared-wiki" in repo_ids
+    # repo nodes carry a GitHub href + a repo_kind
+    for n in repos:
+        assert n["href"].startswith("https://github.com/")
+        assert n["repo_kind"] in ("repo", "vault", "wiki")
+    # repo_link edges connect dept → repo, no dangling
+    ids = {n["id"] for n in g["nodes"]}
+    rlinks = [e for e in g["edges"] if e["kind"] == "repo_link"]
+    assert rlinks, "expected repo_link edges"
+    for e in rlinks:
+        assert e["source"] in ids and e["target"] in ids
+        assert not e.get("label")  # quiet, no permanent label

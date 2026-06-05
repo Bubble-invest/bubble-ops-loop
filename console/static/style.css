@@ -2165,3 +2165,18 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .fw-src--queue   { border-color: var(--line); color: var(--body-muted); }
 .fw-src--llm_ctx { border-color: var(--line); color: var(--body-soft); background: var(--paper); }
 .fw-src--external{ border-color: var(--sage-soft); color: var(--body-soft); border-style: dashed; }
+
+/* ── GitHub repo nodes on the main graph ─────────────────────────────── */
+.fw-rf-card--repo {
+  min-width: 130px; max-width: 168px; padding: 7px 11px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.fw-rf-card--repo .fw-rf-name {
+  font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+  color: var(--ink-soft); word-break: break-all;
+}
+.fw-rf-card--repo .fw-rf-kicker { color: var(--body-muted); }
+/* tint by repo kind */
+.fw-rf-card--repo[class*="repo--repo"] { }  /* default */
