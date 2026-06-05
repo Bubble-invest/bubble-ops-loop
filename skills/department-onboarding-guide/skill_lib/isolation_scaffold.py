@@ -117,6 +117,14 @@ def scaffold_isolation_surface(
     written: list[Path] = []
     written += scaffold_gitkeeps(dept_root)
 
+    # .gitignore — keep runtime artifacts/secrets/vault OUT of the ops-repo so a
+    # stray non-allow-listed file never 403s the dept's runtime push (the
+    # 2026-06-05 ben/maya/tony push-block: a tracked root fund.sqlite + a
+    # .claude lock blocked all pushes; git push is all-or-nothing).
+    gitignore = dept_root / ".gitignore"
+    gitignore.write_text(_render("gitignore.template", ctx), encoding="utf-8")
+    written.append(gitignore)
+
     # .claude/settings.json
     claude = dept_root / ".claude"
     claude.mkdir(parents=True, exist_ok=True)

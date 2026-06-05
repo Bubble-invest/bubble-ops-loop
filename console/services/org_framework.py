@@ -226,14 +226,41 @@ def build_graph() -> Dict[str, Any]:
 
     # ── Ops tier ───────────────────────────────────────────────────────
     parent_ids = mgmt_ids or ["principal"]
+    dept_ids: List[str] = list(mgmt_ids)   # every dept a concierge can act on
     for d in ops:
         n = _dept_node(d, "ops", 2)
         nodes.append(n)
+        dept_ids.append(n["id"])
         # link to the (single) management parent — avoids a fan of duplicate
         # edges when there are multiple parents (there is one manager today).
         edges.append(_link_edge(parent_ids[0], n["id"], d.slug))
 
-    # ── Concierges (beside, no autonomous loop) — with I/O + authz detail ──
+    # ── Concierges — CROSS-CUTTING, above the org (not ops peers). ─────────
+    # Grounded in real code/permissions observed on the VPS (2026-06-05):
+    #   • run as the `claude` user → passwordless sudo to start/stop/restart
+    #     EVERY agent's loop (ops-loop-*, claude-agent-*, telegram-watchdog-*,
+    #     bubble-*, cloud-wiki-*) + journalctl. (/etc/sudoers.d)
+    #   • all dept repos live under /home/claude/agents/bubble-ops-* owned by
+    #     the same `claude` user → read/write on every dept's working tree
+    #     (the "sandbox commune"); share the git credential helper.
+    #   • no per-agent restriction file (claudette settings.json is empty) →
+    #     scope is the broad claude-user set; narrower than Rick-local only by
+    #     convention, NOT a hard OS sandbox.
+    # So they get ONE node above Tony with an INBOUND link to every dept,
+    # representing "can act on any dept" (lifecycle control + shared FS).
+    CONCIERGE_AUTHZ = {
+        "run_as": "utilisateur `claude` (sandbox commune Morty + Claudette)",
+        "lifecycle": "sudo NOPASSWD : start/stop/restart de TOUT loop d'agent "
+                     "(ops-loop-*, claude-agent-*, telegram-watchdog-*, bubble-*, "
+                     "cloud-wiki-*) + journalctl",
+        "filesystem": "lecture/écriture sur tous les repos /home/claude/agents/"
+                      "bubble-ops-* (mêmes droits `claude`)",
+        "limits": "pas de boucle /loop autonome (réactif) ; restriction vs "
+                  "Rick-local par convention, pas par sandbox OS ; secrets en "
+                  "RAM jamais lus.",
+        "evidence": "observé sur cx33 : /etc/sudoers.d + ownership des repos "
+                    "(2026-06-05).",
+    }
     for c in (concierge_reader.get_concierge(name) for name in concierge_reader.CONCIERGES):
         if c is None:
             continue
@@ -241,34 +268,28 @@ def build_graph() -> Dict[str, Any]:
         last_used = getattr(c, "last_activity_iso", None) or ""
         cid = f"concierge:{c.name}"
         nodes.append({
-            "id": cid, "kind": "concierge", "tier": 2,
+            "id": cid, "kind": "concierge", "tier": 0,  # cross-cutting, above Tony
             "title": c.name.capitalize(), "role": "Concierge",
-            "note": "assistant réactif · pas de boucle autonome",
+            "note": "transversal · peut agir sur tout dept",
             "href": f"/concierge/{c.name}",
             "status": "ok" if svc in ("", "active", "running") else "warn",
             "last_human": last_used,
-            # authorisations are architectural facts (shared sandbox, reduced
-            # powers vs Rick, read access to all repos) — surfaced in the panel.
-            "authz": {
-                "sandbox": "sandbox commune (Morty + Claudette)",
-                "powers": "pouvoirs réduits vs Rick (local)",
-                "repos": "lecture de tous les repos dept; pas de secrets cross-dept",
-                "loop": "réactif (pas de /loop autonome)",
-            },
+            "authz": CONCIERGE_AUTHZ,
             "last_used": last_used,
         })
-        # I/O edge: concierge serves the Principal & team (reactive, both ways).
-        # No permanent label — kept quiet; relation shows on click.
-        edges.append({
-            "id": f"e:{cid}-principal", "source": cid, "target": "principal",
-            "kind": "concierge_io", "label": "",
-            "relation": {
-                "direction": "réactif (à la demande, ↔)",
-                "writes": "infra · secrets dispatch · onboarding (pas d'output de layer)",
-                "read_at": "sur sollicitation du Principal / de l'équipe",
-                "note": f"dernière activité : {last_used or 'inconnue'} · "
-                        "sandbox commune, pouvoirs réduits.",
-            }})
+        # INBOUND link to EVERY dept — the concierge can act on any of them.
+        for did in dept_ids:
+            edges.append({
+                "id": f"e:{cid}-{did}", "source": cid, "target": did,
+                "kind": "concierge_io", "label": "",
+                "relation": {
+                    "direction": f"{c.name.capitalize()} → {did} (transversal, à la demande)",
+                    "writes": "contrôle du loop (start/stop/restart) + repo en lecture/écriture",
+                    "read_at": "journalctl + working tree du dept",
+                    "note": f"dernière activité : {last_used or 'inconnue'}. "
+                            "Concierge transversal : agit sur n'importe quel dept "
+                            "(sudo lifecycle + FS commun), réactif, pas de /loop.",
+                }})
 
     # ── Mac-local agents (static — no telemetry yet) ───────────────────
     for a in LOCAL_AGENTS:

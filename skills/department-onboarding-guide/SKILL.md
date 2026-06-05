@@ -259,6 +259,12 @@ It writes (parameterised per-dept via Jinja2):
 - `queues/{research,gates,management,improvements}/.gitkeep` + `inbox/{decisions,feedback}/.gitkeep`
   — so a fresh `git clone` recreates these dirs and the first `/loop` tick does
   not crash with `FileNotFoundError` (this was CGP's CRIT-1).
+- `.gitignore` — keeps runtime artifacts (root `*.sqlite`, `.claude/*.lock`),
+  secrets (`*.sops.env`, `/run/`), and the split-out `vault/` OUT of the ops-repo.
+  A dept's runtime push allow-list is `outputs/** queues/** inbox/**
+  WORKING_MEMORY.md`; `git push` is all-or-nothing, so ANY stray non-allow-listed
+  file 403s the whole push. (This was the 2026-06-05 ben/maya/tony push-block: a
+  tracked root `fund.sqlite` + a `.claude` lock blocked all pushes for ~2 days.)
 - `.claude/settings.json` — dept-scoped `permissions` (allow own tree, **deny
   every sibling dept** + SOPS sources + `git push`), `enabledSkills`,
   `enabledPlugins`, `model`, `env` (BUBBLE_DEPT*), and the SessionStart `hooks`

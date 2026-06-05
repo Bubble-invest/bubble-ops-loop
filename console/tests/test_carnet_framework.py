@@ -164,16 +164,25 @@ def test_graph_has_security_and_wiki_rails(client):
 
 # ─── Concierge I/O + authorisations ──────────────────────────────────────
 
-def test_concierge_nodes_carry_authz_when_present(client):
-    """If concierges exist, they expose authz + an I/O edge to principal."""
+def test_concierge_nodes_are_crosscutting_with_dept_links(client):
+    """Concierges sit ABOVE the org (tier 0, cross-cutting) and have an
+    inbound 'acts on' edge to EVERY department — grounded in the real
+    permission model (sudo lifecycle + shared FS)."""
     g = client.get("/health/graph.json").json()
     concierges = [n for n in g["nodes"] if n["kind"] == "concierge"]
     if not concierges:
         return  # no /home/claude/agents in the test env — acceptable
+    dept_ids = {n["id"] for n in g["nodes"] if n["kind"] in ("ops", "mgmt")}
     for c in concierges:
-        assert "authz" in c and {"sandbox", "powers", "repos", "loop"} <= set(c["authz"])
-    io_edges = [e for e in g["edges"] if e["kind"] == "concierge_io"]
-    assert io_edges, "each concierge should have an I/O edge to principal"
+        # cross-cutting placement, not an ops peer
+        assert c["tier"] == 0, "concierges must be cross-cutting (tier 0)"
+        # code-grounded authz shape
+        assert {"run_as", "lifecycle", "filesystem", "limits", "evidence"} <= set(c["authz"])
+        # one edge to every dept
+        targets = {e["target"] for e in g["edges"]
+                   if e["kind"] == "concierge_io" and e["source"] == c["id"]}
+        assert dept_ids <= targets, (
+            f"{c['id']} must link to every dept; missing {dept_ids - targets}")
 
 
 # ─── On the Carnet de bord page ──────────────────────────────────────────
