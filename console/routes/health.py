@@ -7,9 +7,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from console.services import dept_registry, morty_reader, org_framework
+from console.services import dataflow, dept_registry, morty_reader, org_framework
 
 router = APIRouter()
+
+
+@router.get("/health/dataflow/{slug}.json")
+def health_dataflow(slug: str) -> JSONResponse:
+    """Per-dept data-flow (grounded in dept.yaml): which repos/vault/db/broker/
+    queue/external sources each layer reads + writes. Backs the click-through
+    'data-flow' view on the /health flowchart."""
+    return JSONResponse(dataflow.dept_dataflow(slug))
 
 
 @router.get("/health/graph.json")
