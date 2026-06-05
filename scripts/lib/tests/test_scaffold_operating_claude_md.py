@@ -331,11 +331,12 @@ def test_operating_loop_section_is_concise():
     assert m, "operating CLAUDE.md must have a /loop protocol section"
     loop_block = m.group(0)
     n_lines = loop_block.count("\n")
-    assert n_lines < 75, (
+    assert n_lines < 78, (
         f"/loop block is {n_lines} lines — {{OPERATOR}} asked for concise + "
         "declarative (msg 3160) AND for main to verify subagent outputs "
-        "(msg 3164). The verify protocol legitimately adds ~25 lines. "
-        "Threshold 75 = original 71-line STEP A-F baseline + small "
+        "(msg 3164). The verify protocol legitimately adds ~25 lines, plus "
+        "the on-demand /loop-now trigger doctrine (2026-06-05, {{OPERATOR}}) adds 2. "
+        "Threshold 78 = 71-line STEP A-F baseline + verify + trigger + small "
         "headroom. If you exceed this, push more logic into "
         "dispatch_helpers.py and leave the prose declarative."
     )
@@ -430,4 +431,28 @@ def test_operating_loop_main_logs_subagent_summary():
         "/loop must instruct main to read the subagent's summary.md "
         "after it returns (msg 3164 — 'make main session aware of what "
         "employees do')"
+    )
+
+
+def test_operating_includes_on_demand_loop_trigger():
+    """The operating /loop protocol must teach the dept to run a full dispatch
+    tick when {{OPERATOR}} sends an on-demand trigger (/loop-now or a natural-language
+    equivalent), and to always summarise the tick afterward. The trigger works
+    via the supported Telegram→MCP-channel→turn path (the only one that reaches
+    a live --channels session — see the wiki wall map)."""
+    out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
+    out_low = out.lower()
+    # the explicit trigger token
+    assert "/loop-now" in out, "operating CLAUDE.md must document the /loop-now trigger"
+    # at least one natural-language variant
+    assert any(v in out_low for v in ("run your loop", "tick now", "fais ton loop")), (
+        "operating CLAUDE.md must accept a natural-language loop trigger"
+    )
+    # it must run a dispatch tick (not just reply)
+    assert "dispatch tick" in out_low, (
+        "the trigger must run a full dispatch tick, not a conversational reply"
+    )
+    # and always confirm afterward
+    assert "always send" in out_low or "always summar" in out_low, (
+        "after an on-demand tick the dept must always send a Telegram summary"
     )
