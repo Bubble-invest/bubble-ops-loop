@@ -191,50 +191,47 @@ def build_graph() -> Dict[str, Any]:
         }
 
     # ── Management tier ────────────────────────────────────────────────
+    # ONE bidirectional edge per parent↔child relationship (directives DOWN +
+    # KPIs UP collapsed into a single line, no permanent label — the two-way
+    # relation + which-file/where-read shows in the click panel). This halves
+    # the edge count and removes ~16 floating labels that cluttered the chart.
     mgmt_ids: List[str] = []
-    def _directive_edge(src, dst, dst_slug):
-        # Directive flows DOWN: the parent opens a priority PR into the child's
-        # management queue; the child reads it at Layer 1 (it does NOT execute
-        # directly in the child — see bubble-ops-loop "PR prioritaire du CEO").
-        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
-                "kind": "directive", "label": "directives (PR)",
-                "relation": {
-                    "direction": "down (parent → child)",
-                    "writes": f"bubble-ops-{dst_slug}/queues/management/directive-*.yaml",
-                    "read_at": "child Layer 1 (Data Refresh)",
-                    "note": "priority PR; child stays owner of its execution — "
-                            "parent can't execute or bypass gates.",
-                }}
 
-    def _kpi_edge(src, dst, src_slug):
-        # KPIs flow UP: the child publishes a standardised export the parent reads.
-        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
-                "kind": "kpi", "label": "KPIs (Layer 4)",
+    def _link_edge(parent, child, child_slug):
+        return {"id": f"e:{parent}-{child}", "source": parent, "target": child,
+                "kind": "link", "label": "",
                 "relation": {
-                    "direction": "up (child → parent)",
-                    "writes": f"bubble-ops-{src_slug}/outputs/<date>/4/risk-kpis.yaml "
-                              f"+ management-export.yaml",
-                    "read_at": "parent reads child outputs (read-only)",
-                    "note": "risk KPIs + management export; parent has read-only "
-                            "visibility, no write into the child.",
+                    "summary": "directives ↓ (PR) · KPIs ↑ (Layer 4)",
+                    "down": {
+                        "what": "directives (PR prioritaire)",
+                        "writes": f"bubble-ops-{child_slug}/queues/management/directive-*.yaml",
+                        "read_at": "enfant — Layer 1 (Data Refresh)",
+                        "note": "l'enfant reste propriétaire de son exécution ; "
+                                "le parent ne peut ni exécuter ni contourner les gates.",
+                    },
+                    "up": {
+                        "what": "KPIs + export management (Layer 4)",
+                        "writes": f"bubble-ops-{child_slug}/outputs/<date>/4/risk-kpis.yaml "
+                                  f"+ management-export.yaml",
+                        "read_at": "parent (lecture seule)",
+                        "note": "le parent voit les outputs de l'enfant, sans y écrire.",
+                    },
                 }}
 
     for d in management:
         n = _dept_node(d, "mgmt", 1)
         nodes.append(n)
         mgmt_ids.append(n["id"])
-        # Principal ⇄ management: directives down, exports/KPIs up.
-        edges.append(_directive_edge("principal", n["id"], d.slug))
-        edges.append(_kpi_edge(n["id"], "principal", d.slug))
+        edges.append(_link_edge("principal", n["id"], d.slug))
 
     # ── Ops tier ───────────────────────────────────────────────────────
     parent_ids = mgmt_ids or ["principal"]
     for d in ops:
         n = _dept_node(d, "ops", 2)
         nodes.append(n)
-        for pid in parent_ids:
-            edges.append(_directive_edge(pid, n["id"], d.slug))
-            edges.append(_kpi_edge(n["id"], pid, d.slug))
+        # link to the (single) management parent — avoids a fan of duplicate
+        # edges when there are multiple parents (there is one manager today).
+        edges.append(_link_edge(parent_ids[0], n["id"], d.slug))
 
     # ── Concierges (beside, no autonomous loop) — with I/O + authz detail ──
     for c in (concierge_reader.get_concierge(name) for name in concierge_reader.CONCIERGES):
@@ -261,9 +258,10 @@ def build_graph() -> Dict[str, Any]:
             "last_used": last_used,
         })
         # I/O edge: concierge serves the Principal & team (reactive, both ways).
+        # No permanent label — kept quiet; relation shows on click.
         edges.append({
             "id": f"e:{cid}-principal", "source": cid, "target": "principal",
-            "kind": "concierge_io", "label": "au service",
+            "kind": "concierge_io", "label": "",
             "relation": {
                 "direction": "réactif (à la demande, ↔)",
                 "writes": "infra · secrets dispatch · onboarding (pas d'output de layer)",
