@@ -117,8 +117,13 @@
     // every dept (inbound edges) but clearly sit under the Principal.
     centerRow(roles.concierge, CONCIERGE_Y);
 
-    // Mac-local: compact centered row beneath ops.
-    centerRow(roles.local, LOCAL_Y);
+    // Mac-local agents (Rick, Tony-local, Miranda) sit NEXT TO the Principal
+    // ({{OPERATOR}}/{{OPERATOR_2}}) — they're "our" local machines, not a bottom row. Place
+    // them as a compact stack to the RIGHT of the Principal, at its height.
+    var localX = COL_W * 1.4;  // just right of the centered Principal card
+    roles.local.forEach(function (n, i) {
+      pos[n.id] = { x: localX, y: ROW_Y.principal + i * 70 };
+    });
 
     // Rails ENCLOSE the whole org (transcript: "deux grandes flèches en
     // entourant le flowchart"). Both wiki-compile + security genuinely sweep
