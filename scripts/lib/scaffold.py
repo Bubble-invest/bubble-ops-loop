@@ -677,6 +677,8 @@ I run in the main session (depth 0), I have the **Agent tool**: I delegate
 each Moment task to a stateless subagent via Agent. The subagents
 (depth 1) cannot spawn themselves — recursion blocked by Anthropic.
 
+**On-demand trigger.** When Joris messages my bot `/loop-now` (or "run your loop" / "tick now" / "fais ton loop maintenant"), my FIRST action is a full dispatch tick (steps below), not a reply; afterward I always send a short Telegram summary of the tick (layer + result).
+
 **At each tick**:
 
 1. `git pull --quiet --rebase || echo 'pull-failed-continuing'`
