@@ -107,20 +107,42 @@
     centerRow(roles.mgmt, ROW_Y.mgmt);
     centerRow(roles.ops, ROW_Y.ops);
 
-    // Concierges: cross-cutting band ABOVE the Principal — they're not ops
-    // peers; they can act on every dept (inbound edges drawn to all depts).
-    centerRow(roles.concierge, CONCIERGE_Y);
-
     // Ops half-width drives where the side groups sit.
     var opsHalf = Math.max(1, roles.ops.length) / 2 * COL_W;
+
+    // Concierges: cross-cutting, but NOT above the Principal (they don't
+    // outrank Joris/Jade). Park them as a side column on the LEFT, spanning
+    // the management/ops band — they reach every dept (inbound edges) from
+    // the side, clearly subordinate to the Principal.
+    var concX = -(opsHalf + COL_W * 0.95);
+    roles.concierge.forEach(function (n, i) {
+      pos[n.id] = { x: concX, y: ROW_Y.mgmt + i * 90 };
+    });
 
     // Mac-local: compact centered row beneath ops.
     centerRow(roles.local, LOCAL_Y);
 
-    // Rails: quiet bands far left / right, vertically centered on the spine.
+    // Rails ENCLOSE the whole org (transcript: "deux grandes flèches en
+    // entourant le flowchart"). Both wiki-compile + security genuinely sweep
+    // every agent, so they're drawn as concentric frames wrapping all nodes,
+    // not side cards. Compute the bbox of every positioned (non-rail) node,
+    // then size one frame per rail, nested.
+    var CARD_W = 176, CARD_H = 64;  // approx card footprint for bbox padding
+    var xs = [], ys = [];
+    Object.keys(pos).forEach(function (id) {
+      xs.push(pos[id].x - CARD_W / 2); xs.push(pos[id].x + CARD_W / 2);
+      ys.push(pos[id].y - CARD_H / 2); ys.push(pos[id].y + CARD_H / 2);
+    });
+    var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    // Order frames so each rail gets its own nesting ring (outer = security).
+    var order = { security: 1, wiki: 0 };  // security outermost
     roles.rail.forEach(function (n) {
-      var side = n.rail === "right" ? 1 : -1;
-      pos[n.id] = { x: side * (opsHalf + COL_W * 1.1), y: ROW_Y.mgmt };
+      var ring = (order[n.rail_key] != null ? order[n.rail_key]
+                  : (n.id.indexOf("security") > -1 ? 1 : 0));
+      var pad = 46 + ring * 30;            // each ring steps further out
+      pos[n.id] = { x: minX - pad, y: minY - pad };
+      n.__frame = { w: (maxX - minX) + pad * 2, h: (maxY - minY) + pad * 2 };
     });
     return pos;
   }
@@ -205,12 +227,44 @@
     );
   }
 
-  var nodeTypes = { card: NodeCard };
+  // Rail = a big rounded frame that ENCIRCLES the org (security + wiki-compile
+  // are cross-cutting sweeps over every agent). Rendered behind everything,
+  // non-blocking, with a clickable label tab in the top-left corner.
+  function FrameNode(props) {
+    var d = props.data;
+    var f = d.__frame || { w: 400, h: 300 };
+    return h("div", {
+        className: "fw-rf-frame fw-rf-frame--" + (d.rail_key || "x") +
+                   " fw-rf-frame--status-" + d.status,
+        style: { width: f.w + "px", height: f.h + "px" },
+      },
+      h("button", {
+        className: "fw-rf-frame-tab",
+        type: "button",
+        onClick: function (ev) { ev.stopPropagation(); openRailDetail(d); },
+        title: "Voir le détail",
+      }, (d.title || "") + (d.last_human && d.telemetry !== false
+            ? " · " + d.last_human : ""))
+    );
+  }
+
+  var nodeTypes = { card: NodeCard, frame: FrameNode };
 
   function toFlow(graph) {
     var pos = layout(graph.nodes);
     var nodes = graph.nodes.map(function (n) {
-      return { id: n.id, type: "card", position: pos[n.id] || { x: 0, y: 0 }, data: n };
+      var isFrame = n.kind === "rail";
+      return {
+        id: n.id,
+        type: isFrame ? "frame" : "card",
+        position: pos[n.id] || { x: 0, y: 0 },
+        data: n,
+        // frames sit behind, don't intercept drags/selection of real nodes
+        zIndex: isFrame ? -1 : 0,
+        selectable: !isFrame,
+        draggable: false,
+        style: isFrame ? { zIndex: -1 } : undefined,
+      };
     });
     // No permanent labels (declutter). `link` = bidirectional parent↔child
     // (arrow on BOTH ends); concierge_io = quiet dashed, muted.
@@ -381,6 +435,22 @@
       '<dl class="fw-detail-rel">' + layers + '</dl>' +
       (d.href ? '<p style="margin-top:14px;"><a href="' + esc(d.href) +
         '" class="fw-detail-link">Ouvrir la fiche complète →</a></p>' : ""));
+  }
+
+  function openRailDetail(d) {
+    var when = d.telemetry === false
+      ? '<span class="muted">pas de télémétrie</span>'
+      : (d.last_human ? 'Dernier passage : <strong>' + esc(d.last_human) + '</strong>'
+                      : '<span class="muted">jamais déclenché</span>');
+    openPanel(
+      '<h3 class="fw-detail-title">' + esc(d.title) + '</h3>' +
+      '<p class="fw-detail-sub">' + esc(d.role || "rail transversal") +
+      ' · encercle toute l\'organisation</p>' +
+      '<p class="fw-detail-when">' + when + '</p>' +
+      '<h4 class="fw-detail-h4">Portée</h4>' +
+      '<p>' + esc(d.note || "") + '</p>' +
+      (d.scope ? '<h4 class="fw-detail-h4">Implémentation (observée)</h4>' +
+                 '<p><code>' + esc(d.scope) + '</code></p>' : ""));
   }
 
   function openConciergeDetail(d) {
