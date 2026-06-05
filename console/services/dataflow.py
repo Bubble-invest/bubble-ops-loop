@@ -97,11 +97,38 @@ def dept_dataflow(slug: str) -> Dict[str, Any]:
     # remotes; vault only present for some depts; shared-wiki read by all).
     repos = [{"id": f"bubble-ops-{slug}", "kind": "repo",
               "role": "repo du département (R/W : queues, outputs, layers)"}]
-    # vault: detected via a *vault* source token in the dataflow
-    if any(s["kind"] == "vault" for s in sources.values()):
-        repos.append({"id": f"bubble-{slug}-vault", "kind": "vault",
-                      "role": "vault de thèses / contenu (R/W)"})
+    # Vault: only a real GIT vault subrepo counts as a repo node. Some depts
+    # (e.g. CGP) reference an *Obsidian* vault in dept.yaml — that's a data
+    # source, NOT a GitHub repo, so it must NOT become a vault repo node.
+    vault_remote = _vault_git_remote(slug)
+    if vault_remote:
+        repos.append({"id": vault_remote, "kind": "vault",
+                      "role": "vault GitHub de thèses / contenu (R/W)"})
     repos.append({"id": "shared-wiki", "kind": "wiki",
                   "role": "mémoire partagée (lecture)"})
 
     return {"slug": slug, "repos": repos, "layers": layers, "sources": sources}
+
+
+def _vault_git_remote(slug: str):
+    """Return the vault repo name iff `<dept-repo>/vault` is a real git repo
+    with a remote (Ben/Maya have one; CGP's 'vault' is Obsidian, not git)."""
+    import subprocess
+    from console.services.dept_registry import repo_path
+    root = repo_path(slug)
+    if root is None:
+        return None
+    vdir = root / "vault"
+    if not (vdir / ".git").exists():
+        return None
+    try:
+        out = subprocess.run(["git", "-C", str(vdir), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=4)
+        url = (out.stdout or "").strip()
+        if not url:
+            return None
+        # bubble-ben-vault.git → bubble-ben-vault
+        name = url.rstrip("/").split("/")[-1]
+        return name[:-4] if name.endswith(".git") else name
+    except Exception:
+        return None
