@@ -167,17 +167,40 @@ def build_graph() -> Dict[str, Any]:
 
     # ── Management tier ────────────────────────────────────────────────
     mgmt_ids: List[str] = []
+    def _directive_edge(src, dst, dst_slug):
+        # Directive flows DOWN: the parent opens a priority PR into the child's
+        # management queue; the child reads it at Layer 1 (it does NOT execute
+        # directly in the child — see bubble-ops-loop "PR prioritaire du CEO").
+        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
+                "kind": "directive", "label": "directives (PR)",
+                "relation": {
+                    "direction": "down (parent → child)",
+                    "writes": f"bubble-ops-{dst_slug}/queues/management/directive-*.yaml",
+                    "read_at": "child Layer 1 (Data Refresh)",
+                    "note": "priority PR; child stays owner of its execution — "
+                            "parent can't execute or bypass gates.",
+                }}
+
+    def _kpi_edge(src, dst, src_slug):
+        # KPIs flow UP: the child publishes a standardised export the parent reads.
+        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
+                "kind": "kpi", "label": "KPIs (Layer 4)",
+                "relation": {
+                    "direction": "up (child → parent)",
+                    "writes": f"bubble-ops-{src_slug}/outputs/<date>/4/risk-kpis.yaml "
+                              f"+ management-export.yaml",
+                    "read_at": "parent reads child outputs (read-only)",
+                    "note": "risk KPIs + management export; parent has read-only "
+                            "visibility, no write into the child.",
+                }}
+
     for d in management:
         n = _dept_node(d, "mgmt", 1)
         nodes.append(n)
         mgmt_ids.append(n["id"])
         # Principal ⇄ management: directives down, exports/KPIs up.
-        edges.append({"id": f"e:principal-{n['id']}", "source": "principal",
-                      "target": n["id"], "kind": "directive",
-                      "label": "directives (PR)"})
-        edges.append({"id": f"e:{n['id']}-principal", "source": n["id"],
-                      "target": "principal", "kind": "kpi",
-                      "label": "exports + KPIs"})
+        edges.append(_directive_edge("principal", n["id"], d.slug))
+        edges.append(_kpi_edge(n["id"], "principal", d.slug))
 
     # ── Ops tier ───────────────────────────────────────────────────────
     parent_ids = mgmt_ids or ["principal"]
@@ -185,12 +208,8 @@ def build_graph() -> Dict[str, Any]:
         n = _dept_node(d, "ops", 2)
         nodes.append(n)
         for pid in parent_ids:
-            edges.append({"id": f"e:{pid}-{n['id']}", "source": pid,
-                          "target": n["id"], "kind": "directive",
-                          "label": "directives (PR)"})
-            edges.append({"id": f"e:{n['id']}-{pid}", "source": n["id"],
-                          "target": pid, "kind": "kpi",
-                          "label": "KPIs (Layer 4)"})
+            edges.append(_directive_edge(pid, n["id"], d.slug))
+            edges.append(_kpi_edge(n["id"], pid, d.slug))
 
     # ── Concierges (beside, no autonomous loop) ────────────────────────
     for c in (concierge_reader.get_concierge(name) for name in concierge_reader.CONCIERGES):
