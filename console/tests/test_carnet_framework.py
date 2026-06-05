@@ -107,6 +107,43 @@ def test_graph_two_rails(client):
     assert {"engine", "net"} <= {r["id"] for r in g["rails"]}
 
 
+def test_edges_carry_relation_metadata(client):
+    """Clickable edges expose the 'log visuel' relation (file/direction)."""
+    g = client.get("/health/graph.json").json()
+    rel_edges = [e for e in g["edges"] if e.get("relation")]
+    assert rel_edges, "edges must carry relation metadata for the click panel"
+    for e in rel_edges:
+        r = e["relation"]
+        assert "direction" in r and "writes" in r and "read_at" in r
+    # directive writes into queues/management/, kpi into outputs/.../4
+    kinds = {e["kind"]: e["relation"]["writes"] for e in rel_edges}
+    if "directive" in kinds:
+        assert "queues/management" in kinds["directive"]
+    if "kpi" in kinds:
+        assert "outputs/" in kinds["kpi"]
+
+
+# ─── Layer-detail click-through endpoint ─────────────────────────────────
+
+def test_layer_detail_endpoint_shape(client):
+    r = client.get("/health/layer/fixture/1.json")
+    assert r.status_code == 200
+    d = r.json()
+    assert set(d) >= {"dept", "layer", "never_run", "last_iso",
+                      "age_human", "summary", "artifacts"}
+    assert d["dept"] == "fixture" and d["layer"] == 1
+    assert isinstance(d["artifacts"], list)
+
+
+def test_layer_detail_rejects_bad_layer(client):
+    assert client.get("/health/layer/fixture/9.json").status_code == 400
+
+
+def test_layer_detail_requires_auth(client_noauth):
+    r = client_noauth.get("/health/layer/fixture/1.json")
+    assert r.status_code in (401, 403)
+
+
 # ─── On the Carnet de bord page ──────────────────────────────────────────
 
 def test_carnet_hosts_the_graph_container(client):
