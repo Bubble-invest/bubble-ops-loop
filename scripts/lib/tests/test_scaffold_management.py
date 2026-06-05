@@ -655,3 +655,71 @@ def test_management_claude_md_has_step_c_layer4_time_window(tmp_path: Path):
     assert "Layer 4" in text or "layer 4" in text.lower(), (
         "Management CLAUDE.md must mention 'Layer 4' in the dispatch branch"
     )
+
+
+# ---------------------------------------------------------------------------
+# Broker policy render (2026-06-05: closes the hand-copy drift that lost
+# WORKING_MEMORY.md from maya/tony allow-lists and 403'd their pushes).
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_writes_broker_policy_ops(tmp_path: Path):
+    """An ops-leaf scaffold writes deploy/policies/<slug>-policy.yaml rendered
+    from the canonical leaf template — WORKING_MEMORY.md present, no stray
+    placeholders, valid YAML."""
+    root = _scaffold_ops(tmp_path)
+    pol = root / "deploy" / "policies" / "smoke-policy.yaml"
+    assert pol.is_file(), "broker policy not written into the dept tree"
+    ga = yaml.safe_load(pol.read_text(encoding="utf-8"))["github_access"]
+    assert ga["actor"] == "ops-loop-smoke"
+    assert ga["own_repo"] == "bubble-ops-smoke"
+    allowed = ga["write"][0]["allowed_paths"]
+    assert "WORKING_MEMORY.md" in allowed, (
+        "WORKING_MEMORY.md MUST be in allowed_paths — its absence was the "
+        "2026-06-05 push-block"
+    )
+    # leaf depts never open cross-dept PRs
+    assert ga["pull_requests"]["can_open_to"] == []
+
+
+def test_scaffold_writes_broker_policy_management_with_children(tmp_path: Path):
+    """A management scaffold renders the management template: every child is
+    expanded into read: and pull_requests.can_open_to:, target_paths intact,
+    WORKING_MEMORY.md present."""
+    root = _scaffold_management(tmp_path)
+    pol = root / "deploy" / "policies" / "tony-policy.yaml"
+    assert pol.is_file(), "management broker policy not written"
+    ga = yaml.safe_load(pol.read_text(encoding="utf-8"))["github_access"]
+    child_repos = [f"bubble-ops-{c}" for c in MANAGEMENT_CHILDREN]
+    # read: = own + shared-wiki + every child (order: own, wiki, then children)
+    assert ga["read"] == ["bubble-ops-tony", "bubble-shared-wiki"] + child_repos
+    # can_open_to: = exactly the children
+    assert ga["pull_requests"]["can_open_to"] == child_repos
+    # the priority-directive path is preserved
+    assert ga["pull_requests"]["target_paths"] == ["queues/management/**"]
+    assert "WORKING_MEMORY.md" in ga["write"][0]["allowed_paths"]
+
+
+def test_render_broker_policy_management_without_children_raises():
+    """A management dept with no children is a config error (it would render a
+    policy with empty read/can_open_to child lists)."""
+    with pytest.raises(ValueError):
+        scaffold.render_broker_policy("x", level="management", children=[])
+
+
+def test_broker_policy_has_no_unrendered_active_placeholders(tmp_path: Path):
+    """No active (non-comment) line in either rendered policy may keep a
+    <DEPT_SLUG>/<CHILD_SLUG_N> placeholder."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    for root, name in (
+        (_scaffold_ops(tmp_path / "a"), "smoke-policy.yaml"),
+        (_scaffold_management(tmp_path / "b"), "tony-policy.yaml"),
+    ):
+        text = (root / "deploy" / "policies" / name).read_text(encoding="utf-8")
+        for ln in text.splitlines():
+            if ln.lstrip().startswith("#"):
+                continue
+            assert "<DEPT_SLUG>" not in ln and "<CHILD_SLUG_" not in ln, (
+                f"unrendered placeholder in active line: {ln!r}"
+            )
