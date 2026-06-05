@@ -220,3 +220,34 @@ def test_carnet_still_shows_live_activity(client):
     body = r.text
     assert "Activité en direct" in body
     assert "en direct" in body.lower() or "source vivante" in body.lower()
+
+
+# ─── Per-dept data-flow (grounded in dept.yaml) ──────────────────────────
+
+def test_dataflow_endpoint_shape(client):
+    r = client.get("/health/dataflow/fixture.json")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["slug"] == "fixture"
+    assert "repos" in d and "layers" in d and "sources" in d
+    # every dept always lists at least its own repo + shared-wiki access
+    repo_ids = {rp["id"] for rp in d["repos"]}
+    assert "bubble-ops-fixture" in repo_ids
+    assert "shared-wiki" in repo_ids
+
+
+def test_dataflow_classifies_sources():
+    """Source classification is grounded + correct per token kind."""
+    from console.services.dataflow import _classify
+    assert _classify("queues/research/")["kind"] == "queue"
+    assert _classify("vault_watchlist")["kind"] == "vault"
+    assert _classify("wiki")["kind"] == "wiki"
+    assert _classify("fund_sqlite")["kind"] == "db"
+    assert _classify("pool_db")["kind"] == "db"
+    assert _classify("broker_apis")["kind"] == "broker"
+    assert _classify("linkedin_feed")["kind"] == "external"
+    assert _classify("mandate")["kind"] == "llm_ctx"
+
+
+def test_dataflow_requires_auth(client_noauth):
+    assert client_noauth.get("/health/dataflow/fixture.json").status_code in (401, 403)
