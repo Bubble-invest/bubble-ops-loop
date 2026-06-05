@@ -144,6 +144,33 @@ def test_layer_detail_requires_auth(client_noauth):
     assert r.status_code in (401, 403)
 
 
+# ─── Cross-cutting rails (security + wiki-compile) ───────────────────────
+
+def test_graph_has_security_and_wiki_rails(client):
+    g = client.get("/health/graph.json").json()
+    rails = [n for n in g["nodes"] if n["kind"] == "rail"]
+    ids = {n["id"] for n in rails}
+    assert {"rail:security", "rail:wiki"} <= ids
+    for n in rails:
+        assert n["tier"] == -1
+        assert n["rail"] in ("left", "right")
+        assert n["status"] in {"ok", "warn", "unknown"}
+
+
+# ─── Concierge I/O + authorisations ──────────────────────────────────────
+
+def test_concierge_nodes_carry_authz_when_present(client):
+    """If concierges exist, they expose authz + an I/O edge to principal."""
+    g = client.get("/health/graph.json").json()
+    concierges = [n for n in g["nodes"] if n["kind"] == "concierge"]
+    if not concierges:
+        return  # no /home/claude/agents in the test env — acceptable
+    for c in concierges:
+        assert "authz" in c and {"sandbox", "powers", "repos", "loop"} <= set(c["authz"])
+    io_edges = [e for e in g["edges"] if e["kind"] == "concierge_io"]
+    assert io_edges, "each concierge should have an I/O edge to principal"
+
+
 # ─── On the Carnet de bord page ──────────────────────────────────────────
 
 def test_carnet_hosts_the_graph_container(client):

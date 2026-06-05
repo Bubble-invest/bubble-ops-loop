@@ -2075,3 +2075,14 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .fw-detail-rel code, .fw-detail-arts code { background: var(--paper-soft); padding: 1px 4px; border-radius: 3px; }
 .fw-detail-loading { font-size: 13px; color: var(--body-muted); }
 .org-flow .react-flow__edge { cursor: pointer; }
+
+/* ── Cross-cutting rails (Sécurité + Wiki-compile) enclosing the org ──── */
+.fw-rf-card--rail {
+  background: repeating-linear-gradient(
+    -45deg, var(--paper-soft), var(--paper-soft) 6px,
+    var(--paper-edge) 6px, var(--paper-edge) 12px);
+  border: 1px dashed var(--sage);
+  min-width: 150px; max-width: 170px;
+}
+.fw-rf-card--rail .fw-rf-name { color: var(--sage); }
+.fw-rf-card--rail .fw-rf-role { color: var(--sage-soft); }
