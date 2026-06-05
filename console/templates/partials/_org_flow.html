@@ -86,9 +86,11 @@
   // peripheral groups (concierges, Mac-local, rails) parked tightly around it.
   // Goal: straight short edges down the middle, no diagonal fan, no crossings.
   var COL_W = 210;   // horizontal spacing between sibling cards
-  var ROW_Y = { principal: 0, mgmt: 150, ops: 300 };
-  var LOCAL_Y = 470; // Mac-local row, just under ops
-  var CONCIERGE_Y = -150; // concierges sit ABOVE the Principal (cross-cutting)
+  // Extra room between Principal (0) and Management (220) for the concierge
+  // band that sits BETWEEN them (below Joris/Jade, above Tony).
+  var ROW_Y = { principal: 0, mgmt: 220, ops: 370 };
+  var LOCAL_Y = 540; // Mac-local row, just under ops
+  var CONCIERGE_Y = 110;  // concierges: between Principal and Management
 
   function layout(graphNodes) {
     var roles = { principal: [], mgmt: [], ops: [], concierge: [], local: [], rail: [] };
@@ -110,14 +112,10 @@
     // Ops half-width drives where the side groups sit.
     var opsHalf = Math.max(1, roles.ops.length) / 2 * COL_W;
 
-    // Concierges: cross-cutting, but NOT above the Principal (they don't
-    // outrank Joris/Jade). Park them as a side column on the LEFT, spanning
-    // the management/ops band — they reach every dept (inbound edges) from
-    // the side, clearly subordinate to the Principal.
-    var concX = -(opsHalf + COL_W * 0.95);
-    roles.concierge.forEach(function (n, i) {
-      pos[n.id] = { x: concX, y: ROW_Y.mgmt + i * 90 };
-    });
+    // Concierges: cross-cutting band BETWEEN the Principal and Management
+    // (below Joris/Jade, above Tony) — centered, side by side. They reach
+    // every dept (inbound edges) but clearly sit under the Principal.
+    centerRow(roles.concierge, CONCIERGE_Y);
 
     // Mac-local: compact centered row beneath ops.
     centerRow(roles.local, LOCAL_Y);
