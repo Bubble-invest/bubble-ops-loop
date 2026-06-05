@@ -2030,3 +2030,59 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
   .fw-rf-card, .fw-rf-card--ops { min-width: 150px; max-width: 180px; padding: 10px 12px; }
   .fw-rf-name { font-size: 16px; }
 }
+
+/* ── Flowchart detail panel ("log visuel") — clickable layers + edges ─── */
+.fw-rf-layer--click { cursor: pointer; }
+.fw-rf-layer--click:hover { outline: 1.5px solid var(--ochre); outline-offset: 1px; }
+
+.fw-graph-section { position: relative; overflow: hidden; }
+.fw-detail {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: min(420px, 86%);
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+  box-shadow: -6px 0 24px rgba(26,43,74,0.10);
+  transform: translateX(102%);
+  transition: transform .18s ease;
+  overflow-y: auto;
+  padding: 18px 20px 28px;
+  z-index: 6;
+}
+.fw-detail--open { transform: translateX(0); }
+.fw-detail-close {
+  position: absolute; top: 10px; right: 12px;
+  background: none; border: none; font-size: 22px; line-height: 1;
+  color: var(--body-muted); cursor: pointer;
+}
+.fw-detail-close:hover { color: var(--ink); }
+.fw-detail-title { font-family: var(--font-display); font-size: 21px; color: var(--ink); margin: 0 28px 2px 0; }
+.fw-detail-sub { font-family: var(--font-mono); font-size: 11px; color: var(--body-muted); margin: 0 0 12px; }
+.fw-detail-when { font-size: 13px; color: var(--body-soft); margin: 0 0 14px; }
+.fw-detail-h4 { font-family: var(--font-display); font-size: 14px; color: var(--ink-soft); margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .03em; }
+.fw-detail-summary {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--paper-soft); border: 1px solid var(--line-soft);
+  border-radius: 6px; padding: 10px 12px; max-height: 320px; overflow-y: auto;
+  color: var(--body);
+}
+.fw-detail-arts { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; }
+.fw-detail-arts code { font-family: var(--font-mono); font-size: 11.5px; }
+.fw-detail-rel { margin: 0; font-size: 13px; }
+.fw-detail-rel dt { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--body-muted); margin-top: 10px; }
+.fw-detail-rel dd { margin: 2px 0 0; color: var(--body); }
+.fw-detail-rel code, .fw-detail-arts code { background: var(--paper-soft); padding: 1px 4px; border-radius: 3px; }
+.fw-detail-loading { font-size: 13px; color: var(--body-muted); }
+.org-flow .react-flow__edge { cursor: pointer; }
+
+/* ── Cross-cutting rails (Sécurité + Wiki-compile) enclosing the org ──── */
+.fw-rf-card--rail {
+  background: repeating-linear-gradient(
+    -45deg, var(--paper-soft), var(--paper-soft) 6px,
+    var(--paper-edge) 6px, var(--paper-edge) 12px);
+  border: 1px dashed var(--sage);
+  min-width: 150px; max-width: 170px;
+}
+.fw-rf-card--rail .fw-rf-name { color: var(--sage); }
+.fw-rf-card--rail .fw-rf-role { color: var(--sage-soft); }

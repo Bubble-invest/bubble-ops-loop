@@ -42,6 +42,31 @@ LOCAL_AGENTS = [
 ]
 
 
+def _rail_status(timer_unit: str) -> Dict[str, Any]:
+    """Last-run + status for a cross-cutting rail, from its systemd timer.
+
+    The console runs on the box, so we can read the timer's LastTriggerUSec.
+    Best-effort: if systemctl isn't available (tests / off-box), return a
+    neutral 'unknown' with telemetry False — the rail still renders, honestly
+    flagged as un-instrumented (same pattern as the Mac-local agents)."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", timer_unit,
+             "-p", "LastTriggerUSec", "-p", "Result"],
+            capture_output=True, text=True, timeout=4,
+        )
+        props = dict(
+            line.split("=", 1) for line in out.stdout.splitlines() if "=" in line
+        )
+        last = props.get("LastTriggerUSec", "").strip()
+        if not last or last in ("0", "n/a"):
+            return {"status": "warn", "telemetry": True, "last_human": "jamais déclenché"}
+        return {"status": "ok", "telemetry": True, "last_human": last}
+    except Exception:
+        return {"status": "unknown", "telemetry": False, "last_human": ""}
+
+
 def _level(slug: str) -> str:
     """Hierarchy level of a dept from its dept.yaml (management|ops)."""
     y = github_reader.load_dept_yaml(slug)
@@ -167,17 +192,40 @@ def build_graph() -> Dict[str, Any]:
 
     # ── Management tier ────────────────────────────────────────────────
     mgmt_ids: List[str] = []
+    def _directive_edge(src, dst, dst_slug):
+        # Directive flows DOWN: the parent opens a priority PR into the child's
+        # management queue; the child reads it at Layer 1 (it does NOT execute
+        # directly in the child — see bubble-ops-loop "PR prioritaire du CEO").
+        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
+                "kind": "directive", "label": "directives (PR)",
+                "relation": {
+                    "direction": "down (parent → child)",
+                    "writes": f"bubble-ops-{dst_slug}/queues/management/directive-*.yaml",
+                    "read_at": "child Layer 1 (Data Refresh)",
+                    "note": "priority PR; child stays owner of its execution — "
+                            "parent can't execute or bypass gates.",
+                }}
+
+    def _kpi_edge(src, dst, src_slug):
+        # KPIs flow UP: the child publishes a standardised export the parent reads.
+        return {"id": f"e:{src}-{dst}", "source": src, "target": dst,
+                "kind": "kpi", "label": "KPIs (Layer 4)",
+                "relation": {
+                    "direction": "up (child → parent)",
+                    "writes": f"bubble-ops-{src_slug}/outputs/<date>/4/risk-kpis.yaml "
+                              f"+ management-export.yaml",
+                    "read_at": "parent reads child outputs (read-only)",
+                    "note": "risk KPIs + management export; parent has read-only "
+                            "visibility, no write into the child.",
+                }}
+
     for d in management:
         n = _dept_node(d, "mgmt", 1)
         nodes.append(n)
         mgmt_ids.append(n["id"])
         # Principal ⇄ management: directives down, exports/KPIs up.
-        edges.append({"id": f"e:principal-{n['id']}", "source": "principal",
-                      "target": n["id"], "kind": "directive",
-                      "label": "directives (PR)"})
-        edges.append({"id": f"e:{n['id']}-principal", "source": n["id"],
-                      "target": "principal", "kind": "kpi",
-                      "label": "exports + KPIs"})
+        edges.append(_directive_edge("principal", n["id"], d.slug))
+        edges.append(_kpi_edge(n["id"], "principal", d.slug))
 
     # ── Ops tier ───────────────────────────────────────────────────────
     parent_ids = mgmt_ids or ["principal"]
@@ -185,25 +233,44 @@ def build_graph() -> Dict[str, Any]:
         n = _dept_node(d, "ops", 2)
         nodes.append(n)
         for pid in parent_ids:
-            edges.append({"id": f"e:{pid}-{n['id']}", "source": pid,
-                          "target": n["id"], "kind": "directive",
-                          "label": "directives (PR)"})
-            edges.append({"id": f"e:{n['id']}-{pid}", "source": n["id"],
-                          "target": pid, "kind": "kpi",
-                          "label": "KPIs (Layer 4)"})
+            edges.append(_directive_edge(pid, n["id"], d.slug))
+            edges.append(_kpi_edge(n["id"], pid, d.slug))
 
-    # ── Concierges (beside, no autonomous loop) ────────────────────────
+    # ── Concierges (beside, no autonomous loop) — with I/O + authz detail ──
     for c in (concierge_reader.get_concierge(name) for name in concierge_reader.CONCIERGES):
         if c is None:
             continue
         svc = (getattr(c, "metadata", {}) or {}).get("service_status", "")
+        last_used = getattr(c, "last_activity_iso", None) or ""
+        cid = f"concierge:{c.name}"
         nodes.append({
-            "id": f"concierge:{c.name}", "kind": "concierge", "tier": 2,
+            "id": cid, "kind": "concierge", "tier": 2,
             "title": c.name.capitalize(), "role": "Concierge",
             "note": "assistant réactif · pas de boucle autonome",
             "href": f"/concierge/{c.name}",
             "status": "ok" if svc in ("", "active", "running") else "warn",
+            "last_human": last_used,
+            # authorisations are architectural facts (shared sandbox, reduced
+            # powers vs Rick, read access to all repos) — surfaced in the panel.
+            "authz": {
+                "sandbox": "sandbox commune (Morty + Claudette)",
+                "powers": "pouvoirs réduits vs Rick (local)",
+                "repos": "lecture de tous les repos dept; pas de secrets cross-dept",
+                "loop": "réactif (pas de /loop autonome)",
+            },
+            "last_used": last_used,
         })
+        # I/O edge: concierge serves the Principal & team (reactive, both ways).
+        edges.append({
+            "id": f"e:{cid}-principal", "source": cid, "target": "principal",
+            "kind": "concierge_io", "label": "au service",
+            "relation": {
+                "direction": "réactif (à la demande, ↔)",
+                "writes": "infra · secrets dispatch · onboarding (pas d'output de layer)",
+                "read_at": "sur sollicitation du Principal / de l'équipe",
+                "note": f"dernière activité : {last_used or 'inconnue'} · "
+                        "sandbox commune, pouvoirs réduits.",
+            }})
 
     # ── Mac-local agents (static — no telemetry yet) ───────────────────
     for a in LOCAL_AGENTS:
@@ -212,6 +279,23 @@ def build_graph() -> Dict[str, Any]:
             "title": a["name"], "role": a["role"], "note": a["host"],
             "status": "unknown", "telemetry": False,
         })
+
+    # ── Two cross-cutting rails (belt + suspenders) that ENCLOSE the whole
+    # org: Sécurité and Wiki-compile (meeting wishlist "deux grandes flèches").
+    # They run org-wide (not per-dept), so they frame the graph rather than
+    # connect to one node. Last-run comes from their systemd timers.
+    nodes.append({
+        "id": "rail:security", "kind": "rail", "tier": -1, "rail": "left",
+        "title": "Sécurité", "role": "Rail transversal",
+        "note": "audit agentique périodique sur tous les agents",
+        **_rail_status("morty-agentic-audit.timer"),
+    })
+    nodes.append({
+        "id": "rail:wiki", "kind": "rail", "tier": -1, "rail": "right",
+        "title": "Wiki-compile", "role": "Rail transversal",
+        "note": "compile la mémoire partagée depuis les sessions",
+        **_rail_status("cloud-wiki-compile-compile.timer"),
+    })
 
     return {
         "nodes": nodes,

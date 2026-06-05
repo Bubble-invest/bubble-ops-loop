@@ -150,3 +150,87 @@ def loop_pulse(
                               age_human=_age_human(age),
                               alive=age <= _STALE_PULSE_SEC, age_sec=age)
     return out
+
+
+# Files we never surface as "artifacts" — they're plumbing, not output.
+_ARTIFACT_SKIP = {".last-run", "summary.md", "logs.jsonl", "round_counter.json"}
+_SUMMARY_MAX_CHARS = 1400
+
+
+def _newest_layer_dir(outputs_dir: str, layer: int) -> Optional[str]:
+    """Path to the most-recent `<outputs>/<date>/<layer>/` dir, or None."""
+    best_fp, best_ts = None, None
+    for fp in glob.glob(os.path.join(outputs_dir, "*", str(layer))):
+        if not os.path.isdir(fp):
+            continue
+        lr = os.path.join(fp, ".last-run")
+        ts = None
+        try:
+            with open(lr, "r", encoding="utf-8", errors="replace") as fh:
+                ts = _parse_iso(fh.read())
+        except OSError:
+            ts = None
+        if ts is None:
+            try:
+                ts = os.path.getmtime(fp)
+            except OSError:
+                continue
+        if best_ts is None or ts > best_ts:
+            best_fp, best_ts = fp, ts
+    return best_fp
+
+
+def layer_output_detail(dept: str, layer: int,
+                        now_epoch: Optional[float] = None) -> Dict[str, object]:
+    """Detail for ONE (dept × layer), for the click-through panel on /health.
+
+    Returns: {dept, layer, never_run, last_iso, age_human, age_sec,
+              summary (markdown snippet or ""), artifacts: [filename,...]}.
+    Reads the newest date-dir for that layer; degrades gracefully to a
+    never-run shell if nothing on disk."""
+    now = now_epoch if now_epoch is not None else time.time()
+    root = repo_path(dept)
+    base = {"dept": dept, "layer": layer, "never_run": True,
+            "last_iso": "", "age_human": "", "age_sec": None,
+            "summary": "", "artifacts": []}
+    if root is None:
+        return base
+    ldir = _newest_layer_dir(str(root / "outputs"), layer)
+    if ldir is None:
+        return base
+    # last-run
+    ts = None
+    try:
+        with open(os.path.join(ldir, ".last-run"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            ts = _parse_iso(fh.read())
+    except OSError:
+        ts = None
+    if ts is None:
+        try:
+            ts = os.path.getmtime(ldir)
+        except OSError:
+            ts = None
+    if ts is not None:
+        base["never_run"] = False
+        base["last_iso"] = _dt.datetime.fromtimestamp(
+            ts, _dt.timezone.utc).strftime(_ISO_FMT + "Z")
+        base["age_sec"] = now - ts
+        base["age_human"] = _age_human(now - ts)
+    # summary snippet
+    try:
+        with open(os.path.join(ldir, "summary.md"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            base["summary"] = fh.read(_SUMMARY_MAX_CHARS)
+    except OSError:
+        base["summary"] = ""
+    # artifacts (real output files, not plumbing)
+    try:
+        base["artifacts"] = sorted(
+            f for f in os.listdir(ldir)
+            if f not in _ARTIFACT_SKIP and not f.startswith(".")
+            and os.path.isfile(os.path.join(ldir, f))
+        )
+    except OSError:
+        base["artifacts"] = []
+    return base

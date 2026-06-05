@@ -22,6 +22,16 @@ def health_graph() -> JSONResponse:
     return JSONResponse(org_framework.build_graph())
 
 
+@router.get("/health/layer/{slug}/{layer}.json")
+def health_layer_detail(slug: str, layer: int) -> JSONResponse:
+    """Click-through detail for one dept×layer (the 'log visuel' panel):
+    last-run, the summary.md snippet, and the artifact filenames produced.
+    Backs the clickable 1-2-3-4 badges on the /health flowchart."""
+    if layer not in (1, 2, 3, 4):
+        return JSONResponse({"detail": "layer must be 1-4"}, status_code=400)
+    return JSONResponse(morty_reader.layer_output_detail(slug, layer))
+
+
 @router.get("/health", response_class=HTMLResponse)
 def health(request: Request):
     depts = dept_registry.list_departments()

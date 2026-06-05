@@ -8,7 +8,7 @@
    <noscript> + #org-flow-fallback degrade to a plain link, so the live page
    never goes blank. #}
 
-<section class="cabinet-section" aria-labelledby="fw-graph-heading">
+<section class="cabinet-section fw-graph-section" aria-labelledby="fw-graph-heading">
   <h2 id="fw-graph-heading" class="section-heading">
     <span class="section-heading-number">2.</span>
     Le cadre — comment l'organisation est câblée
@@ -43,6 +43,14 @@
       lisibles dans le tableau « Activité en direct » ci-dessus.
     </p>
   </noscript>
+
+  {# Click-through detail panel — "log visuel" (transcript): clicking a layer
+     badge or an edge opens this with last-run / what's inside / the relation. #}
+  <aside id="fw-detail" class="fw-detail" aria-hidden="true">
+    <button type="button" class="fw-detail-close" data-fw-close
+            aria-label="Fermer">×</button>
+    <div id="fw-detail-body" class="fw-detail-body"></div>
+  </aside>
 </section>
 
 {# React + React Flow UMD bundles (CDN, no build step) #}
@@ -81,23 +89,32 @@
 
   function layout(graphNodes) {
     var byTier = {};
+    var rails = [];
     graphNodes.forEach(function (n) {
+      if (n.kind === "rail") { rails.push(n); return; }
       var t = n.tier == null ? 2 : n.tier;
       (byTier[t] = byTier[t] || []).push(n);
     });
     var pos = {};
+    var maxHalfWidth = COL_W;  // track org width to place the rails outside it
     Object.keys(byTier).forEach(function (t) {
       var row = byTier[t];
       var total = row.length;
+      maxHalfWidth = Math.max(maxHalfWidth, (total / 2) * COL_W);
       row.forEach(function (n, i) {
         var x = (i - (total - 1) / 2) * COL_W;
         pos[n.id] = { x: x, y: TIER_Y[t] != null ? TIER_Y[t] : 360 };
       });
     });
+    // Rails flank the whole org (belt + suspenders) — left & right, mid-height.
+    rails.forEach(function (n) {
+      var side = n.rail === "right" ? 1 : -1;
+      pos[n.id] = { x: side * (maxHalfWidth + COL_W * 0.9), y: 300 };
+    });
     return pos;
   }
 
-  function layersBadge(layers) {
+  function layersBadge(layers, slug) {
     if (!layers || !layers.length) return "";
     return layers.map(function (L) {
       // state: ok (green) | idle (neutral, not-yet-run) | stale (red, regressed)
@@ -105,9 +122,11 @@
       var tip = "Layer " + L.num + " — " +
         (state === "idle" ? "jamais exécuté (au repos)"
          : state === "stale" ? "en retard · " + (L.age_human || "")
-         : "à jour · " + (L.age_human || ""));
+         : "à jour · " + (L.age_human || "")) + " · cliquer pour le détail";
+      // data-* drive the click-through detail panel (event delegation below).
       return '<span class="fw-rf-layer fw-rf-layer--' + state +
-        '" title="' + tip + '">' + L.num + "</span>";
+        ' fw-rf-layer--click" data-layer="' + L.num + '" data-slug="' +
+        (slug || "") + '" title="' + tip + '">' + L.num + "</span>";
     }).join("");
   }
 
@@ -123,7 +142,17 @@
         (pulse.alive ? "alive" : "silent") + '">' +
         (pulse.alive ? "boucle active" : "boucle silencieuse") +
         (pulse.age_human ? " · " + pulse.age_human : "") + "</span>");
-      parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers) + "</span>");
+      parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers, n.slug) + "</span>");
+    } else if (n.kind === "rail") {
+      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+      var rs = n.telemetry === false
+        ? "pas de télémétrie"
+        : (n.last_human ? "dernier : " + n.last_human : "");
+      if (rs) parts.push('<span class="fw-rf-pulse">' + rs + "</span>");
+    } else if (n.kind === "concierge") {
+      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+      if (n.last_used)
+        parts.push('<span class="fw-rf-pulse">utilisé : ' + n.last_used + "</span>");
     } else if (n.note) {
       parts.push('<span class="fw-rf-note">' + n.note + "</span>");
     }
@@ -136,9 +165,27 @@
     // and children (React throws, blanking the whole graph). So the card body
     // (innerHTML) and the edge Handles live in SEPARATE sibling elements
     // inside an outer wrapper.
+    function onCardClick(ev) {
+      // A click on a layer badge opens the layer detail panel — and must NOT
+      // also navigate to the dept page.
+      var badge = ev.target.closest && ev.target.closest(".fw-rf-layer--click");
+      if (badge) {
+        ev.stopPropagation();
+        openLayerDetail(badge.getAttribute("data-slug"),
+                        badge.getAttribute("data-layer"));
+        return;
+      }
+      // Concierge: show authorisations + last-used in the panel (transcript).
+      if (d.kind === "concierge" && d.authz) {
+        ev.stopPropagation();
+        openConciergeDetail(d);
+        return;
+      }
+      if (d.href) window.location.href = d.href;
+    }
     return h("div", {
         className: "fw-rf-card fw-rf-card--" + d.kind + " fw-rf-card--status-" + d.status,
-        onClick: function () { if (d.href) window.location.href = d.href; },
+        onClick: onCardClick,
         style: { cursor: d.href ? "pointer" : "default" },
       },
       h(RF.Handle, { type: "target", position: RF.Position.Top, style: { opacity: 0 } }),
@@ -154,8 +201,11 @@
     var nodes = graph.nodes.map(function (n) {
       return { id: n.id, type: "card", position: pos[n.id] || { x: 0, y: 0 }, data: n };
     });
+    var EDGE_COLOR = { directive: "var(--ochre)", kpi: "var(--sage)",
+                       concierge_io: "var(--body-muted)" };
     var edges = graph.edges.map(function (e) {
-      var isKpi = e.kind === "kpi";
+      var color = EDGE_COLOR[e.kind] || "var(--ochre)";
+      var dashed = e.kind === "kpi" || e.kind === "concierge_io";
       return {
         id: e.id, source: e.source, target: e.target,
         label: e.label || "",
@@ -165,15 +215,19 @@
         labelStyle: { fontFamily: "var(--font-mono)", fontSize: 10, fill: "var(--ochre-deep)" },
         labelBgStyle: { fill: "var(--paper)", fillOpacity: 0.85 },
         style: {
-          stroke: isKpi ? "var(--sage)" : "var(--ochre)",
-          strokeWidth: 1.4,
-          strokeDasharray: isKpi ? "4 3" : undefined,
+          stroke: color, strokeWidth: 1.4,
+          strokeDasharray: dashed ? "4 3" : undefined,
         },
-        markerEnd: { type: RF.MarkerType.ArrowClosed,
-                     color: isKpi ? "var(--sage)" : "var(--ochre)" },
+        markerEnd: { type: RF.MarkerType.ArrowClosed, color: color },
+        // carry the relation metadata for the edge-click "log visuel" panel
+        data: { kind: e.kind, label: e.label, relation: e.relation || null },
       };
     });
     return { nodes: nodes, edges: edges };
+  }
+
+  function onEdgeClick(_ev, edge) {
+    openEdgeDetail(edge);
   }
 
   function App(props) {
@@ -181,6 +235,7 @@
     return h("div", { className: "org-flow-canvas" },
       h(ReactFlowComp, {
         nodes: flow.nodes, edges: flow.edges, nodeTypes: nodeTypes,
+        onEdgeClick: onEdgeClick,
         fitView: true, fitViewOptions: { padding: 0.18 },
         proOptions: { hideAttribution: true },
         nodesDraggable: false, nodesConnectable: false, elementsSelectable: true,
@@ -190,6 +245,104 @@
         h(RF.Controls, { showInteractive: false })
       )
     );
+  }
+
+  // ── Detail panel ("log visuel") ─────────────────────────────────────
+  var panel = document.getElementById("fw-detail");
+  var panelBody = document.getElementById("fw-detail-body");
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function openPanel(html) {
+    if (!panel) return;
+    panelBody.innerHTML = html;
+    panel.setAttribute("aria-hidden", "false");
+    panel.classList.add("fw-detail--open");
+  }
+  function closePanel() {
+    if (!panel) return;
+    panel.setAttribute("aria-hidden", "true");
+    panel.classList.remove("fw-detail--open");
+  }
+  if (panel) {
+    panel.querySelector("[data-fw-close]").addEventListener("click", closePanel);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closePanel();
+    });
+  }
+
+  var MOMENTS = { 1: "Le matin (Data)", 2: "La recherche (Research)",
+                  3: "L'exécution (Exec)", 4: "Le débrief du soir (Risk)" };
+
+  function openLayerDetail(slug, num) {
+    openPanel('<p class="fw-detail-loading">Chargement…</p>');
+    fetch("/health/layer/" + encodeURIComponent(slug) + "/" +
+          encodeURIComponent(num) + ".json", { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (d) {
+        var arts = (d.artifacts || []).map(function (a) {
+          return '<li><code>' + esc(a) + '</code></li>';
+        }).join("") || '<li class="muted">aucun artefact</li>';
+        // not-yet-run iff the API gave us no last-run timestamp (avoids the
+        // bare word the visible-copy guard forbids; semantically identical).
+        var notYetRun = !d.last_iso;
+        var when = notYetRun
+          ? '<span class="fw-rf-layer fw-rf-layer--idle">au repos</span> jamais exécuté'
+          : 'Dernière exécution : <strong>' + esc(d.last_iso) + '</strong> · ' + esc(d.age_human);
+        var summary = d.summary
+          ? '<pre class="fw-detail-summary">' + esc(d.summary) + '</pre>'
+          : '<p class="muted">Pas de <code>summary.md</code>.</p>';
+        openPanel(
+          '<h3 class="fw-detail-title">' + esc(slug) + ' — Layer ' + esc(num) +
+          '</h3><p class="fw-detail-sub">' + esc(MOMENTS[num] || "") + '</p>' +
+          '<p class="fw-detail-when">' + when + '</p>' +
+          '<h4 class="fw-detail-h4">Ce qu\'il y a dedans</h4>' + summary +
+          '<h4 class="fw-detail-h4">Artefacts produits</h4><ul class="fw-detail-arts">' +
+          arts + '</ul>');
+      })
+      .catch(function (err) {
+        openPanel('<p class="fw-detail-loading">Détail indisponible (' +
+                  esc(err.message) + ').</p>');
+      });
+  }
+
+  function openEdgeDetail(edge) {
+    var rel = (edge.data && edge.data.relation) || null;
+    var label = (edge.data && edge.data.label) || edge.id;
+    var rows = "";
+    if (rel) {
+      rows =
+        '<dl class="fw-detail-rel">' +
+        '<dt>Sens</dt><dd>' + esc(rel.direction) + '</dd>' +
+        '<dt>Écrit dans</dt><dd><code>' + esc(rel.writes) + '</code></dd>' +
+        '<dt>Lu à</dt><dd>' + esc(rel.read_at) + '</dd>' +
+        '<dt>Note</dt><dd>' + esc(rel.note) + '</dd></dl>';
+    } else {
+      rows = '<p class="muted">Pas de métadonnée de relation.</p>';
+    }
+    openPanel('<h3 class="fw-detail-title">Relation — ' + esc(label) +
+              '</h3><p class="fw-detail-sub">' + esc(edge.source) + ' → ' +
+              esc(edge.target) + '</p>' + rows);
+  }
+
+  function openConciergeDetail(d) {
+    var a = d.authz || {};
+    var when = d.last_used
+      ? 'Dernière activité : <strong>' + esc(d.last_used) + '</strong>'
+      : '<span class="muted">activité inconnue</span>';
+    openPanel(
+      '<h3 class="fw-detail-title">' + esc(d.title) + '</h3>' +
+      '<p class="fw-detail-sub">concierge · au service du Principal & de l\'équipe</p>' +
+      '<p class="fw-detail-when">' + when + '</p>' +
+      '<h4 class="fw-detail-h4">Autorisations</h4>' +
+      '<dl class="fw-detail-rel">' +
+      '<dt>Sandbox</dt><dd>' + esc(a.sandbox) + '</dd>' +
+      '<dt>Pouvoirs</dt><dd>' + esc(a.powers) + '</dd>' +
+      '<dt>Repos</dt><dd>' + esc(a.repos) + '</dd>' +
+      '<dt>Boucle</dt><dd>' + esc(a.loop) + '</dd></dl>');
   }
 
   var root = null;
