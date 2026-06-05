@@ -82,34 +82,47 @@
   var RF = window.ReactFlow;
   var ReactFlowComp = RF.ReactFlow || RF.default;
 
-  // ── Layout: simple deterministic tiered layout (no dagre dep needed) ──
-  // tier 0 Principal · 1 Management · 2 Ops + Concierges · 3 Mac local
-  var TIER_Y = { 0: 0, 1: 170, 2: 360, 3: 560 };
-  var COL_W = 250;
+  // ── Layout: a CENTERED spine (Principal → Management → Ops) with the
+  // peripheral groups (concierges, Mac-local, rails) parked tightly around it.
+  // Goal: straight short edges down the middle, no diagonal fan, no crossings.
+  var COL_W = 210;   // horizontal spacing between sibling cards
+  var ROW_Y = { principal: 0, mgmt: 150, ops: 300 };
+  var LOCAL_Y = 470; // Mac-local row, just under ops
 
   function layout(graphNodes) {
-    var byTier = {};
-    var rails = [];
+    var roles = { principal: [], mgmt: [], ops: [], concierge: [], local: [], rail: [] };
     graphNodes.forEach(function (n) {
-      if (n.kind === "rail") { rails.push(n); return; }
-      var t = n.tier == null ? 2 : n.tier;
-      (byTier[t] = byTier[t] || []).push(n);
+      (roles[n.kind] || roles.ops).push(n);
     });
     var pos = {};
-    var maxHalfWidth = COL_W;  // track org width to place the rails outside it
-    Object.keys(byTier).forEach(function (t) {
-      var row = byTier[t];
-      var total = row.length;
-      maxHalfWidth = Math.max(maxHalfWidth, (total / 2) * COL_W);
-      row.forEach(function (n, i) {
-        var x = (i - (total - 1) / 2) * COL_W;
-        pos[n.id] = { x: x, y: TIER_Y[t] != null ? TIER_Y[t] : 360 };
+    function centerRow(list, y) {
+      var total = list.length;
+      list.forEach(function (n, i) {
+        pos[n.id] = { x: (i - (total - 1) / 2) * COL_W, y: y };
       });
+    }
+    // Centered spine.
+    centerRow(roles.principal, ROW_Y.principal);
+    centerRow(roles.mgmt, ROW_Y.mgmt);
+    centerRow(roles.ops, ROW_Y.ops);
+
+    // Ops half-width drives where the side groups sit.
+    var opsHalf = Math.max(1, roles.ops.length) / 2 * COL_W;
+
+    // Concierges: a tight pair to the RIGHT of the ops row, same height.
+    roles.concierge.forEach(function (n, i) {
+      pos[n.id] = { x: opsHalf + COL_W * 0.6 + i * COL_W, y: ROW_Y.ops };
     });
-    // Rails flank the whole org (belt + suspenders) — left & right, mid-height.
-    rails.forEach(function (n) {
+    // Mac-local: compact centered row beneath ops.
+    centerRow(roles.local, LOCAL_Y);
+
+    // Rails: quiet bands far left / right, vertically centered on the spine.
+    var rightEdge = opsHalf + COL_W * (0.6 + Math.max(0, roles.concierge.length));
+    roles.rail.forEach(function (n) {
       var side = n.rail === "right" ? 1 : -1;
-      pos[n.id] = { x: side * (maxHalfWidth + COL_W * 0.9), y: 300 };
+      var x = side > 0 ? rightEdge + COL_W * 0.4
+                       : -(opsHalf + COL_W * 0.9);
+      pos[n.id] = { x: x, y: ROW_Y.mgmt };
     });
     return pos;
   }
@@ -130,31 +143,24 @@
     }).join("");
   }
 
-  // Custom node renderer: an editorial card matching the cabinet palette.
+  // Trimmed card: name + a status dot, and (for depts) the 4 layer badges.
+  // Everything else (slug, pulse sentence, last-used, role) moves to the
+  // click panel — keeps the chart scannable. A tiny kicker label gives
+  // just enough context for the non-dept kinds.
+  var KICKER = { principal: "Principal", mgmt: "Management",
+                 concierge: "Concierge", local: "Mac local", rail: "Rail" };
+
   function cardHtml(n) {
     var parts = [];
-    if (n.role) parts.push('<span class="fw-rf-role">' + n.role + "</span>");
-    parts.push('<span class="fw-rf-name">' + (n.title || "") + "</span>");
-    if (n.slug) parts.push('<span class="fw-rf-slug">/' + n.slug + "</span>");
+    var kick = KICKER[n.kind] || "";
+    if (kick) parts.push('<span class="fw-rf-kicker">' + kick + "</span>");
+    parts.push(
+      '<span class="fw-rf-name"><span class="fw-rf-dot fw-rf-dot--' +
+      n.status + '" aria-hidden="true"></span>' + (n.title || "") + "</span>");
     if (n.kind === "ops" || n.kind === "mgmt") {
-      var pulse = n.pulse || {};
-      parts.push('<span class="fw-rf-pulse fw-rf-pulse--' +
-        (pulse.alive ? "alive" : "silent") + '">' +
-        (pulse.alive ? "boucle active" : "boucle silencieuse") +
-        (pulse.age_human ? " · " + pulse.age_human : "") + "</span>");
       parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers, n.slug) + "</span>");
-    } else if (n.kind === "rail") {
-      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
-      var rs = n.telemetry === false
-        ? "pas de télémétrie"
-        : (n.last_human ? "dernier : " + n.last_human : "");
-      if (rs) parts.push('<span class="fw-rf-pulse">' + rs + "</span>");
-    } else if (n.kind === "concierge") {
-      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
-      if (n.last_used)
-        parts.push('<span class="fw-rf-pulse">utilisé : ' + n.last_used + "</span>");
-    } else if (n.note) {
-      parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+    } else if (n.kind === "local") {
+      if (n.note) parts.push('<span class="fw-rf-sub">' + n.note + "</span>");
     }
     return parts.join("");
   }
@@ -181,6 +187,13 @@
         openConciergeDetail(d);
         return;
       }
+      // Dept (ops/mgmt): open a node panel with the moved-out detail (pulse,
+      // slug, link to the full dept page) instead of navigating immediately.
+      if (d.kind === "ops" || d.kind === "mgmt") {
+        ev.stopPropagation();
+        openNodeDetail(d);
+        return;
+      }
       if (d.href) window.location.href = d.href;
     }
     return h("div", {
@@ -201,26 +214,27 @@
     var nodes = graph.nodes.map(function (n) {
       return { id: n.id, type: "card", position: pos[n.id] || { x: 0, y: 0 }, data: n };
     });
-    var EDGE_COLOR = { directive: "var(--ochre)", kpi: "var(--sage)",
-                       concierge_io: "var(--body-muted)" };
+    // No permanent labels (declutter). `link` = bidirectional parent↔child
+    // (arrow on BOTH ends); concierge_io = quiet dashed, muted.
+    var EDGE_COLOR = { link: "var(--ochre)", concierge_io: "var(--body-muted)" };
     var edges = graph.edges.map(function (e) {
       var color = EDGE_COLOR[e.kind] || "var(--ochre)";
-      var dashed = e.kind === "kpi" || e.kind === "concierge_io";
+      var isLink = e.kind === "link";
+      var arrow = { type: RF.MarkerType.ArrowClosed, color: color, width: 14, height: 14 };
       return {
         id: e.id, source: e.source, target: e.target,
-        label: e.label || "",
-        animated: e.kind === "directive",
+        label: "",                     // labels live in the click panel now
         type: "smoothstep",
         className: "fw-rf-edge fw-rf-edge--" + e.kind,
-        labelStyle: { fontFamily: "var(--font-mono)", fontSize: 10, fill: "var(--ochre-deep)" },
-        labelBgStyle: { fill: "var(--paper)", fillOpacity: 0.85 },
         style: {
-          stroke: color, strokeWidth: 1.4,
-          strokeDasharray: dashed ? "4 3" : undefined,
+          stroke: color,
+          strokeWidth: isLink ? 1.3 : 1,
+          strokeDasharray: isLink ? undefined : "4 3",
         },
-        markerEnd: { type: RF.MarkerType.ArrowClosed, color: color },
-        // carry the relation metadata for the edge-click "log visuel" panel
-        data: { kind: e.kind, label: e.label, relation: e.relation || null },
+        // bidirectional: arrowheads at both ends for the link edges
+        markerStart: isLink ? arrow : undefined,
+        markerEnd: arrow,
+        data: { kind: e.kind, relation: e.relation || null },
       };
     });
     return { nodes: nodes, edges: edges };
@@ -309,23 +323,58 @@
       });
   }
 
+  function _flowBlock(title, f) {
+    return '<h4 class="fw-detail-h4">' + esc(title) + '</h4>' +
+      '<dl class="fw-detail-rel">' +
+      '<dt>Quoi</dt><dd>' + esc(f.what) + '</dd>' +
+      '<dt>Écrit dans</dt><dd><code>' + esc(f.writes) + '</code></dd>' +
+      '<dt>Lu à</dt><dd>' + esc(f.read_at) + '</dd>' +
+      '<dt>Note</dt><dd>' + esc(f.note) + '</dd></dl>';
+  }
+
   function openEdgeDetail(edge) {
     var rel = (edge.data && edge.data.relation) || null;
-    var label = (edge.data && edge.data.label) || edge.id;
-    var rows = "";
-    if (rel) {
-      rows =
+    var body = "";
+    if (rel && rel.down && rel.up) {
+      // bidirectional parent↔child link
+      body = '<p class="fw-detail-when">' + esc(rel.summary || "") + '</p>' +
+             _flowBlock("↓ Directives (parent → enfant)", rel.down) +
+             _flowBlock("↑ KPIs (enfant → parent)", rel.up);
+    } else if (rel) {
+      // flat relation (e.g. concierge I/O)
+      body =
         '<dl class="fw-detail-rel">' +
         '<dt>Sens</dt><dd>' + esc(rel.direction) + '</dd>' +
-        '<dt>Écrit dans</dt><dd><code>' + esc(rel.writes) + '</code></dd>' +
-        '<dt>Lu à</dt><dd>' + esc(rel.read_at) + '</dd>' +
+        '<dt>Rôle</dt><dd>' + esc(rel.writes) + '</dd>' +
+        '<dt>Quand</dt><dd>' + esc(rel.read_at) + '</dd>' +
         '<dt>Note</dt><dd>' + esc(rel.note) + '</dd></dl>';
     } else {
-      rows = '<p class="muted">Pas de métadonnée de relation.</p>';
+      body = '<p class="muted">Pas de métadonnée de relation.</p>';
     }
-    openPanel('<h3 class="fw-detail-title">Relation — ' + esc(label) +
-              '</h3><p class="fw-detail-sub">' + esc(edge.source) + ' → ' +
-              esc(edge.target) + '</p>' + rows);
+    openPanel('<h3 class="fw-detail-title">Relation</h3>' +
+              '<p class="fw-detail-sub">' + esc(edge.source) + ' ↔ ' +
+              esc(edge.target) + '</p>' + body);
+  }
+
+  function openNodeDetail(d) {
+    var p = d.pulse || {};
+    var pulse = p.alive
+      ? 'Boucle active · vu ' + esc(p.age_human || "")
+      : 'Boucle silencieuse' + (p.age_human ? ' · ' + esc(p.age_human) : "");
+    var layers = (d.layers || []).map(function (L) {
+      var st = L.state === "idle" ? "au repos" : L.state === "stale" ? "en retard" : "à jour";
+      return '<dt>Layer ' + L.num + '</dt><dd>' + st +
+        (L.age_human ? ' · ' + esc(L.age_human) : "") + '</dd>';
+    }).join("");
+    openPanel(
+      '<h3 class="fw-detail-title">' + esc(d.title) + '</h3>' +
+      '<p class="fw-detail-sub">' + (d.kind === "mgmt" ? "management" : "ops") +
+      (d.slug ? ' · /' + esc(d.slug) : "") + '</p>' +
+      '<p class="fw-detail-when">' + pulse + '</p>' +
+      '<h4 class="fw-detail-h4">Les 4 moments</h4>' +
+      '<dl class="fw-detail-rel">' + layers + '</dl>' +
+      (d.href ? '<p style="margin-top:14px;"><a href="' + esc(d.href) +
+        '" class="fw-detail-link">Ouvrir la fiche complète →</a></p>' : ""));
   }
 
   function openConciergeDetail(d) {
