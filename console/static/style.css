@@ -2133,3 +2133,35 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .fw-rf-frame--security .fw-rf-frame-tab { color: #9a4636; border-color: rgba(180,80,63,0.45); }
 .fw-rf-frame--wiki .fw-rf-frame-tab { color: var(--sage); border-color: rgba(122,139,126,0.5); }
 .fw-rf-frame-tab:hover { background: var(--paper-soft); }
+
+/* ── Per-dept data-flow view (click a dept → ⇄ flux de données) ──────── */
+.fw-detail-btn {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  background: var(--paper-soft); color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+.fw-detail-btn:hover { border-color: var(--ochre); }
+.fw-detail-back {
+  font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+  background: none; border: none; color: var(--body-muted); padding: 0 0 8px;
+}
+.fw-detail-back:hover { color: var(--ink); }
+.fw-flow-layer { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--paper); }
+.fw-flow-layer-h { font-family: var(--font-display); font-size: 14px; color: var(--ink); margin-bottom: 5px; }
+.fw-flow-io { font-size: 12px; margin: 3px 0; line-height: 1.7; }
+.fw-flow-dir { font-family: var(--font-mono); font-size: 10px; color: var(--body-muted); margin-right: 4px; }
+/* source chips — colour by kind */
+.fw-src {
+  display: inline-block; font-family: var(--font-mono); font-size: 10.5px;
+  padding: 1px 7px; border-radius: 999px; margin: 1px 0;
+  border: 1px solid var(--line); background: var(--paper-soft); color: var(--body);
+}
+.fw-src--repo    { border-color: var(--ochre-soft); color: var(--ochre-deep); background: #fdf6e8; }
+.fw-src--vault   { border-color: var(--ochre-soft); color: var(--ochre-deep); }
+.fw-src--wiki    { border-color: var(--sage-soft); color: var(--sage); }
+.fw-src--db      { border-color: var(--ink-soft); color: var(--ink-soft); }
+.fw-src--broker  { border-color: #b4503f; color: #b4503f; }
+.fw-src--queue   { border-color: var(--line); color: var(--body-muted); }
+.fw-src--llm_ctx { border-color: var(--line); color: var(--body-soft); background: var(--paper); }
+.fw-src--external{ border-color: var(--sage-soft); color: var(--body-soft); border-style: dashed; }
