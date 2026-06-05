@@ -12,9 +12,16 @@ github_access:
   write:
     - repo: bubble-ops-fixture
       allowed_paths:
-        - outputs/**
-        - queues/**
-        - inbox/**
+        - outputs/**          # all 4 layers write here
+        - queues/**           # research/, gates/, improvements/, management/
+        - inbox/**            # decisions/, notifications/
+        - WORKING_MEMORY.md   # transient topics / current focus (Part A, 2026-06-01).
+                              # THE place the agent records ad-hoc, time-bound items
+                              # (e.g. "watch SpaceX IPO") instead of editing its
+                              # mission files. Non-structural → pushable. MUST stay
+                              # in lockstep with ops-leaf-policy.template.yaml — its
+                              # absence here was the 2026-06-05 maya/tony push-block
+                              # (every WORKING_MEMORY write 403'd the whole push).
       mode: direct_runtime_commit
 
   pull_requests:
