@@ -157,8 +157,9 @@ def test_graph_has_security_and_wiki_rails(client):
     ids = {n["id"] for n in rails}
     assert {"rail:security", "rail:wiki"} <= ids
     for n in rails:
-        assert n["tier"] == -1
-        assert n["rail"] in ("left", "right")
+        # rails encircle the org (frame nodes) — keyed + scoped, code-grounded
+        assert n["rail_key"] in ("security", "wiki")
+        assert n.get("scope")
         assert n["status"] in {"ok", "warn", "unknown"}
 
 

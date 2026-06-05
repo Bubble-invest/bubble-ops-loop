@@ -303,16 +303,23 @@ def build_graph() -> Dict[str, Any]:
     # org: Sécurité and Wiki-compile (meeting wishlist "deux grandes flèches").
     # They run org-wide (not per-dept), so they frame the graph rather than
     # connect to one node. Last-run comes from their systemd timers.
+    # Both ENCIRCLE the org (concentric frames) — they genuinely sweep every
+    # agent (grounded on cx33 2026-06-05): security = morty-agentic-audit +
+    # security-audit transcript-leak scan over all agents (root-owned logs);
+    # wiki-compile = reads ALL agents' sessions (-home-claude-agents-* + the
+    # two Macs) into the shared-wiki vault, daily, pushed to GitHub.
     nodes.append({
-        "id": "rail:security", "kind": "rail", "tier": -1, "rail": "left",
-        "title": "Sécurité", "role": "Rail transversal",
-        "note": "audit agentique périodique sur tous les agents",
+        "id": "rail:security", "kind": "rail", "rail_key": "security",
+        "title": "Sécurité", "role": "Ceinture transversale",
+        "note": "audit agentique + scan fuite-transcript sur TOUS les agents (quotidien)",
+        "scope": "morty-agentic-audit.service + security-audit.sh ; logs root-owned",
         **_rail_status("morty-agentic-audit.timer"),
     })
     nodes.append({
-        "id": "rail:wiki", "kind": "rail", "tier": -1, "rail": "right",
-        "title": "Wiki-compile", "role": "Rail transversal",
-        "note": "compile la mémoire partagée depuis les sessions",
+        "id": "rail:wiki", "kind": "rail", "rail_key": "wiki",
+        "title": "Wiki-compile", "role": "Bretelle transversale",
+        "note": "compile les sessions de TOUS les agents → vault partagé (quotidien)",
+        "scope": "cloud-wiki-compile.sh lit -home-claude-agents-* + Mac {{OPERATOR}}/{{OPERATOR_2}} → shared-wiki, push GitHub",
         **_rail_status("cloud-wiki-compile-compile.timer"),
     })
 
