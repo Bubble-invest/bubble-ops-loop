@@ -2098,3 +2098,38 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 /* Concierge node card: distinct cross-cutting look (sits above the org). */
 .fw-rf-card--concierge { border-color: var(--sage-soft); }
 .fw-rf-card--concierge .fw-rf-kicker { color: var(--sage); }
+
+/* ── Enclosing rails (Sécurité + Wiki-compile) circling the whole org ── */
+/* React Flow wraps each node; let the frame node size itself + sit behind. */
+.org-flow .react-flow__node-frame { z-index: 0 !important; pointer-events: none; }
+.fw-rf-frame {
+  position: relative;
+  border-radius: 18px;
+  pointer-events: none;            /* never block clicks on real nodes */
+  background: transparent;
+}
+.fw-rf-frame--security {
+  border: 1.5px dashed rgba(180,80,63,0.40);
+  box-shadow: 0 0 0 1px rgba(180,80,63,0.05) inset;
+}
+.fw-rf-frame--wiki {
+  border: 1.5px dashed rgba(122,139,126,0.55);   /* sage */
+  box-shadow: 0 0 0 1px rgba(122,139,126,0.06) inset;
+}
+/* label tab in the top-left of each frame — the only clickable part */
+.fw-rf-frame-tab {
+  position: absolute;
+  top: -11px; left: 18px;
+  pointer-events: auto;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: .04em;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--body-soft);
+  border: 1px solid var(--line);
+}
+.fw-rf-frame--security .fw-rf-frame-tab { color: #9a4636; border-color: rgba(180,80,63,0.45); }
+.fw-rf-frame--wiki .fw-rf-frame-tab { color: var(--sage); border-color: rgba(122,139,126,0.5); }
+.fw-rf-frame-tab:hover { background: var(--paper-soft); }
