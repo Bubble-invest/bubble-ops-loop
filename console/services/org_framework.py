@@ -299,6 +299,52 @@ def build_graph() -> Dict[str, Any]:
             "status": "unknown", "telemetry": False,
         })
 
+    # ── GitHub repos (only) on the main graph, with links. ────────────────
+    # Grounded in each dept's real remotes (via dataflow.dept_dataflow): the
+    # dept's own bubble-ops-<slug> repo (+ its vault when it has one), plus a
+    # single shared-wiki node every dept reads. Each dept → its repo(s).
+    from console.services import dataflow as _dataflow
+    wiki_id = "repo:shared-wiki"
+    wiki_seen = False
+    for d in management + ops:
+        did = f"dept:{d.slug}"
+        try:
+            df = _dataflow.dept_dataflow(d.slug)
+        except Exception:
+            df = {"repos": []}
+        for rp in df.get("repos", []):
+            if rp["kind"] == "wiki":
+                wiki_seen = True
+                # link this dept to the shared wiki (read); node added once below
+                edges.append({
+                    "id": f"e:{did}-{wiki_id}", "source": did, "target": wiki_id,
+                    "kind": "repo_link", "label": "", "access": "read",
+                    "relation": {"direction": f"{d.display_name} lit le wiki partagé",
+                                 "writes": "shared-wiki (lecture)", "read_at": "tous les layers",
+                                 "note": rp.get("role", "")}})
+                continue
+            rid = f"repo:{rp['id']}"
+            nodes.append({
+                "id": rid, "kind": "repo", "repo_kind": rp["kind"],
+                "title": rp["id"], "role": "Repo GitHub" if rp["kind"] == "repo" else "Vault GitHub",
+                "note": rp.get("role", ""), "status": "ok",
+                "href": f"https://github.com/Bubble-invest/{rp['id']}",
+                "owner_dept": did,
+            })
+            edges.append({
+                "id": f"e:{did}-{rid}", "source": did, "target": rid,
+                "kind": "repo_link", "label": "", "access": "rw",
+                "relation": {"direction": f"{d.display_name} ↔ {rp['id']} (lecture/écriture)",
+                             "writes": "queues/ · outputs/ · layers/ · vault",
+                             "read_at": "à chaque layer", "note": rp.get("role", "")}})
+    if wiki_seen:
+        nodes.append({
+            "id": wiki_id, "kind": "repo", "repo_kind": "wiki",
+            "title": "shared-wiki", "role": "Wiki partagé (GitHub)",
+            "note": "mémoire partagée — lue par tous les agents",
+            "status": "ok", "href": "https://github.com/vdk888/bubble-shared-wiki",
+        })
+
     # ── Two cross-cutting rails (belt + suspenders) that ENCLOSE the whole
     # org: Sécurité and Wiki-compile (meeting wishlist "deux grandes flèches").
     # They run org-wide (not per-dept), so they frame the graph rather than
