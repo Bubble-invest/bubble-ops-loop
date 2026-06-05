@@ -108,19 +108,24 @@ def test_graph_two_rails(client):
 
 
 def test_edges_carry_relation_metadata(client):
-    """Clickable edges expose the 'log visuel' relation (file/direction)."""
+    """Clickable edges expose the 'log visuel' relation for the panel.
+
+    Parent↔child links are bidirectional (one edge, no permanent label):
+    relation carries down (directives) + up (KPIs) blocks. Concierge I/O
+    edges carry a flat relation. No edge carries a permanent label."""
     g = client.get("/health/graph.json").json()
     rel_edges = [e for e in g["edges"] if e.get("relation")]
     assert rel_edges, "edges must carry relation metadata for the click panel"
-    for e in rel_edges:
+    # declutter: no permanent text labels on any edge
+    assert all(not e.get("label") for e in g["edges"]), "edges must have no labels"
+
+    links = [e for e in rel_edges if e["kind"] == "link"]
+    assert links, "expected bidirectional parent↔child link edges"
+    for e in links:
         r = e["relation"]
-        assert "direction" in r and "writes" in r and "read_at" in r
-    # directive writes into queues/management/, kpi into outputs/.../4
-    kinds = {e["kind"]: e["relation"]["writes"] for e in rel_edges}
-    if "directive" in kinds:
-        assert "queues/management" in kinds["directive"]
-    if "kpi" in kinds:
-        assert "outputs/" in kinds["kpi"]
+        assert {"summary", "down", "up"} <= set(r)
+        assert "queues/management" in r["down"]["writes"]
+        assert "outputs/" in r["up"]["writes"]
 
 
 # ─── Layer-detail click-through endpoint ─────────────────────────────────

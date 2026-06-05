@@ -1948,15 +1948,16 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .fw-legend-swatch--unknown { background: var(--line); border: 1px dashed var(--body-muted); }
 
 /* ── Custom node card (matches .fw-node editorial look) ───────────────── */
+/* Trimmed cards: compact, name + status dot + (depts) badges. Detail on click. */
 .fw-rf-card {
-  min-width: 190px;
-  max-width: 210px;
-  padding: 12px 18px;
+  min-width: 150px;
+  max-width: 176px;
+  padding: 9px 13px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--paper);
   color: var(--ink);
-  box-shadow: 0 1px 4px rgba(26,43,74,0.04);
+  box-shadow: 0 1px 3px rgba(26,43,74,0.04);
   transition: border-color .15s, box-shadow .15s, transform .1s;
 }
 .fw-rf-body {
@@ -1966,40 +1967,42 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
   text-align: center;
   gap: 3px;
 }
-.fw-rf-card:hover { box-shadow: 0 3px 12px rgba(26,43,74,0.10); transform: translateY(-1px); }
+.fw-rf-card:hover { box-shadow: 0 3px 12px rgba(26,43,74,0.10); transform: translateY(-1px); border-color: var(--ochre-soft); }
 
 .fw-rf-card--principal { background: #fdf6e8; border-color: var(--ochre-soft); }
-.fw-rf-card--mgmt      { border-color: var(--ochre-soft); border-top: 3px solid var(--ochre); }
-.fw-rf-card--ops       { min-width: 180px; }
+.fw-rf-card--mgmt      { border-color: var(--ochre-soft); }
 .fw-rf-card--concierge { background: var(--paper-soft); border-style: dashed; }
-.fw-rf-card--local     { background: var(--paper-soft); border-style: dotted; opacity: .9; }
+.fw-rf-card--local     { background: var(--paper-soft); border-style: dotted; opacity: .85; min-width: 130px; max-width: 150px; padding: 7px 11px; }
 
-/* status accent: red left border when something is stale/silent */
-.fw-rf-card--status-alert { border-left: 3px solid #b4503f; }
-.fw-rf-card--status-ok    { }
-.fw-rf-card--status-warn  { border-left: 3px solid var(--ochre); }
-.fw-rf-card--status-unknown { }
+/* Status is shown by the dot (not a heavy border) — quieter. */
+.fw-rf-card--status-alert { box-shadow: 0 0 0 1px #b4503f inset, 0 1px 3px rgba(26,43,74,0.04); }
+.fw-rf-card--status-warn  { box-shadow: 0 0 0 1px var(--ochre-soft) inset, 0 1px 3px rgba(26,43,74,0.04); }
 
-.fw-rf-role {
+.fw-rf-kicker {
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: .04em;
+  font-size: 8.5px;
+  letter-spacing: .05em;
   text-transform: uppercase;
   color: var(--body-muted);
 }
-.fw-rf-name { font-family: var(--font-display); font-size: 18px; font-weight: 600; color: var(--ink); line-height: 1.1; }
-.fw-rf-slug { font-family: var(--font-mono); font-size: 10.5px; color: var(--body-muted); }
-.fw-rf-note { font-size: 11.5px; color: var(--body-muted); }
-.fw-rf-pulse {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  margin-top: 2px;
+.fw-rf-name {
+  font-family: var(--font-display);
+  font-size: 16px; font-weight: 600; color: var(--ink); line-height: 1.05;
+  display: inline-flex; align-items: center; gap: 6px;
 }
-.fw-rf-pulse--alive  { color: var(--ochre-deep); }
-.fw-rf-pulse--silent { color: #b4503f; }
+.fw-rf-sub { font-size: 10.5px; color: var(--body-muted); }
+
+/* status dot next to the name */
+.fw-rf-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.fw-rf-dot--ok      { background: var(--sage); }
+.fw-rf-dot--warn    { background: var(--ochre); }
+.fw-rf-dot--alert   { background: #b4503f; }
+.fw-rf-dot--unknown { background: var(--line); box-shadow: 0 0 0 1px var(--body-muted) inset; }
+
+.fw-detail-link { color: var(--ochre-deep); font-family: var(--font-mono); font-size: 12px; }
 
 /* per-layer 1-2-3-4 badges */
-.fw-rf-layers { display: inline-flex; gap: 4px; margin-top: 5px; }
+.fw-rf-layers { display: inline-flex; gap: 4px; margin-top: 4px; }
 .fw-rf-layer {
   display: inline-flex;
   align-items: center;
