@@ -261,3 +261,44 @@ def test_dry_run_does_not_mutate(tmp_path, patched_subprocess):
     assert before_state == after_state, "dry-run mutated STATE.yaml"
     assert before_dept == after_dept, "dry-run mutated dept.yaml"
     assert patched_subprocess == [], "dry-run made subprocess calls"
+
+
+def test_secrets_quarantined_on_retire(tmp_path, patched_subprocess):
+    """Side effect 2b (2026-06-05 security): retirement MUST invoke the secret
+    quarantine helper, which locks the bot, archives the SOPS env, and wipes
+    runtime secrets. A retired dept must lose live ACCESS (history stays)."""
+    from retire_dept import retire_dept as retire
+
+    repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
+    retire(slug="miranda", repo_dir=repo)
+
+    flat = [" ".join(c) for c in patched_subprocess]
+    quarantine_lines = [ln for ln in flat if "retire-secrets-quarantine.sh" in ln]
+    assert quarantine_lines, (
+        "retire-dept MUST invoke retire-secrets-quarantine.sh to revoke the "
+        f"retired dept's live secret access; recorded calls: {flat}"
+    )
+    # the dept slug must be passed to the helper
+    assert any("miranda" in ln for ln in quarantine_lines), (
+        f"quarantine helper must receive the dept slug; got: {quarantine_lines}"
+    )
+
+
+def test_quarantine_failure_does_not_block_retirement(tmp_path, monkeypatch):
+    """If the quarantine helper fails (non-zero), retirement still completes —
+    the dept is already disabled, so the security window is bounded and a hard
+    block would leave it in a worse half-retired state. The WARN is logged."""
+    import retire_dept
+
+    def _fake_run(cmd, *a, **k):
+        m = MagicMock()
+        # quarantine call fails; everything else succeeds
+        m.returncode = 1 if "retire-secrets-quarantine.sh" in " ".join(cmd) else 0
+        m.stdout = ""
+        m.stderr = "boom" if "retire-secrets-quarantine.sh" in " ".join(cmd) else ""
+        return m
+
+    monkeypatch.setattr(retire_dept.subprocess, "run", _fake_run)
+    repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
+    result = retire_dept.retire_dept(slug="miranda", repo_dir=repo)
+    assert result["status"] == "retired"  # not blocked

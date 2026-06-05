@@ -17,12 +17,16 @@ Doctrine:
   - We disable WITHOUT --now — the current loop finishes its iteration
     gracefully. Operator can stop manually if urgent.
   - GitHub repo stays intact (history is valuable).
-  - Telegram bot stays in place (operator can review past conversations).
+  - Telegram conversation HISTORY stays reviewable (repo + transcripts), but
+    live bot ACCESS is revoked at retirement (2026-06-05 security fix).
   - The dept shows up in `/agents` -> "Anciens collègues" section (read-only).
 
 Side effects (mocked in tests; real in production):
   1. Telegram: send the final message via the dept's bot (curl / API).
   2. SSH to Morty: `systemctl disable ops-loop-<slug>.service` (no --now).
+  2b. Secret quarantine (security): lock the Telegram bot (access.json ->
+      denied), archive the SOPS env (reversible), wipe the runtime decrypted
+      secrets, log the manual revoke steps. Cuts live access; keeps history.
   3. Git: dept.yaml::department.status = "retired" + commit + push.
   4. STATE.yaml: status="Retired", retired_at=<iso>, retired_reason=<text>.
 
@@ -126,6 +130,32 @@ def _disable_morty_unit_graceful(slug: str, remote: str = DEFAULT_REMOTE
     else:
         # We're elsewhere — proxy via SSH.
         cmd = ["ssh", remote, f"sudo systemctl disable {unit} || true"]
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+_QUARANTINE_HELPER = "/usr/local/bin/retire-secrets-quarantine.sh"
+
+
+def _quarantine_secrets(slug: str, remote: str = DEFAULT_REMOTE
+                        ) -> subprocess.CompletedProcess:
+    """Quarantine the retired dept's secrets (Side effect 5, 2026-06-05).
+
+    DOCTRINE: a retired dept keeps its HISTORY (GitHub repo + transcripts) but
+    loses live ACCESS. The root helper locks the Telegram bot (access.json ->
+    denied), archives the SOPS env (reversible, not deleted), wipes the runtime
+    decrypted secrets, and logs the manual revoke steps (BotFather token,
+    GitHub App install) to the security audit trail.
+
+    Same on-Morty-vs-remote detection as `_disable_morty_unit_graceful`: the
+    helper is root-owned, so we always go through `sudo -n` (locally) or
+    `ssh remote sudo` (proxied). Failure is logged by the caller but never
+    blocks retirement — a retired-but-not-yet-quarantined dept is already
+    disabled, so the security window is bounded.
+    """
+    if Path(_QUARANTINE_HELPER).exists():
+        cmd = ["sudo", "-n", _QUARANTINE_HELPER, slug]
+    else:
+        cmd = ["ssh", remote, f"sudo -n {_QUARANTINE_HELPER} {slug} || true"]
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
@@ -247,6 +277,18 @@ def retire_dept(
         print(
             f"[retire-dept] WARN: morty disable returned "
             f"{morty_result.returncode}: {morty_result.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+
+    # ---- Side effect 2b: quarantine secrets (lock access, archive, wipe) --
+    # Cut live ACCESS now (history stays). Non-blocking: a failure here leaves
+    # the dept disabled-but-secrets-live, which the security log flags.
+    quarantine_result = _quarantine_secrets(slug)
+    if quarantine_result.returncode != 0:
+        print(
+            f"[retire-dept] WARN: secret quarantine returned "
+            f"{quarantine_result.returncode}: "
+            f"{quarantine_result.stderr.strip()[:200]}",
             file=sys.stderr,
         )
 
