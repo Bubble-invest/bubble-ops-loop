@@ -86,11 +86,11 @@
   // peripheral groups (concierges, Mac-local, rails) parked tightly around it.
   // Goal: straight short edges down the middle, no diagonal fan, no crossings.
   var COL_W = 210;   // horizontal spacing between sibling cards
-  // Extra room between Principal (0) and Management (220) for the concierge
-  // band that sits BETWEEN them (below {{OPERATOR}}/{{OPERATOR_2}}, above Tony).
-  var ROW_Y = { principal: 0, mgmt: 220, ops: 370 };
-  var LOCAL_Y = 540; // Mac-local row, just under ops
-  var CONCIERGE_Y = 110;  // concierges: between Principal and Management
+  // Tighter vertical rhythm so the whole org fits on screen. Concierge band
+  // sits in the gap between Principal (0) and Management.
+  var ROW_Y = { principal: 0, mgmt: 175, ops: 300 };
+  var LOCAL_Y = 430; // repo row anchors just below ops
+  var CONCIERGE_Y = 88;   // concierges: between Principal and Management
 
   function layout(graphNodes) {
     var roles = { principal: [], mgmt: [], ops: [], concierge: [], local: [], rail: [], repo: [] };
@@ -125,21 +125,25 @@
       pos[n.id] = { x: localX, y: ROW_Y.principal + i * 70 };
     });
 
-    // GitHub repos sit just BELOW their owning dept (own repo + vault stacked);
-    // the shared-wiki repo is centered at the very bottom (all depts read it).
-    var REPO_Y = LOCAL_Y;          // a row below the ops/local band
+    // GitHub repos sit just BELOW their owning dept (own repo + vault stacked).
+    // shared-wiki goes to the SIDE (right of the repo row) so it never
+    // collides with the centre dept's repo column.
+    var REPO_Y = LOCAL_Y;          // a row below the ops band
     var ownerCount = {};
     roles.repo.forEach(function (n) {
-      if (n.id === "repo:shared-wiki") {
-        pos[n.id] = { x: 0, y: REPO_Y + 95 };   // centered, lowest
-        return;
-      }
+      if (n.id === "repo:shared-wiki") return;  // placed after, to the side
       var owner = n.owner_dept;
       var op = owner && pos[owner];
       var k = owner || n.id;
       var i = ownerCount[k] = (ownerCount[k] || 0) + 1;
       var bx = op ? op.x : 0;
-      pos[n.id] = { x: bx, y: REPO_Y + (i - 1) * 64 };  // stack own repo, then vault
+      pos[n.id] = { x: bx, y: REPO_Y + (i - 1) * 58 };  // own repo, then vault
+    });
+    // shared-wiki: to the right of the repo band, one row down — out of the
+    // central column so it doesn't overlap the centre dept's repos.
+    roles.repo.forEach(function (n) {
+      if (n.id !== "repo:shared-wiki") return;
+      pos[n.id] = { x: opsHalf + COL_W * 0.75, y: REPO_Y + 58 };
     });
 
     // Rails ENCLOSE the whole org (transcript: "deux grandes flèches en
