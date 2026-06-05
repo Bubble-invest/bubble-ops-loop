@@ -89,18 +89,27 @@
 
   function layout(graphNodes) {
     var byTier = {};
+    var rails = [];
     graphNodes.forEach(function (n) {
+      if (n.kind === "rail") { rails.push(n); return; }
       var t = n.tier == null ? 2 : n.tier;
       (byTier[t] = byTier[t] || []).push(n);
     });
     var pos = {};
+    var maxHalfWidth = COL_W;  // track org width to place the rails outside it
     Object.keys(byTier).forEach(function (t) {
       var row = byTier[t];
       var total = row.length;
+      maxHalfWidth = Math.max(maxHalfWidth, (total / 2) * COL_W);
       row.forEach(function (n, i) {
         var x = (i - (total - 1) / 2) * COL_W;
         pos[n.id] = { x: x, y: TIER_Y[t] != null ? TIER_Y[t] : 360 };
       });
+    });
+    // Rails flank the whole org (belt + suspenders) — left & right, mid-height.
+    rails.forEach(function (n) {
+      var side = n.rail === "right" ? 1 : -1;
+      pos[n.id] = { x: side * (maxHalfWidth + COL_W * 0.9), y: 300 };
     });
     return pos;
   }
@@ -134,6 +143,16 @@
         (pulse.alive ? "boucle active" : "boucle silencieuse") +
         (pulse.age_human ? " · " + pulse.age_human : "") + "</span>");
       parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers, n.slug) + "</span>");
+    } else if (n.kind === "rail") {
+      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+      var rs = n.telemetry === false
+        ? "pas de télémétrie"
+        : (n.last_human ? "dernier : " + n.last_human : "");
+      if (rs) parts.push('<span class="fw-rf-pulse">' + rs + "</span>");
+    } else if (n.kind === "concierge") {
+      if (n.note) parts.push('<span class="fw-rf-note">' + n.note + "</span>");
+      if (n.last_used)
+        parts.push('<span class="fw-rf-pulse">utilisé : ' + n.last_used + "</span>");
     } else if (n.note) {
       parts.push('<span class="fw-rf-note">' + n.note + "</span>");
     }
@@ -156,6 +175,12 @@
                         badge.getAttribute("data-layer"));
         return;
       }
+      // Concierge: show authorisations + last-used in the panel (transcript).
+      if (d.kind === "concierge" && d.authz) {
+        ev.stopPropagation();
+        openConciergeDetail(d);
+        return;
+      }
       if (d.href) window.location.href = d.href;
     }
     return h("div", {
@@ -176,8 +201,11 @@
     var nodes = graph.nodes.map(function (n) {
       return { id: n.id, type: "card", position: pos[n.id] || { x: 0, y: 0 }, data: n };
     });
+    var EDGE_COLOR = { directive: "var(--ochre)", kpi: "var(--sage)",
+                       concierge_io: "var(--body-muted)" };
     var edges = graph.edges.map(function (e) {
-      var isKpi = e.kind === "kpi";
+      var color = EDGE_COLOR[e.kind] || "var(--ochre)";
+      var dashed = e.kind === "kpi" || e.kind === "concierge_io";
       return {
         id: e.id, source: e.source, target: e.target,
         label: e.label || "",
@@ -187,12 +215,10 @@
         labelStyle: { fontFamily: "var(--font-mono)", fontSize: 10, fill: "var(--ochre-deep)" },
         labelBgStyle: { fill: "var(--paper)", fillOpacity: 0.85 },
         style: {
-          stroke: isKpi ? "var(--sage)" : "var(--ochre)",
-          strokeWidth: 1.4,
-          strokeDasharray: isKpi ? "4 3" : undefined,
+          stroke: color, strokeWidth: 1.4,
+          strokeDasharray: dashed ? "4 3" : undefined,
         },
-        markerEnd: { type: RF.MarkerType.ArrowClosed,
-                     color: isKpi ? "var(--sage)" : "var(--ochre)" },
+        markerEnd: { type: RF.MarkerType.ArrowClosed, color: color },
         // carry the relation metadata for the edge-click "log visuel" panel
         data: { kind: e.kind, label: e.label, relation: e.relation || null },
       };
@@ -300,6 +326,23 @@
     openPanel('<h3 class="fw-detail-title">Relation — ' + esc(label) +
               '</h3><p class="fw-detail-sub">' + esc(edge.source) + ' → ' +
               esc(edge.target) + '</p>' + rows);
+  }
+
+  function openConciergeDetail(d) {
+    var a = d.authz || {};
+    var when = d.last_used
+      ? 'Dernière activité : <strong>' + esc(d.last_used) + '</strong>'
+      : '<span class="muted">activité inconnue</span>';
+    openPanel(
+      '<h3 class="fw-detail-title">' + esc(d.title) + '</h3>' +
+      '<p class="fw-detail-sub">concierge · au service du Principal & de l\'équipe</p>' +
+      '<p class="fw-detail-when">' + when + '</p>' +
+      '<h4 class="fw-detail-h4">Autorisations</h4>' +
+      '<dl class="fw-detail-rel">' +
+      '<dt>Sandbox</dt><dd>' + esc(a.sandbox) + '</dd>' +
+      '<dt>Pouvoirs</dt><dd>' + esc(a.powers) + '</dd>' +
+      '<dt>Repos</dt><dd>' + esc(a.repos) + '</dd>' +
+      '<dt>Boucle</dt><dd>' + esc(a.loop) + '</dd></dl>');
   }
 
   var root = null;
