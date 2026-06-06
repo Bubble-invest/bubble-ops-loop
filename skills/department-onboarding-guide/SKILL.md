@@ -168,11 +168,16 @@ This pairs with the **mission-file lock** (governance fix 2026-06-01): the dept'
 mission-definition files are STRUCTURAL and the agent **cannot push them** — the
 box-side git credential helper mints a read-only token whenever a push touches
 any structural path, so the only way to change a mission is a PR {{OPERATOR}}/{{OPERATOR_2}}
-merges. Structural paths (see `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`):
-`CLAUDE.md, MANDATE.md, dept.yaml, skills_manifest.yaml, config.yaml,
-gate_policy.yaml, layers/**, missions/**, skills/**, tools/**, subagents/**,
-policies/**, templates/**, .claude/**`. `WORKING_MEMORY.md` and `whiteboard.yaml`
-are deliberately NOT structural (writable runtime/working state).
+merges. Structural paths are defined ONCE in `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`
+(the single source of truth, shared by every dept, so a new dept inherits the list
+automatically). As of 2026-06-06 it is: `CLAUDE.md, MANDATE.md, dept.yaml,
+skills_manifest.yaml, config.yaml, gate_policy.yaml, db/schema.sql, layers/**,
+missions/**, skills/**, tools/**, subagents/**, policies/**, templates/**, assets/**,
+.claude/**`. To change one of these a dept opens a PR via `propose-settings-pr` (it
+branches off origin/main, commits ONLY the structural file, opens a GitHub PR {{OPERATOR}}/{{OPERATOR_2}}
+merge). `WORKING_MEMORY.md`, `whiteboard.yaml`, `db/fund.sqlite`, and `outputs/** queues/**
+inbox/**` are deliberately NOT structural (writable runtime/working state). If you ever
+add a path here, update it in policy.py only, not in per-dept copies, so it can't drift.
 
 The dept's `CLAUDE.md` MUST reference `WORKING_MEMORY.md` so the agent knows
 where to write transient topics and that it cannot touch its own mission. Use
