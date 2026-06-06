@@ -3,9 +3,12 @@ Description=Fire ops-loop Layer 3 (Decide) floor daily at 16:00 Europe/Paris
 Documentation=https://github.com/Bubble-invest/bubble-ops-loop
 
 [Timer]
+# +2h backup offset ({{OPERATOR}} msg 3911, 2026-06-06): the live /loop owns each
+# layer at its min-time (L3); this safety-net cron fires 2h later to catch up
+# on a STALE loop without racing or replacing it.
 Unit=loop-layer@3.service
 # 16:00 Europe/Paris — systemd handles CET/CEST automatically.
-OnCalendar=*-*-* 16:00:00 Europe/Paris
+OnCalendar=*-*-* 18:00:00 Europe/Paris
 # If the box was off/asleep at fire time, run as soon as it's back.
 Persistent=true
 # Small deterministic jitter so it doesn't collide with other top-of-hour jobs.
