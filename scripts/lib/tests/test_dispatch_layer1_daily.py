@@ -25,7 +25,10 @@ from scripts.lib.dispatch_helpers import (
 
 # A time outside the 22:00-22:30 UTC L4 window.
 _MORNING = datetime(2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc)
-_L4_WINDOW = datetime(2026, 6, 1, 17, 10, 0, tzinfo=timezone.utc)
+_L4_TIME = datetime(2026, 6, 1, 17, 30, 0, tzinfo=timezone.utc)  # 19:30 Paris (>=L4)
+_L2_TIME = datetime(2026, 6, 1, 10, 30, 0, tzinfo=timezone.utc)  # 12:30 Paris (>=L2)
+_L3_TIME = datetime(2026, 6, 1, 14, 30, 0, tzinfo=timezone.utc)  # 16:30 Paris (>=L3)
+_FIRED = datetime(2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc)      # a "fired today" stamp
 _RAN = datetime(2026, 6, 1, 5, 0, 0, tzinfo=timezone.utc)
 
 
@@ -112,29 +115,46 @@ def test_fire_after_rounds_threshold_respected():
 
 # ── priority: other branches still win over L1 ──────────────────────────────
 
-def test_l4_window_wins_over_layer1():
+def test_l4_fires_after_prereqs_met():
+    # New model: L4 needs L1+L2+L3 fired today AND time>=19:00 Paris.
     out = decide_dispatch({
-        "now_utc": _L4_WINDOW,
+        "now_utc": _L4_TIME,
+        "layer_1_last_run_today": _FIRED,
+        "layer_2_last_run_today": _FIRED,
+        "layer_3_last_run_today": _FIRED,
         "layer_4_last_run_today": None,
-        "layer_1_last_run_today": None,
     })
     assert out == "layer_4"
 
 
-def test_research_wins_over_layer1():
+def test_l4_blocked_until_prereqs_met():
+    # Same time, but L3 has NOT fired today -> L4 must NOT fire (race guard).
     out = decide_dispatch({
-        "now_utc": _MORNING,
+        "now_utc": _L4_TIME,
+        "layer_1_last_run_today": _FIRED,
+        "layer_2_last_run_today": _FIRED,
+        "layer_3_last_run_today": None,
+        "layer_4_last_run_today": None,
+    })
+    assert out != "layer_4"
+
+
+def test_research_wins_over_layer1():
+    # time>=12:00 Paris + research queued + L1 morning floor already done.
+    out = decide_dispatch({
+        "now_utc": _L2_TIME,
         "has_research_items": True,
-        "layer_1_last_run_today": None,
+        "layer_1_last_run_today": _FIRED,
     })
     assert out == "layer_2"
 
 
 def test_decisions_win_over_layer1():
+    # time>=16:00 Paris + decision queued + L1 morning floor already done.
     out = decide_dispatch({
-        "now_utc": _MORNING,
+        "now_utc": _L3_TIME,
         "has_inbox_decisions": True,
-        "layer_1_last_run_today": None,
+        "layer_1_last_run_today": _FIRED,
     })
     assert out == "layer_3"
 
