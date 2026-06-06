@@ -54,6 +54,7 @@ import pytest
         ".claude/agents/a.md",
         "assets/maya-doctrine.md",   # dept doctrine/voice asset — PR-gated (2026-06-06)
         "assets/voice.md",
+        "db/schema.sql",             # canonical DB schema — PR-only (Ben exception #7)
     ],
 )
 def test_mission_files_are_structural(path):
@@ -72,6 +73,7 @@ def test_mission_files_are_structural(path):
         "inbox/decisions/d.yaml",
         "README.md",
         "kanban_queue.jsonl",
+        "db/fund.sqlite",            # live DB — runtime-writable (NOT structural)
     ],
 )
 def test_runtime_and_working_memory_are_writable(path):
