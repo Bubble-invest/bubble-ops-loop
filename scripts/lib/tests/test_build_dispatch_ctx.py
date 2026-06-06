@@ -31,7 +31,18 @@ def _mk_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-NOON = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)  # outside L4 window
+NOON = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)  # 14:00 Paris (summer)
+# Paris-local min-time anchors (June = CEST = UTC+2). decide_dispatch gates each
+# layer on a Paris-local minimum: L1>=07:00, L2>=12:00, L3>=16:00, L4>=19:00.
+AFTER_L2 = datetime(2026, 6, 1, 10, 30, tzinfo=timezone.utc)  # 12:30 Paris (>=L2)
+AFTER_L3 = datetime(2026, 6, 1, 14, 30, tzinfo=timezone.utc)  # 16:30 Paris (>=L3)
+AFTER_L4 = datetime(2026, 6, 1, 17, 30, tzinfo=timezone.utc)  # 19:30 Paris (>=L4)
+
+
+def _fire(repo, layer, when):
+    """Mark layer N as having fired today (writes its .last-run)."""
+    today = when.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / str(layer), when)
 
 
 def test_empty_queues_give_false_flags(tmp_path: Path):
@@ -61,6 +72,7 @@ def test_empty_queues_after_l1_ran_is_heartbeat(tmp_path: Path):
 def test_research_item_triggers_layer_2(tmp_path: Path):
     repo = _mk_repo(tmp_path)
     (repo / "queues" / "research" / "warming_task-x.yaml").write_text("kind: warming_task\n")
+    _fire(repo, 1, NOON)  # morning floor already done so L2 wins over L1 idle path
     ctx = build_dispatch_ctx(repo, now_utc=NOON)
     assert ctx["has_research_items"] is True
     assert decide_dispatch(ctx) == "layer_2"
@@ -69,9 +81,11 @@ def test_research_item_triggers_layer_2(tmp_path: Path):
 def test_inbox_decision_triggers_layer_3(tmp_path: Path):
     repo = _mk_repo(tmp_path)
     (repo / "queues" / "inbox" / "decisions" / "d-1.yaml").write_text("decision: send\n")
-    ctx = build_dispatch_ctx(repo, now_utc=NOON)
+    # L3 has a 16:00 Paris min-time; L1 morning floor must already be satisfied
+    # so it doesn't win the fall-through. Use AFTER_L3 and pre-fire L1.
+    _fire(repo, 1, AFTER_L3)
+    ctx = build_dispatch_ctx(repo, now_utc=AFTER_L3)
     assert ctx["has_inbox_decisions"] is True
-    # no research items -> L2 not chosen, L3 is
     assert decide_dispatch(ctx) == "layer_3"
 
 
@@ -122,29 +136,35 @@ def test_full_day_cycles_all_layers(tmp_path: Path):
     repo = _mk_repo(tmp_path)
     today = NOON.strftime("%Y-%m-%d")
 
-    # 1) research item present -> L2
+    # 0) Morning (>=07:00 Paris), nothing fired yet -> L1 floor first.
+    MORNING = datetime(2026, 6, 1, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=MORNING)) == "layer_1"
+    _fire(repo, 1, MORNING)
+
+    # 1) After 12:00 Paris with a research item -> L2 (L1 floor already done).
     r = repo / "queues" / "research" / "warming-1.yaml"
     r.write_text("kind: warming_task\n")
-    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=NOON)) == "layer_2"
+    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=AFTER_L2)) == "layer_2"
+    _fire(repo, 2, AFTER_L2)
 
-    # 2) L2 consumed the research item (moved to .processed), now an inbox
-    #    decision exists -> L3
+    # 2) After 16:00 Paris, research consumed, an inbox decision waits -> L3.
     r.unlink()
     (repo / "queues" / "inbox" / "decisions" / "d-1.yaml").write_text("decision: send\n")
-    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=NOON)) == "layer_3"
+    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=AFTER_L3)) == "layer_3"
+    _fire(repo, 3, AFTER_L3)
 
-    # 3) L3 consumed the decision; queues empty but L2/L3/L4 each did a round
-    #    today -> L1 idle gate satisfied -> L1
+    # 3) After 19:00 Paris with L1+L2+L3 all fired today and L4 not yet run ->
+    #    L4 (the aggregator) is now eligible and takes priority.
     (repo / "queues" / "inbox" / "decisions" / "d-1.yaml").unlink()
+    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=AFTER_L4)) == "layer_4"
+    _fire(repo, 4, AFTER_L4)
+
+    # 4) Same evening, L4 already ran, queues empty, but L2/L3/L4 each did a
+    #    fresh round since L1's morning fire -> L1 re-consolidation gate fires.
     (repo / "outputs" / today).mkdir(parents=True, exist_ok=True)
     for layer in (2, 3, 4):
         increment_round_counter(repo / "outputs" / today, layer=layer)
-    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=NOON)) == "layer_1"
-
-    # 4) inside the L4 window with L4 not yet run today -> L4 takes priority
-    in_window = datetime(2026, 6, 1, 17, 10, tzinfo=timezone.utc)
-    # fresh day dir for the window check (no L4 .last-run yet)
-    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=in_window)) == "layer_4"
+    assert decide_dispatch(build_dispatch_ctx(repo, now_utc=AFTER_L4)) == "layer_1"
 
 
 # ── build_dispatch_ctx must inject the Layer-1 daily-floor signals ──────────

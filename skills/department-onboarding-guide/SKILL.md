@@ -168,11 +168,16 @@ This pairs with the **mission-file lock** (governance fix 2026-06-01): the dept'
 mission-definition files are STRUCTURAL and the agent **cannot push them** — the
 box-side git credential helper mints a read-only token whenever a push touches
 any structural path, so the only way to change a mission is a PR Joris/Jade
-merges. Structural paths (see `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`):
-`CLAUDE.md, MANDATE.md, dept.yaml, skills_manifest.yaml, config.yaml,
-gate_policy.yaml, layers/**, missions/**, skills/**, tools/**, subagents/**,
-policies/**, templates/**, .claude/**`. `WORKING_MEMORY.md` and `whiteboard.yaml`
-are deliberately NOT structural (writable runtime/working state).
+merges. Structural paths are defined ONCE in `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`
+(the single source of truth, shared by every dept, so a new dept inherits the list
+automatically). As of 2026-06-06 it is: `CLAUDE.md, MANDATE.md, dept.yaml,
+skills_manifest.yaml, config.yaml, gate_policy.yaml, db/schema.sql, layers/**,
+missions/**, skills/**, tools/**, subagents/**, policies/**, templates/**, assets/**,
+.claude/**`. To change one of these a dept opens a PR via `propose-settings-pr` (it
+branches off origin/main, commits ONLY the structural file, opens a GitHub PR Joris/Jade
+merge). `WORKING_MEMORY.md`, `whiteboard.yaml`, `db/fund.sqlite`, and `outputs/** queues/**
+inbox/**` are deliberately NOT structural (writable runtime/working state). If you ever
+add a path here, update it in policy.py only, not in per-dept copies, so it can't drift.
 
 The dept's `CLAUDE.md` MUST reference `WORKING_MEMORY.md` so the agent knows
 where to write transient topics and that it cannot touch its own mission. Use
@@ -467,29 +472,34 @@ so C.0's cycle-gate re-fires L1 only after a fresh L2/L3/L4 cycle:
 grep -n "write_l1_baseline" layers/1/PROMPT.md   # expect ≥1 match
 ```
 
-**Per-layer-fire notifications (MANDATORY — Joris msg 3898, 2026-06-06: "if work is
-done I need to know it. For all agents of course, and future. Only empty loop heartbeat
-can be silent").** Every dept MUST ping Joris on Telegram whenever a layer/mission fires;
-only an empty heartbeat tick is silent. The framework provides everything:
-- `scripts/lib/notify.py` + `loop_notify.py` are vendored by `sync-dispatch-lib.sh`
-  (verify present: `ls scripts/lib/notify.py scripts/lib/loop_notify.py`).
-- `tools/notify_layer.py` is the standard CLI wrapper (dept-agnostic — derives the slug
-  from the repo dir; reads TELEGRAM_BOT_TOKEN from env + chat_id from `config.yaml`; never
-  crashes the tick). Copy it from any live dept if missing.
-- The dept needs a `config.yaml` with an `accounts.Joris.telegram_chat_id` (see any live
-  dept). WITHOUT it the ping has no recipient.
+**Per-layer-fire notifications (optional but recommended — framework provides them):**
+the framework ships `scripts/lib/notify.py` (email + Telegram) + `loop_notify.py`. To get
+a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) should:
+- at STEP 3c (after `validate_layer_output` ok) call `notify_layer_fired(dept, N, summary_path, config=...)`
+  for N∈{1,4} (immediate), and accumulate `layer_fires={"2":n,"3":n}` for L2/L3;
+- at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
+Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
+`config.yaml` yet, the helpers default to Joris's chat_id. (tony/cgp still need a config.yaml.)
+#### Check F.2 — Gate-card YAML must be VALID (write-time validation)
 
-Wire it into the dept `/loop` protocol (CLAUDE.md), in the notify step:
-- For each **L1 / L4** fired this tick:
-  `python3 tools/notify_layer.py fired --layer <N> --summary outputs/<today>/<N>/<summary>.md`
-- For **L2 / L3** fires (count them), once:
-  `python3 tools/notify_layer.py batched --counts 2=<k>,3=<m>`
-- Gate created → still send the actionable gate line (highest signal).
-- Nothing dispatched (heartbeat) → silence.
+Layers hand-author gate cards under `queues/gates/*.yaml`. A single unquoted
+colon inside a scalar (e.g. `instrument: iShares ... (NASDAQ: TLT)`) makes the
+whole document invalid YAML, and the cockpit then silently fails to render the
+card — the human never sees the gate to approve it (this hid 4 Ben trade gates
+on 2026-06-06). TWO guards, both shipped framework-wide:
+- The cockpit gate reader surfaces a malformed card as a visible error card
+  (never swallows it).
+- `scripts/lib/dispatch_helpers.validate_gate_card(path)` is the WRITE-TIME
+  guard. Every layer PROMPT that writes a gate card MUST, right after writing,
+  quote any string value containing a colon and then:
+  ```python
+  from scripts.lib.dispatch_helpers import validate_gate_card
+  ok, msg = validate_gate_card("queues/gates/<id>.yaml")
+  assert ok, f"gate card invalid — fix before ending the tick: {msg}"
+  ```
+  Verify the dept's gate-writing layer PROMPT(s) include this call:
+  `grep -rl validate_gate_card layers/`.
 
-Verify after wiring: `grep -c notify_layer tools/notify_layer.py CLAUDE.md` (expect ≥1 in
-CLAUDE.md) and a live smoke: `python3 tools/notify_layer.py fired --layer 1 --summary /dev/null`
-should print `[notify_layer] sent (fired).` and ping the dept bot.
 #### Check G — Layer floor coverage (4-cron floor — auto-inherited, but VERIFY)
 
 New depts inherit the **4-cron layer floor automatically** — there is NOTHING to
@@ -522,6 +532,35 @@ genuinely doesn't run that layer (e.g. a concierge), wrong for a full OODA dept.
 
 > The floor is "1 unit iterates N depts" by design — do **not** add a per-dept
 > backup/floor unit. Inheritance is the whole point.
+
+#### Check H — /loop boot re-arm (telegram plugin — auto-inherited, but VERIFY)
+
+New depts inherit `/loop` **boot re-arm automatically**: the unit template
+(`deploy/templates/ops-loop-dept.service.template`) bakes in
+`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`,
+substituted per-dept at deploy time. On poller startup the telegram channel
+plugin injects ONE synthetic "boot" turn straight into Claude via an MCP channel
+notification (bypassing Telegram), so the dept re-runs session-start + re-arms
+its `/loop` after ANY restart. This supersedes `bubble-loop-reinit.sh` (a bot's
+own outbound Telegram message never returns as an inbound update, so that never
+worked). The env does nothing until the plugin is patched on the box
+(`scripts/install-boot-rearm.sh`, INSTALL.md step 8) — a box-level install Rick
+runs once, not per-dept.
+
+Verify the new dept's unit carries the env (read-only):
+
+```bash
+systemctl show ops-loop-<slug>.service -p Environment | tr ' ' '\n' \
+  | grep -E 'OPS_LOOP_BOOT_REARM=1|OPS_LOOP_DEPT=<slug>'
+```
+Both lines must print. If they don't, the unit predates the env — re-render via
+`scripts/deploy-to-morty.sh --slug=<slug>` or add a `systemctl edit` drop-in
+(INSTALL.md step 8), then restart. The plugin must also be boot-rearm-patched
+(`grep -q bootRearmNotification` in the live `server.ts`); if not, run
+`scripts/install-boot-rearm.sh` and restart the dept.
+
+> Boot re-arm is "env in the unit + one box-level plugin patch" by design — do
+> **not** add per-dept re-arm scripting. Inheritance is the whole point.
 
 #### Check F — Service-start prerequisites (MANDATORY for a MANUAL deploy)
 

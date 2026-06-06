@@ -481,6 +481,47 @@ PYEOF
         continue
     fi
     log "$slug: $reason"
+    # Forced-layer BACKUP-OFFSET + PREREQUISITE gate (Joris msgs 3904 + 3911,
+    # 2026-06-06). The backup cron is a SAFETY NET, not a replacement: it must
+    # give the live /loop a head start, then only catch up on a STALE loop.
+    #   (a) BACKUP OFFSET: a forced layer N is withheld until now >= its Paris
+    #       min-time PLUS BUBBLE_BACKUP_LAYER_OFFSET_H (default 2h). Before that
+    #       the live loop owns the layer; the backup never races it.
+    #   (b) PREREQUISITE: L4 still requires L1/L2/L3 fired today (sequences the
+    #       aggregator last even in the backup path).
+    # decide_dispatch's constants are the single source of truth for min-times.
+    if [[ -n "$FORCE_LAYER" ]]; then
+        layer_ok="$("$PY" - "$workdir" "$FORCE_LAYER" "${BUBBLE_BACKUP_LAYER_OFFSET_H:-2}" <<'PYEOF2' 2>/dev/null || echo "ERR"
+import sys
+from datetime import datetime, timezone, timedelta
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.dispatch_helpers import (
+    build_dispatch_ctx, _LAYER_MIN_TIME, _to_paris, _layer_fired_today,
+)
+workdir, layer, offset_h = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+ctx = build_dispatch_ctx(workdir, now_utc=datetime.now(timezone.utc))
+now_paris = _to_paris(ctx["now_utc"])
+# min-time + backup offset, as a Paris-local datetime today
+mt = _LAYER_MIN_TIME[layer]
+earliest = now_paris.replace(hour=mt.hour, minute=mt.minute, second=0, microsecond=0) + timedelta(hours=offset_h)
+if now_paris < earliest:
+    print("EARLY"); sys.exit(0)
+if layer == 4 and not all(_layer_fired_today(ctx, n) for n in (1, 2, 3)):
+    print("PREREQ"); sys.exit(0)
+print("OK")
+PYEOF2
+)"
+        if [[ "$layer_ok" == "EARLY" ]]; then
+            log "$slug: SKIP backup L$FORCE_LAYER — within the live-loop head-start window (min-time + ${BUBBLE_BACKUP_LAYER_OFFSET_H:-2}h)"
+            emit_event "$slug" "skip" "backup L$FORCE_LAYER offset not reached (live loop owns it)" "$age"
+            continue
+        elif [[ "$layer_ok" == "PREREQ" ]]; then
+            log "$slug: SKIP backup L$FORCE_LAYER — prerequisites not met (L1/L2/L3 not all fired today)"
+            emit_event "$slug" "skip" "backup L$FORCE_LAYER prereq not met (L1/2/3 pending)" "$age"
+            continue
+        fi
+        # "OK" or "ERR" (fail-open: a check error runs the tick as before).
+    fi
     if [[ "$DRY_RUN" == "1" ]]; then
         # Record the decision even in dry-run so a smoke test of the schedule
         # shows up in the cockpit, without spending a real tick.
