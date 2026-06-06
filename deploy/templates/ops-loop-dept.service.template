@@ -78,6 +78,19 @@ Environment=PATH=/opt/bubble-token-broker/bin:/home/claude/.bun/bin:/usr/local/s
 Environment=BUBBLE_DEPT=${DEPT_SLUG}
 Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
 
+# /loop boot RE-ARM (supersedes bubble-loop-reinit.sh). On poller startup the
+# telegram channel plugin self-injects ONE synthetic "boot" turn straight into
+# Claude via the same MCP channel notification a real inbound message uses
+# (boot_rearm.ts -> bootRearmNotification). That turn makes the agent re-run
+# session-start + re-register its /loop after ANY restart -- without depending on
+# a bot->{{OPERATOR}} Telegram message (which never returns as an inbound update; that
+# was the bug bubble-loop-reinit.sh could not fix). Fires ONLY when
+# OPS_LOOP_BOOT_REARM=1 (interactive Mac/Telegram sessions must never auto-fire).
+# Requires the plugin to be patched on the box: scripts/install-boot-rearm.sh.
+# OPS_LOOP_DEPT is threaded into the boot turn's meta for journald correlation.
+Environment=OPS_LOOP_BOOT_REARM=1
+Environment=OPS_LOOP_DEPT=${DEPT_SLUG}
+
 # PEM pre-decryption: broker (running as `claude`) cannot read
 # /etc/age/key.txt (root-only), so we decrypt the GitHub App private key
 # here as root and chown to claude. The broker wrapper auto-detects
