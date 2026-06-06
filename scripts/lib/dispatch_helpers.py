@@ -799,6 +799,45 @@ def resolve_push_target(repo_dir: "Path | str") -> "tuple[str | None, str | None
     return slug, repo_name
 
 
+def _resolve_is_structural():
+    """Return the broker's `_is_structural(path)` (single source of truth for
+    STRUCTURAL_PATH_GLOBS). Falls back to a built-in glob check if the broker
+    module isn't importable, so the runtime push never crashes — worst case it
+    behaves like the old add-all (fail-open), never blocks the loop."""
+    import importlib.util, os
+    for cand in (
+        os.environ.get("BUBBLE_BROKER_POLICY_PY"),
+        "/opt/bubble-token-broker/src/policy.py",
+    ):
+        if cand and os.path.isfile(cand):
+            try:
+                spec = importlib.util.spec_from_file_location("_bubble_policy", cand)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if hasattr(mod, "_is_structural"):
+                    return mod._is_structural
+            except Exception:
+                pass
+    # Fallback: minimal built-in structural globs (kept in sync with policy.py).
+    import fnmatch
+    _GLOBS = (
+        "dept.yaml", "CLAUDE.md", "MANDATE.md", "skills_manifest.yaml",
+        "config.yaml", "gate_policy.yaml", "db/schema.sql",
+        "layers/**", "missions/**", "skills/**", "tools/**", "subagents/**",
+        "policies/**", "templates/**", "assets/**", ".claude/**",
+    )
+    def _fallback(path: str) -> bool:
+        for g in _GLOBS:
+            if g.endswith("/**"):
+                base = g[:-3]
+                if path == base or path.startswith(base + "/"):
+                    return True
+            elif fnmatch.fnmatch(path, g):
+                return True
+        return False
+    return _fallback
+
+
 def force_commit_and_push(
     repo_dir: Path,
     message: str,
@@ -855,9 +894,40 @@ def force_commit_and_push(
         print(f"[DRY_RUN] would push dept={slug!r} repo={repo_name!r} from {repo_dir}")
         return True, None
 
-    # 2. Stage everything.
+    # 2. Stage RUNTIME paths only — never structural files (Joris 2026-06-06).
+    # `git add -A` used to sweep structural files (CLAUDE.md, doctrine,
+    # assets/**, db/schema.sql...) into the runtime commit; the guard then minted
+    # a read-only token and the WHOLE push 403'd, so the dept's commits piled up
+    # local-only and the repo drifted. We stage only the non-structural changed
+    # paths here; structural changes go via propose-settings-pr (human-merged PR),
+    # never a runtime push to main. _is_structural is the single source of truth
+    # (same globs the guard uses), so this can't drift from the push policy.
+    changed = [
+        line[3:].strip().strip('"')
+        for line in status.stdout.splitlines()
+        if line.strip()
+    ]
+    # handle rename "old -> new": stage the new path
+    _is_struct = _resolve_is_structural()
+    runtime_paths = []
+    skipped_structural = []
+    for c in changed:
+        path = c.split(" -> ")[-1] if " -> " in c else c
+        if _is_struct(path):
+            skipped_structural.append(path)
+        else:
+            runtime_paths.append(path)
+    if skipped_structural:
+        print(
+            "[force_commit_and_push] NOT staging structural file(s) for the "
+            "runtime push (route via propose-settings-pr): "
+            + ", ".join(sorted(set(skipped_structural)))
+        )
+    if not runtime_paths:
+        # Only structural changes pending — nothing for the runtime push to do.
+        return True, None
     add = subprocess.run(
-        ["git", "-C", str(repo_dir), "add", "-A"],
+        ["git", "-C", str(repo_dir), "add", "--"] + runtime_paths,
         capture_output=True, text=True,
     )
     if add.returncode != 0:
