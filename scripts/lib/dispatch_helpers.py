@@ -928,3 +928,47 @@ def force_commit_and_push(
             f"{(push.stderr or push.stdout).strip()[:200]}"
         )
     return True, None
+
+
+# ─── Gate-card YAML validation (Joris msg 3919, 2026-06-06) ─────────────────
+#
+# Agents hand-author rich gate cards under queues/gates/*.yaml (comments,
+# multi-line scalars, expressive fields). A recurring footgun: an unquoted
+# colon inside a scalar — e.g. `instrument: iShares ... (NASDAQ: TLT)` — makes
+# the whole document invalid YAML, and the cockpit then can't render the card,
+# so the human never sees the gate to approve it (TLT/ROBO/SMH/URA, 2026-06-06).
+# This validator is the WRITE-TIME guard: a layer MUST call it right after
+# writing a gate card; it fails LOUD so the bad card is fixed before the tick
+# ends, instead of silently disappearing from the UI.
+
+def validate_gate_card(path) -> "tuple[bool, str]":
+    """Re-parse a just-written gate card. Returns (ok, message).
+
+    ok=False with a precise message (line/col + the offending text) when the
+    YAML is invalid or not a mapping, so the caller can fix-and-rewrite. The
+    most common cause is an unquoted value containing a colon — wrap such values
+    in double quotes (e.g. instrument: "iShares ... (NASDAQ: TLT)").
+    """
+    import yaml as _yaml
+    p = Path(path)
+    if not p.exists():
+        return False, f"gate card not found: {p}"
+    text = p.read_text(encoding="utf-8")
+    try:
+        doc = _yaml.safe_load(text)
+    except _yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        if mark is not None:
+            lines = text.splitlines()
+            bad = lines[mark.line] if 0 <= mark.line < len(lines) else ""
+            return False, (
+                f"invalid YAML at line {mark.line + 1} col {mark.column + 1}: "
+                f"{str(getattr(e, 'problem', e)).strip()} -> `{bad.strip()[:100]}` "
+                "(likely an unquoted colon — wrap the value in double quotes)"
+            )
+        return False, f"invalid YAML: {str(e).splitlines()[0]}"
+    if not isinstance(doc, dict):
+        return False, "gate card parsed but is not a YAML mapping (top level must be key: value)"
+    if not doc.get("id") or not doc.get("kind"):
+        return False, "gate card is missing required keys `id` and/or `kind`"
+    return True, "ok"

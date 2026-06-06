@@ -139,9 +139,30 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
             doc = yaml.safe_load(p.read_text(encoding="utf-8"))
             if isinstance(doc, dict):
                 out.append(doc)
-        except yaml.YAMLError:
-            continue
+            else:
+                # Parsed but not a mapping → surface a synthetic error card so a
+                # malformed gate is VISIBLE in the cockpit, never silently dropped.
+                out.append(_malformed_gate_card(slug, p, "not a YAML mapping"))
+        except yaml.YAMLError as e:
+            # A malformed gate card used to vanish here (silent `continue`) — that
+            # is exactly how a TLT trade gate disappeared from the UI on
+            # 2026-06-06 (unquoted colon in `instrument:`), so Joris never saw it
+            # to approve it. Surface it as an error card instead of swallowing it.
+            out.append(_malformed_gate_card(slug, p, str(e).splitlines()[0]))
     return out
+
+
+def _malformed_gate_card(slug: str, path: "Path", err: str) -> Dict[str, Any]:
+    """A placeholder gate card making a parse failure VISIBLE in the cockpit."""
+    return {
+        "id": path.stem,
+        "slug": slug,
+        "kind": "malformed_gate",
+        "requires_human": True,
+        "current_mode": "manual_required",
+        "error": f"gate YAML failed to parse ({err}) — fix {path.name} so it renders",
+        "_malformed": True,
+    }
 
 
 def load_gate(slug: str, gate_id: str) -> Optional[Dict[str, Any]]:
