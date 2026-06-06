@@ -16,7 +16,7 @@ If you are the freshly spawned Claude Code session for a new
 
 0. **Read the shared wiki** before doing anything else:
    ```bash
-   cat ~/.claude/agent-memory/shared-wiki/rnd/hot.md 2>/dev/null
+   cat ~/.claude/agent-memory/shared-wiki/<your-wiki-folder>/hot.md 2>/dev/null  # tony_ceo, maya_sales, ben_fund... NOT 'rnd' (that's Rick's). scaffold.py::_wiki_slug maps it.
    cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
    ```
    The wiki is git-synced every 30 min and contains cross-team doctrine,
