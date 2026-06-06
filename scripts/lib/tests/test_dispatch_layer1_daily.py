@@ -25,7 +25,7 @@ from scripts.lib.dispatch_helpers import (
 
 # A time outside the 22:00-22:30 UTC L4 window.
 _MORNING = datetime(2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc)
-_L4_WINDOW = datetime(2026, 6, 1, 22, 10, 0, tzinfo=timezone.utc)
+_L4_WINDOW = datetime(2026, 6, 1, 17, 10, 0, tzinfo=timezone.utc)
 _RAN = datetime(2026, 6, 1, 5, 0, 0, tzinfo=timezone.utc)
 
 

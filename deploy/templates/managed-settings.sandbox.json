@@ -32,8 +32,27 @@
         "registry.npmjs.org",
         "*.notion.so",
         "api.notion.com",
-        "www.data.gouv.fr"
-      ]
+        "www.data.gouv.fr",
+        "api.alpaca.markets",
+        "data.alpaca.markets",
+        "paper-api.alpaca.markets",
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+        "fc.yahoo.com",
+        "*.finance.yahoo.com",
+        "gateway.saxobank.com",
+        "live.logonvalidation.net",
+        "sim.logonvalidation.net",
+        "api.crypto.com",
+        "gamma-api.polymarket.com",
+        "clob.polymarket.com",
+        "polymarket.com",
+        "docs.polymarket.com",
+        "fred.stlouisfed.org",
+        "api.stlouisfed.org",
+        "api.coingecko.com"
+      ],
+      "_doc": "allowedDomains: array-merge base. First 10 = common (anthropic/telegram/github/npm/notion/data.gouv). Remainder = finance/market-data for fund depts (Ben + future CGP-style) \u2014 Alpaca, Yahoo Finance (yfinance), Saxo OpenAPI+OAuth, Crypto.com (ccxt), Polymarket, FRED, CoinGecko. Added 2026-06-06 (Rick, Joris): fund layers ran degraded because broker/market-data egress was blocked by the sandbox proxy. allowManagedDomainsOnly:false so this is the effective egress allowlist inside the sandbox."
     }
   }
 }
