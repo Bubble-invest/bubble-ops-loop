@@ -57,7 +57,8 @@ STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "policies/**",
     "templates/**",
     "missions/**",
-    "assets/**",          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated (Joris 2026-06-06)
+    "assets/**",
+    "db/schema.sql",       # canonical DB schema — PR-only (Ben exception #7, 2026-06-06). db/fund.sqlite stays runtime-writable.          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated (Joris 2026-06-06)
 )
 
 KNOWN_ACTIONS: frozenset[str] = frozenset(
