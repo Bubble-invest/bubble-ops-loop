@@ -52,6 +52,8 @@ import pytest
         ".claude/CLAUDE.md",
         ".claude/settings.json",
         ".claude/agents/a.md",
+        "assets/maya-doctrine.md",   # dept doctrine/voice asset — PR-gated (2026-06-06)
+        "assets/voice.md",
     ],
 )
 def test_mission_files_are_structural(path):

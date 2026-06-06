@@ -57,6 +57,7 @@ STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "policies/**",
     "templates/**",
     "missions/**",
+    "assets/**",          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated (Joris 2026-06-06)
 )
 
 KNOWN_ACTIONS: frozenset[str] = frozenset(
