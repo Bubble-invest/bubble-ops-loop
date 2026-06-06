@@ -37,6 +37,7 @@ Stdlib only.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +67,19 @@ except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts
 DEFAULT_ACCOUNT = "{{OPERATOR}}"
 
 LAYER_FIRE_GLYPH = "🔁"
+
+# Cockpit (console) base URL — every layer-fired ping carries the dept's cockpit
+# link so {{OPERATOR}} can open the work directly from Telegram ({{OPERATOR}} msg 3985,
+# 2026-06-06). Env-overridable for non-prod/test. Console is Tailscale-only.
+COCKPIT_BASE_URL = os.environ.get(
+    "BUBBLE_COCKPIT_BASE_URL",
+    "https://:8443",
+).rstrip("/")
+
+
+def _cockpit_link(dept: str) -> str:
+    """The dept's cockpit page — appended to every layer-fired ping."""
+    return COCKPIT_BASE_URL + "/dept/" + dept
 
 
 def _first_line_of_summary(summary_path) -> str:
@@ -144,6 +158,7 @@ def notify_layer_fired(
     text = f"{LAYER_FIRE_GLYPH} {dept} · L{layer_str} fired"
     if first:
         text += f" — {first}"
+    text += "\n" + _cockpit_link(dept)
 
     recipient = _resolve_chat_recipient(config or {}, account)
     payload = NotificationPayload(
@@ -198,6 +213,7 @@ def notify_layers_batched(
     text = format_batched_line(dept, counts)
     if not text:
         return None
+    text += "\n" + _cockpit_link(dept)
     recipient = _resolve_chat_recipient(config or {}, account)
     payload = NotificationPayload(
         subject=text,

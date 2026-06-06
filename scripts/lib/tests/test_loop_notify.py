@@ -292,3 +292,39 @@ def test_dept_agnostic_no_maya_hardcoded_in_alert():
     )
     assert "tony" in captured["subject"]
     assert "Maya" not in captured["subject"]
+
+
+# ─── cockpit link in layer-fired pings ({{OPERATOR}} msg 3985, 2026-06-06) ──────────
+
+
+def test_layer_fired_includes_cockpit_link(tmp_path, token_env):
+    """Every layer-fired ping must carry the dept cockpit link so {{OPERATOR}} can
+    open the work directly from Telegram."""
+    summary = tmp_path / "summary.md"
+    summary.write_text("# L4 risk brief done\n")
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired("ben", 4, summary, config=CONFIG, opener=opener)
+    text = opener.calls[0]["body"]["text"]
+    # the /dept/ben path must be present (escaping of . and - is fine for MDV2)
+    assert "/dept/ben" in text
+    assert "8443" in text
+
+
+def test_batched_includes_cockpit_link(token_env):
+    opener = _CapturingOpener()
+    loop_notify.notify_layers_batched("maya", {"2": 3, "3": 1}, config=CONFIG, opener=opener)
+    text = opener.calls[0]["body"]["text"]
+    assert "/dept/maya" in text
+    # still carries the batched counts
+    assert "L2" in text and "L3" in text
+
+
+def test_cockpit_base_url_env_override(tmp_path, token_env, monkeypatch):
+    import importlib
+    monkeypatch.setenv("BUBBLE_COCKPIT_BASE_URL", "https://example.test:9999/")
+    importlib.reload(loop_notify)
+    try:
+        assert loop_notify._cockpit_link("tony") == "https://example.test:9999/dept/tony"
+    finally:
+        monkeypatch.delenv("BUBBLE_COCKPIT_BASE_URL", raising=False)
+        importlib.reload(loop_notify)
