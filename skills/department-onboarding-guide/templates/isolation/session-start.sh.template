@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DEPT_ROOT="/home/claude/agents/bubble-ops-{{ slug }}"
-WIKI_HOT="/home/claude/.claude/agent-memory/shared-wiki/rnd/hot.md"
+WIKI_HOT="/home/claude/.claude/agent-memory/shared-wiki/index.md"  # index always exists; the dept reads its own <wiki_slug>/hot.md per its CLAUDE.md
 
 hot_snippet=""
 if [[ -f "${WIKI_HOT}" ]]; then
@@ -17,7 +17,7 @@ read -r -d '' CTX <<JSON || true
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "Réveil de Bubble {{ display_name }} ({{ level }}) sur Morty (VPS Hetzner). ACTION REQUISE au premier tour: (1) Lire ${DEPT_ROOT}/CLAUDE.md (ton manuel) et ${DEPT_ROOT}/MANDATE.md (ta doctrine). (2) Lire le wiki partagé: cat /home/claude/.claude/agent-memory/shared-wiki/rnd/hot.md. (3) Vérifier l'état de tes layers sous ${DEPT_ROOT}/outputs/. (4) Tes secrets (dont TELEGRAM_BOT_TOKEN) sont dans /run/claude-agent-{{ slug }}/env, déjà chargé par systemd — ne jamais décrypter de SOPS toi-même. RÈGLES DURES: aucun partage cross-dept; commits + push via /opt/bubble-git-guard/bin/bubble-git-guard uniquement.\n\n--- shared-wiki/hot.md (extrait) ---\n${hot_snippet}"
+    "additionalContext": "Réveil de Bubble {{ display_name }} ({{ level }}) sur Morty (VPS Hetzner). ACTION REQUISE au premier tour: (1) Lire ${DEPT_ROOT}/CLAUDE.md (ton manuel) et ${DEPT_ROOT}/MANDATE.md (ta doctrine). (2) Lire le wiki partagé: cat /home/claude/.claude/agent-memory/shared-wiki/index.md (puis navigue vers ta page; ta CLAUDE.md indique ton dossier hot.md). (3) Vérifier l'état de tes layers sous ${DEPT_ROOT}/outputs/. (4) Tes secrets (dont TELEGRAM_BOT_TOKEN) sont dans /run/claude-agent-{{ slug }}/env, déjà chargé par systemd — ne jamais décrypter de SOPS toi-même. RÈGLES DURES: aucun partage cross-dept; commits + push via /opt/bubble-git-guard/bin/bubble-git-guard uniquement.\n\n--- shared-wiki/hot.md (extrait) ---\n${hot_snippet}"
   }
 }
 JSON

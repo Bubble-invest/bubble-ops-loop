@@ -201,7 +201,7 @@ CLAUDE_MD_MANAGEMENT_TEMPLATE = """\
 At the start of each session, I read the team wiki:
 
 ```bash
-cat ~/.claude/agent-memory/shared-wiki/rnd/hot.md 2>/dev/null
+cat ~/.claude/agent-memory/shared-wiki/{wiki_slug}/hot.md 2>/dev/null
 cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
 ```
 
@@ -261,7 +261,9 @@ I do not take part in layers 2 and 3 (no autonomous recurring missions).
 
 ## `/loop` runtime protocol — STEP C dispatch
 
-At each tick (every 20 min), after the sync and the state read:
+At each tick (every 20 min):
+
+**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` — commits runtime, stashes leftovers, pulls merged PRs, restores (so a merged CLAUDE.md/skill change auto-lands; never blocks on a dirty tree).
 
 **STEP C** — decide what to dispatch:
 
@@ -380,7 +382,7 @@ I reply **in English**, executive-office voice:
 Once activated (onboarding complete), I run a `/loop` every 20 min.
 At each tick:
 
-**STEP A** — sync: `git pull --quiet --rebase || echo 'pull-failed-continuing'`
+**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged CLAUDE.md/skill change lands automatically)
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
@@ -480,6 +482,24 @@ department. I never widen my scope on my own.
 """
 
 
+
+# Wiki folder per dept (the shared-wiki/<folder>/hot.md the dept reads at session
+# start). The map is IRREGULAR (tony->tony_ceo, maya->maya_sales, ben->ben_fund),
+# so it cannot be derived from the slug. A dept NOT in the map defaults to its own
+# slug (cgp->cgp, future depts->themselves). Fixing the 2026-06-06 bug where the
+# scaffold hardcoded a dead `rnd/hot.md` path into every dept's CLAUDE.md.
+_WIKI_SLUG_MAP = {
+    "tony": "tony_ceo",
+    "maya": "maya_sales",
+    "ben": "ben_fund",
+    "cgp": "cgp",
+}
+
+
+def _wiki_slug(slug: str) -> str:
+    return _WIKI_SLUG_MAP.get(slug, slug)
+
+
 def render_claude_md(slug: str, display_name: str,
                      level: str = "ops",
                      children: list | None = None) -> str:
@@ -495,6 +515,7 @@ def render_claude_md(slug: str, display_name: str,
         return CLAUDE_MD_MANAGEMENT_TEMPLATE.format(
             slug=slug,
             slug_compact=slug_compact,
+            wiki_slug=_wiki_slug(slug),
             display_name=display_name,
             children_list=children_str,
         )
@@ -502,6 +523,7 @@ def render_claude_md(slug: str, display_name: str,
         slug=slug,
         slug_compact=slug_compact,
         display_name=display_name,
+        wiki_slug=_wiki_slug(slug),
     )
 
 
@@ -581,7 +603,7 @@ CLAUDE.md.
 At the start of each session, I read the team wiki:
 
 ```bash
-cat ~/.claude/agent-memory/shared-wiki/rnd/hot.md 2>/dev/null
+cat ~/.claude/agent-memory/shared-wiki/{wiki_slug}/hot.md 2>/dev/null
 cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
 ```
 
@@ -681,7 +703,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 **At each tick**:
 
-1. `git pull --quiet --rebase || echo 'pull-failed-continuing'`
+1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` — commits runtime, stashes leftovers, pulls merged PRs, restores (merged structural changes auto-land)
 
 2. Call the deterministic helper — it **scans my queues itself** (never
    a placeholder dict, otherwise it falls back to `heartbeat` and Moments 2/3 never
@@ -805,6 +827,7 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     return CLAUDE_MD_OPERATING_TEMPLATE.format(
         slug=slug,
         slug_compact=slug.replace("-", ""),
+        wiki_slug=_wiki_slug(slug),
         display_name=display_name,
         role_label=role_label,
         mandate=mandate,

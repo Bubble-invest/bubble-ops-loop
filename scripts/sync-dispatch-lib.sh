@@ -83,7 +83,7 @@ DISPATCH_TEST_FILES=(
   "test_dispatch_layer1_daily.py"
   "test_dispatch_retry_and_push.py"
   "test_layer1_data_sources.py"
-  "test_loop_dispatch_layer1.py"
+  "test_safe_pull.py"
 )
 
 # -----------------------------------------------------------------------------

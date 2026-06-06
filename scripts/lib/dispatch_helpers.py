@@ -1000,6 +1000,104 @@ def force_commit_and_push(
     return True, None
 
 
+
+# ─── safe_pull: dirty-tree-proof in-loop sync ({{OPERATOR}} msg 3979, 2026-06-06) ──
+#
+# WHY: the loop's tick step 1 was `git pull --quiet --rebase || echo
+# 'pull-failed-continuing'`. On a dirty working tree git refuses
+# ("cannot pull with rebase: you have unstaged changes") and the tick just
+# continues — so MERGED structural changes (a CLAUDE.md/skill PR a human just
+# merged) NEVER land on the box. That's the auto-redeploy gap: merge != live.
+# Reproduced on tony/ben/maya 2026-06-06 (28/6/2 dirty files).
+#
+# Option A ({{OPERATOR}}'s pick): make the pull RELIABLE without ever losing work.
+#   1. Land legit RUNTIME changes via force_commit_and_push (outputs/queues/
+#      inbox/WORKING_MEMORY... — runtime-only, structural is skipped there).
+#   2. Stash whatever remains (leftover structural edits the agent shouldn't
+#      have, untracked tooling, cruft) INCLUDING untracked, so the tree is clean.
+#   3. git pull --rebase  (now succeeds — merged PRs land).
+#   4. git stash pop (best-effort). On conflict we KEEP the stash (never drop)
+#      and report — a human/agent can recover it; we never destroy work.
+#
+# Returns (ok, summary). ok=False only on a genuine pull failure the caller
+# should surface; a clean no-op or a kept-stash-on-conflict still returns True
+# with a descriptive summary (the tick must not crash on sync).
+def safe_pull(
+    repo_dir: "Path | str",
+    bubble_git_guard_path: str = "/usr/local/bin/bubble-git-guard",
+) -> "tuple[bool, str]":
+    import subprocess
+    repo_dir = Path(repo_dir).resolve()
+
+    def _git(*args, **kw):
+        return subprocess.run(
+            ["git", "-C", str(repo_dir), *args],
+            capture_output=True, text=True, **kw,
+        )
+
+    notes = []
+
+    # 1. Land legit runtime changes first (clears them from the tree). This
+    #    reuses the single-source runtime/structural split — structural files
+    #    are NOT committed here (they go via propose-settings-pr), they'll be
+    #    stashed in step 2 instead.
+    status = _git("status", "--porcelain")
+    if status.returncode == 0 and status.stdout.strip():
+        ok, err = force_commit_and_push(
+            repo_dir,
+            "loop: auto-commit runtime state before sync",
+            bubble_git_guard_path=bubble_git_guard_path,
+        )
+        if ok:
+            notes.append("runtime committed+pushed")
+        else:
+            # Push may legitimately fail (e.g. nothing-but-structural, or a
+            # transient broker issue) — not fatal to the pull. Keep going; the
+            # stash in step 2 still clears the tree so the pull can run.
+            notes.append(f"runtime push skipped/failed: {err}")
+
+    # 2. Stash anything still dirty (leftover structural edits + untracked), so
+    #    the rebase has a clean tree. -u includes untracked; keep-index off.
+    stashed = False
+    status = _git("status", "--porcelain")
+    if status.returncode == 0 and status.stdout.strip():
+        st = _git("stash", "push", "--include-untracked",
+                  "-m", "safe_pull: pre-rebase autostash")
+        if st.returncode == 0 and "No local changes" not in (st.stdout + st.stderr):
+            stashed = True
+            notes.append("stashed leftovers")
+
+    # 3. Pull --rebase (now the tree is clean → it succeeds).
+    pull = _git("pull", "--quiet", "--rebase", "origin", "main")
+    if pull.returncode != 0:
+        # Abort a half-applied rebase so we don't wedge the tree.
+        _git("rebase", "--abort")
+        if stashed:
+            _git("stash", "pop")  # restore the agent's work
+        return False, (
+            "pull --rebase FAILED: "
+            + (pull.stderr or pull.stdout).strip()[:200]
+            + " | " + "; ".join(notes)
+        )
+    notes.append("pulled")
+
+    # 4. Restore the stash (best-effort). On conflict, KEEP the stash (do not
+    #    drop) so nothing is lost; report it for human/agent recovery.
+    if stashed:
+        pop = _git("stash", "pop")
+        if pop.returncode != 0:
+            # Conflict or other issue — leave the stash in place, reset the
+            # working-tree merge state so the tick can continue cleanly.
+            _git("checkout", "--", ".")
+            notes.append(
+                "STASH KEPT (pop conflicted) — recover with `git stash list`/"
+                "`git stash pop`; merged changes ARE applied"
+            )
+        else:
+            notes.append("stash restored")
+
+    return True, "; ".join(notes)
+
 # ─── Gate-card YAML validation ({{OPERATOR}} msg 3919, 2026-06-06) ─────────────────
 #
 # Agents hand-author rich gate cards under queues/gates/*.yaml (comments,
