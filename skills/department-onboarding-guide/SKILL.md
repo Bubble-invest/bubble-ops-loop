@@ -467,14 +467,29 @@ so C.0's cycle-gate re-fires L1 only after a fresh L2/L3/L4 cycle:
 grep -n "write_l1_baseline" layers/1/PROMPT.md   # expect ≥1 match
 ```
 
-**Per-layer-fire notifications (optional but recommended — framework provides them):**
-the framework ships `scripts/lib/notify.py` (email + Telegram) + `loop_notify.py`. To get
-a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) should:
-- at STEP 3c (after `validate_layer_output` ok) call `notify_layer_fired(dept, N, summary_path, config=...)`
-  for N∈{1,4} (immediate), and accumulate `layer_fires={"2":n,"3":n}` for L2/L3;
-- at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
-Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
-`config.yaml` yet, the helpers default to {{OPERATOR}}'s chat_id. (tony/cgp still need a config.yaml.)
+**Per-layer-fire notifications (MANDATORY — {{OPERATOR}} msg 3898, 2026-06-06: "if work is
+done I need to know it. For all agents of course, and future. Only empty loop heartbeat
+can be silent").** Every dept MUST ping {{OPERATOR}} on Telegram whenever a layer/mission fires;
+only an empty heartbeat tick is silent. The framework provides everything:
+- `scripts/lib/notify.py` + `loop_notify.py` are vendored by `sync-dispatch-lib.sh`
+  (verify present: `ls scripts/lib/notify.py scripts/lib/loop_notify.py`).
+- `tools/notify_layer.py` is the standard CLI wrapper (dept-agnostic — derives the slug
+  from the repo dir; reads TELEGRAM_BOT_TOKEN from env + chat_id from `config.yaml`; never
+  crashes the tick). Copy it from any live dept if missing.
+- The dept needs a `config.yaml` with an `accounts.{{OPERATOR}}.telegram_chat_id` (see any live
+  dept). WITHOUT it the ping has no recipient.
+
+Wire it into the dept `/loop` protocol (CLAUDE.md), in the notify step:
+- For each **L1 / L4** fired this tick:
+  `python3 tools/notify_layer.py fired --layer <N> --summary outputs/<today>/<N>/<summary>.md`
+- For **L2 / L3** fires (count them), once:
+  `python3 tools/notify_layer.py batched --counts 2=<k>,3=<m>`
+- Gate created → still send the actionable gate line (highest signal).
+- Nothing dispatched (heartbeat) → silence.
+
+Verify after wiring: `grep -c notify_layer tools/notify_layer.py CLAUDE.md` (expect ≥1 in
+CLAUDE.md) and a live smoke: `python3 tools/notify_layer.py fired --layer 1 --summary /dev/null`
+should print `[notify_layer] sent (fired).` and ping the dept bot.
 #### Check G — Layer floor coverage (4-cron floor — auto-inherited, but VERIFY)
 
 New depts inherit the **4-cron layer floor automatically** — there is NOTHING to
