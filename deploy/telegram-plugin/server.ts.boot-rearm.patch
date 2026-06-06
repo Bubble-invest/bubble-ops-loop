@@ -1,0 +1,28 @@
+--- server.ts
++++ server.ts
+@@ -22,6 +22,8 @@
+ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+ import { homedir } from 'os'
+ import { join, extname, sep } from 'path'
++import { bootRearmNotification } from './boot_rearm.ts'
++let bootRearmFired = false
+ 
+ const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'telegram')
+ const ACCESS_FILE = join(STATE_DIR, 'access.json')
+@@ -1012,6 +1014,16 @@
+             ],
+             { scope: { type: 'all_private_chats' } },
+           ).catch(() => {})
++          if (!bootRearmFired) {
++            const rearm = bootRearmNotification(process.env)
++            if (rearm) {
++              bootRearmFired = true
++              mcp.notification(rearm).catch(err => {
++                process.stderr.write(`telegram channel: boot re-arm notification failed: ${err}\n`)
++              })
++              process.stderr.write('telegram channel: ops-loop boot re-arm turn injected\n')
++            }
++          }
+         },
+       })
+       return // bot.stop() was called — clean exit from the loop
