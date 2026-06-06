@@ -352,9 +352,11 @@ def materialize_due_missions(missions: Iterable[dict], *,
 # Deterministic dispatch decision (locks down the prompt's tree)
 # ---------------------------------------------------------------------------
 
-# The L4 window is the same as the existing C.1 rule in the template.
-_L4_WINDOW_START = _time(22, 0)
-_L4_WINDOW_END = _time(22, 30)
+# The L4 window matches the box-wide loop-layer4.timer, which fires at
+# 19:00 Europe/Paris. Compared against PARIS-local time (not UTC) so it stays
+# correct across DST ({{OPERATOR}} 2026-06-06: align all agents to Paris time).
+_L4_WINDOW_START = _time(19, 0)
+_L4_WINDOW_END = _time(19, 30)
 
 
 def _queue_has_items(queue_dir: Path) -> bool:
@@ -445,7 +447,7 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
         (default 1)
 
     Priority order (highest to lowest):
-      C.1 — Layer 4 if in 22:00-22:30 UTC window AND not yet run today
+      C.1 — Layer 4 if in 19:00-19:30 Europe/Paris window AND not yet run today
       C.2 — Layer 2 if research queue has items
       C.3 — Layer 3 if inbox decisions have items
       C.0 — Layer 1: AT LEAST once per calendar day, OR once each other layer
@@ -479,8 +481,9 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     baseline = ctx.get("layer_1_baseline_counter") or {}
     fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
 
-    # C.1 — L4 window (UTC).
-    in_window = _L4_WINDOW_START <= now_utc.time() < _L4_WINDOW_END
+    # C.1 — L4 window (Paris-local, matches loop-layer4.timer @ 19:00 Europe/Paris).
+    now_paris_time = _to_paris(now_utc).time()
+    in_window = _L4_WINDOW_START <= now_paris_time < _L4_WINDOW_END
     if in_window and l4_last is None:
         return "layer_4"
 
