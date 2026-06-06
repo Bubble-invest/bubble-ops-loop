@@ -270,6 +270,16 @@ It writes (parameterised per-dept via Jinja2):
   WORKING_MEMORY.md`; `git push` is all-or-nothing, so ANY stray non-allow-listed
   file 403s the whole push. (This was the 2026-06-05 ben/maya/tony push-block: a
   tracked root `fund.sqlite` + a `.claude` lock blocked all pushes for ~2 days.)
+  **STRUCTURAL-MIX RULE (2026-06-06):** the most common cause is a dept committing
+  a STRUCTURAL file (CLAUDE.md, doctrine, assets/**, db/schema.sql, layers/**,
+  config.yaml...) into the same commit as its runtime artifacts. The guard mints a
+  read-only token for the structural path and the WHOLE push 403s, so the dept's
+  commits pile up local-only and the repo silently drifts. The shared
+  `force_commit_and_push` helper now stages ONLY non-structural changed paths (it
+  skips structural files with a log line), so a runtime tick never poisons its own
+  push. The dept CLAUDE.md STEP E must say: runtime push = outputs/queues/inbox/
+  WORKING_MEMORY only, NEVER `git add -A`; structural changes go via
+  `propose-settings-pr` as a separate human-merged PR. Never one mixed push.
 - `.claude/settings.json` — dept-scoped `permissions` (allow own tree, **deny
   every sibling dept** + SOPS sources + `git push`), `enabledSkills`,
   `enabledPlugins`, `model`, `env` (BUBBLE_DEPT*), and the SessionStart `hooks`
