@@ -58,10 +58,10 @@ vendor_canonical_dispatch_lib() {
   echo "[bootstrap] vendored canonical dispatch_helpers.py (md5 $(md5sum "$canon_lib" | awk '{print $1}')) into $target/scripts/lib/" >&2
 
   # Per-layer-fire notification stack (Joris msg 3898, 2026-06-06): every dept
-  # MUST ping when a layer fires. Vendor notify.py + loop_notify.py (libs) and
+  # MUST ping when a layer fires. Vendor notify.py + loop_notify.py + notion_logbook.py (libs) and
   # tools/notify_layer.py (the CLI wrapper CLAUDE.md STEP F calls). Best-effort.
   local nf
-  for nf in notify.py loop_notify.py; do
+  for nf in notify.py loop_notify.py notion_logbook.py; do
     [[ -f "$PROJECT_ROOT/scripts/lib/$nf" ]] && cp -f "$PROJECT_ROOT/scripts/lib/$nf" "$target/scripts/lib/$nf"
   done
   if [[ -f "$PROJECT_ROOT/tools/notify_layer.py" ]]; then
