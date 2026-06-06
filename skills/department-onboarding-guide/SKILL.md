@@ -543,6 +543,38 @@ genuinely doesn't run that layer (e.g. a concierge), wrong for a full OODA dept.
 > The floor is "1 unit iterates N depts" by design — do **not** add a per-dept
 > backup/floor unit. Inheritance is the whole point.
 
+**G.1 — the dept must KNOW its floor exists (CLAUDE.md awareness note — MANDATORY).**
+Installing the floor is not enough: the agent itself must know it has a backup, or
+it operates on an incomplete model of its own runtime (caught 2026-06-06 — Tony
+reasoned "my hourly /loop is my only wake signal" and nearly armed a redundant
+timer; the same blind-spot family as an agent thinking a live broker is "down").
+A dept that doesn't know about the floor can (a) panic when it wakes as a fresh
+`claude -p` backup tick with no live loop armed, (b) try to "fix"/disable the floor,
+or (c) arm competing timers to "guarantee" a layer fires. So every dept CLAUDE.md
+MUST carry a backup-awareness note in its `/loop protocol` section. Verify + add:
+
+```bash
+grep -q "backup floor cron" /home/claude/agents/bubble-ops-<slug>/CLAUDE.md \
+  || echo "MISSING — add the backup-awareness note (canonical text below)"
+```
+
+Canonical note (adapt the cadence wording to the dept; this is structural → ships
+via the CLAUDE.md PR, not a runtime push):
+
+> **I have a backup floor cron — I am NOT my only wake signal.** Two independent
+> mechanisms drive my OODA loop: (1) my live `/loop` (the in-session cron I arm
+> myself — primary while my session is healthy); (2) the backup floor cron
+> (`loop-backup` → `loop-layer{1,2,3,4}.timer`, fires L1/L2/L3/L4 at fixed Paris
+> times) — a platform-owned SAFETY NET that runs ONE forced layer tick only if I
+> am STALE (no recent `outputs/<date>/heartbeat.log`), skips me while my live loop
+> is healthy, and is mutexed (`flock`) so it NEVER double-processes my queue. It's
+> one tick then exit — not a second loop, not a re-arm. So: if I wake as a fresh
+> `claude -p` with no live loop, I may be a backup tick (expected, safe — I run the
+> one tick, no panic, no assuming a racing instance). I never disable/fight the
+> floor; I never need a competing timer to guarantee a layer fires (the floor
+> already does); my live loop is for responsiveness, the floor for guaranteed
+> minimum cadence.
+
 #### Check H — /loop boot re-arm (telegram plugin — auto-inherited, but VERIFY)
 
 New depts inherit `/loop` **boot re-arm automatically**: the unit template
