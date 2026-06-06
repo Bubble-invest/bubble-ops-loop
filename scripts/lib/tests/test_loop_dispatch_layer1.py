@@ -412,7 +412,7 @@ def test_template_dispatch_behavior_still_complete():
     assert dh.decide_dispatch(_ctx(layer_1_last_run_today=None)) == "layer_1"
     # L4 window (22:00-22:30 UTC, no .last-run today yet)
     assert dh.decide_dispatch(_ctx(
-        now_utc=datetime(2026, 5, 25, 22, 5, tzinfo=timezone.utc),
+        now_utc=datetime(2026, 5, 25, 17, 5, tzinfo=timezone.utc),
     )) == "layer_4"
     # L2 — research queue has items (beats C.0)
     assert dh.decide_dispatch(_ctx(has_research_items=True)) == "layer_2"
@@ -421,14 +421,14 @@ def test_template_dispatch_behavior_still_complete():
     # L1 — already ran today, but a full cycle (L2/L3/L4 each advanced past the
     # baseline) completed → re-fire.
     assert dh.decide_dispatch(_ctx(
-        layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
+        layer_4_last_run_today=datetime(2026, 5, 25, 17, 5,
                                           tzinfo=timezone.utc),
         round_counter={"2": 1, "3": 1, "4": 1},
         layer_1_baseline_counter={},
     )) == "layer_1"
     # heartbeat — already ran today, no fresh cycle (counters at 0)
     assert dh.decide_dispatch(_ctx(
-        layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
+        layer_4_last_run_today=datetime(2026, 5, 25, 17, 5,
                                           tzinfo=timezone.utc),
     )) == "heartbeat"
 
@@ -505,7 +505,7 @@ def test_layer_1_does_not_fire_when_inbox_decisions_has_items():
 def test_layer_1_does_not_fire_in_l4_window():
     """C.1 wins over C.0."""
     # 22:10 UTC on 2026-05-24 — inside the L4 window AND L4 hasn't run yet.
-    now = datetime(2026, 5, 24, 22, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 24, 17, 10, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=False, has_decisions=False,
                l4_last_run=None,
                rounds={"2": 1, "3": 1, "4": 1})
@@ -586,7 +586,7 @@ def test_layer_1_skips_layer_4_missions_even_if_due():
         "output_queue": "queues/gates/",
         "creates": ["risk_audit"],
     }
-    now_utc = datetime(2026, 5, 24, 22, 30, tzinfo=timezone.utc)
+    now_utc = datetime(2026, 5, 24, 17, 30, tzinfo=timezone.utc)
     items = dispatch_helpers.materialize_due_missions(
         [layer_4_mission], now=now_utc, last_fired_per_mission={}
     )
