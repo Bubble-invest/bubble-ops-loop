@@ -72,7 +72,7 @@ APP_ID="${BUBBLE_BROKER_APP_ID:-3782718}"
 inst_id_for_dept() {
   case "$1" in
     fixture) echo 134075326 ;;
-    maya|tony|cgp) echo 135214360 ;;
+    maya|tony|cgp|ben) echo 135214360 ;;
     *) echo "" ;;
   esac
 }
