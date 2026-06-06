@@ -352,11 +352,35 @@ def materialize_due_missions(missions: Iterable[dict], *,
 # Deterministic dispatch decision (locks down the prompt's tree)
 # ---------------------------------------------------------------------------
 
-# The L4 window matches the box-wide loop-layer4.timer, which fires at
-# 19:00 Europe/Paris. Compared against PARIS-local time (not UTC) so it stays
-# correct across DST ({{OPERATOR}} 2026-06-06: align all agents to Paris time).
-_L4_WINDOW_START = _time(19, 0)
-_L4_WINDOW_END = _time(19, 30)
+# Per-layer MINIMUM fire time (Europe/Paris local), {{OPERATOR}} msg 3904 (2026-06-06):
+# each layer becomes eligible "from this time onwards until end of day" — a
+# minimum, NOT a window. A layer may fire again later the same day if there is
+# work. Compared against Paris-local time so it tracks the loop-layer*.timer
+# cron (also Europe/Paris) across DST.
+_LAYER_MIN_TIME = {
+    1: _time(7, 0),    # L1 Observe — morning floor
+    2: _time(12, 0),   # L2 Research
+    3: _time(16, 0),   # L3 Execution
+    4: _time(19, 0),   # L4 Debrief / risk control
+}
+
+
+def _layer_fired_today(ctx: "dict[str, Any]", layer: int) -> bool:
+    """True if layer N has fired at least once today.
+
+    Uses the per-layer .last-run marker first (set the instant a layer starts),
+    falling back to round_counter (incremented when a layer completes a round).
+    """
+    last = ctx.get(f"layer_{layer}_last_run_today")
+    if last is not None:
+        return True
+    counts = ctx.get("round_counter") or {}
+    return int(counts.get(str(layer), 0)) > 0
+
+
+def _time_reached(now_paris_t: "Any", layer: int) -> bool:
+    """True once Paris-local time has reached layer N's minimum fire time."""
+    return now_paris_t >= _LAYER_MIN_TIME[layer]
 
 
 def _queue_has_items(queue_dir: Path) -> bool:
@@ -422,8 +446,10 @@ def build_dispatch_ctx(
         "today_dir": str(today_dir),
         "has_research_items": _queue_has_items(repo / "queues" / "research"),
         "has_inbox_decisions": _queue_has_items(repo / "queues" / "inbox" / "decisions"),
-        "layer_4_last_run_today": read_last_run(today_dir / "4"),
         "layer_1_last_run_today": read_last_run(today_dir / "1"),
+        "layer_2_last_run_today": read_last_run(today_dir / "2"),
+        "layer_3_last_run_today": read_last_run(today_dir / "3"),
+        "layer_4_last_run_today": read_last_run(today_dir / "4"),
         "round_counter": read_round_counter(today_dir),
         "layer_1_baseline_counter": read_l1_baseline(today_dir),
         "fire_after_rounds": fire_after_rounds,
@@ -446,12 +472,15 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
       fire_after_rounds: int — rounds each other layer must complete per cycle
         (default 1)
 
-    Priority order (highest to lowest):
-      C.1 — Layer 4 if in 19:00-19:30 Europe/Paris window AND not yet run today
-      C.2 — Layer 2 if research queue has items
-      C.3 — Layer 3 if inbox decisions have items
-      C.0 — Layer 1: AT LEAST once per calendar day, OR once each other layer
-            has fired a round since L1 last fired
+    Priority order (highest to lowest), each gated by a Paris-local MINIMUM
+    fire time (L1>=07:00, L2>=12:00, L3>=16:00, L4>=19:00) — a minimum, not a
+    window; a layer stays eligible to end of day and may re-fire if there is work:
+      C.1 — Layer 4 if time>=19:00 Paris AND L1+L2+L3 each fired today AND
+            L4 not yet run today (prerequisite gate sequences the aggregator last)
+      C.3 — Layer 3 if time>=16:00 Paris AND inbox decisions have items
+      C.2 — Layer 2 if time>=12:00 Paris AND research queue has items
+      C.0 — Layer 1 if time>=07:00 Paris AND (not yet run today  OR  each other
+            layer has fired a fresh round since L1 last fired)
       C.4 — heartbeat (default)
 
     Note: C.0 has the LOWEST priority despite its number — Layer 1 is the
@@ -473,40 +502,61 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     now_utc: datetime = ctx["now_utc"]
     if now_utc.tzinfo is None:
         raise ValueError("decide_dispatch: now_utc must be tz-aware")
+    now_paris_t = _to_paris(now_utc).time()
     has_research = bool(ctx.get("has_research_items", False))
     has_decisions = bool(ctx.get("has_inbox_decisions", False))
-    l4_last = ctx.get("layer_4_last_run_today")
     l1_last = ctx.get("layer_1_last_run_today")
     counts = ctx.get("round_counter") or {}
     baseline = ctx.get("layer_1_baseline_counter") or {}
     fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
 
-    # C.1 — L4 window (Paris-local, matches loop-layer4.timer @ 19:00 Europe/Paris).
-    now_paris_time = _to_paris(now_utc).time()
-    in_window = _L4_WINDOW_START <= now_paris_time < _L4_WINDOW_END
-    if in_window and l4_last is None:
+    l1_fired = _layer_fired_today(ctx, 1)
+    l2_fired = _layer_fired_today(ctx, 2)
+    l3_fired = _layer_fired_today(ctx, 3)
+    l4_fired = _layer_fired_today(ctx, 4)
+
+    # MODEL ({{OPERATOR}} msg 3904, 2026-06-06): each layer has a MINIMUM fire time
+    # (Paris-local), not a window — eligible from then to end of day, and may
+    # re-fire later if there is work. Two layers carry a prerequisite gate ON
+    # TOP of the time check:
+    #   • L4 may fire only once L1, L2 and L3 have each fired >=1x today
+    #     (so the aggregator/debrief always sees a full day — this is what
+    #     sequences Tony AFTER the dept layers and kills the L4 read-race).
+    #   • L1's re-consolidation fires once the other layers have completed a
+    #     fresh cycle since L1 last ran (its morning floor fires unconditionally
+    #     once 07:00 Paris is reached and it has not run yet today).
+    # Priority: L4 (debrief, end of day) > L3 > L2 > L1, each guarded by time.
+
+    # C.1 — Layer 4: time reached AND L1/L2/L3 all fired today AND not yet run.
+    if (
+        _time_reached(now_paris_t, 4)
+        and l1_fired and l2_fired and l3_fired
+        and not l4_fired
+    ):
         return "layer_4"
 
-    # C.2 — research queue.
-    if has_research:
-        return "layer_2"
-
-    # C.3 — inbox decisions.
-    if has_decisions:
+    # C.3 — Layer 3: time reached AND inbox decisions waiting (re-fireable).
+    if _time_reached(now_paris_t, 3) and has_decisions:
         return "layer_3"
 
-    # C.0 — Layer 1: daily floor OR a fresh cycle of the other layers.
-    if l1_last is None:
-        return "layer_1"
-    cycle_complete = all(
-        int(counts.get(str(layer), 0)) - int(baseline.get(str(layer), 0))
-        >= fire_after_rounds
-        for layer in (2, 3, 4)
-    )
-    if cycle_complete:
-        return "layer_1"
+    # C.2 — Layer 2: time reached AND research queue has items (re-fireable).
+    if _time_reached(now_paris_t, 2) and has_research:
+        return "layer_2"
 
-    # C.4 — heartbeat.
+    # C.0 — Layer 1: time reached AND (morning floor not yet run today OR a
+    # fresh full cycle of L2/L3/L4 has completed since L1 last fired).
+    if _time_reached(now_paris_t, 1):
+        if not l1_fired:
+            return "layer_1"
+        cycle_complete = all(
+            int(counts.get(str(layer), 0)) - int(baseline.get(str(layer), 0))
+            >= fire_after_rounds
+            for layer in (2, 3, 4)
+        )
+        if cycle_complete:
+            return "layer_1"
+
+    # C.4 — heartbeat (nothing eligible this tick).
     return "heartbeat"
 
 

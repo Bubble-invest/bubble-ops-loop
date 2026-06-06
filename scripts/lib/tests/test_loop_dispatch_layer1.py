@@ -410,25 +410,29 @@ def test_template_dispatch_behavior_still_complete():
 
     # daily floor — L1 has NOT run today → fires L1 even with empty queues
     assert dh.decide_dispatch(_ctx(layer_1_last_run_today=None)) == "layer_1"
-    # L4 window (22:00-22:30 UTC, no .last-run today yet)
+    # L4: time>=19:00 Paris (17:05 UTC summer) + L1/L2/L3 fired today + no L4 yet.
     assert dh.decide_dispatch(_ctx(
         now_utc=datetime(2026, 5, 25, 17, 5, tzinfo=timezone.utc),
+        round_counter={"2": 1, "3": 1, "4": 0},
     )) == "layer_4"
     # L2 — research queue has items (beats C.0)
     assert dh.decide_dispatch(_ctx(has_research_items=True)) == "layer_2"
-    # L3 — inbox decisions
-    assert dh.decide_dispatch(_ctx(has_inbox_decisions=True)) == "layer_3"
+    # L3 — inbox decisions (needs time>=16:00 Paris = 14:00 UTC summer)
+    assert dh.decide_dispatch(_ctx(
+        has_inbox_decisions=True,
+        now_utc=datetime(2026, 5, 25, 14, 30, tzinfo=timezone.utc),
+    )) == "layer_3"
     # L1 — already ran today, but a full cycle (L2/L3/L4 each advanced past the
     # baseline) completed → re-fire.
     assert dh.decide_dispatch(_ctx(
-        layer_4_last_run_today=datetime(2026, 5, 25, 17, 5,
+        layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
                                           tzinfo=timezone.utc),
         round_counter={"2": 1, "3": 1, "4": 1},
         layer_1_baseline_counter={},
     )) == "layer_1"
     # heartbeat — already ran today, no fresh cycle (counters at 0)
     assert dh.decide_dispatch(_ctx(
-        layer_4_last_run_today=datetime(2026, 5, 25, 17, 5,
+        layer_4_last_run_today=datetime(2026, 5, 25, 22, 5,
                                           tzinfo=timezone.utc),
     )) == "heartbeat"
 
@@ -485,8 +489,8 @@ def test_layer_1_daily_floor_fires_when_not_run_today():
 
 
 def test_layer_1_does_not_fire_when_research_queue_has_items():
-    """C.2 wins over C.0."""
-    now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
+    """C.2 wins over C.0 (time>=12:00 Paris = 10:30 UTC summer)."""
+    now = datetime(2026, 5, 24, 10, 30, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=True, has_decisions=False,
                rounds={"2": 1, "3": 1, "4": 1})
     decision = dispatch_helpers.decide_dispatch(ctx)
@@ -494,8 +498,8 @@ def test_layer_1_does_not_fire_when_research_queue_has_items():
 
 
 def test_layer_1_does_not_fire_when_inbox_decisions_has_items():
-    """C.3 wins over C.0."""
-    now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
+    """C.3 wins over C.0 (time>=16:00 Paris = 14:30 UTC summer)."""
+    now = datetime(2026, 5, 24, 14, 30, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=False, has_decisions=True,
                rounds={"2": 1, "3": 1, "4": 1})
     decision = dispatch_helpers.decide_dispatch(ctx)
@@ -503,12 +507,13 @@ def test_layer_1_does_not_fire_when_inbox_decisions_has_items():
 
 
 def test_layer_1_does_not_fire_in_l4_window():
-    """C.1 wins over C.0."""
-    # 22:10 UTC on 2026-05-24 — inside the L4 window AND L4 hasn't run yet.
+    """C.1 (L4) wins over C.0 once prereqs met and time>=19:00 Paris."""
+    # 17:10 UTC = 19:10 Paris (summer). L1 already ran (_L1_RAN default);
+    # L2/L3 fired today via round_counter -> L4 eligible.
     now = datetime(2026, 5, 24, 17, 10, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=False, has_decisions=False,
                l4_last_run=None,
-               rounds={"2": 1, "3": 1, "4": 1})
+               rounds={"2": 1, "3": 1, "4": 0})
     decision = dispatch_helpers.decide_dispatch(ctx)
     assert decision == "layer_4"
 
@@ -586,7 +591,7 @@ def test_layer_1_skips_layer_4_missions_even_if_due():
         "output_queue": "queues/gates/",
         "creates": ["risk_audit"],
     }
-    now_utc = datetime(2026, 5, 24, 17, 30, tzinfo=timezone.utc)
+    now_utc = datetime(2026, 5, 24, 22, 30, tzinfo=timezone.utc)
     items = dispatch_helpers.materialize_due_missions(
         [layer_4_mission], now=now_utc, last_fired_per_mission={}
     )
