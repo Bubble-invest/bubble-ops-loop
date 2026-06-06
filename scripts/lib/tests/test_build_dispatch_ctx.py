@@ -142,7 +142,7 @@ def test_full_day_cycles_all_layers(tmp_path: Path):
     assert decide_dispatch(build_dispatch_ctx(repo, now_utc=NOON)) == "layer_1"
 
     # 4) inside the L4 window with L4 not yet run today -> L4 takes priority
-    in_window = datetime(2026, 6, 1, 22, 10, tzinfo=timezone.utc)
+    in_window = datetime(2026, 6, 1, 17, 10, tzinfo=timezone.utc)
     # fresh day dir for the window check (no L4 .last-run yet)
     assert decide_dispatch(build_dispatch_ctx(repo, now_utc=in_window)) == "layer_4"
 

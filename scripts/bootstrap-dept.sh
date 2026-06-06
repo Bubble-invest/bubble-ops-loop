@@ -56,6 +56,20 @@ vendor_canonical_dispatch_lib() {
     [[ -f "$canon_tests/$tf" ]] && cp -f "$canon_tests/$tf" "$target/scripts/lib/tests/$tf"
   done
   echo "[bootstrap] vendored canonical dispatch_helpers.py (md5 $(md5sum "$canon_lib" | awk '{print $1}')) into $target/scripts/lib/" >&2
+
+  # Per-layer-fire notification stack ({{OPERATOR}} msg 3898, 2026-06-06): every dept
+  # MUST ping when a layer fires. Vendor notify.py + loop_notify.py (libs) and
+  # tools/notify_layer.py (the CLI wrapper CLAUDE.md STEP F calls). Best-effort.
+  local nf
+  for nf in notify.py loop_notify.py; do
+    [[ -f "$PROJECT_ROOT/scripts/lib/$nf" ]] && cp -f "$PROJECT_ROOT/scripts/lib/$nf" "$target/scripts/lib/$nf"
+  done
+  if [[ -f "$PROJECT_ROOT/tools/notify_layer.py" ]]; then
+    mkdir -p "$target/tools"
+    cp -f "$PROJECT_ROOT/tools/notify_layer.py" "$target/tools/notify_layer.py"
+    chmod +x "$target/tools/notify_layer.py" 2>/dev/null || true
+    echo "[bootstrap] vendored notify stack (notify.py, loop_notify.py, tools/notify_layer.py) into $target" >&2
+  fi
 }
 
 # -----------------------------------------------------------------------------
