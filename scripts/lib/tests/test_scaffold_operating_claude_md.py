@@ -229,7 +229,7 @@ def test_operating_keeps_loop_runtime_protocol():
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
     body_lower = out.lower()
     essential_markers = [
-        "git pull",
+        "safe_pull",  # canonical dirty-tree-proof sync (replaced bare `git pull --rebase`)
         "heartbeat",
         "bubble-git-guard",
         "telegram",
