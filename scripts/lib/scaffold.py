@@ -201,7 +201,7 @@ CLAUDE_MD_MANAGEMENT_TEMPLATE = """\
 At the start of each session, I read the team wiki:
 
 ```bash
-cat ~/.claude/agent-memory/shared-wiki/{wiki_slug}/hot.md 2>/dev/null
+cat ~/.claude/agent-memory/shared-wiki/rnd/hot.md 2>/dev/null
 cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
 ```
 
@@ -263,23 +263,19 @@ I do not take part in layers 2 and 3 (no autonomous recurring missions).
 
 At each tick (every 20 min):
 
-**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` — commits runtime, stashes leftovers, pulls merged PRs, restores (so a merged CLAUDE.md/skill change auto-lands; never blocks on a dirty tree).
+**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged change auto-lands; never blocks on a dirty tree).
 
-**STEP C** — decide what to dispatch:
+**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
+(NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
+only mission CONTENT varies):
 
-> C.1 — If **22:00 UTC ≤ now < 22:30 UTC** AND
->        no `outputs/<today>/4/.last-run` file exists:
->        → spawn the **Layer 4 (Risk Control)** subagent now.
->        This is the daily audit (`daily_risk_audit` in dept.yaml).
->        The Layer 4 subagent writes `outputs/<today>/4/.last-run` as
->        its **very first action**, so that later ticks of the
->        same day do not launch a second Layer 4.
->
-> C.2 — If `queues/research/` contains items: spawn **Layer 2** (Research/Plan).
->
-> C.3 — If `inbox/decisions/` contains items: spawn **Layer 3** (Execution).
->
-> C.4 — Otherwise: silent heartbeat tick (no dispatch).
+`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+
+The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
+encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
+> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
+of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
+fresh each tick) — never type the date from memory.
 
 The 22:00–22:30 UTC window is the eligibility band. The
 `outputs/<today>/4/.last-run` file is the idempotence guard-rail: a single
@@ -382,25 +378,21 @@ I reply **in English**, executive-office voice:
 Once activated (onboarding complete), I run a `/loop` every 20 min.
 At each tick:
 
-**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged CLAUDE.md/skill change lands automatically)
+**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
-**STEP C** — decide what to dispatch:
+**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
+(NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
+only mission CONTENT varies):
 
-> C.1 — If **22:00 UTC ≤ now < 22:30 UTC** AND
->        no `outputs/<today>/4/.last-run` file exists:
->        → spawn the **Layer 4 (Risk Control)** subagent now.
->        This is the daily audit (`daily_risk_audit` in dept.yaml).
->        The Layer 4 subagent writes `outputs/<today>/4/.last-run` as
->        its **very first action**, so that later ticks of the
->        same day do not launch a second Layer 4.
->
-> C.2 — If `queues/research/` contains items: spawn **Layer 2** (Research/Plan).
->
-> C.3 — If `inbox/decisions/` contains items: spawn **Layer 3** (Execution).
->
-> C.4 — Otherwise: silent heartbeat tick (no dispatch).
+`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+
+The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
+encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
+> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
+of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
+fresh each tick) — never type the date from memory.
 
 **STEP D** — heartbeat: if nothing dispatched, write a line in
 `outputs/<today>/heartbeat.log`: `<ISO-ts> tick <status> <queues-summary>`.
@@ -482,24 +474,6 @@ department. I never widen my scope on my own.
 """
 
 
-
-# Wiki folder per dept (the shared-wiki/<folder>/hot.md the dept reads at session
-# start). The map is IRREGULAR (tony->tony_ceo, maya->maya_sales, ben->ben_fund),
-# so it cannot be derived from the slug. A dept NOT in the map defaults to its own
-# slug (cgp->cgp, future depts->themselves). Fixing the 2026-06-06 bug where the
-# scaffold hardcoded a dead `rnd/hot.md` path into every dept's CLAUDE.md.
-_WIKI_SLUG_MAP = {
-    "tony": "tony_ceo",
-    "maya": "maya_sales",
-    "ben": "ben_fund",
-    "cgp": "cgp",
-}
-
-
-def _wiki_slug(slug: str) -> str:
-    return _WIKI_SLUG_MAP.get(slug, slug)
-
-
 def render_claude_md(slug: str, display_name: str,
                      level: str = "ops",
                      children: list | None = None) -> str:
@@ -515,7 +489,6 @@ def render_claude_md(slug: str, display_name: str,
         return CLAUDE_MD_MANAGEMENT_TEMPLATE.format(
             slug=slug,
             slug_compact=slug_compact,
-            wiki_slug=_wiki_slug(slug),
             display_name=display_name,
             children_list=children_str,
         )
@@ -523,7 +496,6 @@ def render_claude_md(slug: str, display_name: str,
         slug=slug,
         slug_compact=slug_compact,
         display_name=display_name,
-        wiki_slug=_wiki_slug(slug),
     )
 
 
@@ -603,7 +575,7 @@ CLAUDE.md.
 At the start of each session, I read the team wiki:
 
 ```bash
-cat ~/.claude/agent-memory/shared-wiki/{wiki_slug}/hot.md 2>/dev/null
+cat ~/.claude/agent-memory/shared-wiki/rnd/hot.md 2>/dev/null
 cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
 ```
 
@@ -703,7 +675,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 **At each tick**:
 
-1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` — commits runtime, stashes leftovers, pulls merged PRs, restores (merged structural changes auto-land)
+1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
 
 2. Call the deterministic helper — it **scans my queues itself** (never
    a placeholder dict, otherwise it falls back to `heartbeat` and Moments 2/3 never
@@ -827,7 +799,6 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     return CLAUDE_MD_OPERATING_TEMPLATE.format(
         slug=slug,
         slug_compact=slug.replace("-", ""),
-        wiki_slug=_wiki_slug(slug),
         display_name=display_name,
         role_label=role_label,
         mandate=mandate,
