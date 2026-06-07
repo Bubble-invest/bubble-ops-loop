@@ -142,6 +142,12 @@ ExecStartPre=+/bin/mv /run/bubble-${DEPT_SLUG}/pem.tmp /run/bubble-${DEPT_SLUG}/
 ExecStartPre=+/bin/chmod 0400 /run/bubble-${DEPT_SLUG}/pem
 ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
 
+# Re-vendor the canonical shared libs (dispatch_helpers/notify*/notion_logbook +
+# tools/notify_layer) from the framework at EVERY start, so they can never drift
+# stale via a checkout/reset/reclone ({{OPERATOR}} 2026-06-07: safe_pull + min-time model
+# silently reverted fleet-wide because vendored on-disk, not committed). Fail-open.
+ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG}
+
 EnvironmentFile=-${ENV_FILE}
 
 # Use script(1) for pty allocation.
