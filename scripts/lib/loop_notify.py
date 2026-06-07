@@ -133,6 +133,7 @@ def notify_layer_fired(
     config: Optional[dict] = None,
     account=DEFAULT_ACCOUNT,
     opener=None,
+    test: bool = False,
 ):
     """Send the IMMEDIATE per-layer ping for L1 / L4 (one line each).
 
@@ -155,7 +156,8 @@ def notify_layer_fired(
     """
     layer_str = str(layer).lstrip("L").lstrip("l")
     first = _first_line_of_summary(summary_path)
-    text = f"{LAYER_FIRE_GLYPH} {dept} · L{layer_str} fired"
+    _prefix = "\U0001F9EA TEST " if test else ""  # 🧪 TEST prefix for verification pings
+    text = f"{_prefix}{LAYER_FIRE_GLYPH} {dept} · L{layer_str} fired"
     if first:
         text += f" — {first}"
     text += "\n" + _cockpit_link(dept)
