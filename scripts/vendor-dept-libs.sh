@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# vendor-dept-libs.sh — boot-time re-vendor of the canonical shared libs into a
+# dept tree, so they can NEVER drift stale (Joris msg 4025, 2026-06-07).
+#
+# WHY: dispatch_helpers.py / notify.py / loop_notify.py / notion_logbook.py +
+# tools/notify_layer.py are SHARED libs owned by the framework
+# (/home/claude/bubble-ops-loop). They're vendored into each dept's scripts/lib
+# + tools at onboarding, but they live ON-DISK and are NOT committed to the dept
+# repo (non-structural-but-not-runtime-pushable). So any `git checkout`/reset/
+# clean-reclone reverts them to the dept's ported baseline — which is exactly how
+# safe_pull + the min-time dispatch model silently disappeared from tony/maya/ben
+# (2026-06-07). Re-vendoring at EVERY service start makes the framework the single
+# source of truth: drift self-heals on the next restart, no per-dept commit needed.
+#
+# Usage:  vendor-dept-libs.sh <dept-workdir>
+#   e.g.  vendor-dept-libs.sh /home/claude/agents/bubble-ops-ben
+#
+# Idempotent, fail-OPEN (a copy problem must NEVER block the loop from starting):
+# any error logs a warning and exits 0. Only copies when the framework file
+# differs (cheap) and preserves the dept's own files for anything not in the set.
+set -uo pipefail
+
+FRAMEWORK="${BUBBLE_FRAMEWORK_ROOT:-/home/claude/bubble-ops-loop}"
+DEPT="${1:-}"
+
+log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*" >&2; }
+
+[[ -n "$DEPT" && -d "$DEPT" ]] || { log "WARN: dept dir '$DEPT' missing — skip (fail-open)"; exit 0; }
+[[ -d "$FRAMEWORK" ]] || { log "WARN: framework '$FRAMEWORK' missing — skip (fail-open)"; exit 0; }
+
+# Canonical shared libs: "src-relative-to-framework  dest-relative-to-dept".
+# Only files the dept actually uses; a dept missing the dest dir is skipped.
+MAP=(
+  "scripts/lib/dispatch_helpers.py   scripts/lib/dispatch_helpers.py"
+  "scripts/lib/notify.py             scripts/lib/notify.py"
+  "scripts/lib/loop_notify.py        scripts/lib/loop_notify.py"
+  "scripts/lib/notion_logbook.py     scripts/lib/notion_logbook.py"
+  "tools/notify_layer.py             tools/notify_layer.py"
+)
+
+vendored=0
+for pair in "${MAP[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $pair
+  src="$FRAMEWORK/$1"; dst="$DEPT/$2"
+  [[ -f "$src" ]] || { log "skip $1 — not in framework"; continue; }
+  # only copy if the dest dir exists (don't create new surfaces a dept doesn't use)
+  dst_dir="$(dirname "$dst")"
+  [[ -d "$dst_dir" ]] || { log "skip $2 — dept has no $dst_dir/"; continue; }
+  if ! cmp -s "$src" "$dst" 2>/dev/null; then
+    if cp -f "$src" "$dst" 2>/dev/null; then
+      chown claude:claude "$dst" 2>/dev/null || true
+      log "re-vendored $2 (was stale/missing)"
+      vendored=$((vendored+1))
+    else
+      log "WARN: could not copy $2 (fail-open)"
+    fi
+  fi
+done
+log "done — $vendored file(s) refreshed for $(basename "$DEPT")"
+exit 0
