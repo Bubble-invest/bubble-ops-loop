@@ -85,21 +85,46 @@ def _cost_of(model_usage: dict, pricing: dict) -> float:
 # `claude -p` cron sessions (wiki-compile, loop-backup floor) — attributed by
 # job below. Mac caches (_mac-joris/_mac-jade) hold Rick + local-Tony.
 def classify(dir_name: str) -> Optional[str]:
+    """Map a project-dir name (top-level, OR a Mac-cache 'cache/workspace' pair
+    joined by '/') → a friendly agent/job label. VPS-live agents live in
+    -home-claude-agents-bubble-ops-<slug>. The -home-claude dir holds the
+    `claude -p` cron sessions. Mac caches are NESTED: _mac-joris/<workspace> and
+    _mac-jade/<workspace> — Rick + local Tony + Miranda (Joris Mac), Miranda
+    (Jade Mac). We attribute Mac sessions by workspace, suffixed by whose Mac."""
     d = dir_name
     if d.startswith("-home-claude-agents-bubble-ops-"):
         return d[len("-home-claude-agents-bubble-ops-"):]
     if d.startswith("-home-claude-agents-"):
         rest = d[len("-home-claude-agents-"):]
-        # skip the noisy fixture / archive dirs
         if rest.startswith(("fixture", "morty-workspace", "ricky")):
             return None
-        return rest  # claudette, maya(legacy), morty
+        return rest
     if d == "-home-claude":
         return "_p_crons"  # split into jobs by cron-marker in parse
-    if d.startswith("_mac-joris"):
-        return "rick (mac)"
-    if d.startswith("_mac-jade"):
-        return "jade-mac"
+    # Mac caches (nested): "_mac-joris/<workspace-dir>" or "_mac-jade/<workspace-dir>"
+    if d.startswith("_mac-"):
+        whose = "joris" if d.startswith("_mac-joris") else "jade"
+        # the workspace part after the cache prefix + '/'
+        ws = d.split("/", 1)[1] if "/" in d else ""
+        # friendly name from the workspace dir tail (…-workspaces-Rick-RnD → rick)
+        name = None
+        for key, label in (
+            ("rick-rnd", "rick"),
+            ("tony-ceo", "tony (local)"),
+            ("miranda-socials", "miranda"),
+            ("ben-fund", "ben (mac-legacy)"),
+            ("maya-sales", "maya (mac-legacy)"),
+            ("eliot-security", "eliot (mac-legacy)"),
+        ):
+            if key in ws.lower():
+                name = label
+                break
+        if name is None:
+            return None  # skip legacy/sub-workspace noise we don't track
+        # disambiguate Miranda across the two Macs
+        if name == "miranda":
+            return f"miranda ({whose}-mac)"
+        return name
     return None
 
 
@@ -209,13 +234,28 @@ def build_report(refresh: bool = False) -> dict:
         return {"scanned_at": now.isoformat(), "agents": {}, "totals": _blank(),
                 "note": "no projects dir"}
 
+    # Build (label, jsonl-files) work units. Flat dirs map directly; the nested
+    # Mac caches (_mac-joris/<ws>, _mac-jade/<ws>) are descended one level.
+    work = []  # list of (label0, file_iterable)
     for proj in PROJECTS_DIR.iterdir():
         if not proj.is_dir():
             continue
-        label0 = classify(proj.name)
-        if label0 is None:
-            continue
-        for f in proj.glob("*.jsonl"):
+        if proj.name.startswith("_mac-"):
+            for sub in proj.iterdir():
+                if not sub.is_dir():
+                    continue
+                label0 = classify(f"{proj.name}/{sub.name}")
+                if label0 is None:
+                    continue
+                work.append((label0, sub.glob("*.jsonl")))
+        else:
+            label0 = classify(proj.name)
+            if label0 is None:
+                continue
+            work.append((label0, proj.glob("*.jsonl")))
+
+    for label0, files in work:
+        for f in files:
             try:
                 mtime = f.stat().st_mtime
             except OSError:
