@@ -57,5 +57,27 @@ for pair in "${MAP[@]}"; do
     fi
   fi
 done
+# skip-worktree the vendored TRACKED files so the loop's git add never picks up
+# the framework-overwrite (else it commits structural libs → push 403; Tony
+# 2026-06-07). Best-effort, fail-open.
+for pair in "${MAP[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $pair
+  dst="$DEPT/$2"
+  [[ -f "$dst" ]] || continue
+  if git -C "$DEPT" ls-files --error-unmatch "$2" >/dev/null 2>&1; then
+    # TRACKED → tell git to ignore the framework-overwrite in the worktree.
+    git -C "$DEPT" update-index --skip-worktree "$2" 2>/dev/null \
+      && log "skip-worktree set on $2" || true
+  else
+    # UNTRACKED → add to .git/info/exclude (local, uncommitted) so `git add`
+    # never stages the vendored file into a runtime commit.
+    excl="$DEPT/.git/info/exclude"
+    if [[ -f "$excl" ]] && ! grep -qxF "$2" "$excl" 2>/dev/null; then
+      printf '%s\n' "$2" >> "$excl" && log "git-excluded untracked vendored $2" || true
+    fi
+  fi
+done
+
 log "done — $vendored file(s) refreshed for $(basename "$DEPT")"
 exit 0
