@@ -1,0 +1,54 @@
+{# components/trade-details.html — readable structured block for trade_proposal gates.
+   Expects `gate` in context (full YAML doc). Renders nothing for non-trade gates.
+   {{OPERATOR}} msg 4005 (2026-06-07): trade cards were a wall of text; surface the key
+   facts as a scannable grid + the thesis below. #}
+{% if gate.kind == 'trade_proposal' or gate.ticker %}
+{% set _side = (gate.side or '') | upper %}
+<div class="trade-details" style="margin:0 0 12px;">
+
+  {# Headline: SIDE TICKER × qty — the one line that says what's happening #}
+  <div class="trade-headline" style="display:flex; align-items:baseline; gap:10px;
+       flex-wrap:wrap; margin-bottom:10px;">
+    <span class="trade-side trade-side--{{ _side|lower }}"
+          style="font-weight:700; font-size:18px; letter-spacing:.02em;
+                 padding:2px 10px; border-radius:3px;
+                 color:#fff; background: {{ '#b3402e' if _side == 'SELL' else '#2e7d50' if _side == 'BUY' else '#777' }};">
+      {{ _side or '?' }}
+    </span>
+    <span style="font-size:20px; font-weight:700; color:var(--ink);">{{ gate.ticker or '—' }}</span>
+    {% if gate.proposed_qty %}<span style="font-size:16px; color:var(--body-soft);">× {{ gate.proposed_qty }}</span>{% endif %}
+    {% if gate.broker %}<span class="slug-ref" style="font-size:12px;">via {{ gate.broker }}</span>{% endif %}
+  </div>
+
+  {# Fact grid: only the cells that have data #}
+  <div class="trade-grid" style="display:grid;
+       grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px 16px;
+       padding:10px 12px; background:var(--paper-soft); border:1px solid var(--line);
+       border-radius:3px; margin-bottom:10px; font-size:13.5px;">
+    {% if gate.estimated_price_usd %}<div><span class="muted" style="display:block;font-size:11px;">prix est.</span><b>${{ gate.estimated_price_usd }}</b></div>{% endif %}
+    {% if gate.estimated_proceeds_usd %}<div><span class="muted" style="display:block;font-size:11px;">{{ 'produit' if _side == 'SELL' else 'coût' }} est.</span><b>${{ gate.estimated_proceeds_usd }}</b></div>{% endif %}
+    {% if gate.order_type %}<div><span class="muted" style="display:block;font-size:11px;">type d'ordre</span><b>{{ gate.order_type }}</b></div>{% endif %}
+    {% if gate.sleeve %}<div><span class="muted" style="display:block;font-size:11px;">poche</span><b>{{ gate.sleeve }}</b></div>{% endif %}
+    {% if gate.risk_level %}<div><span class="muted" style="display:block;font-size:11px;">risque</span><b>{{ gate.risk_level }}</b></div>{% endif %}
+    {% if gate.execution_eligible is defined %}<div><span class="muted" style="display:block;font-size:11px;">exécutable</span><b>{{ '✅ oui' if gate.execution_eligible else '⚠️ non' }}</b></div>{% endif %}
+  </div>
+
+  {% if gate.instrument %}
+  <div class="trade-instrument muted-italic" style="font-size:12.5px; color:var(--body-muted); margin-bottom:8px;">
+    {{ gate.instrument }}
+  </div>
+  {% endif %}
+
+  {# Mandate clauses — collapsed, the compliance detail #}
+  {% if gate.mandate_clauses %}
+  <details style="margin-bottom:8px;">
+    <summary class="muted-italic" style="cursor:pointer; font-size:12.5px;">
+      Conformité mandat ({{ gate.mandate_clauses|length }} clause{{ '' if gate.mandate_clauses|length == 1 else 's' }})
+    </summary>
+    <ul style="margin:6px 0 0; padding-left:18px; font-size:12.5px; color:var(--body-soft);">
+      {% for c in gate.mandate_clauses %}<li>{{ c }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
