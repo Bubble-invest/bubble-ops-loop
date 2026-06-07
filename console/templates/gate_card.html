@@ -55,6 +55,13 @@
     </div>
   </div>
 
+  {# ─── Trade details + thesis (trade_proposal gates) ───────────── #}
+  {% include "components/trade-details.html" %}
+  {% if gate.summary %}
+  <div class="gate-thesis" style="margin:0 0 16px; font-size:15px; line-height:1.6;
+       color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
+  {% endif %}
+
   {# ─── Draft + angles (prospect_dm / warming_comment) ────────────
      Rendered prominently ONLY when the gate carries a draft. Joris
      triages from his phone: he must read the message + see the chosen
