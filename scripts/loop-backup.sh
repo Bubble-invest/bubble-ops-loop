@@ -362,6 +362,48 @@ PROMPT
 }
 TICK_PROMPT="$(build_tick_prompt)"
 
+
+# ── Wake the LIVE session via bubble-inject, if it's alive ({{OPERATOR}} msg 4045) ──
+# A floor fire usually means the in-session cron lapsed, NOT that the session
+# died. In that case the live --channels session is still up and can run the tick
+# itself — cheaper (no new session) and keeps context. We detect "session alive"
+# by a bun poller in the dept's systemd cgroup (same signal the watchdog uses),
+# then drop "run your loop" into <state_dir>/inject (the bubble-inject patch
+# delivers it as a message from {{OPERATOR}}). We confirm it actually ticked by watching
+# the heartbeat.log mtime advance; if not (session wedged/dead), the caller falls
+# back to a `claude -p` backup tick.
+inject_live_loop() {
+    local slug="$1"
+    local svc="ops-loop-${slug}.service"
+    # session alive? = a bun process in this service's cgroup.
+    local main_pid; main_pid=$(systemctl show "$svc" -p MainPID --value 2>/dev/null || echo 0)
+    [[ "$main_pid" =~ ^[0-9]+$ ]] && (( main_pid > 0 )) || return 1
+    local alive=1 pid
+    for pid in $(pgrep -x bun 2>/dev/null); do
+        grep -qs "$svc" "/proc/$pid/cgroup" 2>/dev/null && { alive=0; break; }
+    done
+    (( alive == 0 )) || return 1   # no live poller → can't inject
+
+    local state_dir="/home/claude/.claude/channels/telegram-${slug}"
+    local inject="${state_dir}/inject"
+    [[ -d "$state_dir" ]] || return 1
+    local hb="${AGENTS_ROOT}/bubble-ops-${slug}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    local before; before=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+
+    log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
+    printf 'run your loop\n' >> "$inject" 2>/dev/null || return 1
+
+    # Wait up to ~90s for the live session to tick (heartbeat mtime advances).
+    local i after
+    for i in $(seq 1 18); do
+        sleep 5
+        after=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+        (( after > before )) && { log "$slug: live session ticked from inject (heartbeat advanced)"; return 0; }
+    done
+    log "$slug: inject sent but no tick within window — falling back to backup -p"
+    return 1
+}
+
 run_backup_tick() {
     local slug="$1" workdir="$2" envfile="$3"
     local lock="${LOCK_DIR}/ops-loop-${slug}.tick.lock"
@@ -558,6 +600,12 @@ PYEOF2
         continue
     fi
     tick_exit=0
+    # Prefer waking the LIVE session (cheaper, keeps context) when it's alive and
+    # this isn't a degraded-L4 (which needs its own prompt). Fall back to -p.
+    if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
+        emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
+        continue
+    fi
     run_backup_tick "$slug" "$workdir" "$envfile" || tick_exit=$?
     if [[ "$tick_exit" == "99" ]]; then
         # Lock held by a concurrent (live) tick → no backup tick ran. Record a
