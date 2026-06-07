@@ -32,6 +32,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("fired"); f.add_argument("--layer", required=True)
     f.add_argument("--summary", default=None)
+    f.add_argument("--test", action="store_true",
+        help="mark as a verification ping (🧪 TEST prefix); bypasses the artifact gate")
     b = sub.add_parser("batched"); b.add_argument("--counts", required=True,
         help="comma list like 2=3,3=1")
     a = ap.parse_args()
@@ -42,7 +44,17 @@ def main():
     cfg = _cfg(); dept = _dept()
     try:
         if a.cmd == "fired":
-            r = notify_layer_fired(dept, a.layer, a.summary, config=cfg)
+            # ARTIFACT GATE — only send "L<N> fired" if the layer actually wrote a
+            # real, non-empty summary artifact. A test ping must pass --test (which
+            # prefixes 🧪 TEST). This makes a layer-fired notification PROOF a layer ran.
+            import os as _os
+            has_artifact = bool(a.summary) and _os.path.isfile(a.summary) and _os.path.getsize(a.summary) > 0
+            if not has_artifact and not a.test:
+                print(f"[notify_layer] NOT sending L{a.layer} fired — no real summary artifact "
+                      f"at {a.summary!r} (use --test for a verification ping).")
+                return 0
+            summary_arg = a.summary if has_artifact else None
+            r = notify_layer_fired(dept, a.layer, summary_arg, config=cfg, test=a.test)
         else:
             counts = {}
             for tok in a.counts.split(","):

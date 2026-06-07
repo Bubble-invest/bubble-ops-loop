@@ -328,3 +328,26 @@ def test_cockpit_base_url_env_override(tmp_path, token_env, monkeypatch):
     finally:
         monkeypatch.delenv("BUBBLE_COCKPIT_BASE_URL", raising=False)
         importlib.reload(loop_notify)
+
+
+# ─── test prefix + artifact gate ({{OPERATOR}} msg 4022, 2026-06-07) ────────────────
+
+
+def test_layer_fired_test_flag_prefixes_marker(tmp_path, token_env):
+    """A verification ping (test=True) must be visibly marked so it can't be
+    mistaken for a real layer-fire (the 2026-06-07 false-L4-ping incident)."""
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired("ben", 4, None, config=CONFIG, opener=opener, test=True)
+    text = opener.calls[0]["body"]["text"]
+    assert "TEST" in text
+    assert "\U0001F9EA" in text  # 🧪
+    assert "L4 fired" in text
+
+
+def test_layer_fired_no_test_flag_has_no_marker(tmp_path, token_env):
+    summary = tmp_path / "s.md"
+    summary.write_text("# real L4 export done\n")
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired("ben", 4, summary, config=CONFIG, opener=opener)
+    text = opener.calls[0]["body"]["text"]
+    assert "TEST" not in text and "\U0001F9EA" not in text
