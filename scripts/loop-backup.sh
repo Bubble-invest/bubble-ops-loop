@@ -294,7 +294,29 @@ PYEOF
 # in generic mode it runs the dispatcher's choice. Both end with the concise
 # report the wrapper relays to Joris on Telegram.
 build_tick_prompt() {
-    if [[ -n "$FORCE_LAYER" ]]; then
+    if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
+        cat <<PROMPT
+You are running as a DEGRADED Layer 4 FLOOR tick. Your persistent /loop was
+DOWN earlier today, so Layers 1/2/3 did NOT all run — there is no fresh daily
+cycle to debrief. Do NOT fabricate trades, KPIs, prices or research.
+
+Write a SHORT, HONEST degraded L4 export so the CEO (Tony) still gets a signal
+instead of silence:
+  • State plainly: the loop was down today (stale); L1/L2/L3 did not all fire.
+  • Summarize from LAST KNOWN state only (yesterday's export / current
+    positions / open gates already on disk) — clearly labelled as carried-over,
+    not today's work.
+  • Flag anything time-sensitive that the downtime may have delayed.
+Still WRITE the L4 artifact (outputs/<today>/4/management-export.yaml +
+risk-brief.md) marked degraded=true, so Tony's morning brief can read it.
+Execute EXACTLY ONE tick, then STOP. Do NOT start a /loop.
+
+Do NOT send your own Telegram message — the backup wrapper relays your final
+message to Joris automatically. END your turn with a concise report (max ~6
+lines): confirm the degraded L4, what carried-over state you summarized, and
+any delayed time-sensitive item.
+PROMPT
+    elif [[ -n "$FORCE_LAYER" ]]; then
         cat <<PROMPT
 You are running as the daily Layer ${FORCE_LAYER} FLOOR tick (one of four
 per-layer cron units that guarantee each OODA layer fires at least once a
@@ -490,6 +512,7 @@ PYEOF
     #   (b) PREREQUISITE: L4 still requires L1/L2/L3 fired today (sequences the
     #       aggregator last even in the backup path).
     # decide_dispatch's constants are the single source of truth for min-times.
+    DEGRADED_L4=0
     if [[ -n "$FORCE_LAYER" ]]; then
         layer_ok="$("$PY" - "$workdir" "$FORCE_LAYER" "${BUBBLE_BACKUP_LAYER_OFFSET_H:-2}" <<'PYEOF2' 2>/dev/null || echo "ERR"
 import sys
@@ -516,9 +539,15 @@ PYEOF2
             emit_event "$slug" "skip" "backup L$FORCE_LAYER offset not reached (live loop owns it)" "$age"
             continue
         elif [[ "$layer_ok" == "PREREQ" ]]; then
-            log "$slug: SKIP backup L$FORCE_LAYER — prerequisites not met (L1/L2/L3 not all fired today)"
-            emit_event "$slug" "skip" "backup L$FORCE_LAYER prereq not met (L1/2/3 pending)" "$age"
-            continue
+            # L1/L2/L3 did NOT all fire today AND the loop is stale (we only reach
+            # here for stale depts). Rather than skip L4 entirely — which leaves
+            # Tony with NO export and a false "dept silent" reading (Joris 2026-06-07,
+            # Ben/Maya 06-06) — run a DEGRADED L4: a short, honest "loop was down,
+            # earlier layers did not run" debrief from last-known state. Tony always
+            # gets SOMETHING; the dept never disappears from the morning brief.
+            log "$slug: DEGRADED backup L4 — L1/L2/L3 not all fired today + loop stale; running a degraded debrief"
+            emit_event "$slug" "degraded" "backup L4 degraded (L1/2/3 pending, loop stale)" "$age"
+            DEGRADED_L4=1
         fi
         # "OK" or "ERR" (fail-open: a check error runs the tick as before).
     fi
