@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# bubble-loop-now — trigger a dept's LIVE --channels loop from the box, as if Joris
+# sent "run your loop" on Telegram (Joris msg 4036, 2026-06-07).
+#
+# How: the bubble-inject patch in the telegram channel plugin (server.ts) watches
+# <TELEGRAM_STATE_DIR>/inject and, on each appended line, fires the SAME
+# notifications/claude/channel event a real getUpdates message would — with meta
+# forged to Joris's chat_id. So writing here delivers a message INTO the running
+# session (the upstream gap #24947/#27441/#53049 has no other path).
+#
+# Usage:
+#   bubble-loop-now <slug> [message]
+#     <slug>    dept slug (maya, ben, tony, cgp, ...).
+#     [message] optional; default "run your loop" (a non-slash on-demand trigger;
+#               NEVER use "/loop-now" — the leading / is eaten as Unknown command).
+#
+# Notes:
+#   - Only works if the dept's loop session is RUNNING (it's an in-session inject).
+#   - The dept must have the bubble-inject plugin patch loaded (restart after patch).
+set -euo pipefail
+
+SLUG="${1:-}"
+MSG="${2:-run your loop}"
+[[ -n "$SLUG" ]] || { echo "usage: bubble-loop-now <slug> [message]" >&2; exit 2; }
+
+STATE_DIR="/home/claude/.claude/channels/telegram-${SLUG}"
+INJECT="${STATE_DIR}/inject"
+
+[[ -d "$STATE_DIR" ]] || { echo "bubble-loop-now: no channel state dir for '${SLUG}' (${STATE_DIR})" >&2; exit 1; }
+
+# Refuse a slash-command message — it would be eaten by Telegram's "Unknown command".
+case "$MSG" in
+  /*) echo "bubble-loop-now: message must NOT start with '/' (slash commands are intercepted). Use e.g. 'run your loop'." >&2; exit 2 ;;
+esac
+
+printf '%s\n' "$MSG" >> "$INJECT"
+echo "bubble-loop-now: injected to ${SLUG} as Joris: ${MSG}"
+echo "  (verify it ran: tail /home/claude/agents/bubble-ops-${SLUG}/outputs/\$(date -u +%Y-%m-%d)/heartbeat.log)"

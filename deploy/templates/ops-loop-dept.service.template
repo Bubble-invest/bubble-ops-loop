@@ -148,6 +148,10 @@ ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
 # silently reverted fleet-wide because vendored on-disk, not committed). Fail-open.
 ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG}
 
+# Re-apply the bubble-inject patch to the telegram plugin (delivers a message into
+# this live session as if from Joris) — self-heals after a plugin update. Fail-open.
+ExecStartPre=+/usr/local/bin/apply-inject-patch.sh
+
 EnvironmentFile=-${ENV_FILE}
 
 # Use script(1) for pty allocation.
