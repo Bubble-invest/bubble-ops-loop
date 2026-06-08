@@ -175,3 +175,8 @@ ExecStopPost=+/bin/rm -f ${ENV_FILE} /run/bubble-${DEPT_SLUG}/pem
 
 [Install]
 WantedBy=multi-user.target
+
+# Notion logbook agent identity. The shared notion_logbook.py uses this to
+# set the Agent select column in the shared "Agent Logbook" DB so every
+# dept's entries are attributed correctly.
+Environment=LOGBOOK_AGENT_ID=${DEPT_SLUG}
