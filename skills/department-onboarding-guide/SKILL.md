@@ -743,3 +743,29 @@ The skill references schemas at
 flow requires schema v3.1 (which adds `status`, `display_name`, `owner`,
 `forbidden` to the `department` block). Existing v3 fixtures stay valid
 (all new fields are optional, status defaults to `live` when absent).
+
+## Deployment modes (2026-06-08)
+
+The onboarding guide supports two deployment modes, controlled by env vars
+in the dept's systemd unit:
+
+### GitHub mode (default)
+`BUBBLE_GIT_PROVIDER=github` — repos created on GitHub (Bubble-invest org).
+Standard mode for VPS deployments. Requires `GITHUB_APP_ID` + broker PEM.
+
+### Local-bare mode (Bubble Cabinet / on-prem)
+`BUBBLE_GIT_PROVIDER=local-bare` — repos created as bare git repos at
+`/srv/git-local/bubble-ops-<slug>.git`. Zero data leaves the box.
+Used by Bubble Cabinet (Docker) deployments. No GitHub token needed.
+
+### Notion (optional, both modes)
+`NOTION_API_KEY` and `LOGBOOK_AGENT_ID` are optional. If set, the dept's
+L4 evening debrief writes a daily logbook entry to the shared Notion Agent
+Logbook DB. If absent, `notion_logbook.py` skips cleanly. The framework
+works fully without Notion — it's an optional integration.
+
+### Boot-rearm (automatic, both modes)
+`OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>` are set in every dept's
+systemd unit. After a restart, an ExecStartPost inject writes to the
+telegram plugin's inject file, triggering a turn that re-arms the /loop.
+No manual operator ping needed.
