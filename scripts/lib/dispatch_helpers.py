@@ -320,8 +320,13 @@ def materialize_due_missions(missions: Iterable[dict], *,
                              now: datetime,
                              last_fired_per_mission: dict[str, datetime]
                              ) -> list[dict]:
-    """For each mission with layer==1 that is due, return one queue-item
+    """For each mission with layer in 1..3 that is due, return one queue-item
     descriptor per `creates[]` entry.
+
+    Layers 1-3 are materialized here (WS3 growth-spearhead lock, 2026-06-08):
+    recurring L2/L3 missions like Maya's `discovery` and `warming` were defined
+    in dept.yaml but never woken on schedule because this used to filter
+    `layer != 1`. Now any due mission on layers 1-3 produces its cards.
 
     The returned dicts are NOT full queue-item.schema.yaml documents — they
     are the minimum payload the agent / a downstream skill needs to write
@@ -332,7 +337,8 @@ def materialize_due_missions(missions: Iterable[dict], *,
     """
     out: list[dict] = []
     for m in missions:
-        if int(m.get("layer", 0)) != 1:
+        # WS3: materialize layers 1-3 (L4 is owned by the L4/debrief branch).
+        if int(m.get("layer", 0)) not in (1, 2, 3):
             continue
         mid = m.get("id", "")
         last = last_fired_per_mission.get(mid)
