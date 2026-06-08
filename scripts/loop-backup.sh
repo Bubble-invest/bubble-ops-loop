@@ -393,9 +393,12 @@ inject_live_loop() {
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
     printf 'run your loop\n' >> "$inject" 2>/dev/null || return 1
 
-    # Wait up to ~90s for the live session to tick (heartbeat mtime advances).
+    # Wait up to ~240s for the live session to tick (heartbeat mtime advances).
+    # 90s was too short: the inject IS delivered but a quiet session can take a
+    # couple minutes to wake + run a tick (esp. opus depts), so the floor fell back
+    # to -p even when the inject would have worked ({{OPERATOR}} 2026-06-08, all 3 depts).
     local i after
-    for i in $(seq 1 18); do
+    for i in $(seq 1 48); do
         sleep 5
         after=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
         (( after > before )) && { log "$slug: live session ticked from inject (heartbeat advanced)"; return 0; }
