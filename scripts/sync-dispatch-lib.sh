@@ -67,15 +67,6 @@ PYTHON_BIN="${BUBBLE_SYNC_PYTHON:-}"
 LIB_REL="scripts/lib/dispatch_helpers.py"
 TESTS_REL="scripts/lib/tests"
 
-# Plain framework lib files that travel WITH the dispatch lib (no test pairing,
-# no md5 gate — just keep every dept current). Added 2026-06-06 (Rick, {{OPERATOR}}
-# msg 3898): the per-layer Telegram notifier. Depts were missing these, so
-# "work done" pings had no code to call.
-NOTIFY_LIB_FILES=(
-  "notify.py"
-  "loop_notify.py"
-)
-
 # The sibling dispatch test files that travel WITH dispatch_helpers.py.
 # (Only these are synced; other tests in the dept are left untouched.)
 DISPATCH_TEST_FILES=(
@@ -83,7 +74,9 @@ DISPATCH_TEST_FILES=(
   "test_dispatch_layer1_daily.py"
   "test_dispatch_retry_and_push.py"
   "test_layer1_data_sources.py"
-  "test_safe_pull.py"
+  # NOTE: test_loop_dispatch_layer1.py is FRAMEWORK-ONLY (it `import scaffold`,
+  # which exists only in the framework repo) — deliberately NOT propagated to
+  # dept repos, where it would ModuleNotFoundError. Keep it framework-side only.
 )
 
 # -----------------------------------------------------------------------------
@@ -229,20 +222,6 @@ for slug in $DEPTS; do
   # 1. Copy canonical lib (idempotent — install -m preserves a clean perm).
   mkdir -p "$(dirname "$dept_lib")"
   cp -f "$CANON_LIB" "$dept_lib"
-
-  # 1b. Copy plain notify libs (best-effort; no md5 gate).
-  for nf in "${NOTIFY_LIB_FILES[@]}"; do
-    if [[ -f "$FRAMEWORK/scripts/lib/$nf" ]]; then
-      cp -f "$FRAMEWORK/scripts/lib/$nf" "$dept_root/scripts/lib/$nf"
-    fi
-  done
-
-  # 1c. Copy the notify_layer.py CLI wrapper (tools/) — what CLAUDE.md calls.
-  if [[ -f "$FRAMEWORK/tools/notify_layer.py" ]]; then
-    mkdir -p "$dept_root/tools"
-    cp -f "$FRAMEWORK/tools/notify_layer.py" "$dept_root/tools/notify_layer.py"
-    chmod +x "$dept_root/tools/notify_layer.py" 2>/dev/null || true
-  fi
 
   # 2. Copy sibling dispatch test files.
   mkdir -p "$dept_tests"
