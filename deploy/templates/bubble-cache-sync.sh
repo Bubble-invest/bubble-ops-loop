@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # bubble-cache-sync.sh — Sync /srv/bubble-ops/repos/ cache.
 #
-# Installed at: /usr/local/bin/bubble-cache-sync.sh
-# Triggered by: bubble-cache-sync.timer (every 10 min)
-# Deploy runbook: deploy/templates/CACHE-SYNC-DEPLOY.md
-#
 # For each bubble-ops-<slug> repo visible to the bubble-ops-bot GitHub App,
 # clone it (if absent) or fetch+reset (if present), using short-lived tokens
 # minted by bubble-token-broker.
@@ -14,14 +10,14 @@
 #   - Token section runs without set -x to avoid accidental leak.
 #   - Uses git clone https://x-access-token:$TOKEN@... pattern.
 #   - Token var is unset immediately after use.
-#   - Remote URL cleaned back to unauthenticated form after git ops.
 #
 # Idempotent: re-running is a no-op (fetch --depth 1 + reset --hard).
 #
-# Requires (from EnvironmentFile=/run/claude-agent-fixture/env):
+# Requires:
 #   BUBBLE_BROKER_PEM_PATH — path to pre-decrypted GitHub App PEM
 #   GITHUB_APP_ID          — GitHub App numeric ID
 #   GITHUB_APP_INSTALLATION_ID_BUBBLE_OPS_FIXTURE — installation ID for fixture
+#   (Loaded from /run/claude-agent-fixture/env or passed via systemd EnvironmentFile)
 
 set -uo pipefail
 
@@ -31,7 +27,7 @@ LOG_FILE="${LOG_DIR}/sync-$(date -u +%Y-%m-%d).log"
 BROKER=/opt/bubble-token-broker/bin/bubble-token-broker
 GITHUB_ORG=vdk888
 
-# Repos to sync — seed with fixture; extend as new depts are created by Team A+F.
+# Repos to sync — seed with fixture; script will be extended for new depts.
 # These are the bubble-ops-<slug> repo names.
 REPOS=(
   bubble-ops-fixture

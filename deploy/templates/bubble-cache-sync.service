@@ -1,22 +1,10 @@
 # /etc/systemd/system/bubble-cache-sync.service
-# Bubble Ops — repo cache sync service (GAP 5, 2026-05-23).
+# Bubble Ops — repo cache sync service.
 # Triggered by bubble-cache-sync.timer (every 10 min).
 # Keeps /srv/bubble-ops/repos/ up to date with GitHub.
-#
-# Purpose (per Notion §"Le filesystem local de Morty"):
-#   Tony's Layer-1 reads child repo artifacts from /srv/bubble-ops/repos/
-#   (local clones). This service keeps those clones fresh. GitHub remains
-#   the canonical source; Morty is a working copy / cache runtime.
-#
-# Design:
-#   - Runs as claude user (no root at runtime).
-#   - Reads env from /run/claude-agent-fixture/env (pre-decrypted by
-#     ops-loop-fixture.service ExecStartPre) for broker credentials.
-#   - Token is minted fresh per repo per run; never written to disk.
-#   - Remote URL is cleaned to unauthenticated form after each git op.
 [Unit]
 Description=Bubble Ops repo cache sync (bubble-cache-sync)
-After=network-online.target ops-loop-fixture.service
+After=network-online.target claude-agent-morty.service
 Wants=network-online.target
 
 [Service]
@@ -24,17 +12,27 @@ Type=oneshot
 User=claude
 Group=claude
 
-# Pre-decrypted env from the fixture service (available while fixture runs).
-# The broker uses BUBBLE_BROKER_PEM_PATH + GITHUB_APP_ID + installation IDs.
-EnvironmentFile=-/run/claude-agent-fixture/env
+# Root-elevated pre-flight (same `+` pattern as claude-agent-morty.service):
+# 1. Decrypt GitHub App PEM into tmpfs.
+# 2. Extract only the 2 needed vars from Morty's decrypted env — no Telegram/OAuth tokens exposed.
+ExecStartPre=+/bin/mkdir -p /run/bubble-cache-sync
+ExecStartPre=+/bin/sh -c 'SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops --decrypt --output /run/bubble-cache-sync/pem.tmp /srv/bubble-secrets/github-app-bubble-ops-bot.private-key.sops.pem'
+ExecStartPre=+/bin/mv /run/bubble-cache-sync/pem.tmp /run/bubble-cache-sync/pem
+ExecStartPre=+/bin/chmod 0400 /run/bubble-cache-sync/pem
+ExecStartPre=+/bin/chown claude:claude /run/bubble-cache-sync/pem
+ExecStartPre=+/bin/sh -c 'grep -E "^GITHUB_APP_(ID|INSTALLATION_ID_BUBBLE_OPS_FIXTURE)=" /run/claude-agent/env > /run/bubble-cache-sync/env.tmp 2>/dev/null && mv /run/bubble-cache-sync/env.tmp /run/bubble-cache-sync/env && chmod 0400 /run/bubble-cache-sync/env && chown claude:claude /run/bubble-cache-sync/env || true'
 
-# Point broker to the pre-decrypted fixture PEM (no SOPS at sync time).
-Environment=BUBBLE_BROKER_PEM_PATH=/run/bubble-fixture/pem
+# Minimal env: GITHUB_APP_ID + installation ID only. No other secrets.
+EnvironmentFile=-/run/bubble-cache-sync/env
+
+# PEM path — broker uses --no-sops mode with the pre-decrypted file.
+Environment=BUBBLE_BROKER_PEM_PATH=/run/bubble-cache-sync/pem
 
 ExecStart=/usr/local/bin/bubble-cache-sync.sh
 
-# Logs captured by journald (supplement the script's own log file at
-# /var/log/bubble-cache-sync/sync-<date>.log).
+# Shred PEM and minimal env after every run (success or failure) — tmpfs but belt-and-suspenders.
+ExecStopPost=+/bin/sh -c 'shred -u /run/bubble-cache-sync/pem /run/bubble-cache-sync/env 2>/dev/null; true'
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=bubble-cache-sync

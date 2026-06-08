@@ -103,3 +103,7 @@ Tune the global threshold / model / budget via the template service
 `BUBBLE_BACKUP_BUDGET_USD`) — no script edit, no per-dept config needed. The
 dept set is auto-discovered, not configured; `BUBBLE_BACKUP_DEPTS` remains a
 test/pin override only.
+
+| 9 | Cache sync (every 10min) |  | yes | Keeps /srv/bubble-ops/repos/ synced with GitHub. |
+| 10 | Secrets tmp sweep (every 30min) |  | yes | Scans /tmp for leaked plaintext secrets. |
+| 11 | Transcript leak scan (daily 06:30) |  | yes | Scans JSONL transcripts for credential leaks. |
