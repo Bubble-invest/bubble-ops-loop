@@ -394,8 +394,13 @@ encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fir
 of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
 fresh each tick) — never type the date from memory.
 
-**STEP D** — heartbeat: if nothing dispatched, write a line in
-`outputs/<today>/heartbeat.log`: `<ISO-ts> tick <status> <queues-summary>`.
+**STEP D** — heartbeat on EVERY tick: write a freshness line in
+`outputs/<today>/heartbeat.log` (create the dir if needed):
+`<ISO-ts> tick <status> <queues-summary>` — even when layers fired this tick.
+The loop-backup freshness check and cockpit depend on this file; a missing
+heartbeat looks like a dead loop. `<today>` = `$(date -u +%Y-%m-%d)` recomputed
+EVERY tick (and `<ISO-ts>` = `$(date -u +%Y-%m-%dT%H:%M:%SZ)`). NEVER write
+`HEARTBEAT.log`/`logs.jsonl` at the repo root (outside push policy).
 
 **STEP E** — commit+push via `bubble-git-guard push --action runtime_write_own`.
 
