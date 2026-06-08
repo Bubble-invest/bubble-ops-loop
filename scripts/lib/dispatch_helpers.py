@@ -872,6 +872,14 @@ def force_commit_and_push(
     import os
     import shutil
     import subprocess
+
+    # Ensure broker PATH is always available for subprocess calls
+    # (sandbox/bwrap may strip the systemd Environment PATH).
+    _broker_bin = "/opt/bubble-token-broker/bin"
+    _env = os.environ.copy()
+    if _broker_bin not in _env.get("PATH", ""):
+        _env["PATH"] = _broker_bin + ":" + _env.get("PATH", "")
+
     repo_dir = Path(repo_dir)
 
     # 1. Anything to commit?
@@ -963,6 +971,7 @@ def force_commit_and_push(
              "--repo-dir", str(repo_dir), "--action", action,
              "--policy", policy],
             capture_output=True, text=True,
+            env=_env,
         )
     elif repo_name:
         # Generic fallback: mint a short-lived GitHub App token via the
@@ -997,6 +1006,7 @@ def force_commit_and_push(
         push = subprocess.run(
             ["git", "-C", str(repo_dir), "push", "origin", "main"],
             capture_output=True, text=True,
+            env=_env,
         )
     if push.returncode != 0:
         return False, (
