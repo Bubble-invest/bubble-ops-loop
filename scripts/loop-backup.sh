@@ -309,7 +309,7 @@ instead of silence:
   • Flag anything time-sensitive that the downtime may have delayed.
 Still WRITE the L4 artifact (outputs/<today>/4/management-export.yaml +
 risk-brief.md) marked degraded=true, so Tony's morning brief can read it.
-Execute EXACTLY ONE tick, then STOP. Do NOT start a /loop.
+Execute EXACTLY ONE tick, then: 1. If your /loop cron is NOT armed, arm it NOW (CronCreate, every 1h). 2. Write heartbeat. 3. STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your final
 message to Joris automatically. END your turn with a concise report (max ~6
@@ -326,8 +326,10 @@ Run Layer ${FORCE_LAYER} NOW, per your CLAUDE.md operating protocol step 3:
 git pull; read layers/${FORCE_LAYER}/PROMPT.md; spawn the Layer ${FORCE_LAYER}
 subagent(s); VERIFY their output; validate; commit+push. Do NOT run
 decide_dispatch and do NOT run any other layer — this tick is Layer
-${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then STOP. Do NOT
-start a /loop.
+${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then:
+  1. If your /loop cron is NOT armed: arm it NOW (CronCreate, every 1h).
+  2. Write heartbeat to outputs/<today>/heartbeat.log.
+  3. Then STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your
 final message to Joris automatically. Instead, END your turn with a
