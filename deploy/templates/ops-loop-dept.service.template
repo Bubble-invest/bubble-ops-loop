@@ -180,3 +180,8 @@ WantedBy=multi-user.target
 # set the Agent select column in the shared "Agent Logbook" DB so every
 # dept's entries are attributed correctly.
 Environment=LOGBOOK_AGENT_ID=${DEPT_SLUG}
+
+# Boot-rearm via inject file (ExecStartPost). The MCP notification in onStart
+# fires too early (during session init). Instead, wait for the poller to start
+# watching the inject file, then write the boot message there.
+ExecStartPost=/bin/sh -c "sleep 8 && printf 'Arm a /loop cron every 1h. Then run your full tick NOW: STEP A through STEP F per your CLAUDE.md /loop protocol. Write heartbeat.\\n' >> ${TELEGRAM_STATE_DIR}/inject"
