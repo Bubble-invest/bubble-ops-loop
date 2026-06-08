@@ -194,6 +194,7 @@ REPO_NAME="bubble-ops-${SLUG}"
 # repos, but can be overridden via env (e.g. Bubble-invest org since
 # 2026-05-24 — GitHub Apps can't createRepository on personal user
 # accounts, only on orgs, so all new depts target the org).
+GIT_PROVIDER="${BUBBLE_GIT_PROVIDER:-github}"  # "github" or "local-bare"
 GITHUB_OWNER="${BUBBLE_GITHUB_OWNER:-vdk888}"
 FULL_NAME="${GITHUB_OWNER}/${REPO_NAME}"
 BRANCH="onboarding/${SLUG}"
@@ -337,10 +338,17 @@ fi
 #                                  repos but a Bubble admin pre-created an
 #                                  empty placeholder.
 # -----------------------------------------------------------------------------
-echo "[bootstrap] checking whether $FULL_NAME already exists on GitHub..."
+echo "[bootstrap] checking whether $FULL_NAME already exists (provider=$GIT_PROVIDER)..."
 REPO_EXISTS=0
 REPO_IS_EMPTY=0
-if gh repo view "$FULL_NAME" >/dev/null 2>&1; then
+if [[ "$GIT_PROVIDER" == "local-bare" ]]; then
+  if [[ -d "/srv/git-local/${REPO_NAME}.git" ]]; then
+    REPO_EXISTS=1
+    if [[ -z "$(git -C "/srv/git-local/${REPO_NAME}.git" for-each-ref --format="%(refname)" 2>/dev/null)" ]]; then
+      REPO_IS_EMPTY=1
+    fi
+  fi
+elif gh repo view "$FULL_NAME" >/dev/null 2>&1; then
   REPO_EXISTS=1
   # An "empty repo" has no default branch (no commits, no main, no anything).
   # gh's defaultBranchRef returns null/missing for empty repos.
@@ -391,13 +399,19 @@ fi
 SKIP_REPO_CREATE="${SKIP_REPO_CREATE:-0}"
 
 # -----------------------------------------------------------------------------
-# Step 1: create the GitHub repo.
+# Step 1: create the repo (GitHub or local-bare).
 # -----------------------------------------------------------------------------
 if [[ "$SKIP_REPO_CREATE" != "1" ]]; then
-  echo "[bootstrap] creating GitHub repo $FULL_NAME..."
-  gh repo create "$FULL_NAME" \
-    --private \
-    --description "Bubble Ops dept: $DISPLAY_NAME (onboarding)"
+  if [[ "$GIT_PROVIDER" == "local-bare" ]]; then
+    echo "[bootstrap] creating local bare repo /srv/git-local/${REPO_NAME}.git..."
+    mkdir -p /srv/git-local
+    git init --bare "/srv/git-local/${REPO_NAME}.git"
+  else
+    echo "[bootstrap] creating GitHub repo $FULL_NAME..."
+    gh repo create "$FULL_NAME" \
+      --private \
+      --description "Bubble Ops dept: $DISPLAY_NAME (onboarding)"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -420,7 +434,13 @@ if [[ -d "$CLONE_DIR" ]]; then
   fi
 fi
 
-REMOTE_URL="${FAKE_GH_REPO_URL:-https://github.com/${FULL_NAME}.git}"
+if [[ "$GIT_PROVIDER" == "local-bare" ]]; then
+  REMOTE_URL="file:///srv/git-local/${REPO_NAME}.git"
+elif [[ -n "${FAKE_GH_REPO_URL:-}" ]]; then
+  REMOTE_URL="${FAKE_GH_REPO_URL}"
+else
+  REMOTE_URL="https://github.com/${FULL_NAME}.git"
+fi
 echo "[bootstrap] cloning $REMOTE_URL -> $CLONE_DIR..."
 git clone "$REMOTE_URL" "$CLONE_DIR" 2>&1 | sed 's/^/[git] /' || {
   # Fresh GitHub repo has no HEAD; clone may fail with "warning: You appear..."

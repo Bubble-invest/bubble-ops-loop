@@ -899,6 +899,18 @@ def force_commit_and_push(
     # isolation: a dept can only push itself).
     slug, repo_name = resolve_push_target(repo_dir)
 
+    # Local-bare: skip broker mint + guarded push; plain git push works for file://
+    _remote_url = subprocess.run(
+        ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if _remote_url.startswith("file://"):
+        push = subprocess.run(
+            ["git", "-C", str(repo_dir), "push", "origin", "main"],
+            capture_output=True, text=True,
+        )
+        return (push.returncode == 0, None if push.returncode == 0 else f"git push failed (rc={push.returncode}): {(push.stderr or push.stdout).strip()[:200]}")
+
     # DRY_RUN: resolve + report the push target and RETURN *before* any mutation.
     # This MUST come before `git add`/`git commit` so a dry run is genuinely
     # side-effect-free (HEAD, index and working tree all untouched) — a dry run
