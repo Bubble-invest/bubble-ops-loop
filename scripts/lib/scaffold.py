@@ -261,21 +261,23 @@ I do not take part in layers 2 and 3 (no autonomous recurring missions).
 
 ## `/loop` runtime protocol — STEP C dispatch
 
-At each tick (every 20 min):
+At each tick (every 20 min), after the sync and the state read:
 
-**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged change auto-lands; never blocks on a dirty tree).
+**STEP C** — decide what to dispatch:
 
-**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
-(NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
-only mission CONTENT varies):
-
-`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
-
-The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
-encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
-> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
-of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
-fresh each tick) — never type the date from memory.
+> C.1 — If **22:00 UTC ≤ now < 22:30 UTC** AND
+>        no `outputs/<today>/4/.last-run` file exists:
+>        → spawn the **Layer 4 (Risk Control)** subagent now.
+>        This is the daily audit (`daily_risk_audit` in dept.yaml).
+>        The Layer 4 subagent writes `outputs/<today>/4/.last-run` as
+>        its **very first action**, so that later ticks of the
+>        same day do not launch a second Layer 4.
+>
+> C.2 — If `queues/research/` contains items: spawn **Layer 2** (Research/Plan).
+>
+> C.3 — If `inbox/decisions/` contains items: spawn **Layer 3** (Execution).
+>
+> C.4 — Otherwise: silent heartbeat tick (no dispatch).
 
 The 22:00–22:30 UTC window is the eligibility band. The
 `outputs/<today>/4/.last-run` file is the idempotence guard-rail: a single
@@ -378,29 +380,28 @@ I reply **in English**, executive-office voice:
 Once activated (onboarding complete), I run a `/loop` every 20 min.
 At each tick:
 
-**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
+**STEP A** — sync: `git pull --quiet --rebase || echo 'pull-failed-continuing'`
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
-**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
-(NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
-only mission CONTENT varies):
+**STEP C** — decide what to dispatch:
 
-`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+> C.1 — If **22:00 UTC ≤ now < 22:30 UTC** AND
+>        no `outputs/<today>/4/.last-run` file exists:
+>        → spawn the **Layer 4 (Risk Control)** subagent now.
+>        This is the daily audit (`daily_risk_audit` in dept.yaml).
+>        The Layer 4 subagent writes `outputs/<today>/4/.last-run` as
+>        its **very first action**, so that later ticks of the
+>        same day do not launch a second Layer 4.
+>
+> C.2 — If `queues/research/` contains items: spawn **Layer 2** (Research/Plan).
+>
+> C.3 — If `inbox/decisions/` contains items: spawn **Layer 3** (Execution).
+>
+> C.4 — Otherwise: silent heartbeat tick (no dispatch).
 
-The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
-encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
-> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
-of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
-fresh each tick) — never type the date from memory.
-
-**STEP D** — heartbeat on EVERY tick: write a freshness line in
-`outputs/<today>/heartbeat.log` (create the dir if needed):
-`<ISO-ts> tick <status> <queues-summary>` — even when layers fired this tick.
-The loop-backup freshness check and cockpit depend on this file; a missing
-heartbeat looks like a dead loop. `<today>` = `$(date -u +%Y-%m-%d)` recomputed
-EVERY tick (and `<ISO-ts>` = `$(date -u +%Y-%m-%dT%H:%M:%SZ)`). NEVER write
-`HEARTBEAT.log`/`logs.jsonl` at the repo root (outside push policy).
+**STEP D** — heartbeat: if nothing dispatched, write a line in
+`outputs/<today>/heartbeat.log`: `<ISO-ts> tick <status> <queues-summary>`.
 
 **STEP E** — commit+push via `bubble-git-guard push --action runtime_write_own`.
 
@@ -676,17 +677,14 @@ I run in the main session (depth 0), I have the **Agent tool**: I delegate
 each Moment task to a stateless subagent via Agent. The subagents
 (depth 1) cannot spawn themselves — recursion blocked by Anthropic.
 
-**On-demand trigger.** When Joris messages my bot `/loop-now` (or "run your loop" / "tick now" / "fais ton loop maintenant"), my FIRST action is a full dispatch tick (steps below), not a reply; afterward I always send a short Telegram summary of the tick (layer + result).
-
 **At each tick**:
 
-1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
+1. `git pull --quiet --rebase || echo 'pull-failed-continuing'`
 
 2. Call the deterministic helper — it **scans my queues itself** (never
    a placeholder dict, otherwise it falls back to `heartbeat` and Moments 2/3 never
    fire) and returns `layer_1`/`2`/`3`/`4`/`heartbeat`:
    `python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
-   `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
 3. If the decision ≠ `heartbeat` — spawn + verify each subagent:
    - Read `layers/<N>/PROMPT.md` (the Moment's instruction sheet).
@@ -822,71 +820,6 @@ def render_systemd_unit(slug: str) -> str:
     text = text.replace("${DEPT_SLUG}", slug)
     text = text.replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
     text = text.replace("${ENV_FILE}", env_file)
-    return text
-
-
-def render_broker_policy(slug: str, *, level: str = "ops",
-                         children: list | None = None) -> str:
-    """Render the token-broker actor policy (`<slug>-policy.yaml`) from the
-    CANONICAL template, so a new dept's runtime push allow-list is correct by
-    construction — never hand-copied from a stale fixture.
-
-    This closes the 2026-06-05 drift: maya/tony were hand-copied from
-    fixture-policy.yaml (which lacked WORKING_MEMORY.md) instead of rendered
-    from ops-leaf-policy.template.yaml (which has it), so their WORKING_MEMORY
-    writes 403'd every push. Rendering from the template here makes that
-    impossible for future depts.
-
-    - level='ops' (leaf): substitute every `<DEPT_SLUG>`.
-    - level='management': substitute `<DEPT_SLUG>` AND expand the
-      `<CHILD_SLUG_N>` placeholder lines into one real line per child (in both
-      the `read:` block and `pull_requests.can_open_to:`). A management dept
-      MUST have children; raises ValueError otherwise (matches the template's
-      own "empty list = use the leaf template" note).
-    """
-    children = children or []
-    pol_dir = _PROJECT_ROOT / "token-broker" / "deploy" / "policies"
-    if level == "management":
-        if not children:
-            raise ValueError(
-                "management dept needs children for its broker policy "
-                "(read: + pull_requests.can_open_to:); none given"
-            )
-        text = (pol_dir / "management-policy.template.yaml").read_text(encoding="utf-8")
-        text = text.replace("<DEPT_SLUG>", slug)
-        # Expand the two `<CHILD_SLUG_N>` placeholder blocks. The template ships
-        # two sample lines (CHILD_SLUG_1/2) in each of `read:` and
-        # `can_open_to:`; replace each sample line-pair with one real line per
-        # child, preserving the surrounding indentation.
-        out_lines: list[str] = []
-        for line in text.splitlines(keepends=True):
-            stripped = line.lstrip()
-            if stripped.startswith("- bubble-ops-<CHILD_SLUG_"):
-                indent = line[: len(line) - len(stripped)]
-                # Emit one line per child only on the FIRST sample line of a
-                # block; skip subsequent sample lines (CHILD_SLUG_2, ...).
-                if "<CHILD_SLUG_1>" in line:
-                    for c in children:
-                        out_lines.append(f"{indent}- bubble-ops-{c}\n")
-                # CHILD_SLUG_2+ sample lines are dropped (already expanded above)
-                continue
-            out_lines.append(line)
-        text = "".join(out_lines)
-    else:
-        text = (pol_dir / "ops-leaf-policy.template.yaml").read_text(encoding="utf-8")
-        text = text.replace("<DEPT_SLUG>", slug)
-    # Guard against unrendered placeholders in ACTIVE (non-comment) lines.
-    # Header-comment references like `#   <CHILD_SLUG_*> → ...` are docs and
-    # stay verbatim; only a live config line with a placeholder is a bug.
-    for ln in text.splitlines():
-        if ln.lstrip().startswith("#"):
-            continue
-        if "<DEPT_SLUG>" in ln or "<CHILD_SLUG_" in ln:
-            raise ValueError(
-                f"broker policy for {slug} still has an unrendered placeholder "
-                f"in an active line: {ln.strip()!r} — template shape changed; "
-                "update render_broker_policy()"
-            )
     return text
 
 
@@ -1183,17 +1116,6 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     write_with_dirs(
         root / "deploy" / f"ops-loop-{slug}.service",
         render_systemd_unit(slug),
-    )
-
-    # 11. deploy/policies/<slug>-policy.yaml — token-broker actor policy,
-    #     rendered from the CANONICAL template (leaf or management) so the
-    #     runtime push allow-list is correct by construction. The operator
-    #     installs this to /opt/bubble-token-broker/deploy/policies/ at
-    #     activation. Closes the 2026-06-05 hand-copy drift (maya/tony lost
-    #     WORKING_MEMORY.md by copying the stale fixture).
-    write_with_dirs(
-        root / "deploy" / "policies" / f"{slug}-policy.yaml",
-        render_broker_policy(slug, level=level, children=children),
     )
 
 

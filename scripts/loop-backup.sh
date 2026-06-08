@@ -391,7 +391,7 @@ inject_live_loop() {
     local before; before=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
-    printf 'run your loop\n' >> "$inject" 2>/dev/null || return 1
+    printf 'Arm a /loop cron every 1h. Then run your full tick: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log.\n' >> "$inject" 2>/dev/null || return 1
 
     # Wait up to ~240s for the live session to tick (heartbeat mtime advances).
     # 90s was too short: the inject IS delivered but a quiet session can take a
