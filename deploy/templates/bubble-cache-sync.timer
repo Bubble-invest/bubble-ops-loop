@@ -1,10 +1,6 @@
 # /etc/systemd/system/bubble-cache-sync.timer
-# Bubble Ops — repo cache sync timer (GAP 5, 2026-05-23).
 # Runs bubble-cache-sync.service every 10 minutes.
-#
-# Configurable:
-#   OnUnitActiveSec — change to adjust sync interval (default: 10min).
-#   RandomizedDelaySec — jitter to avoid thundering herd (default: 30s).
+# Configurable: change OnUnitActiveSec to adjust the interval.
 [Unit]
 Description=Bubble Ops repo cache sync timer (every 10 min)
 After=network-online.target
@@ -12,7 +8,7 @@ After=network-online.target
 [Timer]
 # Run 2 minutes after boot (give fixture service time to pre-decrypt PEM)
 OnBootSec=2min
-# Then every 10 minutes after the last activation
+# Then every 10 minutes
 OnUnitActiveSec=10min
 # Randomize by up to 30s to avoid thundering herd
 RandomizedDelaySec=30

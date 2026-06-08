@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily JSONL transcript leak scan at 06:30 UTC (Layer 3)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+
+[Timer]
+# Fire at 06:30 UTC every day
+OnCalendar=*-*-* 06:30:00 UTC
+# If the machine was off at 06:30, run as soon as it comes up (within 15 min window)
+Persistent=true
+# Small random delay to avoid thundering-herd with other 06:30 jobs
+RandomizedDelaySec=120
+Unit=transcript-leak-scan.service
+
+[Install]
+WantedBy=timers.target
