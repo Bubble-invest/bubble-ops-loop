@@ -415,7 +415,7 @@
               {% endif %}
               <span class="loop-run-badges">
                 {% for layer in run.layers %}
-                  <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
+                  <span class="loop-badge loop-badge--L{{ layer.num }}" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
                 {% endfor %}
               </span>
               {% if run.is_empty %}

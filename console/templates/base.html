@@ -44,9 +44,39 @@
     </div>
   </header>
 
-  <main class="content">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="app-layout">
+    {# ─── Left sidebar — department navigation ──────────────────────── #}
+    <aside class="sidebar" aria-label="Départements">
+      <nav class="sidebar-nav">
+        <div class="sidebar-section-label">Équipe</div>
+        {% set all_depts = dept_registry.list_departments() if dept_registry else [] %}
+        {% for d in all_depts if d.is_live %}
+          <a href="/dept/{{ d.slug }}" class="sidebar-link{% if dept and dept.slug == d.slug %} sidebar-link--active{% endif %}">
+            <span class="sidebar-dot sidebar-dot--live" title="En ligne"></span>
+            {{ d.display_name }}
+          </a>
+        {% endfor %}
+        {% set eclore = all_depts | selectattr('is_live', 'equalto', false) | selectattr('is_ancien', 'equalto', false) | list %}
+        {% if eclore %}
+          <div class="sidebar-section-label">À l'éclosion</div>
+          {% for d in eclore %}
+            <a href="/dept/{{ d.slug }}" class="sidebar-link{% if dept and dept.slug == d.slug %} sidebar-link--active{% endif %}">
+              <span class="sidebar-dot sidebar-dot--eclosing" title="En éclosion"></span>
+              {{ d.display_name }}
+            </a>
+          {% endfor %}
+        {% endif %}
+      </nav>
+      <div class="sidebar-footer">
+        <a href="/" class="sidebar-link sidebar-link--home">← Le matin</a>
+        <a href="/agents" class="sidebar-link sidebar-link--home">Toute l'équipe</a>
+      </div>
+    </aside>
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 
   <footer class="cabinet-footer">
     Cabinet d'éclosion — chaque arrivée passe par ce registre.

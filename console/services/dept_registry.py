@@ -67,6 +67,9 @@ def list_departments() -> List[DeptSummary]:
         if not child.is_dir() or not child.name.startswith("bubble-ops-"):
             continue
         slug = child.name[len("bubble-ops-"):]
+        # Decommissioned — not part of the active team (Joris 2026-06-09)
+        if slug in ("cgp",):
+            continue
         state = read_state_for_repo(child)
         if state is None:
             # No STATE.yaml -> minimal idea-stage record
