@@ -7,10 +7,11 @@ from scripts.lib.layer_templates import render_layer_prompt
 
 
 @pytest.mark.parametrize("n,moment", [
-    (1, "Le matin"),
-    (2, "recherche"),
-    (3, "exécution"),
-    (4, "débrief"),
+    # Moment titles are English (executive-office voice, {{OPERATOR}}'s English-only preference).
+    (1, "morning"),
+    (2, "research"),
+    (3, "execution"),
+    (4, "debrief"),
 ])
 def test_each_layer_has_its_moment_title(n, moment):
     t = render_layer_prompt(n, "maya", "Maya")

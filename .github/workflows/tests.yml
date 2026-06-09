@@ -14,4 +14,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install test deps
+        run: python3 -m pip install --quiet pytest pyyaml jinja2
       - run: python3 -m pytest scripts/lib/tests/ -q --tb=short
