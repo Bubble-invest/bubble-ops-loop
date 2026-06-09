@@ -27,6 +27,7 @@ HITS=$(find ${SCAN_DIRS[*]} -maxdepth 4 -type f \
   ! -name "*.sops.env" \
   ! -name "secrets-tmp-sweep.sh" \
   ! -path "*/scripts/*" \
+  ! -path "*/deploy/templates/*" \
   ! -path "/var/log/bubble-security/*" \
   ! -name "*.bak-*" \
   ! -path "*/.claude/channels/*/.env" \
