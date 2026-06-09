@@ -177,3 +177,74 @@ def test_working_memory_file_is_not_structural(repo_with_upstream: Path):
     (repo / "WORKING_MEMORY.md").write_text("- IPO Watch: SpaceX, Anthropic\n")
     _git(repo, "add", "-A")
     assert _run_detector(repo) == 1
+
+
+# ---------------------------------------------------------------------------
+# Framework-repo-scoped protection (governance fix 2026-06-09).
+# scripts/lib/** (the scaffolder/loop lib) is structural ONLY in the framework
+# repo (bubble-ops-loop) — NOT in dept repos, which legitimately vendor & sync it.
+# ---------------------------------------------------------------------------
+
+
+def _repo_with_named_remote(tmp_path: Path, remote_name: str) -> Path:
+    """Clone whose `origin` URL ends in <remote_name>.git, so the detector's
+    repo-name derivation sees that name. Mirrors repo_with_upstream otherwise."""
+    bare = tmp_path / f"{remote_name}.git"
+    _git(tmp_path, "init", "--bare", str(bare))
+    clone = tmp_path / f"clone-{remote_name}"
+    clone.mkdir()
+    _git(clone, "init")
+    _git(clone, "remote", "add", "origin", str(bare))
+    (clone / "README.md").write_text("hi\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-m", "init")
+    _git(clone, "branch", "-M", "main")
+    _git(clone, "push", "-u", "origin", "main")
+    return clone
+
+
+def test_framework_scaffold_push_on_framework_repo_is_structural(tmp_path: Path):
+    """scripts/lib/scaffold.py pushed to bubble-ops-loop -> structural -> exit 0.
+    This is the exact f3213b7 incident: a framework-source rewrite must be locked."""
+    repo = _repo_with_named_remote(tmp_path, "bubble-ops-loop")
+    p = repo / "scripts" / "lib"
+    p.mkdir(parents=True)
+    (p / "scaffold.py").write_text("# rewrite\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "edit scaffolder")
+    assert _run_detector(repo) == 0
+
+
+def test_framework_ci_push_on_framework_repo_is_structural(tmp_path: Path):
+    """.github/** on the framework repo -> structural -> exit 0."""
+    repo = _repo_with_named_remote(tmp_path, "bubble-ops-loop")
+    p = repo / ".github" / "workflows"
+    p.mkdir(parents=True)
+    (p / "tests.yml").write_text("name: Tests\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "edit ci")
+    assert _run_detector(repo) == 0
+
+
+def test_vendored_lib_push_on_dept_repo_is_NOT_structural(tmp_path: Path):
+    """The SAME scripts/lib/ path on a DEPT repo (bubble-ops-maya) must stay
+    writable -> NOT structural -> exit 1. Depts vendor & sync the lib at runtime;
+    the framework-scoped glob must NOT 403 that legitimate push."""
+    repo = _repo_with_named_remote(tmp_path, "bubble-ops-maya")
+    p = repo / "scripts" / "lib"
+    p.mkdir(parents=True)
+    (p / "dispatch_helpers.py").write_text("# synced from framework\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "sync vendored lib")
+    assert _run_detector(repo) == 1
+
+
+def test_dept_mission_file_still_structural_on_dept_repo(tmp_path: Path):
+    """Sanity: the shared mission globs still apply on a dept repo (layers/**)."""
+    repo = _repo_with_named_remote(tmp_path, "bubble-ops-maya")
+    p = repo / "layers" / "2"
+    p.mkdir(parents=True)
+    (p / "PROMPT.md").write_text("edit\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "edit mission")
+    assert _run_detector(repo) == 0

@@ -15,5 +15,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test deps
-        run: python3 -m pip install --quiet pytest pyyaml jinja2
-      - run: python3 -m pytest scripts/lib/tests/ -q --tb=short
+        run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests
+      - name: Framework lib tests
+        run: python3 -m pytest scripts/lib/tests/ -q --tb=short
+      # The token-broker (push chokepoint) and git-guard are security code — run
+      # their suites too so a regression in the mission-file-lock / structural-push
+      # detector is caught here. Run separately: each dir has its own conftest.py.
+      - name: Token-broker tests
+        run: python3 -m pytest token-broker/tests/ -q --tb=short
+      - name: Git-guard tests
+        run: python3 -m pytest git-guard/tests/ -q --tb=short
