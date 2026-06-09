@@ -402,104 +402,63 @@
     </details>
   {% endif %}
 
-  {# ─── Boucles — compact, recent 7 days expanded ─────────────────── #}
+  {# ─── Boucles — compact, click to expand ────────────────────────── #}
   {% if loop_runs %}
     <ul class="loop-runs">
       {% for run in loop_runs %}
-        {% set is_recent = loop.index <= 7 %}
-        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}{% if not is_recent %} loop-run--compact{% endif %}">
-          {% if is_recent %}
-            {# Recent: expanded by default — show layer summary line + full details #}
-            <details class="loop-run-toggle" open>
-              <summary class="loop-run-head">
-                <span class="loop-run-date">{{ run.date }}</span>
-                {% if run.total_rounds is not none %}
-                  <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
-                {% endif %}
-                <span class="loop-run-badges">
-                  {% for layer in run.layers %}
-                    <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
-                  {% endfor %}
-                </span>
-                {% if run.is_empty %}
-                  <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
-                {% endif %}
-              </summary>
-
-              {% for layer in run.layers %}
-                <div class="loop-layer">
-                  <div class="loop-layer-head">
-                    <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
-                    {% if layer.last_run %}
-                      <span class="loop-layer-time">{{ layer.last_run }}</span>
-                    {% endif %}
-                    {% if layer.rounds %}
-                      <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
-                    {% endif %}
-                  </div>
-                  {% if layer.files %}
-                    <ul class="loop-files">
-                      {% for of in layer.files %}
-                        <li>
-                          <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
-                            {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
-                          </a>
-                        </li>
-                      {% endfor %}
-                    </ul>
-                  {% else %}
-                    <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
-                  {% endif %}
-                </div>
-              {% endfor %}
-
-              {% if run.extra_files %}
-                <div class="loop-extra">
-                  <span class="loop-extra-label">Journal de boucle :</span>
-                  {% for of in run.extra_files %}
-                    <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
-                  {% endfor %}
-                </div>
+        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
+          <details class="loop-run-toggle">
+            <summary class="loop-run-head">
+              <span class="loop-run-date">{{ run.date }}</span>
+              {% if run.total_rounds is not none %}
+                <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
               {% endif %}
-            </details>
-          {% else %}
-            {# Older: collapsed one-line summary #}
-            <details class="loop-run-toggle">
-              <summary class="loop-run-head loop-run-head--compact">
-                <span class="loop-run-date">{{ run.date }}</span>
-                {% if run.total_rounds is not none %}
-                  <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
-                {% endif %}
-                <span class="loop-run-badges">
-                  {% for layer in run.layers %}
-                    <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
-                  {% endfor %}
-                </span>
-              </summary>
+              <span class="loop-run-badges">
+                {% for layer in run.layers %}
+                  <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
+                {% endfor %}
+              </span>
+              {% if run.is_empty %}
+                <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
+              {% endif %}
+            </summary>
 
-              {% for layer in run.layers %}
-                <div class="loop-layer">
-                  <div class="loop-layer-head">
-                    <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
-                    {% if layer.last_run %}
-                      <span class="loop-layer-time">{{ layer.last_run }}</span>
-                    {% endif %}
-                  </div>
-                  {% if layer.files %}
-                    <ul class="loop-files">
-                      {% for of in layer.files %}
-                        <li>
-                          <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
-                            {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
-                          </a>
-                        </li>
-                      {% endfor %}
-                    </ul>
+            {% for layer in run.layers %}
+              <div class="loop-layer">
+                <div class="loop-layer-head">
+                  <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
+                  {% if layer.last_run %}
+                    <span class="loop-layer-time">{{ layer.last_run }}</span>
+                  {% endif %}
+                  {% if layer.rounds %}
+                    <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
                   {% endif %}
                 </div>
-              {% endfor %}
-            </details>
-          {% endif %}
+                {% if layer.files %}
+                  <ul class="loop-files">
+                    {% for of in layer.files %}
+                      <li>
+                        <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
+                          {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
+                        </a>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
+                {% endif %}
+              </div>
+            {% endfor %}
+
+            {% if run.extra_files %}
+              <div class="loop-extra">
+                <span class="loop-extra-label">Journal de boucle :</span>
+                {% for of in run.extra_files %}
+                  <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
+                {% endfor %}
+              </div>
+            {% endif %}
+          </details>
         </li>
       {% endfor %}
     </ul>
