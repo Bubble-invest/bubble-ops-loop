@@ -12,7 +12,7 @@
 
 - Test file created with **11 assertions** (10 hard + 1 optional/skip-tolerant) covering all 3 mandatory Notion v4 outputs PLUS the standard 4-file output schema for Layer 4 itself PLUS schema validation against `management-export.schema.yaml`.
 - **RED captured cleanly** (2026-05-20 ~21:50 UTC) — 10 fail, 1 skip (autonomy_readiness is optional). No Layer 4 outputs exist yet for `2026-05-20` on the fixture repo.
-- **Telegram trigger message drafted** below — Joris pastes verbatim to `@bubtiktikbot`.
+- **Telegram trigger message drafted** below — Joris pastes verbatim to `@bubbleops_<slug>_bot`.
 - **`layers/4/PROMPT.md` audit:** GREEN — the prompt is well-specified for all 3 outputs, the path-outside-`4/` quirk for `management-export.yaml` is called out explicitly, and the PURE-AUDITOR guard is reaffirmed. **Two small additions recommended for Step 11** (no blocker for Step 9 GREEN).
 
 ---
@@ -42,7 +42,7 @@
 ### RED capture (verbatim summary)
 
 ```
-$ cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+$ cd .
 $ python3 -m pytest tests/round-trip/test_layer4_three_outputs.py -v --tb=short
 
 FAILED tests/round-trip/test_layer4_three_outputs.py::test_risk_brief_md_exists
@@ -84,7 +84,7 @@ RED is real, not a tooling artifact.
 
 ## Phase B — Manual trigger (Telegram message for Joris)
 
-**Send to** `@bubtiktikbot` (the fixture agent on Morty, NOT `@ContentbubbleClawbot` which is morty/Tony).
+**Send to** `@bubbleops_<slug>_bot` (the fixture agent on Morty, NOT `@ContentbubbleClawbot` which is morty/Tony).
 
 ### Trigger message (copy verbatim)
 
@@ -125,7 +125,7 @@ Report back via this chat when all 6 files are committed (or paste the gh api / 
 Once Joris sends the message and the agent reports a commit (or once 22:00 UTC fires naturally), run:
 
 ```bash
-cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+cd .
 python3 -m pytest tests/round-trip/test_layer4_three_outputs.py -v --tb=short
 ```
 
