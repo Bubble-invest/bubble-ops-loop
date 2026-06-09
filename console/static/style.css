@@ -1567,6 +1567,114 @@ code, .code {
 }
 .loop-extra-label { font-style: italic; margin-right: 6px; }
 
+/* ─── Compact loop-run (older days, collapsed) ─────────────────────── */
+.loop-run--compact { padding: 0; border: none; margin-bottom: 0; background: none; }
+.loop-run--compact .loop-run-toggle { border: 1px solid var(--line-soft); border-radius: 4px; padding: 0; margin-bottom: 8px; background: var(--paper); }
+.loop-run--compact .loop-run-toggle > summary { padding: 10px 16px; cursor: pointer; }
+.loop-run--compact .loop-run-toggle[open] { padding-bottom: 8px; }
+.loop-run--compact .loop-run-toggle[open] > summary { border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; }
+.loop-run--compact .loop-layer { padding: 6px 16px; }
+.loop-run--compact .loop-run-tag { display: none; }
+
+/* ─── Loop-run toggle (details/summary for collapsible days) ────────── */
+.loop-run-toggle { width: 100%; }
+.loop-run-toggle > summary { list-style: none; }
+.loop-run-toggle > summary::-webkit-details-marker { display: none; }
+.loop-run-toggle > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  color: var(--ochre);
+  transition: transform 0.15s;
+}
+.loop-run-toggle[open] > summary::before { transform: rotate(90deg); }
+
+/* ─── Loop badges (L1 L2 L3 L4 pills) ──────────────────────────────── */
+.loop-run-badges { display: flex; gap: 4px; margin-left: auto; }
+.loop-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--ink-soft);
+  background: var(--paper-soft);
+  border: 1px solid var(--line-soft);
+}
+.loop-badge--run { background: var(--ochre-soft); color: var(--ochre-deep); border-color: var(--ochre); }
+
+/* ─── Decision timeline ─────────────────────────────────────────────── */
+.decision-timeline-details { margin: 20px 0 24px; }
+.decision-timeline-summary {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 0;
+}
+.decision-timeline-summary::-webkit-details-marker { display: none; }
+.decision-timeline-sub {
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--body-muted);
+  margin-left: 8px;
+}
+.decision-timeline {
+  margin-top: 8px;
+  border-left: 2px solid var(--line-soft);
+  padding-left: 16px;
+}
+.decision-event {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+}
+.decision-event-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+  min-width: 80px;
+}
+.decision-event-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.decision-status--pending   { background: #fdf6e8; color: var(--ochre); border: 1px solid var(--ochre-soft); }
+.decision-status--approved  { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+.decision-status--executed  { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+.decision-event-kind {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  min-width: 90px;
+  white-space: nowrap;
+}
+.decision-event-summary {
+  flex: 1;
+  min-width: 180px;
+  color: var(--ink);
+}
+.decision-event-link {
+  font-size: 14px;
+  color: var(--ochre);
+  text-decoration: none;
+}
+.decision-event-link:hover { color: var(--ochre-deep); }
+
 /* ─── Filet de sécurité / loop-backup ({{OPERATOR}} msg 1171) ──────────── */
 .backup-net {
   border: 1px solid var(--line-soft);

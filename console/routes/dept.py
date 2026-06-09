@@ -66,6 +66,9 @@ def dept_detail(slug: str, request: Request):
     # Loop-run history — one entry per active day, with clickable outputs.
     # {{OPERATOR}} msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
+    # Decision timeline — all past and pending decisions surfaced in the
+    # loop-history section ({{OPERATOR}} 2026-06-09).
+    decision_events = loop_history.list_decision_events(slug)
     # Safety-net (loop-backup) events — the twice-daily backup timer's verdict
     # per fire: loop alive → skip, or loop dead/parked → one backup tick.
     # {{OPERATOR}} msg 1171, 2026-06-01.
@@ -90,6 +93,7 @@ def dept_detail(slug: str, request: Request):
             "whiteboard_freeform": whiteboard_freeform,
             "whiteboard_graphs": whiteboard_graphs,
             "loop_runs": loop_runs,
+            "decision_events": decision_events,
             "backup_events": backup_events,
             "latest_backup": latest_backup,
         },
