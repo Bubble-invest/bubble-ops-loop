@@ -70,6 +70,24 @@ def _is_inside_work_tree(repo_dir: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def _repo_name(repo_dir: Path) -> str | None:
+    """Bare repo name from the `origin` remote URL (e.g. 'bubble-ops-loop').
+
+    Returns None on any error (fail-OPEN: framework globs simply won't apply, so
+    a legitimate push is never blocked by an unknown repo name). Handles both
+    https (…/org/name.git) and ssh (git@host:org/name.git) remotes.
+    """
+    proc = _run_git(repo_dir, "config", "--get", "remote.origin.url")
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    url = proc.stdout.strip()
+    tail = url.rstrip("/").split("/")[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    # ssh form "git@host:org/name" leaves "name" already after the split above
+    return tail or None
+
+
 def _unpushed_paths(repo_dir: Path) -> list[str]:
     """Union of staged-in-index + committed-but-unpushed paths.
 
@@ -135,7 +153,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         pol = _load_policy_module(policy_py)
-        is_structural = pol._is_structural  # noqa: SLF001 — single-sourced glob check
+        # Repo-aware check: shared mission globs (every repo) + framework-source
+        # globs (only when pushing the framework repo). Fall back to the
+        # repo-agnostic check on older policy.py that lacks the new function.
+        is_structural_for_repo = getattr(pol, "is_structural_for_repo", None)
+        if is_structural_for_repo is None:
+            _legacy = pol._is_structural  # noqa: SLF001 — single-sourced glob check
+            is_structural_for_repo = lambda p, _r=None: _legacy(p)  # noqa: E731
     except Exception as exc:  # noqa: BLE001 — fail-OPEN to write
         if args.verbose:
             print(f"[is-structural] cannot load policy.py ({exc}) -> not-structural", file=sys.stderr)
@@ -153,10 +177,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[is-structural] diff error ({exc}) -> not-structural", file=sys.stderr)
         return 1
 
-    structural_hits = [p for p in paths if is_structural(p)]
+    repo_name = _repo_name(repo_dir)
+    structural_hits = [p for p in paths if is_structural_for_repo(p, repo_name)]
     if structural_hits:
         if args.verbose:
-            print(f"[is-structural] STRUCTURAL paths in push: {structural_hits}", file=sys.stderr)
+            print(
+                f"[is-structural] STRUCTURAL paths in push (repo={repo_name}): "
+                f"{structural_hits}",
+                file=sys.stderr,
+            )
         return 0  # structural detected -> helper mints read-only
 
     if args.verbose:

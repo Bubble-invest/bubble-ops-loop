@@ -61,6 +61,29 @@ STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "db/schema.sql",       # canonical DB schema — PR-only (Ben exception #7, 2026-06-06). db/fund.sqlite stays runtime-writable.          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated ({{OPERATOR}} 2026-06-06)
 )
 
+# FRAMEWORK-REPO-ONLY structural paths (governance fix 2026-06-09, {{OPERATOR}}).
+#
+# These protect the FRAMEWORK's OWN SOURCE in the canonical repo (bubble-ops-loop):
+# the scaffolder, the loop/dispatch library, CI, and the token-broker/git-guard
+# security code itself. A direct push rewriting any of these silently degrades the
+# whole fleet (e.g. commit f3213b7 reverted scaffold.py + PR #47's canonical loop
+# protocol, undetected, because the framework source was NOT structural-locked).
+#
+# Why a SEPARATE list (not folded into STRUCTURAL_PATH_GLOBS): the dept repos VENDOR
+# `scripts/lib/**` (ben/maya carry dispatch_helpers.py etc.) and sync it at runtime.
+# A blanket `scripts/lib/**` in the shared list would 403 those legitimate dept
+# lib-syncs. So these globs apply ONLY when the repo being pushed is the framework
+# repo — see `is_structural_for_repo()`.
+FRAMEWORK_REPO_NAME: str = "bubble-ops-loop"
+FRAMEWORK_STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
+    "scripts/lib/**",      # the scaffolder + canonical loop/dispatch library
+    "scripts/bootstrap-dept.sh",
+    "scripts/sync-dispatch-lib.sh",
+    ".github/**",          # CI workflows (a bad edit here can mask regressions)
+    "token-broker/**",     # the push chokepoint's own source
+    "git-guard/**",        # the guard's own source
+)
+
 KNOWN_ACTIONS: frozenset[str] = frozenset(
     {"runtime_read", "runtime_write_own", "open_priority_pr", "settings_pr"}
 )
@@ -83,8 +106,33 @@ def _glob_match(path: str, pattern: str) -> bool:
 
 
 def _is_structural(path: str) -> bool:
-    """True if the path is structural (settings_pr territory)."""
+    """True if the path is structural (settings_pr territory).
+
+    Repo-agnostic: applies the dept-mission globs that are structural in EVERY
+    repo. For framework-repo-only protection use is_structural_for_repo().
+    """
     return any(_glob_match(path, g) for g in STRUCTURAL_PATH_GLOBS)
+
+
+def is_structural_for_repo(path: str, repo_name: str | None = None) -> bool:
+    """True if `path` is structural in the context of the repo being pushed.
+
+    - The shared STRUCTURAL_PATH_GLOBS (dept mission files) apply to every repo.
+    - The FRAMEWORK_STRUCTURAL_PATH_GLOBS (the framework's own source) apply ONLY
+      when `repo_name` is the framework repo (bubble-ops-loop). This is what stops
+      an agent silently rewriting scaffold.py while leaving the depts' legitimate
+      vendored-lib syncs (scripts/lib/**) untouched.
+
+    `repo_name` may be a bare name ("bubble-ops-loop") or "org/name"
+    ("Bubble-invest/bubble-ops-loop"); only the trailing path segment is compared.
+    """
+    if _is_structural(path):
+        return True
+    if repo_name:
+        bare = repo_name.rstrip("/").split("/")[-1]
+        if bare == FRAMEWORK_REPO_NAME:
+            return any(_glob_match(path, g) for g in FRAMEWORK_STRUCTURAL_PATH_GLOBS)
+    return False
 
 
 @dataclass
