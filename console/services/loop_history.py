@@ -27,6 +27,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from console.services.dept_registry import repo_path
 
 _log = logging.getLogger(__name__)
@@ -236,3 +238,126 @@ def read_output_file(slug: str, rel_path: str) -> Optional[Dict[str, Any]]:
         kind = "text"
     return {"name": target.name, "rel_path": rel, "kind": kind,
             "content": content, "empty": False}
+
+
+# ---------------------------------------------------------------------------
+# Decision timeline — surfaced in the loop-history section
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DecisionEvent:
+    """One human decision (approved / rejected / deferred / proposed)."""
+    id: str
+    kind: str                      # trade_proposal, prospect_dm, warming_comment, …
+    date: str                      # iso date extracted from filename or created_at
+    summary: str                   # one-line description
+    status: str                    # pending / approved / rejected / deferred / executed
+    url: str = ""                  # link to gate detail page, if applicable
+
+
+# Maps gate YAML actions to status. A gate in queues/gates/ is pending;
+# one in inbox/decisions/ was approved; one in .processed/ was executed.
+_STATUS_FROM_DIR = {
+    "gates": "pending",
+    "decisions": "approved",
+}
+
+
+def list_decision_events(slug: str) -> List[DecisionEvent]:
+    """Scan the dept's inbox/decisions/ and queues/gates/ for decision events.
+
+    Returns a list of DecisionEvent sorted newest-first, drawing from:
+      - queues/gates/*.yaml         → pending proposals (awaiting decision)
+      - queues/gates/.processed/*.yaml → past proposals (executed)
+      - inbox/decisions/*.yaml       → approved (awaiting execution)
+      - inbox/decisions/.processed/*.yaml → past decisions (executed)
+    """
+    root = repo_path(slug)
+    if root is None:
+        return []
+
+    out: List[DecisionEvent] = []
+
+    def _scan(dir_path: Path, status: str) -> None:
+        if not dir_path.exists():
+            return
+        seen_ids = set()  # de-duplicate by id
+        for p in sorted(dir_path.glob("*.yaml")):
+            if p.name.startswith("."):
+                continue
+            try:
+                doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+
+            # Determine kind: from YAML field, or parse from filename
+            kind = doc.get("kind", "")
+            if not kind or kind == "unknown":
+                # Parse from filename: trade-proposal-DTLA-2026-06-04.yaml
+                stem = p.stem
+                # Try to extract kind from prefix before the first date-like segment
+                parts = stem.split("-")
+                kind_parts = []
+                for part in parts:
+                    if len(part) == 8 and part.isdigit():
+                        break  # hit a date, stop
+                    kind_parts.append(part)
+                kind = "-".join(kind_parts) if kind_parts else stem
+
+            # Extract date: try created_at, then scan filename for YYYY-MM-DD or YYYYMMDD
+            date_str = (doc.get("created_at") or "")[:10]
+            if not date_str:
+                stem = p.stem
+                # Try YYYY-MM-DD pattern first (e.g. trade-proposal-DTLA-2026-06-04)
+                import re
+                m = re.search(r"(\d{4}-\d{2}-\d{2})", stem)
+                if m:
+                    date_str = m.group(1)
+                else:
+                    # Try YYYYMMDD (e.g. prospect_dm-...-20260601-072044)
+                    parts = stem.split("-")
+                    for part in parts:
+                        if len(part) == 8 and part.isdigit():
+                            date_str = f"{part[:4]}-{part[4:6]}-{part[6:8]}"
+                            break
+
+            summary = doc.get("summary", "")
+            if not summary:
+                ticker = doc.get("ticker", "")
+                side = doc.get("side", "")
+                if ticker and side:
+                    summary = f"{side} {ticker}"
+                elif kind:
+                    summary = kind.replace("_", " ")
+                else:
+                    summary = p.stem[:80]
+            if len(summary) > 150:
+                summary = summary[:147] + "…"
+
+            ev_id = doc.get("id", p.stem)
+            if ev_id in seen_ids:
+                continue
+            seen_ids.add(ev_id)
+
+            out.append(DecisionEvent(
+                id=ev_id,
+                kind=kind,
+                date=date_str,
+                summary=summary.strip(),
+                status=status,
+                url=f"/gate/{slug}/{ev_id}" if status == "pending" else "",
+            ))
+
+    # Scan active queues first (most relevant)
+    _scan(root / "queues" / "gates", "pending")
+    _scan(root / "inbox" / "decisions", "approved")
+    _scan(root / "queues" / "gates" / ".processed", "executed")
+    _scan(root / "inbox" / "decisions" / ".processed", "executed")
+
+    # Sort newest first by date, ties broken by status priority
+    status_prio = {"pending": 0, "approved": 1, "executed": 2}
+    out.sort(key=lambda e: (e.date, status_prio.get(e.status, 3)), reverse=True)
+    return out

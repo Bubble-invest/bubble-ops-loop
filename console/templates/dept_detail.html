@@ -55,6 +55,29 @@
 </aside>
 {% endif %}
 
+{# Session en direct — live view of this dept's agent. Moved to top per
+   Joris 2026-06-09: most important real-time signal belongs first. #}
+<section style="margin-bottom:32px;">
+  <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
+    <h2 class="section-title" style="margin:0;">Session en direct</h2>
+    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
+      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
+      live &middot; rafraîchi toutes les 5 s
+    </span>
+  </div>
+  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
+    Ce que {{ dept.display_name }} fait en ce moment — messages et
+    actions, le plus récent en haut.
+  </p>
+  <div id="dept-session"
+       hx-get="/dept/{{ dept.slug }}/session"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
+  </div>
+</section>
+<style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
+
 {# ─── Son mandat ────────────────────────────────────────────────
    One-line mandate shown plainly first (human-readable), then the
    full MANDATE.md as a collapsible for audit (Joris msg 1071). #}
@@ -313,18 +336,17 @@
   {% endif %}
 </section>
 
-{# ─── Historique des boucles ─────────────────────────────────────
-   One entry per active day, with every output file clickable to read
-   in-browser — empty runs shown too (Joris msg 1168, 2026-06-01). #}
+{# ─── Historique des boucles + décisions ──────────────────────────
+   Compact by default: recent 7 days expanded, older collapsed.
+   Decision timeline surfaces Joris's approvals/rejections per day.
+   Joris msg 1168 (2026-06-01) + compact redesign 2026-06-09. #}
 <section class="cabinet-section" aria-labelledby="dept-history-heading">
   <h2 id="dept-history-heading" class="section-heading">
     <span class="section-heading-number">4.</span>
     Historique des boucles
   </h2>
 
-  {# ─── Filet de sécurité (loop-backup) ──────────────────────────────
-     The twice-daily backup timer's verdict per dept: loop alive → skip,
-     loop dead/parked → one backup tick. Joris msg 1171, 2026-06-01. #}
+  {# ─── Filet de sécurité (loop-backup) ────────────────────────────── #}
   <div class="backup-net">
     <div class="backup-net-head">
       <span class="backup-net-title">Filet de sécurité</span>
@@ -354,54 +376,129 @@
     {% endif %}
   </div>
 
+  {# ─── Décisions ─────────────────────────────────────────────────── #}
+  {% if decision_events %}
+    <details class="decision-timeline-details" open>
+      <summary class="decision-timeline-summary">
+        {{ decision_events|length }} décision{{ 's' if decision_events|length != 1 else '' }}
+        <span class="decision-timeline-sub">historique des approbations et rejets</span>
+      </summary>
+      <div class="decision-timeline">
+        {% for ev in decision_events[:30] %}
+          <div class="decision-event decision-event--{{ ev.status }}">
+            <span class="decision-event-date">{{ ev.date }}</span>
+            <span class="decision-event-status decision-status--{{ ev.status }}">{{ ev.status }}</span>
+            <span class="decision-event-kind">{{ ev.kind | replace('_', ' ') }}</span>
+            <span class="decision-event-summary">{{ ev.summary[:120] }}{% if ev.summary|length > 120 %}…{% endif %}</span>
+            {% if ev.url %}
+              <a class="decision-event-link" href="{{ ev.url }}">→</a>
+            {% endif %}
+          </div>
+        {% endfor %}
+        {% if decision_events|length > 30 %}
+          <p class="muted-italic" style="text-align:center;margin-top:8px;">… et {{ decision_events|length - 30 }} décision{{ 's' if decision_events|length - 30 != 1 else '' }} plus ancienne{{ 's' if decision_events|length - 30 != 1 else '' }}</p>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+
+  {# ─── Boucles — compact, recent 7 days expanded ─────────────────── #}
   {% if loop_runs %}
     <ul class="loop-runs">
       {% for run in loop_runs %}
-        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
-          <div class="loop-run-head">
-            <span class="loop-run-date">{{ run.date }}</span>
-            {% if run.total_rounds is not none %}
-              <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
-            {% endif %}
-            {% if run.is_empty %}
-              <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
-            {% endif %}
-          </div>
-
-          {% for layer in run.layers %}
-            <div class="loop-layer">
-              <div class="loop-layer-head">
-                <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
-                {% if layer.last_run %}
-                  <span class="loop-layer-time">{{ layer.last_run }}</span>
+        {% set is_recent = loop.index <= 7 %}
+        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}{% if not is_recent %} loop-run--compact{% endif %}">
+          {% if is_recent %}
+            {# Recent: expanded by default — show layer summary line + full details #}
+            <details class="loop-run-toggle" open>
+              <summary class="loop-run-head">
+                <span class="loop-run-date">{{ run.date }}</span>
+                {% if run.total_rounds is not none %}
+                  <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
                 {% endif %}
-                {% if layer.rounds %}
-                  <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
-                {% endif %}
-              </div>
-              {% if layer.files %}
-                <ul class="loop-files">
-                  {% for of in layer.files %}
-                    <li>
-                      <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
-                        {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
-                      </a>
-                    </li>
+                <span class="loop-run-badges">
+                  {% for layer in run.layers %}
+                    <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
                   {% endfor %}
-                </ul>
-              {% else %}
-                <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
-              {% endif %}
-            </div>
-          {% endfor %}
+                </span>
+                {% if run.is_empty %}
+                  <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
+                {% endif %}
+              </summary>
 
-          {% if run.extra_files %}
-            <div class="loop-extra">
-              <span class="loop-extra-label">Journal de boucle :</span>
-              {% for of in run.extra_files %}
-                <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
+              {% for layer in run.layers %}
+                <div class="loop-layer">
+                  <div class="loop-layer-head">
+                    <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
+                    {% if layer.last_run %}
+                      <span class="loop-layer-time">{{ layer.last_run }}</span>
+                    {% endif %}
+                    {% if layer.rounds %}
+                      <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
+                    {% endif %}
+                  </div>
+                  {% if layer.files %}
+                    <ul class="loop-files">
+                      {% for of in layer.files %}
+                        <li>
+                          <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
+                            {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
+                          </a>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
+                  {% endif %}
+                </div>
               {% endfor %}
-            </div>
+
+              {% if run.extra_files %}
+                <div class="loop-extra">
+                  <span class="loop-extra-label">Journal de boucle :</span>
+                  {% for of in run.extra_files %}
+                    <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </details>
+          {% else %}
+            {# Older: collapsed one-line summary #}
+            <details class="loop-run-toggle">
+              <summary class="loop-run-head loop-run-head--compact">
+                <span class="loop-run-date">{{ run.date }}</span>
+                {% if run.total_rounds is not none %}
+                  <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
+                {% endif %}
+                <span class="loop-run-badges">
+                  {% for layer in run.layers %}
+                    <span class="loop-badge loop-badge--run" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
+                  {% endfor %}
+                </span>
+              </summary>
+
+              {% for layer in run.layers %}
+                <div class="loop-layer">
+                  <div class="loop-layer-head">
+                    <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
+                    {% if layer.last_run %}
+                      <span class="loop-layer-time">{{ layer.last_run }}</span>
+                    {% endif %}
+                  </div>
+                  {% if layer.files %}
+                    <ul class="loop-files">
+                      {% for of in layer.files %}
+                        <li>
+                          <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
+                            {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
+                          </a>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </details>
           {% endif %}
         </li>
       {% endfor %}
@@ -414,7 +511,7 @@
   {% endif %}
 </section>
 
-<p>
+<p style="margin-top:12px;">
   <a href="/settings/{{ dept.slug }}" class="discreet-link">Ajuster ses réglages →</a>
 </p>
 
@@ -464,29 +561,5 @@
   </details>
 </section>
 {% endif %}
-
-{# Session en direct — live view of this dept's agent (same feed as the
-   concierges). Raw PTY is discarded (script -> /dev/null), so we tail the
-   session transcript. Newest-first; HTMX re-fetches every 5s. #}
-<section style="margin-top:32px;">
-  <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
-    <h2 class="section-title" style="margin:0;">Session en direct</h2>
-    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
-      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
-      live &middot; rafraichi toutes les 5 s
-    </span>
-  </div>
-  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
-    Ce que {{ dept.display_name }} fait en ce moment &mdash; messages et
-    actions, le plus recent en haut.
-  </p>
-  <div id="dept-session"
-       hx-get="/dept/{{ dept.slug }}/session"
-       hx-trigger="load, every 5s"
-       hx-swap="innerHTML">
-    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
-  </div>
-</section>
-<style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
 
 {% endblock %}
