@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built on Claude Code](https://img.shields.io/badge/built%20on-Claude%20Code-orange)](https://claude.ai)
-[![Tests](https://img.shields.io/badge/tests-270%20passed-green)]()
+[![Tests](https://github.com/Bubble-invest/bubble-ops-loop/actions/workflows/tests.yml/badge.svg)](https://github.com/Bubble-invest/bubble-ops-loop/actions)
 
 ---
 
