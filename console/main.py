@@ -54,7 +54,7 @@ def create_app() -> FastAPI:
     # Expose dept_registry + sidebar_agents for navigation ({{OPERATOR}} 2026-06-09)
     from console.services import dept_registry  # noqa: WPS433
     templates.env.globals["dept_registry"] = dept_registry
-    templates.env.globals["sidebar_agents"] = dept_registry.sidebar_agents()
+    templates.env.globals["sidebar_agents"] = dept_registry.sidebar_agents  # called fresh each render
     templates.env.filters["humanize_kind"] = humanize_kind
     templates.env.filters["humanize_risk"] = humanize_risk
     templates.env.filters["humanize_mode"] = humanize_mode

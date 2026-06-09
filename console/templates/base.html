@@ -35,7 +35,7 @@
 
       <nav class="sidebar-nav">
         <div class="sidebar-section-label">Équipe</div>
-        {% for agent in sidebar_agents %}
+        {% for agent in sidebar_agents() %}
           <a href="/dept/{{ agent.slug }}" class="sidebar-agent{% if dept is defined and dept and dept.slug == agent.slug %} sidebar-agent--active{% endif %}">
             <span class="sidebar-agent-dot"></span>
             <span class="sidebar-agent-name">{{ agent.display_name }}</span>
