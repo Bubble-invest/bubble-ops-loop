@@ -7,17 +7,14 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  {# Bureau de Cadre: Cormorant Garamond (display) + Source Sans 3 (body)
-     + JetBrains Mono (parcimonieux pour code/slugs). No Inter, no Roboto. #}
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet">
 
-  <link rel="stylesheet" href="/static/style.css?v=2026-06-05-layout-fix">
+  <link rel="stylesheet" href="/static/style.css?v=2026-06-09">
 
   <meta name="theme-color" content="#faf7f2">
   <style>
     :root { --paper: #faf7f2; --ink: #1a2b4a; --ochre: #b8804a; }
-    /* Inline papier crème background before stylesheet loads. */
     html, body { background: #faf7f2; }
   </style>
 
@@ -28,7 +25,6 @@
 </head>
 <body>
 
-  {# ─── Top bar (cabinet) ───────────────────────────────────────── #}
   <header class="topbar">
     <div class="topbar-inner">
       <a href="/" class="brand">
@@ -44,39 +40,26 @@
     </div>
   </header>
 
-  <div class="app-layout">
-    {# ─── Left sidebar — department navigation ──────────────────────── #}
-    <aside class="sidebar" aria-label="Départements">
-      <nav class="sidebar-nav">
-        <div class="sidebar-section-label">Équipe</div>
-        {% set all_depts = dept_registry.list_departments() if dept_registry else [] %}
-        {% for d in all_depts if d.is_live %}
-          <a href="/dept/{{ d.slug }}" class="sidebar-link{% if dept and dept.slug == d.slug %} sidebar-link--active{% endif %}">
-            <span class="sidebar-dot sidebar-dot--live" title="En ligne"></span>
-            {{ d.display_name }}
-          </a>
-        {% endfor %}
-        {% set eclore = all_depts | selectattr('is_live', 'equalto', false) | selectattr('is_ancien', 'equalto', false) | list %}
-        {% if eclore %}
-          <div class="sidebar-section-label">À l'éclosion</div>
-          {% for d in eclore %}
-            <a href="/dept/{{ d.slug }}" class="sidebar-link{% if dept and dept.slug == d.slug %} sidebar-link--active{% endif %}">
-              <span class="sidebar-dot sidebar-dot--eclosing" title="En éclosion"></span>
-              {{ d.display_name }}
-            </a>
-          {% endfor %}
-        {% endif %}
-      </nav>
-      <div class="sidebar-footer">
-        <a href="/" class="sidebar-link sidebar-link--home">← Le matin</a>
-        <a href="/agents" class="sidebar-link sidebar-link--home">Toute l'équipe</a>
-      </div>
-    </aside>
+  {% block dept_nav %}
+  {# Dept nav — only rendered when `dept` is in context (dept pages) #}
+  {% if dept is defined and dept %}
+  <nav class="dept-nav" aria-label="Départements">
+    <div class="dept-nav-inner">
+      {% set all_depts = dept_registry.list_departments() if dept_registry is defined else [] %}
+      {% for d in all_depts if d.is_live %}
+        <a href="/dept/{{ d.slug }}" class="dept-nav-link{% if dept.slug == d.slug %} dept-nav-link--active{% endif %}">
+          <span class="dept-nav-dot"></span>
+          {{ d.display_name }}
+        </a>
+      {% endfor %}
+    </div>
+  </nav>
+  {% endif %}
+  {% endblock %}
 
-    <main class="content">
-      {% block content %}{% endblock %}
-    </main>
-  </div>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
 
   <footer class="cabinet-footer">
     Cabinet d'éclosion — chaque arrivée passe par ce registre.
