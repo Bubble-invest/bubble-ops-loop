@@ -25,6 +25,13 @@
 </head>
 <body>
 
+  {# ─── Mobile menu toggle (CSS-only, no JS) ───────────────────── #}
+  <input type="checkbox" id="sidebar-toggle" class="sidebar-toggle-input" aria-hidden="true">
+  <label for="sidebar-toggle" class="sidebar-toggle-label" aria-label="Menu">
+    <span class="sidebar-toggle-icon"></span>
+  </label>
+  <label for="sidebar-toggle" class="sidebar-overlay"></label>
+
   <div class="app-shell">
     {# ─── Sidebar — agents + current tasks ────────────────────────── #}
     <aside class="sidebar" aria-label="Équipe">
