@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -517,11 +518,28 @@ def test_bootstrap_dept_sh_dry_run_refuses_to_wipe_non_tmp_target(tmp_path: Path
     For simplicity: we use a custom bootstrap-dept.sh wrapper that
     runs the real script with CLONE_PARENT pointed at the non-tmp dir
     by editing the line in-place via a sed temp copy.
+
+    NOTE: the clone dir must genuinely NOT be under /tmp/ for the guard to
+    fire. `tmp_path` is under /var/folders on macOS but UNDER /tmp on Linux CI,
+    so we can't use it here — we create the clone dir under $HOME instead (never
+    /tmp on either platform) and clean it up ourselves.
     """
-    clone_dir = tmp_path / "not-under-tmp"   # not /tmp/*
-    clone_dir.mkdir()
-    (clone_dir / "bubble-ops-canary").mkdir()
-    (clone_dir / "bubble-ops-canary" / "dummy.txt").write_text("hi", encoding="utf-8")
+    import tempfile as _tempfile
+    home_tmp = _tempfile.mkdtemp(prefix="bootstrap-wipe-test-", dir=str(Path.home()))
+    self_cleanup = home_tmp
+    try:
+        clone_dir = Path(home_tmp) / "not-under-tmp"   # guaranteed not /tmp/*
+        clone_dir.mkdir()
+        (clone_dir / "bubble-ops-canary").mkdir()
+        (clone_dir / "bubble-ops-canary" / "dummy.txt").write_text("hi", encoding="utf-8")
+        return _run_wipe_guard_assertions(tmp_path, clone_dir)
+    finally:
+        shutil.rmtree(self_cleanup, ignore_errors=True)
+
+
+def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
+    """Body of the wipe-refusal test, factored out so the clone dir (which must
+    live outside /tmp on both macOS and Linux) is cleaned up via try/finally."""
 
     # Make a patched copy of the script that defaults CLONE_PARENT to our
     # non-tmp dir (and ignores the env var so we can hit the unsafe branch).
