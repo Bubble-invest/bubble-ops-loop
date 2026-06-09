@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -517,11 +518,28 @@ def test_bootstrap_dept_sh_dry_run_refuses_to_wipe_non_tmp_target(tmp_path: Path
     For simplicity: we use a custom bootstrap-dept.sh wrapper that
     runs the real script with CLONE_PARENT pointed at the non-tmp dir
     by editing the line in-place via a sed temp copy.
+
+    NOTE: the clone dir must genuinely NOT be under /tmp/ for the guard to
+    fire. `tmp_path` is under /var/folders on macOS but UNDER /tmp on Linux CI,
+    so we can't use it here — we create the clone dir under $HOME instead (never
+    /tmp on either platform) and clean it up ourselves.
     """
-    clone_dir = tmp_path / "not-under-tmp"   # not /tmp/*
-    clone_dir.mkdir()
-    (clone_dir / "bubble-ops-canary").mkdir()
-    (clone_dir / "bubble-ops-canary" / "dummy.txt").write_text("hi", encoding="utf-8")
+    import tempfile as _tempfile
+    home_tmp = _tempfile.mkdtemp(prefix="bootstrap-wipe-test-", dir=str(Path.home()))
+    self_cleanup = home_tmp
+    try:
+        clone_dir = Path(home_tmp) / "not-under-tmp"   # guaranteed not /tmp/*
+        clone_dir.mkdir()
+        (clone_dir / "bubble-ops-canary").mkdir()
+        (clone_dir / "bubble-ops-canary" / "dummy.txt").write_text("hi", encoding="utf-8")
+        return _run_wipe_guard_assertions(tmp_path, clone_dir)
+    finally:
+        shutil.rmtree(self_cleanup, ignore_errors=True)
+
+
+def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
+    """Body of the wipe-refusal test, factored out so the clone dir (which must
+    live outside /tmp on both macOS and Linux) is cleaned up via try/finally."""
 
     # Make a patched copy of the script that defaults CLONE_PARENT to our
     # non-tmp dir (and ignores the env var so we can hit the unsafe branch).
@@ -626,18 +644,25 @@ def test_management_dept_yaml_has_daily_risk_audit_mission(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 def test_ops_claude_md_has_step_c_layer4_time_window(tmp_path: Path):
-    """G-2: Ops CLAUDE.md must contain the explicit 22:00 UTC Layer-4 dispatch branch."""
+    """G-2: Ops CLAUDE.md must wire Step C to the canonical dispatch helper (PR #47).
+
+    #47 moved the Layer-4 timing OUT of literal CLAUDE.md prose and INTO
+    `decide_dispatch` (the single fleet-wide source of truth for *when* each layer
+    fires), so the dept never hand-rolls the schedule. The CLAUDE.md must therefore
+    delegate to the helper and reference the L4 eligibility window (19:00 Paris),
+    rather than hardcode a literal '22:00' branch (the pre-#47 anti-pattern).
+    """
     root = _scaffold_ops(tmp_path)
     text = (root / "CLAUDE.md").read_text(encoding="utf-8")
 
-    assert "22:00" in text, (
-        "Ops CLAUDE.md must mention '22:00' (UTC dispatch window for Layer 4)"
+    assert "decide_dispatch" in text, (
+        "Ops CLAUDE.md must delegate Step C to the canonical decide_dispatch helper (PR #47)"
     )
-    assert ".last-run" in text, (
-        "Ops CLAUDE.md must mention '.last-run' (idempotency guard for Layer-4 dispatch)"
+    assert "19:00 Paris" in text, (
+        "Ops CLAUDE.md must reference the Layer-4 eligibility window (19:00 Paris)"
     )
-    assert "Layer 4" in text or "layer 4" in text.lower(), (
-        "Ops CLAUDE.md must mention 'Layer 4' in the dispatch branch"
+    assert "Layer 4" in text or "l4" in text.lower(), (
+        "Ops CLAUDE.md must mention Layer 4 in the dispatch description"
     )
 
 
