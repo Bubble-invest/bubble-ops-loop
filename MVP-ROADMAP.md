@@ -35,7 +35,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 
 - `claude-agent-morty.service` → still `active`. ExecStartPre/SOPS pattern unchanged.
 - `gh` on Morty → still **NOT installed**. Git auth = custom `git-credential-helper.sh` + `GITHUB_TOKEN`.
-- `vdk888/bubble-ops-fixture` → still does NOT exist. `vdk888/bubble-ops-loop` → still does NOT exist.
+- `Bubble-invest/bubble-ops-fixture` → still does NOT exist. `Bubble-invest/bubble-ops-loop` → still does NOT exist.
 - `/home/claude/depts/` → does not exist yet; will be created by `ops-loop-fixture.service` `ExecStartPre`.
 - Morty disk/RAM/Tailscale/systemd-timers → unchanged.
 - `/loop` semantics (built-in in v2.1.x, headless-tmux behavior unproven on Linux) → still the load-bearing unknown → **Step 4 dedicated smoke test stays**.
@@ -48,7 +48,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│             GitHub  vdk888/bubble-ops-fixture (PRIVATE)                 │
+│             GitHub  Bubble-invest/bubble-ops-fixture (PRIVATE)                 │
 │  dept.yaml (hierarchy + optional_domain_ledger:null)                    │
 │  templates/schemas/{dept,queue-item,gate-item,mgmt-export,directive}    │
 │  layers/{1,2,3,4}/PROMPT.md   .claude/agents/*.md   .claude/settings.json│
@@ -109,27 +109,27 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 - **Acceptance:** `dept.yaml` validates against `dept.schema.yaml`; every required field is present.
 - **Effort:** 1 h • **Risk:** Low • **Blocked by:** Step 0.
 
-### Step 2 — Create `vdk888/bubble-ops-fixture` (15 min)
+### Step 2 — Create `Bubble-invest/bubble-ops-fixture` (15 min)
 
 - **What:** From Mac:
   ```bash
-  gh repo create vdk888/bubble-ops-fixture --private \
+  gh repo create Bubble-invest/bubble-ops-fixture --private \
     --description "MVP fixture for bubble-ops-loop /loop pattern (Notion-aligned)"
-  git clone git@github.com:vdk888/bubble-ops-fixture
+  git clone git@github.com:Bubble-invest/bubble-ops-fixture
   ```
   Empty repo with just `README.md` + `.gitignore`. The full skeleton lands in Step 5.
 - **Why:** Repo URL is needed by Step 3 (token-scope widening).
-- **Acceptance:** `gh repo view vdk888/bubble-ops-fixture` returns 200; first commit lands.
+- **Acceptance:** `gh repo view Bubble-invest/bubble-ops-fixture` returns 200; first commit lands.
 - **Effort:** 15 min • **Blocked by:** Step 1.
 
 ### Step 3 — Widen Morty's GITHUB_TOKEN to include the fixture repo (15 min)
 
-- **What:** github.com → Settings → Developer settings → edit the existing PAT in `secrets.sops.env`. Add `vdk888/bubble-ops-fixture` to repo scope (fine-grained) OR confirm `repo` classic scope already covers it.
+- **What:** github.com → Settings → Developer settings → edit the existing PAT in `secrets.sops.env`. Add `Bubble-invest/bubble-ops-fixture` to repo scope (fine-grained) OR confirm `repo` classic scope already covers it.
 - **Verify on Morty:**
   ```bash
   ssh hetzner "sudo systemctl restart claude-agent-morty.service && sleep 5 && \
     sudo -u claude bash -c 'source /run/claude-agent/env && \
-    git ls-remote https://x-access-token:\$GITHUB_TOKEN@github.com/vdk888/bubble-ops-fixture.git'"
+    git ls-remote https://x-access-token:\$GITHUB_TOKEN@github.com/Bubble-invest/bubble-ops-fixture.git'"
   ```
 - **Why:** without push perm, loop can't commit and round-trip dies.
 - **Acceptance:** `git ls-remote` returns HEAD SHA.
@@ -189,7 +189,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 - **What:** Two files, scp'd to Morty (no pyinfra for MVP):
   1. `/etc/systemd/system/ops-loop-fixture.service` — clone of `claude-agent-morty.service` with:
      - `WorkingDirectory=/home/claude/depts/bubble-ops-fixture`
-     - `ExecStartPre=+/bin/sh -c 'test -d /home/claude/depts/bubble-ops-fixture || (mkdir -p /home/claude/depts && chown claude:claude /home/claude/depts && sudo -u claude git clone https://x-access-token:$(grep ^GITHUB_TOKEN /run/claude-agent/env | cut -d= -f2-)@github.com/vdk888/bubble-ops-fixture /home/claude/depts/bubble-ops-fixture)'`
+     - `ExecStartPre=+/bin/sh -c 'test -d /home/claude/depts/bubble-ops-fixture || (mkdir -p /home/claude/depts && chown claude:claude /home/claude/depts && sudo -u claude git clone https://x-access-token:$(grep ^GITHUB_TOKEN /run/claude-agent/env | cut -d= -f2-)@github.com/Bubble-invest/bubble-ops-fixture /home/claude/depts/bubble-ops-fixture)'`
      - `ExecStart=/bin/sh -c '/usr/bin/script -qfc "/home/claude/scripts/loop-autostart.sh" /dev/null'`
      - `Restart=always`, `RestartSec=5`
      - `EnvironmentFile=-/run/claude-agent/env`
@@ -228,7 +228,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
   EOF
   git add queues/ && git commit -m "test: first round-trip" && git push
   ```
-  Watch via: `ssh hetzner "tmux capture-pane -t ops-loop-fixture -p | tail -40"` and `gh api repos/vdk888/bubble-ops-fixture/commits --jq '.[0:5][] | {sha,message: .commit.message}'`.
+  Watch via: `ssh hetzner "tmux capture-pane -t ops-loop-fixture -p | tail -40"` and `gh api repos/Bubble-invest/bubble-ops-fixture/commits --jq '.[0:5][] | {sha,message: .commit.message}'`.
 - **Acceptance:** within ≤40 min (2 ticks worst-case):
   - `outputs/<date>/2/summary.md` exists on github
   - `outputs/<date>/2/artifacts/.gitkeep`, `logs.jsonl`, `.last-run` all present  *(the full 4-file schema)*
@@ -260,7 +260,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
   2. `sudo reboot` Morty → after boot, unit active + tmux session reachable within 60 s.
   3. Push malformed `dept.yaml` → loop writes `outputs/<date>/error.log`, does NOT exit; revert recovers.
   4. **Non-negotiables observable:**
-     - `gh api repos/vdk888/bubble-ops-fixture/contents/dept.yaml --jq .content | base64 -d | grep optional_domain_ledger` → present
+     - `gh api repos/Bubble-invest/bubble-ops-fixture/contents/dept.yaml --jq .content | base64 -d | grep optional_domain_ledger` → present
      - `gh api .../contents/tools` returns 200; `.../contents/skills` returns 200
      - `gh api .../contents/tests/run.sh` returns 200; running it locally exits 0
      - `gh api .../contents/queues/management` returns 200 (with `.gitkeep`)
@@ -381,7 +381,7 @@ mandate: |
   commits, pushes. No real-world side effects.
 
 owner:
-  github: vdk888
+  github: Bubble-invest
   telegram_user_id: "{{OPERATOR_CHAT_ID}}"
 
 # Notion §"Hiérarchie & visibilité cross-dept" — present from day 1 even for a leaf ops dept

@@ -222,4 +222,4 @@ python3 -m src.cli check --dept <dept_slug> --action runtime_read \
 - Notion v4 architecture page → `/tmp/notion_final.txt`, lines 563-725
 - GitHub App auth → https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app
 - Installation token endpoint → https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
-- MVP-ROADMAP v2 → `/Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/MVP-ROADMAP.md`
+- MVP-ROADMAP v2 → `./MVP-ROADMAP.md`

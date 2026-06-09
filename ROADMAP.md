@@ -2,7 +2,7 @@
 
 **Owner:** {{OPERATOR}} {{OPERATOR}} (founder) + Tony (CEO agent)
 **Builder:** Rick (R&D, Lab)
-**Repo target:** `git@github.com:vdk888/bubble-ops-loop.git` (TBD)
+**Repo target:** `git@github.com:Bubble-invest/bubble-ops-loop.git` (TBD)
 **Status:** Draft v1 — pending {{OPERATOR}} green-light (open questions §5)
 **Created:** 2026-05-20
 **Target ship date:** 2026-06-10 (3 weeks) — Maya operational on framework end-of-week-2
@@ -29,7 +29,7 @@
                          │ git pull│ git pull  │ git pull    │ git pull
                          ▼          ▼           ▼              ▼
                  ┌────────────────────────────────────────────────────────────────┐
-                 │   GitHub org `vdk888` — one repo per dept                       │
+                 │   GitHub org `Bubble-invest` — one repo per dept                       │
                  │   bubble-ops-loop          (template)                           │
                  │   bubble-ops-ben           ─┐                                   │
                  │   bubble-ops-maya          ─┼─ each contains:                   │
@@ -167,11 +167,11 @@ Each Cloud Routine runs this prelude:
 
 ```bash
 # pseudo-code; real impl in templates/routines/_dept_scan.py
-gh repo list vdk888 --json name --jq '.[].name' \
+gh repo list Bubble-invest --json name --jq '.[].name' \
   | grep '^bubble-ops-' \
   | grep -v '^bubble-ops-loop$' \
   | while read repo; do
-      git clone --depth 1 "git@github.com:vdk888/$repo" /tmp/$repo
+      git clone --depth 1 "git@github.com:Bubble-invest/$repo" /tmp/$repo
       yq '.subscribed_layers[]' /tmp/$repo/dept.yaml \
         | grep -q "^$LAYER_NUM$" && echo "$repo"
     done
@@ -341,7 +341,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 ## 5. Open Questions (numbered, blocking-marked)
 
 1. **[Phase 0, BLOCKING]** Repo name: `bubble-ops-loop` confirmed? Or `bubble-loop`, `bubble-ops-fabric`?
-2. **[Phase 0, BLOCKING]** GitHub org: stay on `vdk888` or move to `bubble-invest` org now to avoid rename later?
+2. **[Phase 0, BLOCKING]** GitHub org: stay on `Bubble-invest` or move to `bubble-invest` org now to avoid rename later?
 3. **[Phase 1]** Cloud Routines cost ceiling: what's the monthly Anthropic-bill budget for routines so Rick can size cadences? *Default if no answer:* assume 4 routines × 10 depts × daily layer-1/layer-4 + half-hourly layer-2/3 = budget-friendly.
 4. **[Phase 1]** Cloud Routines: register under {{OPERATOR}}'s personal Anthropic account or a Bubble Invest team account? Affects which token to use in `gh secret set`.
 5. **[Phase 2]** /loop cadence default: 20 min reasonable starting point for layer-2/3, or do specific depts need faster (Ben in trading hours)? *Default:* 20 min, per-dept override via `dept.yaml`.
@@ -415,7 +415,7 @@ After commit 10: open PR for Phase-1 routines (Cloud Routine registration is by-
 | `auth` skill (OOB email + SOPS secret setting) | `/Users/joris/.claude/skills/auth/SKILL.md` | Phase 4 Ben live execution + per-dept secret rotation |
 | Ben dashboard pattern | `/Users/joris/claude-workspaces/Ben_Fund/dashboard/` | Phase 4 console reuses kanban + HTMX patterns |
 | Maya webapp pattern | `/Users/joris/claude-workspaces/Maya_Sales/webapp/` | Phase 4 console gate-card UX |
-| Shared wiki (github-first) | `git@github.com:vdk888/bubble-shared-wiki.git` | each dept repo symlinks; nightly wiki-compile already works |
+| Shared wiki (github-first) | `git@github.com:Bubble-invest/bubble-shared-wiki.git` | each dept repo symlinks; nightly wiki-compile already works |
 | Heartbeats infra | `/Users/joris/claude-workspaces/Rick_RnD/monitoring/heartbeats.jsonl` | Cloud Routines emit heartbeats here |
 | Notion logbook (reader skill) | `~/.claude/skills/notion-reader/SKILL.md` | Maya/Ben Layer-1 data sources |
 | Subagent isolation spec | https://code.claude.com/docs/en/sub-agents | canonical reference; verify in Phase 0 fixture |
