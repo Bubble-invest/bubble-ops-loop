@@ -90,6 +90,56 @@ def live_departments() -> List[DeptSummary]:
     return [d for d in list_departments() if d.is_live]
 
 
+def sidebar_agents() -> list:
+    """Return live agents with latest activity summary for the sidebar."""
+    out = []
+    for d in live_departments():
+        summary = _latest_summary(d.slug)
+        out.append({
+            "slug": d.slug,
+            "display_name": d.display_name,
+            "summary": summary,
+        })
+    return out
+
+
+def _latest_summary(slug: str) -> str:
+    """Get the latest L1 summary line for a dept, or empty string."""
+    root = repo_path(slug)
+    if root is None:
+        return ""
+    out_dir = root / "outputs"
+    if not out_dir.exists():
+        return ""
+    dates = sorted(
+        [x.name for x in out_dir.iterdir() if x.is_dir() and x.name[:1].isdigit()],
+        reverse=True,
+    )
+    if not dates:
+        return ""
+    # Try L1 summary.md first
+    l1 = out_dir / dates[0] / "1" / "summary.md"
+    if l1.exists():
+        try:
+            text = l1.read_text(encoding="utf-8")
+            # Extract first substantive line (skip title lines starting with #)
+            for line in text.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line[:120]
+        except OSError:
+            pass
+    # Fallback: last heartbeat line
+    hb = out_dir / dates[0] / "heartbeat.log"
+    if hb.exists():
+        try:
+            last = hb.read_text().strip().split("\n")[-1]
+            return last[:120]
+        except OSError:
+            pass
+    return "En attente du premier cycle"
+
+
 def agents_a_eclore() -> List[DeptSummary]:
     """Depts mid-eclosure (NOT Live, NOT Cancelled, NOT Retired).
 

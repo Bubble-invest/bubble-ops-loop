@@ -51,9 +51,10 @@ def create_app() -> FastAPI:
     templates.env.globals["humanize_cadence"] = humanize_cadence
     templates.env.globals["shadow_autonomy_label"] = shadow_autonomy_label
     templates.env.globals["capitalize_fr"] = capitalize_fr
-    # Expose dept_registry for sidebar navigation (Joris 2026-06-09)
+    # Expose dept_registry + sidebar_agents for navigation (Joris 2026-06-09)
     from console.services import dept_registry  # noqa: WPS433
     templates.env.globals["dept_registry"] = dept_registry
+    templates.env.globals["sidebar_agents"] = dept_registry.sidebar_agents()
     templates.env.filters["humanize_kind"] = humanize_kind
     templates.env.filters["humanize_risk"] = humanize_risk
     templates.env.filters["humanize_mode"] = humanize_mode
