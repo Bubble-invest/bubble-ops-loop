@@ -1178,6 +1178,74 @@ code, .code {
   hyphens: auto;
 }
 
+/* ─── Mobile sidebar — CSS-only hamburger menu ──────────────────── */
+.sidebar-toggle-input { display: none; }
+.sidebar-toggle-label { display: none; }
+.sidebar-overlay { display: none; }
+
+@media (max-width: 768px) {
+  .app-shell { position: relative; }
+  .content { padding: 24px 16px 48px; }
+
+  .sidebar-toggle-label {
+    display: flex; align-items: center; justify-content: center;
+    position: fixed; top: 12px; left: 12px; z-index: 101;
+    width: 40px; height: 40px;
+    background: var(--ink); border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+  }
+  .sidebar-toggle-icon,
+  .sidebar-toggle-icon::before, .sidebar-toggle-icon::after {
+    display: block; width: 18px; height: 2px;
+    background: #e8ecf4; border-radius: 2px;
+    transition: transform 0.2s, opacity 0.2s;
+  }
+  .sidebar-toggle-icon { position: relative; }
+  .sidebar-toggle-icon::before, .sidebar-toggle-icon::after {
+    content: ""; position: absolute; left: 0;
+  }
+  .sidebar-toggle-icon::before { top: -5px; }
+  .sidebar-toggle-icon::after  { top:  5px; }
+
+  .sidebar-toggle-input:checked ~ .sidebar-toggle-label .sidebar-toggle-icon {
+    background: transparent;
+  }
+  .sidebar-toggle-input:checked ~ .sidebar-toggle-label .sidebar-toggle-icon::before {
+    transform: translateY(5px) rotate(45deg);
+  }
+  .sidebar-toggle-input:checked ~ .sidebar-toggle-label .sidebar-toggle-icon::after {
+    transform: translateY(-5px) rotate(-45deg);
+  }
+
+  .sidebar {
+    position: fixed; top: 0; left: 0;
+    width: 280px; min-width: 280px;
+    height: 100vh; height: 100dvh;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+    overflow-y: auto;
+  }
+  .sidebar-toggle-input:checked ~ .app-shell .sidebar {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed; inset: 0; z-index: 99;
+    background: rgba(0,0,0,0.35);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .sidebar-toggle-input:checked ~ .sidebar-overlay {
+    opacity: 1; pointer-events: auto;
+  }
+
+  .topbar { display: none; }
+}
+
 @media (max-width: 720px) {
   .content { padding: 36px 22px 60px; }
   .carnet-header { flex-direction: column; align-items: flex-start; }
