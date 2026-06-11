@@ -865,6 +865,44 @@ def _resolve_is_structural():
     return _fallback
 
 
+# ─── Vendored, canonical-sourced paths a dept must NEVER push (2026-06-11) ──
+#
+# `scripts/lib/**` (dispatch_helpers.py + its sibling tests) is VENDORED into
+# every dept from the framework repo by scripts/sync-dispatch-lib.sh and
+# re-synced at restart. It is NOT in any dept's `allowed_paths`
+# (outputs/queues/inbox/...) — by design: the canonical copy lives in
+# bubble-ops-loop and changes there via a human-merged PR, never a dept push.
+#
+# The gap this closes: `_is_structural` (the runtime/structural split below)
+# only flags the SHARED mission globs. `scripts/lib/**` is structural ONLY in
+# the framework repo (FRAMEWORK_STRUCTURAL_PATH_GLOBS), so in a DEPT repo it is
+# neither structural NOR runtime-allowed. force_commit_and_push therefore used
+# to classify a re-vendored scripts/lib/ change as "runtime", stage+commit it,
+# and the guard then DENIED the dept's whole next push ("path scripts/lib/... not
+# in allowed_paths") — stranding every runtime commit behind it. Poisoned Tony's
+# loop on 2026-06-11. We skip these paths from the runtime push entirely; the
+# vendored files stay correct on disk (the loop imports them) and are owned by
+# the framework PR flow, not the dept.
+_VENDORED_NONPUSHABLE_GLOBS = (
+    "scripts/lib/**",
+)
+
+
+def _is_vendored_nonpushable(path: str) -> bool:
+    """True if `path` is a vendored, canonical-sourced file a dept must not push
+    (currently scripts/lib/**). Kept separate from _is_structural because the
+    remedy differs: structural -> propose-settings-pr; vendored -> leave it to the
+    framework sync (no dept action at all)."""
+    for g in _VENDORED_NONPUSHABLE_GLOBS:
+        if g.endswith("/**"):
+            base = g[:-3]
+            if path == base or path.startswith(base + "/"):
+                return True
+        elif path == g:
+            return True
+    return False
+
+
 def force_commit_and_push(
     repo_dir: Path,
     message: str,
@@ -958,10 +996,17 @@ def force_commit_and_push(
     _is_struct = _resolve_is_structural()
     runtime_paths = []
     skipped_structural = []
+    skipped_vendored = []
     for c in changed:
         path = c.split(" -> ")[-1] if " -> " in c else c
         if _is_struct(path):
             skipped_structural.append(path)
+        elif _is_vendored_nonpushable(path):
+            # Vendored canonical lib (scripts/lib/**) — owned by the framework
+            # sync, never a dept push. Skipping it here is what stops the
+            # "scripts/lib/... not in allowed_paths" guard DENY that strands the
+            # whole runtime push behind it (Tony, 2026-06-11).
+            skipped_vendored.append(path)
         else:
             runtime_paths.append(path)
     if skipped_structural:
@@ -969,6 +1014,12 @@ def force_commit_and_push(
             "[force_commit_and_push] NOT staging structural file(s) for the "
             "runtime push (route via propose-settings-pr): "
             + ", ".join(sorted(set(skipped_structural)))
+        )
+    if skipped_vendored:
+        print(
+            "[force_commit_and_push] NOT staging vendored canonical file(s) for "
+            "the runtime push (owned by scripts/sync-dispatch-lib.sh): "
+            + ", ".join(sorted(set(skipped_vendored)))
         )
     if not runtime_paths:
         # Only structural changes pending — nothing for the runtime push to do.
