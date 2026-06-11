@@ -64,6 +64,7 @@ github_access:
         - queues/**
         - inbox/**
         - WORKING_MEMORY.md   # transient topics / current focus (Part A, 2026-06-01).
+        - whiteboard.yaml     # L4 cockpit KPI cards — runtime data written every L4 debrief (Tony 2026-06-09).
                               # THE place the agent records ad-hoc, time-bound items
                               # (e.g. "watch SpaceX IPO") instead of editing its
                               # mission files. Mission files are structural -> agent
