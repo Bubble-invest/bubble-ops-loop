@@ -451,7 +451,19 @@ def build_dispatch_ctx(
         "today": today,
         "today_dir": str(today_dir),
         "has_research_items": _queue_has_items(repo / "queues" / "research"),
-        "has_inbox_decisions": _queue_has_items(repo / "queues" / "inbox" / "decisions"),
+        # Approved decisions land in the dept top-level `inbox/decisions/`
+        # — that is where the cockpit approve-click writes (console
+        # github_reader.write_decision) and where Layer 3 reads + archives to
+        # `.processed/`. The original `queues/inbox/decisions/` path exists on
+        # NO dept on disk, so has_inbox_decisions was ALWAYS False and C.3
+        # (Layer 3) NEVER fired from the live loop — every approved trade was
+        # stranded until the once-daily backup floor cron forced an L3 tick
+        # (root cause of the recurring DTLA "missed its window", 2026-06-04 to 09).
+        # Check both paths so the fix is robust to either inbox layout.
+        "has_inbox_decisions": (
+            _queue_has_items(repo / "inbox" / "decisions")
+            or _queue_has_items(repo / "queues" / "inbox" / "decisions")
+        ),
         "layer_1_last_run_today": read_last_run(today_dir / "1"),
         "layer_2_last_run_today": read_last_run(today_dir / "2"),
         "layer_3_last_run_today": read_last_run(today_dir / "3"),
@@ -541,8 +553,17 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     ):
         return "layer_4"
 
-    # C.3 — Layer 3: time reached AND inbox decisions waiting (re-fireable).
-    if _time_reached(now_paris_t, 3) and has_decisions:
+    # C.3 — Layer 3: an APPROVED decision is waiting. Eligible from L1's
+    # morning floor (07:00 Paris, _LAYER_MIN_TIME[1]) rather than the fixed
+    # 16:00 L3 gate, so an approved trade reaches the executor at ITS market's
+    # open — not hours later. Safe because L3 runs its OWN arm-state fence +
+    # market-open + slippage/news pre-flight (PROMPT STEP 0ter / validate) and
+    # defers WITHOUT a broker call when the venue is shut. The old 16:00 Paris
+    # gate left almost no window for LSE names (LSE closes 17:30 Paris) which —
+    # together with the has_inbox_decisions path bug fixed above — is why
+    # approved trades kept lapsing unexecuted. C.3 still ranks ABOVE C.2, so an
+    # approved trade always outranks the research queue.
+    if _time_reached(now_paris_t, 1) and has_decisions:
         return "layer_3"
 
     # C.2 — Layer 2: time reached AND research queue has items (re-fireable).

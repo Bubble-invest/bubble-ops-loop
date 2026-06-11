@@ -251,6 +251,76 @@ def test_incident_ebb03972_l1_already_ran_empty_queues_is_heartbeat(tmp_path: Pa
     )
 
 
+# ── Layer-3 path bug + morning-floor eligibility (Ben CRITICAL, 2026-06-11) ──
+#
+# REAL INCIDENT — Ben's L3 "never fires from the live loop". build_dispatch_ctx
+# scanned `queues/inbox/decisions/`, but the cockpit approve-click writes to the
+# dept TOP-LEVEL `inbox/decisions/` (console github_reader.write_decision), and
+# that is the ONLY path that exists on disk for every dept. So has_inbox_decisions
+# was permanently False -> C.3 never fired from /loop -> approved trades stranded
+# until the once-daily backup floor cron forced an L3 tick (root of the recurring
+# DTLA "missed its window", 2026-06-04..09). The fix reads the real top-level path
+# (and keeps the old one as a fallback), and lets an APPROVED decision fire L3
+# from L1's morning floor so the trade reaches the executor at its market's open
+# instead of waiting for the fixed 16:00 gate.
+
+
+def _mk_repo_real_inbox(tmp_path: Path) -> Path:
+    """Like _mk_repo but ALSO creates the real top-level inbox/decisions/ —
+    the path the cockpit actually writes to (console github_reader)."""
+    repo = _mk_repo(tmp_path)
+    (repo / "inbox" / "decisions").mkdir(parents=True)
+    (repo / "inbox" / "decisions" / ".gitkeep").write_text("")
+    return repo
+
+
+def test_build_ctx_reads_top_level_inbox_decisions(tmp_path: Path):
+    """A decision in the REAL `inbox/decisions/` must set has_inbox_decisions.
+
+    Red against the old build_dispatch_ctx (which only scanned
+    `queues/inbox/decisions/`), green after the fix. This is the exact byte that
+    kept Ben's Layer 3 dark."""
+    repo = _mk_repo_real_inbox(tmp_path)
+    (repo / "inbox" / "decisions" / "gate-42.yaml").write_text("decision: approve\n")
+    ctx = build_dispatch_ctx(repo, now_utc=NOON)
+    assert ctx["has_inbox_decisions"] is True, (
+        "decision in top-level inbox/decisions/ must be seen — its absence IS "
+        "the Ben L3-never-fires bug (2026-06-11)"
+    )
+
+
+def test_top_level_decision_fires_layer_3_from_morning_floor(tmp_path: Path):
+    """An approved decision must fire L3 from L1's morning floor (>=07:00 Paris),
+    not wait for the old 16:00 gate — so the trade hits its market's open.
+
+    MORNING is 08:00 Paris (after L1 floor, well before the old 16:00 L3 gate).
+    L1 has already fired this morning so it does not win the fall-through."""
+    repo = _mk_repo_real_inbox(tmp_path)
+    MORNING = datetime(2026, 6, 1, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    _fire(repo, 1, MORNING)  # morning floor satisfied
+    (repo / "inbox" / "decisions" / "gate-7.yaml").write_text("decision: approve\n")
+    ctx = build_dispatch_ctx(repo, now_utc=MORNING)
+    assert ctx["has_inbox_decisions"] is True
+    assert decide_dispatch(ctx) == "layer_3", (
+        "an approved decision must reach L3 from the morning floor, not wait for "
+        "16:00 Paris (Ben L3 timing fix, 2026-06-11)"
+    )
+
+
+def test_approved_decision_outranks_research_queue(tmp_path: Path):
+    """C.3 (L3) still ranks ABOVE C.2 (L2): with BOTH a research item and an
+    approved decision waiting after the morning floor, L3 wins."""
+    repo = _mk_repo_real_inbox(tmp_path)
+    MORNING = datetime(2026, 6, 1, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    _fire(repo, 1, MORNING)
+    (repo / "queues" / "research" / "warming-1.yaml").write_text("kind: warming_task\n")
+    (repo / "inbox" / "decisions" / "gate-9.yaml").write_text("decision: approve\n")
+    ctx = build_dispatch_ctx(repo, now_utc=MORNING)
+    assert ctx["has_research_items"] is True
+    assert ctx["has_inbox_decisions"] is True
+    assert decide_dispatch(ctx) == "layer_3"
+
+
 def test_incident_ebb03972_refires_only_after_a_full_cycle(tmp_path: Path):
     """Companion to the ebb03972 regression: once L1 has run, it re-fires only
     after L2/L3/L4 EACH complete a round since L1's baseline — not before."""
