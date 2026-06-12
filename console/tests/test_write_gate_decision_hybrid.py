@@ -85,3 +85,100 @@ def test_local_dept_gh_api_failure_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
     out = github_reader.write_gate_decision("content", "gate-9", {"decision": "approve"})
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# QA-requested extra coverage (B5): injection-safety, GITHUB_ORG resolution,
+# re-approval of an existing path (422 → None).
+# ---------------------------------------------------------------------------
+
+
+def test_local_gate_id_special_chars_stays_a_discrete_argv_element(tmp_path, monkeypatch):
+    """A gate_id with shell-significant / unicode characters must travel as a
+    DISCRETE argv element to gh — never interpolated into a shell string — so it
+    can't break out of the command (no shell=True, no injection). We assert the
+    crafted gate_id appears verbatim inside exactly one argv element (the contents
+    API path) and that no element is a shell metacharacter expansion."""
+    monkeypatch.setattr("console.services.dept_registry.get_department",
+                        lambda slug: _fake_dept("content", "local"))
+    captured = {}
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        # The cockpit must NEVER hand gh a shell string; cmd must be a list (argv)
+        # and the call must not request shell interpretation.
+        assert isinstance(cmd, list), "command must be an argv list, not a shell string"
+        assert k.get("shell", False) is False, "must not run with shell=True"
+        class R:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
+    # Colon + spaces + a backtick + a unicode char + a would-be command separator.
+    nasty = "evil:id `whoami`; rm -rf / é"
+    out = github_reader.write_gate_decision("content", nasty, {"decision": "approve"})
+
+    assert out is not None
+    cmd = captured["cmd"]
+    # The path argument is the gh contents path; the raw gate_id must live inside
+    # exactly that ONE element, intact, and not be split across argv elements.
+    path_args = [c for c in cmd if "contents/inbox/decisions/" in c]
+    assert len(path_args) == 1, f"gate_id path must be a single argv element: {cmd}"
+    assert nasty in path_args[0], "gate_id must be passed verbatim, not shell-mangled"
+    # And no argv element is the dangerous fragment on its own (i.e. the shell
+    # never had a chance to split it) — the whole nasty string is contained.
+    assert "whoami" not in [c.strip() for c in cmd if c.strip() != path_args[0]]
+
+
+def test_local_github_org_resolution_uses_settings_value(tmp_path, monkeypatch):
+    """The gh api contents path must be built from settings.GITHUB_ORG, so a
+    custom org (e.g. a client's Cabinet org) is honoured — not a hardcoded one."""
+    monkeypatch.setattr("console.services.dept_registry.get_department",
+                        lambda slug: _fake_dept("content", "local"))
+    # Patch GITHUB_ORG on the EXACT settings module object that the already-
+    # imported github_reader references (github_reader.settings), not via a
+    # dotted-string path. The `app`/`client` fixtures purge + re-import all
+    # console.* modules between tests, so a string path can resolve to a fresh
+    # module object that github_reader doesn't actually use at call time — this
+    # binds the patch to the live object, making the test isolation-proof.
+    monkeypatch.setattr(github_reader.settings, "GITHUB_ORG", "Bubble-invest-custom")
+    captured = {}
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        class R:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
+    out = github_reader.write_gate_decision("content", "gate-org", {"decision": "approve"})
+
+    assert out is not None
+    joined = " ".join(captured["cmd"])
+    assert "repos/Bubble-invest-custom/bubble-ops-content/contents/" in joined, joined
+    # the default org must NOT leak through when overridden
+    assert "repos/vdk888/" not in joined
+
+
+def test_local_reapproval_existing_path_422_returns_none(tmp_path, monkeypatch):
+    """Re-approving a gate whose decision file already exists: a PUT without the
+    blob sha returns HTTP 422 (gh exits non-zero). write_gate_decision must
+    return None — neither fake a success nor crash."""
+    monkeypatch.setattr("console.services.dept_registry.get_department",
+                        lambda slug: _fake_dept("content", "local"))
+
+    def fake_run(cmd, *a, **k):
+        class R:
+            returncode = 1  # gh api surfaces a 422 as a non-zero exit
+            stdout = ""
+            stderr = ('{"message":"Invalid request.\\n\\n'
+                      '\\"sha\\" wasn\'t supplied.","status":"422"}')
+        return R()
+
+    monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
+    out = github_reader.write_gate_decision("content", "gate-existing", {"decision": "approve"})
+    assert out is None, "a 422 (file exists, no sha) must return None, not a fake success"
