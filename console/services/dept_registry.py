@@ -28,6 +28,8 @@ class DeptSummary:
     status: str
     validated_steps: List[str]
     total_steps: int = 6  # 6 work-steps per state.schema.yaml
+    host: str = "vps"  # "vps" | "local" — where the dept's loop runs (Hybrid
+    # local/VPS agent, 2026-06-11). Absent in STATE.yaml → "vps" (back-compat).
 
     @property
     def percent_complete(self) -> int:
@@ -82,6 +84,8 @@ def list_departments() -> List[DeptSummary]:
             display_name=state.get("display_name", slug),
             status=state.get("status", "Idea"),
             validated_steps=list(state.get("validated_steps", [])),
+            # Hybrid local/VPS agent (2026-06-11): absent → "vps" (back-compat).
+            host=state.get("host", "vps"),
         ))
     return out
 

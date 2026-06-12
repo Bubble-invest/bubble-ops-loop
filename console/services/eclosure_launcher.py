@@ -101,8 +101,16 @@ def render_systemd_unit(slug: str) -> str:
     template = SYSTEMD_TEMPLATE_PATH.read_text(encoding="utf-8")
     telegram_state_dir = str(TELEGRAM_STATE_PARENT / f"telegram-{slug}")
     env_file = f"/run/claude-agent-{slug}/env"
+    # DEPT_SLUG_UPPER = slug upper-cased with '-'→'_' — MUST match the CLI path
+    # (deploy-to-morty.sh: `tr '[:lower:]-' '[:upper:]_'`) so the env var name
+    # GITHUB_APP_INSTALLATION_ID_<UPPER> the broker reads is identical whether a
+    # dept is launched from the cockpit (this renderer) or the CLI. Without it
+    # ${DEPT_SLUG_UPPER} survived rendering and a cockpit-launched dept shipped a
+    # malformed env name (test_eclosure_launcher_v2 placeholder failures).
+    slug_upper = slug.upper().replace("-", "_")
     rendered = (
         template
+        .replace("${DEPT_SLUG_UPPER}", slug_upper)
         .replace("${DEPT_SLUG}", slug)
         .replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
         .replace("${ENV_FILE}", env_file)
