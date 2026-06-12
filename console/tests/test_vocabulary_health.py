@@ -28,12 +28,20 @@ def test_health_uses_pas_encore_commence_for_never(client):
     # v1 stub returns 'never' for every cell, which we translate.
     assert "pas encore commencé" in body, \
         "stub 'never' cells must read 'pas encore commencé'"
-    # And the bare 'never' label must be gone from visible copy.
-    body_lower = body.lower()
+    # And the bare 'never' label must be gone from VISIBLE copy. Strip the
+    # non-visible parts first: HTML comments, plus <script>/<style> blocks and
+    # Jinja comments — the word "never" legitimately appears in JS/Jinja CODE
+    # COMMENTS inside inline <script> (e.g. "...so it never goes blank"), which
+    # the operator never reads. (Without stripping these, the test false-fails on
+    # a code comment even though the rendered FR copy is correct.)
     import re
-    visible = re.sub(r"<!--.*?-->", "", body_lower, flags=re.DOTALL)
+    visible = body.lower()
+    visible = re.sub(r"<!--.*?-->", "", visible, flags=re.DOTALL)
+    visible = re.sub(r"<script\b.*?</script>", "", visible, flags=re.DOTALL)
+    visible = re.sub(r"<style\b.*?</style>", "", visible, flags=re.DOTALL)
+    visible = re.sub(r"\{#.*?#\}", "", visible, flags=re.DOTALL)
     assert "never" not in visible, \
-        "no 'never' label in visible copy"
+        "no 'never' label in visible copy (rendered text must be French)"
 
 
 def test_health_footer_explains_live_source(client):

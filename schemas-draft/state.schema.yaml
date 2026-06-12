@@ -126,6 +126,22 @@ properties:
     description: |
       Slug/name of the operator who validated the most recent step.
       Optional - absent until at least one step is validated.
+  host:
+    type: string
+    enum:
+      - vps
+      - local
+    description: |
+      Where this dept's bubble-ops-loop runtime runs (Hybrid local/VPS agent,
+      Joris 2026-06-11). Optional + additive — ABSENT means "vps" (back-compat:
+      every existing dept runs on the VPS).
+        vps    — runs headless on the tenant VPS via systemd (the default).
+        local  — runs on a local machine (e.g. Miranda on Jade's Mac, to use
+                 real Chrome tabs / local apps) via launchd/cron. Still a
+                 first-class team member: its repo pushes to GitHub so the
+                 cockpit reads its state/gates/heartbeat the same way; its /loop
+                 runs the SAME framework, just on a different host. The cockpit
+                 treats `local` host-aware (no VPS systemd heartbeat expected).
   commits:
     type: array
     items:
