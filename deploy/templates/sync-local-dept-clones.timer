@@ -1,0 +1,22 @@
+# /etc/systemd/system/sync-local-dept-clones.timer
+# Fires sync-local-dept-clones.service every ~15 minutes so the cockpit's view
+# of host:local depts (gates / state / heartbeat) stays current.
+# Configurable: change OnUnitActiveSec to adjust the cadence.
+[Unit]
+Description=Bubble Ops host:local dept mirror-sync timer (every 15 min)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+After=network-online.target
+
+[Timer]
+# First run shortly after boot (let the network come up).
+OnBootSec=3min
+# Then every 15 minutes.
+OnUnitActiveSec=15min
+# Randomize by up to 60s to avoid a thundering herd against GitHub.
+RandomizedDelaySec=60
+# Catch up after downtime (e.g. VPS was off) on the next boot.
+Persistent=true
+Unit=sync-local-dept-clones.service
+
+[Install]
+WantedBy=timers.target
