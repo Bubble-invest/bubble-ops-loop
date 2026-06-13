@@ -22,10 +22,24 @@ pushes via the operator's own **`gh`/git credential**.
 
 | File | Role |
 |------|------|
-| `install-local-loop.sh` | Install the **main `/loop` runner** as a launchd agent (`com.bubble.ops-loop-<slug>`). The systemd-unit twin. |
-| `install-local-loop-backup.sh` | Install the **backup floor** as a launchd agent (`com.bubble.ops-loop-backup-<slug>`). The VPS loop-backup twin, for one local dept. |
+| `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
+| `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`). The VPS loop-backup twin, for one local dept. |
 | `local-loop-backup-runner.sh` | The per-tick body the backup agent runs: heartbeat-staleness check → force-tick the `/loop` only if stale. |
-| `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_plist` / `render_backup_plist`. |
+| `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
+
+### Main runner shape — persistent `--channels` session (KeepAlive), NOT a per-tick job
+
+The main runner is the **exact Mac twin of the VPS systemd dept unit**: a
+**persistent interactive** `claude --dangerously-skip-permissions --channels
+plugin:telegram@claude-plugins-official` session, run inside a **tmux** session
+(`ops-loop-<slug>` — a human can `tmux attach -t ops-loop-<slug>` to watch it
+live) by a generic **wrapper** that launchd **`KeepAlive`** supervises (restarts
+on crash). The dept's Telegram bot — its only channel to its owners — needs the
+interactive `--channels` binary; `claude -p` would lose the channel + hooks (VPS
+Ban #2). Loop **cadence** comes from the dept arming its **own `/loop` cron**
+inside the session (boot-rearm), exactly like the VPS depts — not from an
+external timer. The **backup floor** below remains a periodic `StartInterval`
+job (it's a stale-heartbeat backstop, not a session).
 
 Tests (run from repo root, no launchctl, no live machine):
 
@@ -46,35 +60,40 @@ effects.
 ## Install (on the Mac, only after re-audit PASS + Joris go — see MIRANDA-BUILD-SPEC P4)
 
 ```sh
-# Dry render first (writes plist, NO launchctl) — inspect it:
+# Dry render first (writes wrapper + plist, NO launchctl) — inspect them:
 deploy/local/install-local-loop.sh \
-    --dept-dir ~/claude-workspaces/Miranda_Content \
-    --slug content --interval 1200
+    --dept-dir ~/claude-workspaces/bubble-ops-content --slug content \
+    --claude-bin ~/.npm-global/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir ~/.claude/channels/telegram-socials
 
 deploy/local/install-local-loop-backup.sh \
-    --dept-dir ~/claude-workspaces/Miranda_Content \
+    --dept-dir ~/claude-workspaces/bubble-ops-content \
     --slug content --interval 10800 --stale-sec 5400
 
 # When ready, activate (loads the launchd agents):
-deploy/local/install-local-loop.sh        --dept-dir ... --slug content --activate
+deploy/local/install-local-loop.sh        --dept-dir ... --slug content ... --activate
 deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --activate
 ```
 
-Uninstall: `install-local-loop.sh --uninstall --slug content` (add `--activate`
-to also `launchctl unload`).
+Uninstall: `install-local-loop.sh --uninstall --slug content` (removes the plist
++ wrapper; add `--activate` to also `launchctl unload`).
 
-## Mac-asleep catch-up — handled by `StartInterval`, no special code
+## Mac-asleep catch-up — no special code
 
 When the Mac is closed/asleep through one or more scheduled windows and is then
-reopened, **launchd coalesces the missed `StartInterval` and fires it on wake.**
-Both plists use **`StartInterval`** (NOT `StartCalendarInterval`):
+reopened:
+
+- the **main runner** (KeepAlive) is relaunched on wake (RunAtLoad + KeepAlive),
+  so the persistent `/loop` session comes back up;
+- the **backup floor** uses **`StartInterval`** (NOT `StartCalendarInterval`), and
+  launchd **coalesces the missed `StartInterval` and fires it on wake**:
 
 - `StartInterval` = "run every N seconds; if a fire was missed while asleep, run
-  once on wake." → the loop always gets a tick shortly after the Mac reopens.
+  once on wake." → the backstop always gets a tick shortly after the Mac reopens.
 - `StartCalendarInterval` = "run at this wall-clock time." → a window that passed
   while asleep is **silently missed**. We deliberately avoid it.
 
-On that wake-fire the dept's existing `/loop` protocol does the catch-up itself —
+On wake the dept's existing `/loop` protocol does the catch-up itself —
 **no catch-up code is needed here**:
 
 1. **STEP A `safe_pull`** pulls anything merged while the Mac was asleep

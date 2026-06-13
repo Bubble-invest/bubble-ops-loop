@@ -17,9 +17,10 @@
 #   T1  install-local-loop.sh (no --activate) writes a plist + exits 0.
 #   T2  the plist parses (plutil -lint if present, else a key/XML sanity check).
 #   T3  it carries the right Label (com.bubble.ops-loop-<slug>).
-#   T4  it uses StartInterval (NOT StartCalendarInterval) — the wake-catch-up
-#       doctrine.
-#   T5  the ProgramArguments cd into the dept-dir and run claude.
+#   T4  the MAIN runner uses KeepAlive (persistent session), NOT StartInterval /
+#       StartCalendarInterval — the Mac twin of the VPS interactive --channels unit.
+#   T5  it installs + invokes a wrapper that runs `claude --channels telegram`
+#       inside tmux (the dept's Telegram channel), cd'ing into the dept-dir.
 #   T6  install-local-loop-backup.sh renders a valid backup plist with the
 #       backup Label + the runner invocation + StartInterval.
 #   T7  re-running the installer is idempotent (overwrites, still valid, exit 0).
@@ -56,9 +57,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 LA="$WORK/LaunchAgents"          # throwaway "LaunchAgents" dir
 LOGS="$WORK/logs"
+WRAP="$WORK/wrappers"            # throwaway wrapper dir
 DEPT="$WORK/agents/bubble-ops-content"; mkdir -p "$DEPT/outputs"
 SLUG="content"
-INTERVAL=1200
 
 # launchctl tripwire shim — if any installer calls launchctl WITHOUT --activate,
 # this records it and the test fails T9.
@@ -78,20 +79,27 @@ echo "== local-loop plist render tests =="
 # Main loop runner render (NO --activate)
 # -----------------------------------------------------------------------------
 out="$WORK/main.log"
-"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "$SLUG" --interval "$INTERVAL" \
-    --launch-agents-dir "$LA" --log-dir "$LOGS" --claude-bin /usr/bin/claude \
+"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "$SLUG" \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP" \
+    --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
     >"$out" 2>&1
 rc=$?
 PLIST="$LA/com.bubble.ops-loop-${SLUG}.plist"
+WRAPPER="$WRAP/ops-loop-${SLUG}-wrapper.sh"
 chk    "T1 install-local-loop (no --activate) exits 0" 0 "$rc"
 exists "T1b plist file written" "$PLIST"
+exists "T1c wrapper file written" "$WRAPPER"
 if valid_plist "$PLIST"; then echo "  PASS: T2 rendered plist is valid"; PASS=$((PASS+1)); else echo "  FAIL: T2 rendered plist INVALID"; FAIL=$((FAIL+1)); fi
 want   "T3 plist carries the right Label" "com.bubble.ops-loop-${SLUG}" "$PLIST"
-want   "T4 plist uses StartInterval"      "<key>StartInterval</key>"    "$PLIST"
-nowant "T4b plist does NOT use the StartCalendarInterval key" "<key>StartCalendarInterval</key>" "$PLIST"
-want   "T4c StartInterval value matches --interval" "<integer>${INTERVAL}</integer>" "$PLIST"
-want   "T5 ProgramArguments cd into the dept-dir"   "cd '${DEPT}'" "$PLIST"
-want   "T5b ProgramArguments run claude"            "claude" "$PLIST"
+want   "T4 MAIN runner uses KeepAlive"    "<key>KeepAlive</key>"        "$PLIST"
+nowant "T4b MAIN runner does NOT use StartInterval"          "<key>StartInterval</key>"         "$PLIST"
+nowant "T4c MAIN runner does NOT use StartCalendarInterval"  "<key>StartCalendarInterval</key>" "$PLIST"
+want   "T4d plist ProgramArguments points at the wrapper"    "ops-loop-${SLUG}-wrapper.sh" "$PLIST"
+want   "T5 wrapper cd's into the dept-dir"        "cd \"${DEPT}\"" "$WRAPPER"
+want   "T5b wrapper runs claude with --channels telegram" "channels plugin:telegram@claude-plugins-official" "$WRAPPER"
+want   "T5c wrapper runs claude inside tmux"      "new-session" "$WRAPPER"
+want   "T5d wrapper sources the telegram env"     "${WORK}/tg/.env" "$WRAPPER"
 
 # -----------------------------------------------------------------------------
 # Backup floor render (NO --activate)
@@ -114,20 +122,23 @@ want   "T6h backup plist passes --dept-dir"  "dept-dir" "$BPLIST"
 # -----------------------------------------------------------------------------
 # T7: idempotent re-run
 # -----------------------------------------------------------------------------
-"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "$SLUG" --interval "$INTERVAL" \
-    --launch-agents-dir "$LA" --log-dir "$LOGS" --claude-bin /usr/bin/claude \
+"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "$SLUG" \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP" \
+    --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
     >"$WORK/main2.log" 2>&1
 rc=$?
 chk "T7 re-run install is idempotent (exit 0)" 0 "$rc"
 if valid_plist "$PLIST"; then echo "  PASS: T7b plist still valid after re-run"; PASS=$((PASS+1)); else echo "  FAIL: T7b plist invalid after re-run"; FAIL=$((FAIL+1)); fi
 
 # -----------------------------------------------------------------------------
-# T8: --uninstall (no --activate) removes the plist, no launchctl
+# T8: --uninstall (no --activate) removes the plist + wrapper, no launchctl
 # -----------------------------------------------------------------------------
-"$INSTALL_LOOP" --uninstall --slug "$SLUG" --launch-agents-dir "$LA" >"$WORK/uninstall.log" 2>&1
+"$INSTALL_LOOP" --uninstall --slug "$SLUG" --launch-agents-dir "$LA" --wrapper-dir "$WRAP" >"$WORK/uninstall.log" 2>&1
 rc=$?
 chk    "T8 --uninstall exits 0" 0 "$rc"
 absent "T8b plist removed by --uninstall" "$PLIST"
+absent "T8c wrapper removed by --uninstall" "$WRAPPER"
 
 # -----------------------------------------------------------------------------
 # T9: launchctl was NEVER called (no --activate anywhere above)

@@ -7,29 +7,40 @@
 # dept pushes via the operator's own `gh`/git credential.
 #
 # WHAT IT INSTALLS:
+#   ~/Library/Application Support/bubble-ops-loop/ops-loop-<slug>-wrapper.sh
 #   ~/Library/LaunchAgents/com.bubble.ops-loop-<slug>.plist
-#   A StartInterval launchd agent that, every <interval> sec, cd's into the dept
-#   clone and runs `claude` so the dept's CLAUDE.md /loop protocol drives a full
-#   STEP A-F tick (safe_pull → decide_dispatch → run layer → commit+push).
+#   A KeepAlive launchd agent that supervises a generic WRAPPER which launches a
+#   PERSISTENT interactive `claude --dangerously-skip-permissions --channels
+#   plugin:telegram@claude-plugins-official` session inside a tmux session
+#   (ops-loop-<slug>). The dept's CLAUDE.md /loop protocol + its OWN armed /loop
+#   cron drive the STEP A-F tick; its Telegram bot reaches Jade/Joris. This is the
+#   exact Mac twin of the VPS systemd dept unit's interactive `--channels` runner.
 #
-# DOCTRINE — StartInterval (NOT StartCalendarInterval): a tick missed while the
-# Mac was asleep COALESCES and fires on WAKE; STEP A safe_pull then lands any
-# approvals committed while asleep and decide_dispatch's morning-floor catches
-# up missed layers. See deploy/local/README.md. No catch-up code needed.
+# DOCTRINE — KeepAlive (NOT StartInterval/`claude -p`): the runner is a long-lived
+# interactive session (the dept needs its Telegram channel + hooks; `claude -p`
+# would lose both — VPS Ban #2). launchd KeepAlive relaunches the wrapper on
+# crash; RunAtLoad starts it on login/wake. A tick missed while the Mac was
+# asleep is caught by decide_dispatch's morning-floor on the first post-wake tick;
+# the separate backup floor (install-local-loop-backup.sh) is the stale-heartbeat
+# backstop. See deploy/local/README.md.
 #
-# GENERIC: parameterized by --dept-dir / --slug / --interval — any future local
-# dept (ours or a client's) uses the same script. NOT Miranda-hardcoded.
+# GENERIC: parameterized by --dept-dir / --slug / --claude-bin / --tmux-bin /
+# --telegram-state-dir / --extra-path — any future local dept (ours or a
+# client's) uses the same script. NOT Miranda-hardcoded.
 #
-# TEST-SAFE: WITHOUT --activate it only RENDERS the plist (writes the file +
-# prints what it would do) and NEVER calls launchctl. `launchctl load` happens
-# ONLY when --activate is passed. Idempotent: re-running overwrites the plist
-# (and reloads it under --activate). --uninstall removes the agent.
+# TEST-SAFE: WITHOUT --activate it only RENDERS the wrapper + plist (writes the
+# files + prints what it would do) and NEVER calls launchctl. `launchctl load`
+# happens ONLY when --activate is passed. Idempotent: re-running overwrites the
+# wrapper + plist (and reloads under --activate). --uninstall removes both.
 #
 # Usage:
-#   install-local-loop.sh --dept-dir <path> --slug <slug> [--interval <sec>]
+#   install-local-loop.sh --dept-dir <path> --slug <slug>
+#                         [--claude-bin <path>] [--tmux-bin <path>]
+#                         [--telegram-state-dir <dir>] [--extra-path <PATH>]
 #                         [--launch-agents-dir <dir>] [--log-dir <dir>]
-#                         [--claude-bin <path>] [--activate]
+#                         [--wrapper-dir <dir>] [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
+#                         [--wrapper-dir <dir>]
 # =============================================================================
 set -uo pipefail
 
@@ -39,10 +50,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPT_DIR=""
 SLUG=""
-INTERVAL=1200                       # 20 min default (matches the spec example)
 LAUNCH_AGENTS_DIR="${LOCAL_LOOP_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOCAL_LOOP_LOG_DIR:-$HOME/Library/Logs/bubble-ops-loop}"
+WRAPPER_DIR="${LOCAL_LOOP_WRAPPER_DIR:-$HOME/Library/Application Support/bubble-ops-loop}"
 CLAUDE_BIN="${LOCAL_LOOP_CLAUDE_BIN:-claude}"
+TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-tmux}"
+TELEGRAM_STATE_DIR=""               # default derived from slug below if unset
+EXTRA_PATH="${LOCAL_LOOP_EXTRA_PATH:-/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.npm-global/bin}"
 ACTIVATE=0
 UNINSTALL=0
 
@@ -54,14 +68,20 @@ while [[ $# -gt 0 ]]; do
         --dept-dir=*)         DEPT_DIR="${1#--dept-dir=}"; shift ;;
         --slug)               SLUG="${2:?--slug needs a value}"; shift 2 ;;
         --slug=*)             SLUG="${1#--slug=}"; shift ;;
-        --interval)           INTERVAL="${2:?--interval needs a value}"; shift 2 ;;
-        --interval=*)         INTERVAL="${1#--interval=}"; shift ;;
         --launch-agents-dir)  LAUNCH_AGENTS_DIR="${2:?}"; shift 2 ;;
         --launch-agents-dir=*) LAUNCH_AGENTS_DIR="${1#--launch-agents-dir=}"; shift ;;
         --log-dir)            LOG_DIR="${2:?}"; shift 2 ;;
         --log-dir=*)          LOG_DIR="${1#--log-dir=}"; shift ;;
+        --wrapper-dir)        WRAPPER_DIR="${2:?}"; shift 2 ;;
+        --wrapper-dir=*)      WRAPPER_DIR="${1#--wrapper-dir=}"; shift ;;
         --claude-bin)         CLAUDE_BIN="${2:?}"; shift 2 ;;
         --claude-bin=*)       CLAUDE_BIN="${1#--claude-bin=}"; shift ;;
+        --tmux-bin)           TMUX_BIN="${2:?}"; shift 2 ;;
+        --tmux-bin=*)         TMUX_BIN="${1#--tmux-bin=}"; shift ;;
+        --telegram-state-dir) TELEGRAM_STATE_DIR="${2:?}"; shift 2 ;;
+        --telegram-state-dir=*) TELEGRAM_STATE_DIR="${1#--telegram-state-dir=}"; shift ;;
+        --extra-path)         EXTRA_PATH="${2:?}"; shift 2 ;;
+        --extra-path=*)       EXTRA_PATH="${1#--extra-path=}"; shift ;;
         --activate)           ACTIVATE=1; shift ;;
         --uninstall)          UNINSTALL=1; shift ;;
         -h|--help)            sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -70,8 +90,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$SLUG" ]] || die "--slug is required"
+# Default telegram state dir matches the workspace convention (channels/telegram-<slug>).
+[[ -n "$TELEGRAM_STATE_DIR" ]] || TELEGRAM_STATE_DIR="$HOME/.claude/channels/telegram-${SLUG}"
 LABEL="com.bubble.ops-loop-${SLUG}"
 PLIST_PATH="${LAUNCH_AGENTS_DIR%/}/${LABEL}.plist"
+WRAPPER_PATH="${WRAPPER_DIR%/}/ops-loop-${SLUG}-wrapper.sh"
 
 say() { echo "[install-local-loop] $*"; }
 
@@ -85,33 +108,48 @@ if [[ "$UNINSTALL" == "1" ]]; then
     else
         say "(dry) would: launchctl unload '$PLIST_PATH'  (pass --activate to actually unload)"
     fi
-    if [[ -f "$PLIST_PATH" ]]; then
-        rm -f "$PLIST_PATH" && say "removed $PLIST_PATH"
-    else
-        say "no plist at $PLIST_PATH — nothing to remove"
-    fi
+    for f in "$PLIST_PATH" "$WRAPPER_PATH"; do
+        if [[ -f "$f" ]]; then
+            rm -f "$f" && say "removed $f"
+        else
+            say "no file at $f — nothing to remove"
+        fi
+    done
     exit 0
 fi
 
 # ── install / render ─────────────────────────────────────────────────────────
 [[ -n "$DEPT_DIR" ]] || die "--dept-dir is required (the dept repo clone on the Mac)"
-[[ "$INTERVAL" =~ ^[0-9]+$ ]] || die "--interval must be an integer (seconds)"
 
 # Warn (don't fail) if the dept dir doesn't exist yet — install can precede the
 # clone in a scripted bring-up; the agent simply does nothing until it appears.
 [[ -d "$DEPT_DIR" ]] || say "WARNING: dept-dir '$DEPT_DIR' does not exist yet (agent will idle until it does)"
 
-mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$WRAPPER_DIR"
 
-say "rendering main /loop runner plist:"
-say "  label    = $LABEL"
-say "  dept-dir = $DEPT_DIR"
-say "  slug     = $SLUG"
-say "  interval = ${INTERVAL}s (StartInterval — fires on wake if missed while asleep)"
-say "  claude   = $CLAUDE_BIN"
-say "  plist    = $PLIST_PATH"
+say "rendering main /loop runner (persistent KeepAlive session):"
+say "  label        = $LABEL"
+say "  dept-dir     = $DEPT_DIR"
+say "  slug         = $SLUG"
+say "  claude       = $CLAUDE_BIN"
+say "  tmux         = $TMUX_BIN"
+say "  telegram-dir = $TELEGRAM_STATE_DIR"
+say "  extra-path   = $EXTRA_PATH"
+say "  wrapper      = $WRAPPER_PATH"
+say "  plist        = $PLIST_PATH"
 
-render_loop_plist "$LABEL" "$DEPT_DIR" "$SLUG" "$INTERVAL" "$CLAUDE_BIN" "$LOG_DIR" > "$PLIST_PATH" \
+# 1) Render the generic persistent-session wrapper (the Mac twin of the VPS
+#    systemd ExecStart): claude --channels telegram inside tmux, KeepAlive-supervised.
+render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" > "$WRAPPER_PATH" \
+    || die "failed to render wrapper to $WRAPPER_PATH"
+chmod +x "$WRAPPER_PATH"
+say "wrote $WRAPPER_PATH (chmod +x)"
+
+# 2) Render the launchd plist (KeepAlive) that supervises the wrapper.
+#    launchd does NOT expand $HOME inside plist <string> values, so expand it for
+#    the plist's PATH (the wrapper keeps the literal $HOME — it's a real shell).
+PLIST_PATH_ENV="${EXTRA_PATH//\$HOME/$HOME}"
+render_loop_plist "$LABEL" "$WRAPPER_PATH" "$DEPT_DIR" "$SLUG" "$LOG_DIR" "$PLIST_PATH_ENV" > "$PLIST_PATH" \
     || die "failed to render plist to $PLIST_PATH"
 say "wrote $PLIST_PATH"
 
@@ -128,7 +166,7 @@ if [[ "$ACTIVATE" == "1" ]]; then
     say "activating: launchctl unload (if loaded) then load '$PLIST_PATH'"
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
     launchctl load "$PLIST_PATH" || die "launchctl load failed"
-    say "ACTIVATED — $LABEL is now scheduled every ${INTERVAL}s."
+    say "ACTIVATED — $LABEL is now a persistent KeepAlive session (tmux: ops-loop-${SLUG})."
 else
     say "DRY RENDER complete (no launchctl). To activate:"
     say "  launchctl load '$PLIST_PATH'   # or re-run with --activate"
