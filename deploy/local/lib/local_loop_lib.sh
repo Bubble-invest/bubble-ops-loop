@@ -110,7 +110,7 @@ _lll_xml_escape() {
     printf '%s' "$s"
 }
 
-# ── render_loop_wrapper <dept-dir> <slug> <claude-bin> <tmux-bin> <telegram-state-dir> <extra-path> ──
+# ── render_loop_wrapper <dept-dir> <slug> <claude-bin> <tmux-bin> <telegram-state-dir> <extra-path> [workspace-dir] ──
 # Echo a generic MAIN-runner wrapper script to stdout. This is the Mac twin of
 # the VPS systemd ExecStart: a PERSISTENT interactive `claude --channels` session
 # (NOT a per-tick headless relaunch). It mirrors the proven production pattern on
@@ -127,12 +127,24 @@ _lll_xml_escape() {
 #     persistent session (boot-rearm), exactly like the VPS depts — NOT from an
 #     external timer. A bare per-tick `claude` with no channel would just idle.
 #
-# GENERIC: parameterized by dept-dir/slug/claude-bin/tmux-bin/telegram-state-dir.
-# NO SOPS / NO token-broker / NO tmpfs (Mac pushes via its own gh/git credential).
-# The telegram env file (TELEGRAM_BOT_TOKEN etc.) is sourced from
-# <telegram-state-dir>/.env if present, matching the workspace convention.
+# BRAIN↔BODY (host:local depts that reuse an existing workspace's skills/tools):
+# cwd is the DEPT repo (so the loop's cwd-relative outputs/queues/inbox paths +
+# its `git push` of runtime state resolve natively). When <workspace-dir> is
+# given, it is passed to claude as `--add-dir <workspace-dir>`: per Claude Code
+# docs, `.claude/skills/` inside an --add-dir directory is loaded automatically,
+# so the dept reaches the workspace's EXISTING skills + folders + scripts +
+# memory WITHOUT moving or copying them (Miranda's 8 skills live only in
+# Miranda_Socials/.claude/skills, not at user scope). This is option A:
+# port-existing-working-components, brain in the dept repo, body in the workspace.
+#
+# GENERIC: parameterized by dept-dir/slug/claude-bin/tmux-bin/telegram-state-dir/
+# extra-path/workspace-dir. NO SOPS / NO token-broker / NO tmpfs (Mac pushes via
+# its own gh/git credential). The telegram env file (TELEGRAM_BOT_TOKEN etc.) is
+# sourced from <telegram-state-dir>/.env if present, matching the convention.
 render_loop_wrapper() {
-    local dept_dir="$1" slug="$2" claude_bin="$3" tmux_bin="$4" tg_state="$5" extra_path="$6"
+    local dept_dir="$1" slug="$2" claude_bin="$3" tmux_bin="$4" tg_state="$5" extra_path="$6" workspace_dir="${7:-}"
+    local add_dir_arg=""
+    [[ -n "$workspace_dir" ]] && add_dir_arg=" --add-dir '${workspace_dir}'"
     cat <<WRAPPER
 #!/bin/bash
 # ops-loop LOCAL main-runner wrapper for dept '${slug}' (host: local).
@@ -164,9 +176,10 @@ SESSION="ops-loop-${slug}"
 "\$TMUX_BIN" kill-session -t "\$SESSION" 2>/dev/null || true
 
 # Start claude detached inside tmux. tmux gives it a real PTY. The inner shell
-# \`exec\`s claude so the pane dies exactly when claude dies.
+# \`exec\`s claude so the pane dies exactly when claude dies. cwd is the dept repo
+# (loop state); when a workspace is granted it loads that dir's .claude/skills.
 "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-  "exec '${claude_bin}' --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"
+  "exec '${claude_bin}' --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
 
 # Block in the foreground until the session ends. When claude exits, the session
 # disappears, this loop ends, the wrapper exits non-zero, and launchd KeepAlive

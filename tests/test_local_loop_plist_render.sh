@@ -78,11 +78,13 @@ echo "== local-loop plist render tests =="
 # -----------------------------------------------------------------------------
 # Main loop runner render (NO --activate)
 # -----------------------------------------------------------------------------
+WSDIR="$WORK/workspace"; mkdir -p "$WSDIR/.claude/skills"   # the body whose skills the dept reuses
 out="$WORK/main.log"
 "$INSTALL_LOOP" --dept-dir "$DEPT" --slug "$SLUG" \
     --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP" \
     --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
     --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+    --workspace-dir "$WSDIR" \
     >"$out" 2>&1
 rc=$?
 PLIST="$LA/com.bubble.ops-loop-${SLUG}.plist"
@@ -100,6 +102,7 @@ want   "T5 wrapper cd's into the dept-dir"        "cd \"${DEPT}\"" "$WRAPPER"
 want   "T5b wrapper runs claude with --channels telegram" "channels plugin:telegram@claude-plugins-official" "$WRAPPER"
 want   "T5c wrapper runs claude inside tmux"      "new-session" "$WRAPPER"
 want   "T5d wrapper sources the telegram env"     "${WORK}/tg/.env" "$WRAPPER"
+want   "T5e wrapper grants the workspace via --add-dir (brain↔body)" "add-dir '${WSDIR}'" "$WRAPPER"
 
 # -----------------------------------------------------------------------------
 # Backup floor render (NO --activate)
@@ -126,10 +129,20 @@ want   "T6h backup plist passes --dept-dir"  "dept-dir" "$BPLIST"
     --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP" \
     --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
     --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+    --workspace-dir "$WSDIR" \
     >"$WORK/main2.log" 2>&1
 rc=$?
 chk "T7 re-run install is idempotent (exit 0)" 0 "$rc"
 if valid_plist "$PLIST"; then echo "  PASS: T7b plist still valid after re-run"; PASS=$((PASS+1)); else echo "  FAIL: T7b plist invalid after re-run"; FAIL=$((FAIL+1)); fi
+
+# T7c: WITHOUT --workspace-dir, the wrapper carries NO --add-dir (self-contained dept).
+WRAP2="$WORK/wrappers-nows"
+"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "selfcontained" \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP2" \
+    --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+    >"$WORK/main3.log" 2>&1
+nowant "T7c no --workspace-dir => wrapper has NO --add-dir" "add-dir" "$WRAP2/ops-loop-selfcontained-wrapper.sh"
 
 # -----------------------------------------------------------------------------
 # T8: --uninstall (no --activate) removes the plist + wrapper, no launchctl

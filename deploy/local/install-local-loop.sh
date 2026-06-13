@@ -25,8 +25,16 @@
 # backstop. See deploy/local/README.md.
 #
 # GENERIC: parameterized by --dept-dir / --slug / --claude-bin / --tmux-bin /
-# --telegram-state-dir / --extra-path — any future local dept (ours or a
-# client's) uses the same script. NOT Miranda-hardcoded.
+# --telegram-state-dir / --extra-path / --workspace-dir — any future local dept
+# (ours or a client's) uses the same script. NOT Miranda-hardcoded.
+#
+# --workspace-dir (brain↔body): a host:local dept that REUSES an existing
+# workspace's skills/tools (e.g. Miranda → Miranda_Socials, whose 8 skills live
+# only in its .claude/skills, not at user scope) passes its workspace here. It is
+# rendered into the wrapper as `claude --add-dir <workspace-dir>`, which loads
+# that dir's .claude/skills automatically while cwd stays the dept repo (so the
+# loop's outputs/queues/inbox + git push resolve natively). Omit it for a
+# self-contained dept that ships its own skills.
 #
 # TEST-SAFE: WITHOUT --activate it only RENDERS the wrapper + plist (writes the
 # files + prints what it would do) and NEVER calls launchctl. `launchctl load`
@@ -35,10 +43,10 @@
 #
 # Usage:
 #   install-local-loop.sh --dept-dir <path> --slug <slug>
-#                         [--claude-bin <path>] [--tmux-bin <path>]
-#                         [--telegram-state-dir <dir>] [--extra-path <PATH>]
-#                         [--launch-agents-dir <dir>] [--log-dir <dir>]
-#                         [--wrapper-dir <dir>] [--activate]
+#                         [--workspace-dir <dir>] [--claude-bin <path>]
+#                         [--tmux-bin <path>] [--telegram-state-dir <dir>]
+#                         [--extra-path <PATH>] [--launch-agents-dir <dir>]
+#                         [--log-dir <dir>] [--wrapper-dir <dir>] [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
 #                         [--wrapper-dir <dir>]
 # =============================================================================
@@ -57,6 +65,7 @@ CLAUDE_BIN="${LOCAL_LOOP_CLAUDE_BIN:-claude}"
 TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-tmux}"
 TELEGRAM_STATE_DIR=""               # default derived from slug below if unset
 EXTRA_PATH="${LOCAL_LOOP_EXTRA_PATH:-/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.npm-global/bin}"
+WORKSPACE_DIR="${LOCAL_LOOP_WORKSPACE_DIR:-}"   # optional: existing workspace whose .claude/skills the dept reuses (passed as --add-dir)
 ACTIVATE=0
 UNINSTALL=0
 
@@ -82,6 +91,8 @@ while [[ $# -gt 0 ]]; do
         --telegram-state-dir=*) TELEGRAM_STATE_DIR="${1#--telegram-state-dir=}"; shift ;;
         --extra-path)         EXTRA_PATH="${2:?}"; shift 2 ;;
         --extra-path=*)       EXTRA_PATH="${1#--extra-path=}"; shift ;;
+        --workspace-dir)      WORKSPACE_DIR="${2:?}"; shift 2 ;;
+        --workspace-dir=*)    WORKSPACE_DIR="${1#--workspace-dir=}"; shift ;;
         --activate)           ACTIVATE=1; shift ;;
         --uninstall)          UNINSTALL=1; shift ;;
         -h|--help)            sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -124,23 +135,25 @@ fi
 # Warn (don't fail) if the dept dir doesn't exist yet — install can precede the
 # clone in a scripted bring-up; the agent simply does nothing until it appears.
 [[ -d "$DEPT_DIR" ]] || say "WARNING: dept-dir '$DEPT_DIR' does not exist yet (agent will idle until it does)"
+[[ -z "$WORKSPACE_DIR" || -d "$WORKSPACE_DIR" ]] || say "WARNING: workspace-dir '$WORKSPACE_DIR' does not exist (--add-dir would be skipped by claude)"
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$WRAPPER_DIR"
 
 say "rendering main /loop runner (persistent KeepAlive session):"
-say "  label        = $LABEL"
-say "  dept-dir     = $DEPT_DIR"
-say "  slug         = $SLUG"
-say "  claude       = $CLAUDE_BIN"
-say "  tmux         = $TMUX_BIN"
-say "  telegram-dir = $TELEGRAM_STATE_DIR"
-say "  extra-path   = $EXTRA_PATH"
-say "  wrapper      = $WRAPPER_PATH"
-say "  plist        = $PLIST_PATH"
+say "  label         = $LABEL"
+say "  dept-dir      = $DEPT_DIR"
+say "  slug          = $SLUG"
+say "  claude        = $CLAUDE_BIN"
+say "  tmux          = $TMUX_BIN"
+say "  telegram-dir  = $TELEGRAM_STATE_DIR"
+say "  extra-path    = $EXTRA_PATH"
+say "  workspace-dir = ${WORKSPACE_DIR:-<none> (no --add-dir; dept must hold its own skills)}"
+say "  wrapper       = $WRAPPER_PATH"
+say "  plist         = $PLIST_PATH"
 
 # 1) Render the generic persistent-session wrapper (the Mac twin of the VPS
 #    systemd ExecStart): claude --channels telegram inside tmux, KeepAlive-supervised.
-render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" > "$WRAPPER_PATH" \
+render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" > "$WRAPPER_PATH" \
     || die "failed to render wrapper to $WRAPPER_PATH"
 chmod +x "$WRAPPER_PATH"
 say "wrote $WRAPPER_PATH (chmod +x)"
