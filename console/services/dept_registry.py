@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 dept_registry.py — enumerate live vs a-eclore departments + concierges.
 
@@ -11,8 +12,6 @@ Each dept is classified by its onboarding/STATE.yaml::status:
 
 Concierges are always "Live" — they're persistent agents without layers.
 """
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,7 +128,6 @@ def _latest_summary(slug: str) -> str:
     if root is None:
         return ""
 
-    # ── Look for the most recent output across all layers ──
     outputs_dir = root / "outputs"
     if not outputs_dir.exists():
         return ""
@@ -146,7 +144,6 @@ def _latest_summary(slug: str) -> str:
             summary_file = layer_dir / "summary.md"
             if summary_file.exists():
                 text = summary_file.read_text(encoding="utf-8").strip()
-                # Take first meaningful line
                 for line in text.split("\n"):
                     line = line.strip()
                     if line and not line.startswith("#"):
@@ -158,14 +155,34 @@ def _latest_summary(slug: str) -> str:
     return latest
 
 
+def get_department(slug: str) -> Optional[DeptSummary]:
+    for d in list_departments():
+        if d.slug == slug:
+            return d
+    return None
+
+
+def agents_a_eclore() -> List[DeptSummary]:
+    """Depts mid-eclosure (NOT Live, NOT Cancelled, NOT Retired)."""
+    return [d for d in list_departments()
+            if not d.is_live and not d.is_ancien]
+
+
+def anciens_collegues() -> List[DeptSummary]:
+    """Depts in terminal Cancelled/Retired status."""
+    return [d for d in list_departments() if d.is_ancien]
+
+
 def repo_path(slug: str) -> Optional[Path]:
-    root = settings.disk_root()
+    """Return on-disk path to the agent's directory, or None."""
+    if not settings.disk_mode():
+        return None
     # Departments: bubble-ops-<slug>
-    dept = root / f"bubble-ops-{slug}"
+    dept = settings.disk_root() / f"bubble-ops-{slug}"
     if dept.exists():
         return dept.resolve()
     # Concierges: <slug> (unprefixed)
-    concierge = root / slug
+    concierge = settings.disk_root() / slug
     if concierge.exists():
         return concierge.resolve()
     return None
