@@ -355,6 +355,15 @@ elif gh repo view "$FULL_NAME" >/dev/null 2>&1; then
   DEFAULT_BRANCH=$(gh api "repos/$FULL_NAME" --jq '.default_branch // "null"' 2>/dev/null)
   if [[ "$DEFAULT_BRANCH" == "null" || -z "$DEFAULT_BRANCH" ]]; then
     REPO_IS_EMPTY=1
+  else
+    # Modern gh/GitHub reports a default_branch NAME (e.g. main) even on a repo
+    # with ZERO commits. The true emptiness signal is the commits endpoint
+    # returning HTTP 409 "Git Repository is empty." (Tony 2026-06-13 fix; the
+    # default_branch==null check alone false-negatives on freshly-created empty
+    # org repos. Upstream this to canonical.)
+    if ! gh api "repos/$FULL_NAME/commits" >/dev/null 2>&1; then
+      REPO_IS_EMPTY=1
+    fi
   fi
 fi
 

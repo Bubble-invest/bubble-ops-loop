@@ -1,41 +1,42 @@
 """
-dept_registry.py — enumerate live vs a-eclore departments.
+dept_registry.py — enumerate live vs a-eclore departments + concierges.
 
-In disk mode: scans READ_FROM_DISK for `bubble-ops-*` subdirs.
-In github mode: `gh api orgs/<org>/repos` filtered by prefix `bubble-ops-`.
+In disk mode: scans READ_FROM_DISK for `bubble-ops-*` subdirs (departments)
+and unprefixed agent dirs (concierges: morty, claudette).
 
 Each dept is classified by its onboarding/STATE.yaml::status:
   - "Live"                        -> live_departments
   - any other (Idea..Ready..)     -> agents_a_eclore
   - missing STATE.yaml            -> agents_a_eclore (status="Idea")
+
+Concierges are always "Live" — they're persistent agents without layers.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
-
-import yaml
+from typing import Dict, List, Optional
 
 from console import settings
 from console.services.state_yaml_reader import read_state_for_repo
+
+
+# ── Concierges ──────────────────────────────────────────────────────────────
+# Concierges are always-on agents that don't follow the dept layer lifecycle.
+# Their dirs live alongside bubble-ops-* but without the prefix.
+KNOWN_CONCIERGE_SLUGS: dict[str, str] = {
+    "morty": "Morty",
+    "claudette": "Claudette",
+}
 
 
 @dataclass(frozen=True)
 class DeptSummary:
     slug: str
     display_name: str
-    status: str
+    status: str          # "Live" | anything else
     validated_steps: List[str]
-    total_steps: int = 6  # 6 work-steps per state.schema.yaml
-    host: str = "vps"  # "vps" | "local" — where the dept's loop runs (Hybrid
-    # local/VPS agent, 2026-06-11). Absent in STATE.yaml → "vps" (back-compat).
-
-    @property
-    def percent_complete(self) -> int:
-        if self.total_steps == 0:
-            return 0
-        return int(round(100 * len(self.validated_steps) / self.total_steps))
+    host: str = "vps"    # "vps" | "local" — hybrid local/VPS agent (2026-06-11)
 
     @property
     def is_live(self) -> bool:
@@ -53,11 +54,14 @@ class DeptSummary:
         return self.validated_steps[-1] if self.validated_steps else None
 
 
+def _is_concierge_dir(dirname: str) -> bool:
+    """True if the directory name matches a known concierge."""
+    return dirname in KNOWN_CONCIERGE_SLUGS
+
+
 def list_departments() -> List[DeptSummary]:
     """Return all known departments (sorted by slug)."""
     if not settings.disk_mode():
-        # github mode is a follow-up (UX-5); for v1 we expose disk-mode only,
-        # which is also what tests exercise. Return [] gracefully.
         return []
 
     root = settings.disk_root()
@@ -66,27 +70,37 @@ def list_departments() -> List[DeptSummary]:
 
     out: List[DeptSummary] = []
     for child in sorted(root.iterdir()):
-        if not child.is_dir() or not child.name.startswith("bubble-ops-"):
+        if not child.is_dir():
             continue
-        slug = child.name[len("bubble-ops-"):]
-        # Decommissioned — not part of the active team ({{OPERATOR}} 2026-06-09)
-        if slug in ("cgp",):
-            continue
-        state = read_state_for_repo(child)
-        if state is None:
-            # No STATE.yaml -> minimal idea-stage record
+        # ── Departments (bubble-ops-* prefix) ──
+        if child.name.startswith("bubble-ops-"):
+            slug = child.name[len("bubble-ops-"):]
+            # Decommissioned — not part of the active team ({{OPERATOR}} 2026-06-09)
+            if slug in ("cgp",):
+                continue
+            state = read_state_for_repo(child)
+            if state is None:
+                out.append(DeptSummary(
+                    slug=slug, display_name=slug, status="Idea",
+                    validated_steps=[]))
+                continue
             out.append(DeptSummary(
-                slug=slug, display_name=slug, status="Idea",
-                validated_steps=[]))
-            continue
-        out.append(DeptSummary(
-            slug=state.get("slug", slug),
-            display_name=state.get("display_name", slug),
-            status=state.get("status", "Idea"),
-            validated_steps=list(state.get("validated_steps", [])),
-            # Hybrid local/VPS agent (2026-06-11): absent → "vps" (back-compat).
-            host=state.get("host", "vps"),
-        ))
+                slug=state.get("slug", slug),
+                display_name=state.get("display_name", slug),
+                status=state.get("status", "Idea"),
+                validated_steps=list(state.get("validated_steps", [])),
+                # Hybrid local/VPS agent (2026-06-11): absent → "vps" (back-compat).
+                host=state.get("host", "vps"),
+            ))
+        # ── Concierges (unprefixed, always Live) ──
+        elif _is_concierge_dir(child.name):
+            slug = child.name
+            out.append(DeptSummary(
+                slug=slug,
+                display_name=KNOWN_CONCIERGE_SLUGS[slug],
+                status="Live",
+                validated_steps=list(KNOWN_CONCIERGE_SLUGS.keys()),
+            ))
     return out
 
 
@@ -95,7 +109,8 @@ def live_departments() -> List[DeptSummary]:
 
 
 def sidebar_agents() -> list:
-    """Return live agents with latest activity summary for the sidebar."""
+    """Return live agents with latest activity summary for the sidebar.
+    Departments first, then concierges."""
     out = []
     for d in live_departments():
         summary = _latest_summary(d.slug)
@@ -108,72 +123,48 @@ def sidebar_agents() -> list:
 
 
 def _latest_summary(slug: str) -> str:
-    """Get the latest L1 summary line for a dept, or empty string."""
+    """Get the latest activity summary line for an agent."""
     root = repo_path(slug)
     if root is None:
         return ""
-    out_dir = root / "outputs"
-    if not out_dir.exists():
+
+    # ── Look for the most recent output across all layers ──
+    outputs_dir = root / "outputs"
+    if not outputs_dir.exists():
         return ""
-    dates = sorted(
-        [x.name for x in out_dir.iterdir() if x.is_dir() and x.name[:1].isdigit()],
-        reverse=True,
-    )
-    if not dates:
-        return ""
-    # Try L1 summary.md first
-    l1 = out_dir / dates[0] / "1" / "summary.md"
-    if l1.exists():
-        try:
-            text = l1.read_text(encoding="utf-8")
-            # Extract first substantive line (skip title lines starting with #)
-            for line in text.split("\n"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    return line[:120]
-        except OSError:
-            pass
-    # Fallback: last heartbeat line
-    hb = out_dir / dates[0] / "heartbeat.log"
-    if hb.exists():
-        try:
-            last = hb.read_text().strip().split("\n")[-1]
-            return last[:120]
-        except OSError:
-            pass
-    return "En attente du premier cycle"
 
-
-def agents_a_eclore() -> List[DeptSummary]:
-    """Depts mid-eclosure (NOT Live, NOT Cancelled, NOT Retired).
-
-    Sprint Lifecycle (2026-05-21) — Cancelled + Retired depts move out of
-    'à éclore' into 'Anciens collègues' (see anciens_collegues() below).
-    """
-    return [d for d in list_departments()
-            if not d.is_live and not d.is_ancien]
-
-
-def anciens_collegues() -> List[DeptSummary]:
-    """Sprint Lifecycle: depts in terminal Cancelled/Retired status.
-
-    Surfaced as a 3rd section of /agents ("Anciens collègues" — read-only
-    archive). Empty most of the time; populated as the operator cancels /
-    retires depts.
-    """
-    return [d for d in list_departments() if d.is_ancien]
-
-
-def get_department(slug: str) -> Optional[DeptSummary]:
-    for d in list_departments():
-        if d.slug == slug:
-            return d
-    return None
+    latest = ""
+    latest_ts = ""
+    pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})$")
+    for date_dir in sorted(outputs_dir.iterdir(), reverse=True):
+        if not date_dir.is_dir() or not pattern.match(date_dir.name):
+            continue
+        for layer_dir in sorted(date_dir.iterdir(), reverse=True):
+            if not layer_dir.is_dir():
+                continue
+            summary_file = layer_dir / "summary.md"
+            if summary_file.exists():
+                text = summary_file.read_text(encoding="utf-8").strip()
+                # Take first meaningful line
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        ts = f"{date_dir.name}/{layer_dir.name}"
+                        if ts > latest_ts:
+                            latest_ts = ts
+                            latest = line[:120]
+                        break
+    return latest
 
 
 def repo_path(slug: str) -> Optional[Path]:
-    """Return on-disk path to bubble-ops-<slug>, or None."""
-    if not settings.disk_mode():
-        return None
-    p = settings.disk_root() / f"bubble-ops-{slug}"
-    return p if p.exists() else None
+    root = settings.disk_root()
+    # Departments: bubble-ops-<slug>
+    dept = root / f"bubble-ops-{slug}"
+    if dept.exists():
+        return dept.resolve()
+    # Concierges: <slug> (unprefixed)
+    concierge = root / slug
+    if concierge.exists():
+        return concierge.resolve()
+    return None
