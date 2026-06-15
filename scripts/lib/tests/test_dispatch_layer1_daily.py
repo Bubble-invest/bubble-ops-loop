@@ -116,7 +116,7 @@ def test_fire_after_rounds_threshold_respected():
 # ── priority: other branches still win over L1 ──────────────────────────────
 
 def test_l4_fires_after_prereqs_met():
-    # New model: L4 needs L1+L2+L3 fired today AND time>=19:00 Paris.
+    # L1+L2+L3 all fired + time>=19:00 Paris (trade day with decisions processed).
     out = decide_dispatch({
         "now_utc": _L4_TIME,
         "layer_1_last_run_today": _FIRED,
@@ -127,14 +127,30 @@ def test_l4_fires_after_prereqs_met():
     assert out == "layer_4"
 
 
-def test_l4_blocked_until_prereqs_met():
-    # Same time, but L3 has NOT fired today -> L4 must NOT fire (race guard).
+def test_l4_fires_on_no_trade_day_without_l3():
+    # No inbox decisions (no-trade day): L4 may fire at its window even
+    # though L3 never ran — nothing for L3 to process, no race to guard.
     out = decide_dispatch({
         "now_utc": _L4_TIME,
         "layer_1_last_run_today": _FIRED,
         "layer_2_last_run_today": _FIRED,
         "layer_3_last_run_today": None,
         "layer_4_last_run_today": None,
+        "has_inbox_decisions": False,
+    })
+    assert out == "layer_4"
+
+
+def test_l4_blocked_when_inbox_decisions_pending_and_l3_not_fired():
+    # Inbox decisions exist, but L3 has NOT fired yet — L4 must wait
+    # for L3 to process the approved trades first (still a race guard).
+    out = decide_dispatch({
+        "now_utc": _L4_TIME,
+        "layer_1_last_run_today": _FIRED,
+        "layer_2_last_run_today": _FIRED,
+        "layer_3_last_run_today": None,
+        "layer_4_last_run_today": None,
+        "has_inbox_decisions": True,
     })
     assert out != "layer_4"
 
