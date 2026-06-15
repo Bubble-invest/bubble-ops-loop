@@ -1,0 +1,60 @@
+# investment-cases/ — Canonical ticker watchlist
+
+Each `.md` file in this directory is the **canonical per-ticker record**
+for one security the fund tracks. Created and updated by Layer 2 research.
+Scanned by `watchlist_pricer.py` to build the monitoring universe.
+
+## File naming
+
+`<TICKER>.md` — the ticker as a bare filename, e.g. `CAP.PA.md`, `TLT.md`, `SMH.md`.
+
+Date-stamped files (`YYYY-MM-DD-<topic>.md`) are the detailed research capsules
+that feed into these canonical files. The canonical file is the **head** — the
+latest thesis, status, and review dates. The capsules are the **history**.
+
+## Frontmatter (required)
+
+```yaml
+---
+ticker: <TICKER>           # yahoo-style ticker, e.g. CAP.PA, TLT, SMH
+name: <Company/Fund name>  # human-readable name
+exchange: <exchange>       # MIC or yahoo suffix, e.g. xpar, .PA, NASDAQ
+status: active             # active | watch | closed
+last_reviewed: <ISO date>  # when this file was last touched by research
+review_by: <ISO date>      # next mandatory review (hard backstop: 90 days)
+source: l2_research        # which layer created/updated this
+capsule_ref: <path>        # backlink to the dated research capsule
+---
+```
+
+## Body
+
+A 3-5 line investment thesis summary from the most recent research capsule.
+Keep it tight — the reader should understand the "why we track this" in
+10 seconds. The detailed capsule is in `capsule_ref:`.
+
+## Revision log
+
+At the bottom of the file, append-only:
+
+```
+## Revision log
+
+- 2026-06-15: Initial research. Thesis: <one line>. Capsule: vault/investment-cases/2026-06-15-<topic>.md
+- 2026-07-20: Re-reviewed post-earnings. Thesis intact, raised conviction. Capsule: vault/investment-cases/2026-07-20-<topic>.md
+```
+
+## How this feeds the watchlist
+
+`tools/watchlist_pricer.py` `build_universe()` scans this directory for `*.md`
+files, extracts `ticker:` from frontmatter, and prices every name across daily
+/ weekly / period windows. No ticker file here = invisible to the price-trigger
+scanner = falls out of the monitoring universe after the research capsule is
+archived.
+
+## Multi-ticker cases
+
+If L2 researches a cluster (e.g. "AI-Capex Cluster: SMH + URA + ROBO"),
+create ONE canonical file per ticker: `SMH.md`, `URA.md`, `ROBO.md`.
+Each gets its own thesis summary, frontmatter, and revision log.
+The cluster capsule backlink goes in each file's `capsule_ref:`.
