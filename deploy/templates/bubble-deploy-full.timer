@@ -1,0 +1,10 @@
+[Unit]
+Description=Bubble Deploy — full sync timer (every 2 hours)
+Requires=bubble-deploy-full.service
+
+[Timer]
+OnCalendar=0/2:07
+Persistent=true
+
+[Install]
+WantedBy=timers.target
