@@ -180,6 +180,33 @@ Plus gates: `queues/gates/<item-id>.yaml` (one per gating decision).
   (`tools/notify-gate/notify.py`) — see step 7 above. Each gate fires
   exactly one notification. The token never appears in logs.
 
+
+## Canonical entity file (watchlist / discovery feed)
+
+After producing the artifact for your queue item, create or update the
+**canonical per-entity file** in your department's vault so downstream
+tooling (pricers, dashboards, discovery scanners) can find this entity
+without parsing every dated research capsule.
+
+**For fund departments (Ben):** `vault/investment-cases/<TICKER>.md`
+**For prospection departments (Maya):** `vault/people/<slug>.md`
+**For content departments:** `vault/topics/<slug>.md`
+
+Every canonical entity file MUST have at minimum:
+- Frontmatter: the entity key (e.g. `ticker:`, `slug:`, `topic:`) so scanners
+  can discover it with a single grep; `status:` (active / watch / closed);
+  `last_reviewed:` (ISO date); `review_by:` (ISO date, hard backstop 90 days);
+  `source:` (which layer created it)
+- Body: a 3-5 line summary of the current thesis / assessment
+
+If the file already exists, update `last_reviewed` and append to a
+`## Revision log` at the bottom — never overwrite the prior thesis.
+
+This step closes the gap between research output and monitoring —
+without it, the entity falls out of the scanning universe the moment
+the queue item is archived. See `vault/investment-cases/README.md` for
+the canonical format reference.
+
 ## Perm policy (recap)
 
 The `task-orchestrator` has `Agent` in its toolset (it spawns sub-task
