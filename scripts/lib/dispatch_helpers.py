@@ -1115,8 +1115,13 @@ def force_commit_and_push(
 #      inbox/WORKING_MEMORY... — runtime-only, structural is skipped there).
 #   2. Stash whatever remains (leftover structural edits the agent shouldn't
 #      have, untracked tooling, cruft) INCLUDING untracked, so the tree is clean.
-#   3. git pull --rebase  (now succeeds — merged PRs land).
-#   4. git stash pop (best-effort). On conflict we KEEP the stash (never drop)
+#   3. Tag HEAD as a safety checkpoint (Maya 2026-06-15 data-loss fix: a
+#      fast-forward to a merge commit can delete runtime files the dept pushed
+#      moments earlier because the merged PR branch was forked before the push).
+#   4. git pull --rebase  (now succeeds — merged PRs land).
+#   4a. Detect and restore any runtime files the pull deleted (diff against the
+#       safety tag; checkout deleted outputs/queues/... back from the tag).
+#   5. git stash pop (best-effort). On conflict we KEEP the stash (never drop)
 #      and report — a human/agent can recover it; we never destroy work.
 #
 # Returns (ok, summary). ok=False only on a genuine pull failure the caller
@@ -1167,11 +1172,21 @@ def safe_pull(
             stashed = True
             notes.append("stashed leftovers")
 
-    # 3. Pull --rebase (now the tree is clean → it succeeds).
+    # 3. Snapshot the current HEAD before the pull so we can detect and
+    #    recover any runtime files the pull deletes (Maya data-loss bug,
+    #    2026-06-15: a fast-forward to a merge commit deleted subagent
+    #    output files — the merge branch was forked before the outputs
+    #    were pushed, so the merge commit never included them).
+    from datetime import datetime, timezone
+    backup_tag = f"safe_pull_pre_pull_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    _git("tag", backup_tag)
+
+    # 4. Pull --rebase (now the tree is clean → it succeeds).
     pull = _git("pull", "--quiet", "--rebase", "origin", "main")
     if pull.returncode != 0:
         # Abort a half-applied rebase so we don't wedge the tree.
         _git("rebase", "--abort")
+        _git("tag", "-d", backup_tag)
         if stashed:
             _git("stash", "pop")  # restore the agent's work
         return False, (
@@ -1181,7 +1196,34 @@ def safe_pull(
         )
     notes.append("pulled")
 
-    # 4. Restore the stash (best-effort). On conflict, KEEP the stash (do not
+    # 4a. Detect and restore any runtime files the pull deleted.
+    #     This closes the Maya 2026-06-15 data-loss bug: when a merge
+    #     commit on origin removes files the dept pushed moments earlier
+    #     (because the merged branch was forked before the dept's push),
+    #     the fast-forward silently drops them.  We recover them from
+    #     the pre-pull backup tag.
+    diff = _git("diff", "--name-only", "--diff-filter=D",
+                backup_tag, "HEAD")
+    if diff.returncode == 0 and diff.stdout.strip():
+        deleted = diff.stdout.strip().splitlines()
+        # Only restore runtime paths (outputs/queues/inbox/WORKING_MEMORY
+        # etc.) — never structural files the human intentionally deleted.
+        runtime_deleted = [
+            p for p in deleted
+            if (p.startswith("outputs/") or p.startswith("queues/")
+                or p.startswith("inbox/") or p == "WORKING_MEMORY.md"
+                or p.startswith("missions/"))
+        ]
+        if runtime_deleted:
+            for p in runtime_deleted:
+                _git("checkout", backup_tag, "--", p)
+            notes.append(
+                f"RESTORED {len(runtime_deleted)} runtime file(s) "
+                "dropped by pull: " + ", ".join(runtime_deleted)
+            )
+    _git("tag", "-d", backup_tag)
+
+    # 5. Restore the stash (best-effort). On conflict, KEEP the stash (do not
     #    drop) so nothing is lost; report it for human/agent recovery.
     if stashed:
         pop = _git("stash", "pop")
