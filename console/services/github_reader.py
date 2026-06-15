@@ -12,6 +12,8 @@ flesh it out when wiring to live Morty.
 from __future__ import annotations
 
 import logging
+import base64
+import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -315,7 +317,27 @@ def read_chat_log(slug: str, step_num: int, step_name: str) -> Optional[str]:
 
 def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
                          ) -> Optional[Path]:
-    """Write inbox/decisions/<gate_id>.yaml. Returns path on success."""
+    """Land the operator's approval in inbox/decisions/<gate_id>.yaml where the
+    dept's loop reads it. Returns the path (vps) / a sentinel path (local) on
+    success, or None on failure.
+
+    Hybrid local/VPS agent (2026-06-12): a dept declares its host in STATE.yaml.
+      - host=vps (default): the dept repo is on the cockpit's disk → write to disk.
+      - host=local (e.g. Miranda on {{OPERATOR_2}}'s Mac): the repo is NOT on the cockpit's
+        disk — it lives on the Mac + GitHub. We commit the decision to the dept's
+        GitHub repo via `gh api` so the Mac loop pulls it on its next safe_pull.
+    """
+    # Resolve the dept's host (default vps). Reference the function through the
+    # MODULE (dept_registry.get_department) rather than a `from … import` binding,
+    # so a test's monkeypatch on the module attribute is always honoured.
+    from console.services import dept_registry as _dr
+    dept = _dr.get_department(slug)
+    host = getattr(dept, "host", "vps") if dept is not None else "vps"
+
+    if host == "local":
+        return _write_gate_decision_github(slug, gate_id, decision)
+
+    # host=vps — write to the on-disk repo (unchanged).
     root = repo_path(slug)
     if root is None:
         return None
@@ -325,6 +347,37 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
     out.write_text(yaml.safe_dump(decision, sort_keys=False, allow_unicode=True),
                    encoding="utf-8")
     return out
+
+
+def _write_gate_decision_github(slug: str, gate_id: str, decision: Dict[str, Any]
+                                ) -> Optional[Path]:
+    """Commit inbox/decisions/<gate_id>.yaml to the dept's GitHub repo via gh api
+    (for host=local depts, whose repo isn't on the cockpit's disk). Returns a
+    sentinel Path on success (the repo-relative path), None on failure."""
+    repo = f"bubble-ops-{slug}"
+    rel_path = f"inbox/decisions/{gate_id}.yaml"
+    body = yaml.safe_dump(decision, sort_keys=False, allow_unicode=True)
+    content_b64 = base64.b64encode(body.encode("utf-8")).decode("ascii")
+    # PUT repos/<org>/<repo>/contents/<path> creates (or updates) a file in one
+    # commit. -f content=<base64>, -f message=<msg>. (For an update GitHub also
+    # needs the blob sha; a fresh gate decision id is new each time, so create.)
+    try:
+        r = subprocess.run(
+            ["gh", "api", "-X", "PUT",
+             f"repos/{settings.GITHUB_ORG}/{repo}/contents/{rel_path}",
+             "-f", f"message=cockpit: gate {gate_id} decision",
+             "-f", f"content={content_b64}"],
+            capture_output=True, text=True, check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("gate decision gh api failed: %s", exc)
+        return None
+    if r.returncode != 0:
+        logging.getLogger(__name__).warning(
+            "gate decision gh api PUT failed (rc=%s): %s",
+            r.returncode, (r.stderr or r.stdout or "")[:200])
+        return None
+    return Path(rel_path)
 
 
 # ---------------------------------------------------------------------------

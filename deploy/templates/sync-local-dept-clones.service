@@ -1,0 +1,30 @@
+# /etc/systemd/system/sync-local-dept-clones.service
+# Bubble Ops — read-only mirror sync for host:local depts.
+# Triggered by sync-local-dept-clones.timer (every ~15 min).
+#
+# Keeps the VPS's READ-ONLY clones of host:local depts (e.g. Miranda's
+# bubble-ops-content, whose /loop runs on {{OPERATOR_2}}'s Mac) fresh from GitHub via
+# `git pull --ff-only`, so the disk-mode cockpit renders their latest gates /
+# state / heartbeat. The dept NEVER executes on the VPS — this is a pure mirror:
+# no commit, no push, no loop. See scripts/sync-local-dept-clones.sh.
+[Unit]
+Description=Bubble Ops — read-only mirror sync for host:local depts
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+# Read-only mirror pull against the dept clones under /home/claude/agents. The
+# clones already carry their own remotes (created at activation); the dept's
+# repo is public-read / the claude user's gh auth covers private read.
+ExecStart=/home/claude/scripts/sync-local-dept-clones.sh --agents-root /home/claude/agents
+# It only fast-forward-pulls existing clones; constrain writes to the agents dir.
+ProtectSystem=strict
+ReadWritePaths=/home/claude/agents
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sync-local-dept-clones

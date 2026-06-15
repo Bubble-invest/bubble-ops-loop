@@ -176,6 +176,34 @@ discover_depts() {
     done
 }
 
+# dept_host <slug>: where does this dept's loop RUN? Reads the `host:` field from
+# its onboarding/STATE.yaml. Echoes "vps" (default) or "local".
+#   - Hybrid local/VPS agent ({{OPERATOR}} msg 4258, 2026-06-11): a dept can declare
+#     host: local (e.g. Miranda on {{OPERATOR_2}}'s Mac) so its /loop runs on its OWN
+#     machine (real Chrome/tools), NOT on the VPS floor. The VPS still SEES it
+#     (the synced read-only clone stays on disk for the cockpit) but must NOT
+#     try to execute its layer here — the VPS cannot run a local dept's loop.
+#   - FAIL-SAFE: a missing/unreadable/malformed STATE.yaml, or any host value
+#     that isn't exactly "local", resolves to "vps" — i.e. the existing
+#     execute-on-the-floor behaviour. A bad STATE must NEVER crash the floor and
+#     must NEVER silently mute a real vps dept.
+dept_host() {
+    local slug="$1"
+    local state="${AGENTS_ROOT}/bubble-ops-${slug}/onboarding/STATE.yaml"
+    [[ -f "$state" ]] || { echo "vps"; return 0; }
+    # Top-level `host:` only (anchored, no leading space) so a nested key can't
+    # be mistaken for the dept host. Tolerate quotes + trailing comment. A grep
+    # miss (no such line / unreadable) → empty → defaults to vps below.
+    local val
+    val="$(grep -E '^host:[[:space:]]*' "$state" 2>/dev/null | head -n1 \
+            | sed -E 's/^host:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')"
+    if [[ "$val" == "local" ]]; then
+        echo "local"
+    else
+        echo "vps"
+    fi
+}
+
 # dept_eligible <slug>: is this dept a LIVE, tickable dept?
 #   - its ops-loop-<slug>.service must EXIST and be ENABLED (so paused depts
 #     like cgp and the disabled test fixture are skipped); `is-enabled` exits 0
@@ -519,6 +547,15 @@ for slug in "${DEPTS[@]}"; do
     envfile="/run/claude-agent-${slug}/env"
     if [[ ! -d "$workdir" ]]; then
         log "$slug: SKIP — workdir $workdir not found"
+        continue
+    fi
+    # Host gate (Hybrid local/VPS agent): a host: local dept runs its loop on its
+    # OWN machine (real Chrome/tools), so the VPS floor must NOT execute its layer
+    # — but it STAYS discovered (its synced clone remains on disk for the cockpit).
+    # Record the skip so the cockpit shows the dept; do NOT tick, do NOT ping.
+    if [[ "$(dept_host "$slug")" == "local" ]]; then
+        log "skip $slug (host: local — runs on its own machine, not the VPS floor)"
+        emit_event "$slug" "skip" "host: local (runs on its own machine, not the VPS floor)"
         continue
     fi
     # Eligibility gate: enabled service (+ layer prompt in floor mode). A skip

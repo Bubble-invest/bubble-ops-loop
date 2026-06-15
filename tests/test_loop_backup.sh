@@ -156,6 +156,19 @@ make_layer() {
     echo "Layer $n mission for $slug." > "$dir/PROMPT.md"
 }
 
+make_host() {
+    # make_host <slug> <vps|local|MALFORMED>  → write onboarding/STATE.yaml host.
+    # "MALFORMED" writes an unparseable STATE.yaml to prove fail-safe→vps.
+    local slug="$1" host="$2"
+    local dir="$AGENTS_ROOT/bubble-ops-$slug/onboarding"
+    mkdir -p "$dir"
+    if [[ "$host" == "MALFORMED" ]]; then
+        printf 'host: [unterminated\n  : : :\n' > "$dir/STATE.yaml"
+    else
+        printf 'slug: %s\nstatus: Live\nhost: %s\n' "$slug" "$host" > "$dir/STATE.yaml"
+    fi
+}
+
 reset_fixtures() {
     rm -rf "$AGENTS_ROOT"; mkdir -p "$AGENTS_ROOT"
     : > "$ENABLED_FILE"
@@ -558,6 +571,61 @@ else
     bad "H1 result-relay missing under --layer; notify.log=$(cat "$NOTIFY_LOG")"
 fi
 unset CLAUDE_STUB_RESULT
+
+# =============================================================================
+# I. Host-skip (B1) — a `host: local` dept (onboarding/STATE.yaml) is DISCOVERED
+#    (its files stay on disk for the cockpit) but its OODA layer is NOT executed
+#    by the VPS backup floor (it runs on its own machine). A `host: vps` dept,
+#    and a dept with NO host field (back-compat), still execute. A malformed
+#    STATE.yaml fails SAFE → treated as vps (never crash the floor).
+# =============================================================================
+reset_fixtures
+common_env
+# vpsdept: host: vps   → MUST tick.        absent: no host field → MUST tick (back-compat).
+# localdept: host: local → MUST be skipped. broken: malformed STATE → fail-safe vps → MUST tick.
+make_dept vpsdept   10800; make_layer vpsdept   1; make_host vpsdept   vps
+make_dept localdept 10800; make_layer localdept 1; make_host localdept local
+make_dept absent    10800; make_layer absent    1   # no make_host → no STATE.yaml host
+make_dept broken    10800; make_layer broken    1; make_host broken    MALFORMED
+set_enabled vpsdept localdept absent broken
+unset BUBBLE_BACKUP_DEPTS
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$WORK/loop-backup.jsonl"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+
+# I1: the host:local dept is SKIPPED — no tick, no ping. The others all tick.
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" || true)"
+pinged="$(cut -f1 "$NOTIFY_LOG" | sort | tr '\n' ' ')"
+if [[ "$ran" == "3" && "$pinged" == "absent broken vpsdept " ]]; then
+    ok "I1 host:local SKIPPED by the VPS floor; vps + host-absent + malformed(fail-safe vps) all tick"
+else
+    bad "I1 expected 3 ticks {absent,broken,vpsdept}, NOT localdept; ran=$ran pinged='$pinged'"
+fi
+
+# I2: the host:local skip is RECORDED (cockpit visibility) and names the reason.
+if grep -q '"slug": "localdept"' "$WORK/loop-backup.jsonl" \
+   && grep -q 'host: local' "$WORK/loop-backup.jsonl"; then
+    ok "I2 host:local skip recorded in the event log ('host: local' reason)"
+else
+    bad "I2 host:local skip not logged; jsonl=$(cat "$WORK/loop-backup.jsonl")"
+fi
+
+# I3: the localdept dir STAYS on disk (discovered/visible) — the skip must not
+#     delete or hide it; only the EXECUTION is withheld.
+if [[ -d "$AGENTS_ROOT/bubble-ops-localdept" \
+   && -f "$AGENTS_ROOT/bubble-ops-localdept/onboarding/STATE.yaml" ]]; then
+    ok "I3 host:local dept dir + STATE.yaml remain on disk (still rendered by the cockpit)"
+else
+    bad "I3 localdept dir/STATE.yaml unexpectedly gone after the run"
+fi
+
+# I4: the human-readable skip line is logged to stdout/stderr for the journal.
+if [[ "$ALL" == *"skip localdept (host: local"* ]] \
+   || [[ "$ALL" == *"localdept"*"host: local"* ]]; then
+    ok "I4 clear journal line for the host:local skip"
+else
+    bad "I4 missing clear host:local skip line; got: $ALL"
+fi
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
