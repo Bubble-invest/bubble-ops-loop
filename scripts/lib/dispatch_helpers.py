@@ -493,8 +493,8 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     Priority order (highest to lowest), each gated by a Paris-local MINIMUM
     fire time (L1>=07:00, L2>=12:00, L3>=16:00, L4>=19:00) — a minimum, not a
     window; a layer stays eligible to end of day and may re-fire if there is work:
-      C.1 — Layer 4 if time>=19:00 Paris AND L1+L2+L3 each fired today AND
-            L4 not yet run today (prerequisite gate sequences the aggregator last)
+      C.1 — Layer 4 if time>=19:00 Paris AND L1+L2 each fired today AND (L3 fired
+            OR no inbox decisions — no-trade day) AND L4 not yet run (aggregator last)
       C.3 — Layer 3 if time>=16:00 Paris AND inbox decisions have items
       C.2 — Layer 2 if time>=12:00 Paris AND research queue has items
       C.0 — Layer 1 if time>=07:00 Paris AND (not yet run today  OR  each other
@@ -537,18 +537,18 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     # (Paris-local), not a window — eligible from then to end of day, and may
     # re-fire later if there is work. Two layers carry a prerequisite gate ON
     # TOP of the time check:
-    #   • L4 may fire only once L1, L2 and L3 have each fired >=1x today
-    #     (so the aggregator/debrief always sees a full day — this is what
-    #     sequences Tony AFTER the dept layers and kills the L4 read-race).
+    #   • L4 may fire once L1+L2 have each fired >=1x today AND (L3 has
+    #     fired OR no inbox decisions — no-trade day). This sequences the
+    #     aggregator after all work is done — with or without trades.)
     #   • L1's re-consolidation fires once the other layers have completed a
     #     fresh cycle since L1 last ran (its morning floor fires unconditionally
     #     once 07:00 Paris is reached and it has not run yet today).
     # Priority: L4 (debrief, end of day) > L3 > L2 > L1, each guarded by time.
 
-    # C.1 — Layer 4: time reached AND L1/L2/L3 all fired today AND not yet run.
+    # C.1 — Layer 4: time reached AND L1/L2 all fired today AND (L3 fired OR no inbox decisions — no-trade day) AND not yet run.
     if (
         _time_reached(now_paris_t, 4)
-        and l1_fired and l2_fired and l3_fired
+        and l1_fired and l2_fired and (l3_fired or not has_decisions)
         and not l4_fired
     ):
         return "layer_4"
