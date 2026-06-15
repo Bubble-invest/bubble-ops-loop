@@ -55,7 +55,6 @@ GITKEEP_DIRS = [
     "tests/fixtures",
     "queues/research",
     "queues/gates",
-    "queues/management",
     "queues/improvements",
     "inbox/decisions",
     "outputs/onboarding",
@@ -420,6 +419,28 @@ If I have been waiting for Joris for more than 2h, I send a polite reminder on
 Telegram. If more than 6h without a reply, I pause and write a
 status note in `MORNING_BRIEF.md`.
 
+## How I request Rick's help
+
+When I encounter a problem I cannot fix within my own operating context
+(debugging, new tool, framework fix, skill change, infrastructure), I use
+the standardized Rick request channel instead of creating ad-hoc files:
+
+```bash
+/home/claude/bubble-ops-loop/scripts/emit_rick_request.sh \\
+  --dept={slug} \\
+  --title="One-line summary of what I need" \\
+  --body="Detailed diagnosis, evidence, proposed fix" \\
+  --priority=normal
+```
+
+This writes a durable YAML file in `queues/management/`. Rick's Phase 4
+loop discovers it. I do NOT need to ping him separately — the YAML is the
+canonical record. If the kanban dashboard is up, a live card is also
+emitted.
+
+I can also write the YAML directly if the script is unavailable (format
+documented in `shared-wiki/shared/systems/dept-rick-request-channel.md`).
+
 ## Discipline — 5 guard-rails I apply to myself
 
 These 5 principles keep me on track when a non-technical operator
@@ -755,6 +776,28 @@ depend on this decision and I write a status note in
 `MORNING_BRIEF.md` so that the next operator wake-up finds a
 clean state.
 
+## How I request Rick's help
+
+When I encounter a problem I cannot fix within my own operating context
+(debugging, new tool, framework fix, skill change, infrastructure), I use
+the standardized Rick request channel instead of creating ad-hoc files:
+
+```bash
+/home/claude/bubble-ops-loop/scripts/emit_rick_request.sh \\
+  --dept={slug} \\
+  --title="One-line summary of what I need" \\
+  --body="Detailed diagnosis, evidence, proposed fix" \\
+  --priority=normal
+```
+
+This writes a durable YAML file in `queues/management/`. Rick's Phase 4
+loop discovers it. I do NOT need to ping him separately — the YAML is the
+canonical record. If the kanban dashboard is up, a live card is also
+emitted.
+
+I can also write the YAML directly if the script is unavailable (format
+documented in `shared-wiki/shared/systems/dept-rick-request-channel.md`).
+
 ## References
 
 - My narrative mandate (trade doctrine): `MANDATE.md`
@@ -949,6 +992,58 @@ STEP_README = {
         "961-977).\n"
     ),
 }
+
+
+QUEUES_MANAGEMENT_README = """# queues/management/ — Inbound directives & Rick requests
+
+This directory holds structured YAML notes addressed to this department.
+
+## Rick request channel
+
+When I need Rick's help (debugging, new tool, framework fix, skill change), I use the standardized Rick request channel.
+
+### Quick: call emit_rick_request.sh
+
+```bash
+/home/claude/bubble-ops-loop/scripts/emit_rick_request.sh \\
+  --dept=<my-slug> \\
+  --title="One-line summary of what I need" \\
+  --body="Detailed diagnosis, evidence, proposed fix" \\
+  --priority=normal
+```
+
+### Manual: write the YAML directly
+
+```yaml
+id: rick-<slug>-<YYYYMMDD>
+kind: management_note
+audience: [rick, joris]
+created_at: '<ISO-8601 UTC>'
+created_by: <dept>
+title: "<one-line summary>"
+detail: >-
+  <detailed prose>
+status: open
+priority: high
+```
+
+Save as: `rick-<slug>-<YYYYMMDD>.yaml`
+
+### What happens next
+
+1. The YAML file is the durable record — Rick's loop (Phase 4) discovers it
+2. A kanban card is emitted for live dashboard visibility (best-effort)
+3. Rick triages, handles, and updates the YAML `status` field
+4. I can check my own queue file to see progress
+
+Full documentation: `shared-wiki/shared/systems/dept-rick-request-channel.md`
+
+## Management notes from other departments
+
+Files named `<dept>-<topic>-<date>.yaml` are management notes from other departments
+(e.g., Tony writing directives). My Layer-1 STEP 0-ter reads all `.yaml` files in this
+directory, not just `directive-*.yaml`.
+"""
 
 
 _DAILY_RISK_AUDIT_MISSION = {
@@ -1156,6 +1251,10 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     # 6. .gitkeep dirs.
     for d in GITKEEP_DIRS:
         write_with_dirs(root / d / ".gitkeep", "")
+
+    # 6b. queues/management/README.md — Rick request channel docs.
+    #     queues/management is NOT in GITKEEP_DIRS; the README keeps the dir in git.
+    write_with_dirs(root / "queues" / "management" / "README.md", QUEUES_MANAGEMENT_README)
 
     # 7. Canonical layer PROMPT.md (Joris 2026-06-01: layers are templated,
     #    not empty; L4 includes the Notion logbook step).
