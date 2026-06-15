@@ -1,0 +1,10 @@
+[Unit]
+Description=Bubble Deploy — framework sync timer (15 min)
+Requires=bubble-deploy-infra.service
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

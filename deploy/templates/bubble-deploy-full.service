@@ -1,0 +1,11 @@
+[Unit]
+Description=Bubble Deploy — full (framework + dept restarts)
+After=network-online.target bubble-deploy-infra.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bubble-deploy.sh
+StandardOutput=journal
+StandardError=journal
+User=root
