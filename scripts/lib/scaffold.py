@@ -266,7 +266,7 @@ At each tick (every 20 min):
 
 **STEP B** — materialize due missions BEFORE scanning queues:
 ```bash
-python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {len(created)} created')"
+python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {{len(created)}} created')"
 ```
 Ensures time-bound missions (e.g. 09:00 news_relay) are materialized on EVERY tick,
 including heartbeat ticks. Idempotent (mission_id dedup). L4 excluded (fires via STEP C).
@@ -390,7 +390,7 @@ At each tick:
 
 **STEP B** — materialize due missions BEFORE scanning queues:
 ```bash
-python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {len(created)} created')"
+python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {{len(created)}} created')"
 ```
 Ensures time-bound missions (e.g. 09:00 news_relay) are materialized on EVERY tick,
 including heartbeat ticks. Idempotent (mission_id dedup). L4 excluded (fires via STEP C).
