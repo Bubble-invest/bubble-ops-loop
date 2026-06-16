@@ -446,6 +446,8 @@ def materialize_due_missions_for_tick(
         item_path.write_text(
             yaml.dump(queue_item, allow_unicode=True, default_flow_style=False)
         )
+        # Stamp the mission .last-run so it is not re-materialized next tick.
+        write_last_run(today_dir / "missions" / mid, when=now_utc)
         created.append(item)
 
     return created
