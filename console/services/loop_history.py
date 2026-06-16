@@ -293,6 +293,11 @@ def list_decision_events(slug: str) -> List[DecisionEvent]:
             if not isinstance(doc, dict):
                 continue
 
+            # Override status for gates with approved_by that still live in queues/gates/
+            actual_status = status
+            if doc.get("approved_by") and status == "pending":
+                actual_status = "approved"
+
             # Determine kind: from YAML field, or parse from filename
             kind = doc.get("kind", "")
             if not kind or kind == "unknown":

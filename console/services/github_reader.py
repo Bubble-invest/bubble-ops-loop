@@ -140,6 +140,9 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
         try:
             doc = yaml.safe_load(p.read_text(encoding="utf-8"))
             if isinstance(doc, dict):
+                # Skip gates that have been approved — they are no longer "pending."
+                if doc.get("approved_by"):
+                    continue
                 out.append(doc)
             else:
                 # Parsed but not a mapping → surface a synthetic error card so a
