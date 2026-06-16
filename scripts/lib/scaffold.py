@@ -264,6 +264,13 @@ At each tick (every 20 min):
 
 **STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged change auto-lands; never blocks on a dirty tree).
 
+**STEP B** — materialize due missions BEFORE scanning queues:
+```bash
+python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {len(created)} created')"
+```
+Ensures time-bound missions (e.g. 09:00 news_relay) are materialized on EVERY tick,
+including heartbeat ticks. Idempotent (mission_id dedup). L4 excluded (fires via STEP C).
+
 **STEP C** — decide what to dispatch via the CANONICAL deterministic helper
 (NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
 only mission CONTENT varies):
@@ -380,6 +387,13 @@ At each tick:
 **STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
+
+**STEP B** — materialize due missions BEFORE scanning queues:
+```bash
+python3 -c "from scripts.lib.dispatch_helpers import materialize_due_missions_for_tick; created=materialize_due_missions_for_tick('.', None, None); print(f'missions: {len(created)} created')"
+```
+Ensures time-bound missions (e.g. 09:00 news_relay) are materialized on EVERY tick,
+including heartbeat ticks. Idempotent (mission_id dedup). L4 excluded (fires via STEP C).
 
 **STEP C** — decide what to dispatch via the CANONICAL deterministic helper
 (NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
