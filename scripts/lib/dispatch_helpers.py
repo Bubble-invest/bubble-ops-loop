@@ -356,7 +356,7 @@ def materialize_due_missions(missions: Iterable[dict], *,
     return out
 
 
-def _materialize_due_if_missing(
+def materialize_due_missions_for_tick(
     repo_dir: Path,
     today_dir: Path,
     now_utc: datetime,
@@ -521,7 +521,7 @@ def build_dispatch_ctx(
 
     Queue conventions (dept template):
       - dept.yaml::recurring_missions[] -> materialized into queue items
-        by _materialize_due_if_missions() BEFORE the queue scan below.
+        by materialize_due_missions_for_tick() BEFORE the queue scan below.
         Uses mission_id dedup so the same mission is never double-queued.
       - queues/research/*.yaml         -> has_research_items (Layer 2)
       - queues/inbox/decisions/*.yaml  -> has_inbox_decisions (Layer 3)
@@ -546,7 +546,7 @@ def build_dispatch_ctx(
     # Materialize due recurring missions BEFORE scanning queues — newly
     # created items become visible to the queue scanners below and can
     # trigger the appropriate layer this same tick.
-    _materialize_due_if_missing(repo, today_dir, now_utc)
+    materialize_due_missions_for_tick(repo, today_dir, now_utc)
 
     return {
         "now_utc": now_utc,
