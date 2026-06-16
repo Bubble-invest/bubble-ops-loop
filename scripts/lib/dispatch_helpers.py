@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+
+import yaml
 from datetime import datetime, time as _time, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -354,6 +356,101 @@ def materialize_due_missions(missions: Iterable[dict], *,
     return out
 
 
+def _materialize_due_if_missing(
+    repo_dir: Path,
+    today_dir: Path,
+    now_utc: datetime,
+) -> list[dict]:
+    """Materialize due recurring missions into queue items (idempotent).
+
+    Reads dept.yaml → recurring_missions, checks per-mission .last-run
+    timestamps, and creates queue item YAML files for missions whose
+    cadence says they are due right now.
+
+    Idempotent via mission_id dedup: scans the output queue for existing
+    items with the same mission_id (excluding .processed/ and dotfiles).
+    If found, skips creation — same mission is never double-queued.
+
+    Layer-4 missions are NOT materialized here (they fire via C.1).
+
+    Returns the list of items that were actually created (empty if none).
+    """
+    dept_yaml_path = repo_dir / "dept.yaml"
+    if not dept_yaml_path.is_file():
+        return []
+
+    try:
+        dept = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+
+    missions = dept.get("recurring_missions") or []
+    if not missions:
+        return []
+
+    # Per-mission .last-run timestamps: outputs/<today>/missions/<id>/.last-run
+    last_fired_per_mission: dict[str, datetime] = {}
+    for m in missions:
+        mid = m.get("id", "")
+        if mid:
+            last = read_last_run(today_dir / "missions" / mid)
+            if last:
+                last_fired_per_mission[mid] = last
+
+    due = materialize_due_missions(
+        missions, now=now_utc, last_fired_per_mission=last_fired_per_mission
+    )
+
+    if not due:
+        return []
+
+    created: list[dict] = []
+    for item in due:
+        mid = item["mission_id"]
+        oq = item["output_queue"]
+        kind = item["kind"]
+        queue_dir = repo_dir / oq
+        queue_dir.mkdir(parents=True, exist_ok=True)
+
+        # Idempotent: skip if any existing queue item already has this mission_id.
+        already_queued = False
+        for existing in sorted(queue_dir.glob("*.yaml")):
+            if existing.name.startswith("."):
+                continue
+            if not existing.is_file():
+                continue
+            try:
+                existing_data = yaml.safe_load(
+                    existing.read_text(encoding="utf-8")
+                ) or {}
+            except Exception:
+                continue
+            if existing_data.get("mission_id") == mid:
+                already_queued = True
+                break
+
+        if already_queued:
+            continue
+
+        # Create the queue item.
+        ts = now_utc.isoformat()
+        item_id = f"{kind}-{mid}-{now_utc.strftime('%Y%m%d-%H%M%S')}"
+        queue_item = {
+            "id": item_id,
+            "mission_id": mid,
+            "kind": kind,
+            "created_at": ts,
+            "created_by": "materialize_due_missions",
+        }
+        item_path = queue_dir / f"{item_id}.yaml"
+        item_path.write_text(
+            yaml.dump(queue_item, allow_unicode=True, default_flow_style=False)
+        )
+        created.append(item)
+
+    return created
+
+
 # ---------------------------------------------------------------------------
 # Deterministic dispatch decision (locks down the prompt's tree)
 # ---------------------------------------------------------------------------
@@ -423,6 +520,9 @@ def build_dispatch_ctx(
     never fired and work piled up in the queues.
 
     Queue conventions (dept template):
+      - dept.yaml::recurring_missions[] -> materialized into queue items
+        by _materialize_due_if_missions() BEFORE the queue scan below.
+        Uses mission_id dedup so the same mission is never double-queued.
       - queues/research/*.yaml         -> has_research_items (Layer 2)
       - queues/inbox/decisions/*.yaml  -> has_inbox_decisions (Layer 3)
       - outputs/<today>/4/.last-run    -> layer_4_last_run_today (L4 idempotence)
@@ -442,6 +542,12 @@ def build_dispatch_ctx(
         now_utc = datetime.now(timezone.utc)
     today = now_utc.strftime("%Y-%m-%d")
     today_dir = repo / "outputs" / today
+
+    # Materialize due recurring missions BEFORE scanning queues — newly
+    # created items become visible to the queue scanners below and can
+    # trigger the appropriate layer this same tick.
+    _materialize_due_if_missing(repo, today_dir, now_utc)
+
     return {
         "now_utc": now_utc,
         # Deterministic UTC date for THIS tick. The agent MUST use these for
@@ -493,8 +599,9 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     Priority order (highest to lowest), each gated by a Paris-local MINIMUM
     fire time (L1>=07:00, L2>=12:00, L3>=16:00, L4>=19:00) — a minimum, not a
     window; a layer stays eligible to end of day and may re-fire if there is work:
-      C.1 — Layer 4 if time>=19:00 Paris AND L1+L2 each fired today AND (L3 fired
-            OR no inbox decisions — no-trade day) AND L4 not yet run (aggregator last)
+      C.1 — Layer 4 if time>=19:00 Paris AND L1 fired today AND (L2 fired
+            OR no research items) AND (L3 fired OR no inbox decisions —
+            no-trade day) AND L4 not yet run (aggregator last)
       C.3 — Layer 3 if time>=16:00 Paris AND inbox decisions have items
       C.2 — Layer 2 if time>=12:00 Paris AND research queue has items
       C.0 — Layer 1 if time>=07:00 Paris AND (not yet run today  OR  each other
@@ -537,18 +644,19 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     # (Paris-local), not a window — eligible from then to end of day, and may
     # re-fire later if there is work. Two layers carry a prerequisite gate ON
     # TOP of the time check:
-    #   • L4 may fire once L1+L2 have each fired >=1x today AND (L3 has
-    #     fired OR no inbox decisions — no-trade day). This sequences the
-    #     aggregator after all work is done — with or without trades.)
+    #   • L4 may fire once L1 has fired >=1x today AND (L2 has fired
+    #     OR no research items — quiet day) AND (L3 has fired OR no inbox
+    #     decisions — no-trade day). This sequences the aggregator after all
+    #     work is done — with or without research or trades.)
     #   • L1's re-consolidation fires once the other layers have completed a
     #     fresh cycle since L1 last ran (its morning floor fires unconditionally
     #     once 07:00 Paris is reached and it has not run yet today).
     # Priority: L4 (debrief, end of day) > L3 > L2 > L1, each guarded by time.
 
-    # C.1 — Layer 4: time reached AND L1/L2 all fired today AND (L3 fired OR no inbox decisions — no-trade day) AND not yet run.
+    # C.1 — Layer 4: time reached AND L1 fired today AND (L2 fired OR no research items — quiet day) AND (L3 fired OR no inbox decisions — no-trade day) AND not yet run.
     if (
         _time_reached(now_paris_t, 4)
-        and l1_fired and l2_fired and (l3_fired or not has_decisions)
+        and l1_fired and (l2_fired or not has_research) and (l3_fired or not has_decisions)
         and not l4_fired
     ):
         return "layer_4"

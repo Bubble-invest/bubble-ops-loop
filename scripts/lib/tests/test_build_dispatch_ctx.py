@@ -339,3 +339,199 @@ def test_incident_ebb03972_refires_only_after_a_full_cycle(tmp_path: Path):
     increment_round_counter(repo / "outputs" / today, layer=3)
     increment_round_counter(repo / "outputs" / today, layer=4)
     assert decide_dispatch(build_dispatch_ctx(repo, now_utc=NOON)) == "layer_1"
+# ── L4 L2-prerequisite relaxation (Proposal 2, 2026-06-16) ──
+#
+# PR #62 fixed the L3 half: L4 fires when (l3_fired or not has_decisions).
+# Proposal 2 fixes the symmetric L2 half: on no-research days, L2 never
+# fires so L4 was still blocked. The fix relaxes the L2 prerequisite
+# identically: (l2_fired or not has_research).
+#
+# These tests are RED against the pre-fix C.1 gate
+# (l1_fired and l2_fired and ...), GREEN after the fix.
+
+def test_l4_fires_on_no_research_day_without_l2(tmp_path: Path):
+    """L4 fires at 19:00 when no research items exist, even if L2 didn't fire.
+
+    Pre-fix: L4 required l2_fired=True regardless of whether there was research
+    work. On quiet days with no research items, L2 never fires → L4 blocked
+    forever → no end-of-day debrief. The fix relaxes the gate symmetrically:
+    (l2_fired or not has_research).
+    """
+    repo = _mk_repo(tmp_path)
+    # AFTER_L4 = 19:30 Paris (>= L4 min-time 19:00)
+    _fire(repo, 1, AFTER_L4)  # L1 fired today (morning floor)
+    # L2 NOT fired (no .last-run, no round_counter)
+    # No research items (queues/research/ empty)
+    # No inbox decisions
+    # L4 NOT yet fired
+    ctx = build_dispatch_ctx(repo, now_utc=AFTER_L4)
+    assert ctx["has_research_items"] is False
+    assert ctx["has_inbox_decisions"] is False
+    assert decide_dispatch(ctx) == "layer_4", (
+        "L4 must fire on a no-research day with only L1 having run — "
+        "without the L2 relaxation, this was a heartbeat (the aggregator "
+        "never ran on quiet days)"
+    )
+
+
+def test_l4_blocked_when_research_pending_and_l2_not_fired(tmp_path: Path):
+    """L4 is still blocked when research IS pending and L2 hasn't processed it.
+
+    Symmetry check: the relaxation must not fire L4 when there is actual
+    research work sitting in the queue. In that case, C.2 (L2) fires first
+    to process the research, and L4 waits until L2 has completed its round.
+    """
+    repo = _mk_repo(tmp_path)
+    # Place a research item in the queue (L2 has work to do)
+    (repo / "queues" / "research" / "warming-1.yaml").write_text("kind: warming_task\n")
+    _fire(repo, 1, AFTER_L4)  # L1 fired today
+    # L2 NOT fired
+    # No inbox decisions
+    ctx = build_dispatch_ctx(repo, now_utc=AFTER_L4)
+    assert ctx["has_research_items"] is True
+    result = decide_dispatch(ctx)
+    assert result != "layer_4", (
+        "L4 must NOT fire when research is pending and L2 hasn't fired — "
+        "L2 must process the research first"
+    )
+    assert result == "layer_2", (
+        "with pending research at L4 min-time, C.2 should fire L2 to "
+        "process the backlog before L4 can aggregate"
+    )
+
+
+# ── Materialize due missions into queue items ──
+
+import yaml
+
+
+def _mk_dept_yaml(repo: Path, missions: list[dict]) -> None:
+    """Write a minimal dept.yaml with the given recurring_missions."""
+    dept = {"recurring_missions": missions}
+    (repo / "dept.yaml").write_text(
+        yaml.dump(dept, allow_unicode=True, default_flow_style=False)
+    )
+
+
+def _mk_mission(mission_id: str, layer: int = 1, **kwargs) -> dict:
+    """Build a minimal recurring mission dict for testing."""
+    base = {
+        "id": mission_id,
+        "layer": layer,
+        "cadence": kwargs.pop("cadence", "daily"),
+        "time": kwargs.pop("time", "07:00"),
+        "description": f"Test mission {mission_id}",
+        "output_queue": kwargs.pop("output_queue", "queues/research/"),
+        "creates": kwargs.pop("creates", ["test_task"]),
+    }
+    base.update(kwargs)
+    return base
+
+
+# 08:30 Paris = 06:30 UTC in June (CEST, UTC+2) — well after the 07:00 floor.
+MORNING_AFTER_FLOOR = datetime(2026, 6, 16, 6, 30, tzinfo=timezone.utc)
+
+
+def test_materialize_daily_mission_creates_queue_item(tmp_path: Path):
+    """A daily mission whose time has passed today creates a queue item."""
+    repo = _mk_repo(tmp_path)
+    _mk_dept_yaml(repo, [
+        _mk_mission("morning_sync", time="07:00"),
+    ])
+
+    # Yesterday's .last-run so the mission is due today.
+    today_str = MORNING_AFTER_FLOOR.strftime("%Y-%m-%d")
+    yesterday = MORNING_AFTER_FLOOR.replace(day=MORNING_AFTER_FLOOR.day - 1)
+    yesterday_str = yesterday.strftime("%Y-%m-%d")
+    (repo / "outputs" / yesterday_str / "missions" / "morning_sync").mkdir(parents=True)
+    write_last_run(
+        repo / "outputs" / yesterday_str / "missions" / "morning_sync",
+        yesterday,
+    )
+
+    # No existing queue items for this mission.
+    ctx = build_dispatch_ctx(repo, now_utc=MORNING_AFTER_FLOOR)
+
+    # A queue item should have been created
+    research_dir = repo / "queues" / "research"
+    items = sorted(
+        p for p in research_dir.glob("*.yaml")
+        if not p.name.startswith(".")
+    )
+    assert len(items) >= 1, (
+        "materializer must create at least one queue item in queues/research/"
+    )
+    item_data = yaml.safe_load(items[0].read_text(encoding="utf-8"))
+    assert item_data["mission_id"] == "morning_sync"
+    assert item_data["kind"] == "test_task"
+    assert item_data["created_by"] == "materialize_due_missions"
+
+
+def test_materialize_idempotent(tmp_path: Path):
+    """Same mission does not get double-queued on a second call."""
+    repo = _mk_repo(tmp_path)
+    _mk_dept_yaml(repo, [
+        _mk_mission("morning_sync", time="07:00"),
+    ])
+
+    # Yesterday's .last-run → due today.
+    yesterday = MORNING_AFTER_FLOOR.replace(day=MORNING_AFTER_FLOOR.day - 1)
+    yesterday_str = yesterday.strftime("%Y-%m-%d")
+    (repo / "outputs" / yesterday_str / "missions" / "morning_sync").mkdir(parents=True)
+    write_last_run(
+        repo / "outputs" / yesterday_str / "missions" / "morning_sync",
+        yesterday,
+    )
+
+    # Pre-seed the queue with an existing item for this mission.
+    existing_item = {
+        "id": "test_task-morning_sync-20260616-063000",
+        "mission_id": "morning_sync",
+        "kind": "test_task",
+        "created_at": MORNING_AFTER_FLOOR.isoformat(),
+        "created_by": "manual",
+    }
+    (repo / "queues" / "research" / "existing.yaml").write_text(
+        yaml.dump(existing_item, allow_unicode=True, default_flow_style=False)
+    )
+
+    # First call: should NOT create a duplicate.
+    ctx = build_dispatch_ctx(repo, now_utc=MORNING_AFTER_FLOOR)
+
+    research_dir = repo / "queues" / "research"
+    items = sorted(
+        p for p in research_dir.glob("*.yaml")
+        if not p.name.startswith(".")
+    )
+    assert len(items) == 1, (
+        f"materializer must NOT create duplicate queue items; "
+        f"expected 1, got {len(items)}: {[p.name for p in items]}"
+    )
+
+
+def test_materialize_respects_per_mission_last_run_today(tmp_path: Path):
+    """If a mission already fired today (.last-run exists for today), skip it."""
+    repo = _mk_repo(tmp_path)
+    _mk_dept_yaml(repo, [
+        _mk_mission("morning_sync", time="07:00"),
+    ])
+
+    # Today's .last-run exists — mission already fired.
+    today_str = MORNING_AFTER_FLOOR.strftime("%Y-%m-%d")
+    (repo / "outputs" / today_str / "missions" / "morning_sync").mkdir(parents=True)
+    write_last_run(
+        repo / "outputs" / today_str / "missions" / "morning_sync",
+        MORNING_AFTER_FLOOR,
+    )
+
+    ctx = build_dispatch_ctx(repo, now_utc=MORNING_AFTER_FLOOR)
+
+    research_dir = repo / "queues" / "research"
+    items = sorted(
+        p for p in research_dir.glob("*.yaml")
+        if not p.name.startswith(".")
+    )
+    assert len(items) == 0, (
+        f"mission already fired today must not re-materialize; "
+        f"got {len(items)} items: {[p.name for p in items]}"
+    )
