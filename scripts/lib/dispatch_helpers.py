@@ -430,6 +430,16 @@ def materialize_due_missions_for_tick(
                 break
 
         if already_queued:
+            # The mission's card is still live in the queue — it has effectively
+            # "fired" for today, so stamp .last-run too. Without this, a mission
+            # whose card lingers (e.g. an orphan kind with no draining layer, or
+            # work awaiting a later layer's min-time) stays last_fired=None →
+            # due=True on every tick → the dispatcher fire-spins on it hourly.
+            # That fire-spin is what drove the 2026-06-16 Maya deaf-restart storm
+            # (heavy re-dispatch every tick → CC-core notification drop #61797).
+            # See maya rick-requests: research-queue-poison-routing /
+            # mission-lastrun-never-stamped (2026-06-16).
+            write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
         # Create the queue item.
