@@ -737,3 +737,56 @@ def test_for_tick_stamps_last_run_even_when_card_already_queued(tmp_path):
         [mission], now=now_utc, last_fired_per_mission=last_fired
     )
     assert due_again == []
+
+
+def test_queue_has_items_quarantines_orphan_kind(tmp_path):
+    """Kind-aware quarantine: a research queue holding ONLY an orphan kind
+    (one no L2 mission drains) must read as empty, so L2 does not fire-spin.
+    A drainable kind in the same queue must still register."""
+    import yaml as _yaml
+    qdir = tmp_path / "queues" / "research"
+    qdir.mkdir(parents=True)
+    # Orphan: kind that no L2 mission creates.
+    (qdir / "orphan.yaml").write_text(
+        _yaml.dump({"mission_id": "discovery", "kind": "discovery_sweep"}),
+        encoding="utf-8",
+    )
+    drainable = {"prospect_research"}  # what L2 actually drains
+    assert dispatch_helpers._queue_has_items(qdir, drainable) is False, (
+        "orphan-kind-only queue must read empty so L2 doesn't fire-spin"
+    )
+    # Add a drainable item — now it should register.
+    (qdir / "real.yaml").write_text(
+        _yaml.dump({"mission_id": "qualify", "kind": "prospect_research"}),
+        encoding="utf-8",
+    )
+    assert dispatch_helpers._queue_has_items(qdir, drainable) is True
+    # Back-compat: no drainable_kinds → kind-blind (orphan counts).
+    assert dispatch_helpers._queue_has_items(qdir) is True
+
+
+def test_queue_has_items_failopen_on_missing_kind(tmp_path):
+    """An item with no readable `kind` is counted (fail-open) even under
+    kind-aware mode — we never silently starve a real item."""
+    import yaml as _yaml
+    qdir = tmp_path / "queues" / "research"
+    qdir.mkdir(parents=True)
+    (qdir / "nokind.yaml").write_text(
+        _yaml.dump({"mission_id": "x"}), encoding="utf-8"
+    )
+    assert dispatch_helpers._queue_has_items(qdir, {"prospect_research"}) is True
+
+
+def test_drainable_kinds_for_layer_reads_dept_yaml(tmp_path):
+    """_drainable_kinds_for_layer returns the creates[] of that layer's
+    missions, and an empty set when dept.yaml is absent (→ kind-blind)."""
+    import yaml as _yaml
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert dispatch_helpers._drainable_kinds_for_layer(repo, 2) == set()
+    (repo / "dept.yaml").write_text(_yaml.dump({"recurring_missions": [
+        {"id": "qualify", "layer": 2, "creates": ["prospect_research"]},
+        {"id": "warming", "layer": 3, "creates": ["warming_outcome"]},
+    ]}), encoding="utf-8")
+    assert dispatch_helpers._drainable_kinds_for_layer(repo, 2) == {"prospect_research"}
+    assert dispatch_helpers._drainable_kinds_for_layer(repo, 3) == {"warming_outcome"}

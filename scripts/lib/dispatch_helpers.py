@@ -498,12 +498,25 @@ def _time_reached(now_paris_t: "Any", layer: int) -> bool:
     return now_paris_t >= _LAYER_MIN_TIME[layer]
 
 
-def _queue_has_items(queue_dir: Path) -> bool:
+def _queue_has_items(queue_dir: Path,
+                     drainable_kinds: "set[str] | None" = None) -> bool:
     """True if `queue_dir` holds at least one actionable item.
 
     "Actionable" = a regular `*.yaml` file that is NOT a dotfile/hidden helper.
     Excludes `.gitkeep`, anything starting with `.`, and processed/archived
     subdirs. Missing dir -> False (fail-safe).
+
+    Kind-aware quarantine (2026-06-17, Maya rick-requests): if
+    `drainable_kinds` is given, only count items whose `kind` is in that set.
+    An "orphan kind" — a card no layer can drain (e.g. a `discovery_sweep`
+    materialized into queues/research but only handled by L3, or a kind with no
+    handler at all) — used to make this return True forever, so the dispatcher
+    fire-spun on that layer every tick. That fire-spin tripped the CC-core
+    notification drop (#61797) and drove the deaf-restart storm. With
+    `drainable_kinds`, an unrecognised-kind card no longer pins the layer.
+    `drainable_kinds=None` keeps the old kind-blind behaviour (fail-open: an
+    item with no readable `kind` is still counted so we never silently starve
+    a real item).
     """
     queue_dir = Path(queue_dir)
     if not queue_dir.is_dir():
@@ -511,9 +524,39 @@ def _queue_has_items(queue_dir: Path) -> bool:
     for p in queue_dir.glob("*.yaml"):
         if p.name.startswith("."):
             continue
-        if p.is_file():
+        if not p.is_file():
+            continue
+        if drainable_kinds is None:
+            return True
+        # Kind-aware: only an item this layer can actually drain counts.
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            # Unparseable → fail-open, count it (don't silently drop real work).
+            return True
+        kind = data.get("kind")
+        if kind is None or kind in drainable_kinds:
             return True
     return False
+
+
+def _drainable_kinds_for_layer(repo_dir: Path, layer: int) -> "set[str]":
+    """Kinds a given layer can drain = the `creates[]` of that layer's
+    recurring missions in dept.yaml. Empty set if dept.yaml is absent/unreadable
+    (caller then falls back to kind-blind, fail-open)."""
+    dept_yaml = Path(repo_dir) / "dept.yaml"
+    if not dept_yaml.is_file():
+        return set()
+    try:
+        dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    kinds: set[str] = set()
+    for m in dept.get("recurring_missions") or []:
+        if int(m.get("layer", 0)) == layer:
+            for k in m.get("creates", []) or []:
+                kinds.add(k)
+    return kinds
 
 
 def build_dispatch_ctx(
@@ -568,7 +611,13 @@ def build_dispatch_ctx(
         # the real date was 2026-06-04 (see docs/FLOWCHART-SPEC.md BUG-DATE).
         "today": today,
         "today_dir": str(today_dir),
-        "has_research_items": _queue_has_items(repo / "queues" / "research"),
+        # Kind-aware: only L2-drainable kinds in queues/research count, so an
+        # orphan kind (e.g. a discovery_sweep that only L3 drains) can no longer
+        # pin L2 every tick. Falls back to kind-blind if dept.yaml is absent.
+        "has_research_items": _queue_has_items(
+            repo / "queues" / "research",
+            drainable_kinds=(_drainable_kinds_for_layer(repo, 2) or None),
+        ),
         # Approved decisions land in the dept top-level `inbox/decisions/`
         # — that is where the cockpit approve-click writes (console
         # github_reader.write_decision) and where Layer 3 reads + archives to
