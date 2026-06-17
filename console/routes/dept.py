@@ -17,6 +17,39 @@ from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
 
+# Firm-wide kanban lives on the Mac dashboard; the management dept page shows a
+# compact snapshot of it. urllib (no `requests` dep — same as the /kanban route).
+_DASHBOARD = "http://{{INTERNAL_IP}}:3847"
+_KANBAN_COL_LABELS = {
+    "needs_attention": "À traiter",
+    "investigating": "En cours",
+    "waiting": "En attente",
+}
+
+
+def _kanban_snapshot(limit: int = 6) -> "dict | None":
+    """Compact cross-dept kanban view for the management cockpit: per-column
+    counts + the first few `needs_attention` items. Returns None if the
+    dashboard is unreachable (the page must still render)."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{_DASHBOARD}/api/inbox", timeout=4) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None
+    cols = data.get("columns", {}) or {}
+    counts = data.get("counts", {}) or {}
+    attention = (cols.get("needs_attention") or [])[:limit]
+    return {
+        "counts": {k: counts.get(k, 0) for k in _KANBAN_COL_LABELS},
+        "labels": _KANBAN_COL_LABELS,
+        "attention": attention,
+        "attention_total": len(cols.get("needs_attention") or []),
+        "generated_at": data.get("generated_at", ""),
+    }
+
 
 @router.get("/dept/{slug}", response_class=HTMLResponse)
 def dept_detail(slug: str, request: Request):
@@ -74,6 +107,17 @@ def dept_detail(slug: str, request: Request):
     # {{OPERATOR}} msg 1171, 2026-06-01.
     backup_events = backup_history.recent_backups(slug)
     latest_backup = backup_history.latest_backup(slug)
+    # Compact firm-wide kanban snapshot — ONLY for the management dept (Tony).
+    # The management cockpit should surface the cross-dept board (counts + the
+    # few items needing attention); the full board lives at /kanban. Read-only.
+    # ({{OPERATOR}} 2026-06-17.)
+    kanban_summary = None
+    is_management = (
+        isinstance(dept_yaml, dict)
+        and (dept_yaml.get("hierarchy") or {}).get("level") == "management"
+    )
+    if is_management:
+        kanban_summary = _kanban_snapshot()
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -96,6 +140,7 @@ def dept_detail(slug: str, request: Request):
             "decision_events": decision_events,
             "backup_events": backup_events,
             "latest_backup": latest_backup,
+            "kanban_summary": kanban_summary,
         },
     )
 
