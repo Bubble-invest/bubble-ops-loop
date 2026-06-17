@@ -1,0 +1,24 @@
+[Unit]
+Description=Notion <-> Kanban bidirectional sync
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /home/claude/bubble-ops-loop/scripts/notion_kanban_sync.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=notion-kanban-sync
+
+# Security hardening (systemd-level, complements bubble-shield)
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/claude/bubble-ops-loop/state
+ReadOnlyPaths=/home/claude/.config/notion/api_key
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+MemoryDenyWriteExecute=no
