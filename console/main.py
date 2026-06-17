@@ -22,7 +22,8 @@ from fastapi.templating import Jinja2Templates
 
 from console import settings
 from console.routes import (
-    agents, concierge, costs, dept, dept_session, gate, health, home, onboarding,
+    agents, concierge, costs, dept, dept_session, gate, health, home, kanban,
+    onboarding,
 )
 from console.routes import settings as settings_route
 
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(onboarding.router)
     app.include_router(concierge.router)
     app.include_router(dept_session.router)
+    app.include_router(kanban.router)
 
     # unauthenticated liveness probe (tailscale only — see middleware)
     @app.get("/health-noauth")
