@@ -154,6 +154,53 @@
   </div>
 </section>
 
+{# ─── Kanban (firm-wide snapshot — management dept only) ──────────────
+   Compact cross-dept board: per-column counts + the items needing
+   attention. Full board at /kanban. Read-only. (Joris 2026-06-17.) #}
+{% if kanban_summary %}
+<section class="cabinet-section" aria-labelledby="dept-kanban-heading">
+  <div style="display:flex; justify-content:space-between; align-items:baseline;">
+    <h2 id="dept-kanban-heading" class="section-heading">
+      <span class="section-heading-number">1bis.</span>
+      Kanban — toute l'équipe
+    </h2>
+    <a href="/kanban" class="discreet-link" style="font-size:13px;">Tout voir →</a>
+  </div>
+
+  <div class="kpi-grid" style="margin:6px 0 14px;">
+    {% for key, label in kanban_summary.labels.items() %}
+    <div class="kpi-card">
+      <div class="kpi-value">{{ kanban_summary.counts[key] }}</div>
+      <div class="kpi-label">{{ label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if kanban_summary.attention %}
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      {% for item in kanban_summary.attention %}
+      <div style="padding:10px 14px; background:var(--paper); border:1px solid var(--line); border-radius:2px;">
+        <strong style="font-size:13px;">{{ item.title or item.summary or '(sans titre)' }}</strong>
+        {% if item.assignee or item.task %}
+        <span style="font-size:11px; color:var(--body-soft);">
+          — {% if item.assignee %}{{ item.assignee }}{% endif %}{% if item.task %} · {{ item.task }}{% endif %}
+        </span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% if kanban_summary.attention_total > kanban_summary.attention|length %}
+      <p class="muted-italic" style="font-size:12px; margin-top:8px;">
+        + {{ kanban_summary.attention_total - kanban_summary.attention|length }} autres à traiter —
+        <a href="/kanban" class="discreet-link">voir le board complet</a>
+      </p>
+    {% endif %}
+  {% else %}
+    <p class="muted-italic" style="font-size:13px;">Rien à traiter — le board est calme.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {# ─── Décisions qu'on attend de toi ──────────────────────────── #}
 <section class="cabinet-section" aria-labelledby="dept-decisions-heading">
   <h2 id="dept-decisions-heading" class="section-heading">
