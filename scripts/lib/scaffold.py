@@ -55,6 +55,7 @@ GITKEEP_DIRS = [
     "tests/fixtures",
     "queues/research",
     "queues/gates",
+    "queues/management",
     "queues/improvements",
     "inbox/decisions",
     "outputs/onboarding",

@@ -61,11 +61,23 @@ VERBOSE = "--verbose" in sys.argv or DRY_RUN
 # ── Notion API helpers ──────────────────────────────────────────────────────
 
 def _notion_key():
+    # Prefer the SOPS-injected env var (canonical secret convention — the
+    # service unit decrypts /etc/bubble/secrets-<slug>.sops.env to /run and
+    # passes it as NOTION_API_KEY). Fall back to the legacy plaintext path so
+    # this stays working during the transition. (2026-06-17 audit: the plaintext
+    # /home/claude/.config/notion/api_key bypassed the SOPS chain.)
+    key = os.environ.get("NOTION_API_KEY")
+    if key:
+        return key.strip()
     try:
         with open(NOTION_KEY_PATH) as f:
             return f.read().strip()
     except FileNotFoundError:
-        print(f"ERROR: Notion API key not found at {NOTION_KEY_PATH}", file=sys.stderr)
+        print(
+            "ERROR: Notion API key not found — set NOTION_API_KEY (SOPS) "
+            f"or place it at {NOTION_KEY_PATH}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 def notion_request(path, method="GET", body=None):
