@@ -55,29 +55,6 @@
 </aside>
 {% endif %}
 
-{# Session en direct — live view of this dept's agent. Moved to top per
-   {{OPERATOR}} 2026-06-09: most important real-time signal belongs first. #}
-<section style="margin-bottom:32px;">
-  <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
-    <h2 class="section-title" style="margin:0;">Session en direct</h2>
-    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
-      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
-      live &middot; rafraîchi toutes les 5 s
-    </span>
-  </div>
-  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
-    Ce que {{ dept.display_name }} fait en ce moment — messages et
-    actions, le plus récent en haut.
-  </p>
-  <div id="dept-session"
-       hx-get="/dept/{{ dept.slug }}/session"
-       hx-trigger="load, every 5s"
-       hx-swap="innerHTML">
-    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
-  </div>
-</section>
-<style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
-
 {# ─── Son mandat ────────────────────────────────────────────────
    One-line mandate shown plainly first (human-readable), then the
    full MANDATE.md as a collapsible for audit ({{OPERATOR}} msg 1071). #}
@@ -232,6 +209,36 @@
   {% endif %}
 </section>
 
+
+{# Session en direct — live view of this dept's agent. Moved BELOW decisions per
+   {{OPERATOR}} 2026-06-16: actionable decisions deserve top placement. #}
+<details style="margin-bottom:32px;" id="dept-session-details">
+  <summary style="cursor:pointer; font-size:15px; font-weight:600; padding:4px 0; color:var(--ink);">
+    <span style="display:inline-flex; align-items:center; gap:6px;">
+      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
+      Session en direct
+      <span style="font-weight:400; font-size:11px; color:var(--body-soft);">· rafraîchi toutes les 5s</span>
+    </span>
+  </summary>
+  <div style="margin-top:8px;">
+    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
+      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
+      live &middot; rafraîchi toutes les 5 s
+    </span>
+  </div>
+  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
+    Ce que {{ dept.display_name }} fait en ce moment — messages et
+    actions, le plus récent en haut.
+  </p>
+  <div id="dept-session"
+       hx-get="/dept/{{ dept.slug }}/session"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
+  </div>
+  </div>
+</details>
+<style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
 {# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
    Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
    mission cards) + "Ses 4 moments" (4 layer cards). {{OPERATOR}} flagged
