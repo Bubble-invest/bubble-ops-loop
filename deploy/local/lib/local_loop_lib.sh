@@ -264,18 +264,31 @@ render_loop_plist() {
 PLIST
 }
 
-# ── render_backup_plist <label> <dept-dir> <slug> <interval_sec> <runner> <log_dir> ──
+# ── render_backup_plist <label> <dept-dir> <slug> <interval_sec> <runner> <log_dir> [claude_bin] [workspace_dir] [extra_path] [activate_tick] ──
 # Echo a launchd plist for the BACKUP floor. On its StartInterval it runs the
 # backup runner script (which checks heartbeat staleness and force-ticks the
 # /loop only if stale). The runner path is baked in so the plist is the only
 # scheduling surface.
+#
+# The optional trailing args make the baked runner invocation actually able to
+# tick: claude_bin (else "claude", not on launchd PATH), workspace_dir (--add-dir
+# so the tick is skill-aware), extra_path (prepended to PATH), and activate_tick
+# ("1" → pass --activate-tick so the floor REALLY ticks; default-empty keeps the
+# old render-only/dry behaviour so a test or a deliberately-passive floor is safe).
 render_backup_plist() {
     local label="$1" dept_dir="$2" slug="$3" interval="$4" runner="$5" log_dir="$6"
+    local claude_bin="${7:-}" workspace_dir="${8:-}" extra_path="${9:-}" activate_tick="${10:-}"
     local e_dept e_runner e_out e_err
     e_dept="$(_lll_xml_escape "$dept_dir")"
     e_runner="$(_lll_xml_escape "$runner")"
     e_out="$(_lll_xml_escape "${log_dir%/}/${label}.out.log")"
     e_err="$(_lll_xml_escape "${log_dir%/}/${label}.err.log")"
+    # Build the runner arg string, XML-escaping each interpolated value.
+    local runner_args="--dept-dir '$(_lll_xml_escape "$dept_dir")' --slug '$(_lll_xml_escape "$slug")'"
+    [[ -n "$claude_bin" ]]    && runner_args="$runner_args --claude-bin '$(_lll_xml_escape "$claude_bin")'"
+    [[ -n "$workspace_dir" ]] && runner_args="$runner_args --workspace-dir '$(_lll_xml_escape "$workspace_dir")'"
+    [[ -n "$extra_path" ]]    && runner_args="$runner_args --extra-path '$(_lll_xml_escape "$extra_path")'"
+    [[ "$activate_tick" == "1" ]] && runner_args="$runner_args --activate-tick"
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -291,7 +304,7 @@ render_backup_plist() {
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>exec '${e_runner}' --dept-dir '${e_dept}' --slug '${slug}'</string>
+        <string>exec '${e_runner}' ${runner_args}</string>
     </array>
 
     <key>WorkingDirectory</key>

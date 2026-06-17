@@ -105,11 +105,12 @@ want   "T5d wrapper sources the telegram env"     "${WORK}/tg/.env" "$WRAPPER"
 want   "T5e wrapper grants the workspace via --add-dir (brain↔body)" "add-dir '${WSDIR}'" "$WRAPPER"
 
 # -----------------------------------------------------------------------------
-# Backup floor render (NO --activate)
+# Backup floor render (NO --activate) — now WITH claude-bin + workspace + extra-path
 # -----------------------------------------------------------------------------
 out="$WORK/backup.log"
 "$INSTALL_BACKUP" --dept-dir "$DEPT" --slug "$SLUG" --interval 10800 \
     --launch-agents-dir "$LA" --log-dir "$LOGS" \
+    --claude-bin /usr/bin/claude --workspace-dir "$WSDIR" --extra-path "/opt/homebrew/bin" \
     >"$out" 2>&1
 rc=$?
 BPLIST="$LA/com.bubble.ops-loop-backup-${SLUG}.plist"
@@ -121,6 +122,16 @@ want   "T6e backup plist StartInterval"    "<key>StartInterval</key>" "$BPLIST"
 nowant "T6f backup plist no StartCalendarInterval key" "<key>StartCalendarInterval</key>" "$BPLIST"
 want   "T6g backup plist invokes the runner" "local-loop-backup-runner.sh" "$BPLIST"
 want   "T6h backup plist passes --dept-dir"  "dept-dir" "$BPLIST"
+# Regression guard (2026-06-17): a real install bakes --activate-tick + the
+# claude-bin + the workspace, so the floor actually ticks + is skill-aware.
+want   "T6i backup plist bakes --activate-tick (floor really ticks)" "activate-tick" "$BPLIST"
+want   "T6j backup plist bakes --claude-bin"    "claude-bin" "$BPLIST"
+want   "T6k backup plist bakes --workspace-dir" "workspace-dir" "$BPLIST"
+# And --dry-tick keeps the old detect-only behaviour (no --activate-tick).
+"$INSTALL_BACKUP" --dept-dir "$DEPT" --slug "${SLUG}-dry" --interval 10800 \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --dry-tick >"$WORK/backup-dry.log" 2>&1
+BPLIST_DRY="$LA/com.bubble.ops-loop-backup-${SLUG}-dry.plist"
+nowant "T6l --dry-tick omits --activate-tick (detect-only)" "activate-tick" "$BPLIST_DRY"
 
 # -----------------------------------------------------------------------------
 # T7: idempotent re-run

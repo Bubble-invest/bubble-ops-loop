@@ -26,9 +26,17 @@
 # Usage:
 #   install-local-loop-backup.sh --dept-dir <path> --slug <slug>
 #                               [--interval <sec>] [--stale-sec <sec>]
+#                               [--claude-bin <path>] [--workspace-dir <path>]
+#                               [--extra-path <path>] [--dry-tick]
 #                               [--launch-agents-dir <dir>] [--log-dir <dir>]
 #                               [--activate]
 #   install-local-loop-backup.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
+#
+# By default the rendered floor ACTUALLY force-ticks when the heartbeat is stale
+# (the runner gets --activate-tick baked in). Pass --dry-tick for a detect-only
+# floor. For a dept whose loop needs an explicit claude path / workspace skills
+# (e.g. content/Miranda), pass --claude-bin + --workspace-dir + --extra-path so
+# the baked tick can find claude and load the workspace's .claude/skills.
 # =============================================================================
 set -uo pipefail
 
@@ -43,6 +51,10 @@ STALE_SEC="$LOCAL_LOOP_STALE_SEC_DEFAULT"   # 90 min, mirrors VPS BUBBLE_BACKUP_
 LAUNCH_AGENTS_DIR="${LOCAL_LOOP_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOCAL_LOOP_LOG_DIR:-$HOME/Library/Logs/bubble-ops-loop}"
 RUNNER="${LOCAL_LOOP_BACKUP_RUNNER:-$SCRIPT_DIR/local-loop-backup-runner.sh}"
+CLAUDE_BIN="${LOCAL_LOOP_CLAUDE_BIN:-}"     # baked into the plist so the tick finds claude (launchd PATH is minimal)
+WORKSPACE_DIR="${LOCAL_LOOP_WORKSPACE_DIR:-}"  # --add-dir for brain↔body skill reuse
+EXTRA_PATH="${LOCAL_LOOP_EXTRA_PATH:-}"     # prepended to PATH in the runner
+DRY_TICK=0                          # default: the floor ACTUALLY ticks when stale. --dry-tick = detect-only (old behaviour)
 ACTIVATE=0
 UNINSTALL=0
 
@@ -64,6 +76,13 @@ while [[ $# -gt 0 ]]; do
         --log-dir=*)           LOG_DIR="${1#--log-dir=}"; shift ;;
         --runner)              RUNNER="${2:?}"; shift 2 ;;
         --runner=*)            RUNNER="${1#--runner=}"; shift ;;
+        --claude-bin)          CLAUDE_BIN="${2:?}"; shift 2 ;;
+        --claude-bin=*)        CLAUDE_BIN="${1#--claude-bin=}"; shift ;;
+        --workspace-dir)       WORKSPACE_DIR="${2:?}"; shift 2 ;;
+        --workspace-dir=*)     WORKSPACE_DIR="${1#--workspace-dir=}"; shift ;;
+        --extra-path)          EXTRA_PATH="${2:?}"; shift 2 ;;
+        --extra-path=*)        EXTRA_PATH="${1#--extra-path=}"; shift ;;
+        --dry-tick)            DRY_TICK=1; shift ;;
         --activate)            ACTIVATE=1; shift ;;
         --uninstall)           UNINSTALL=1; shift ;;
         -h|--help)             sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -105,16 +124,26 @@ chmod +x "$RUNNER" 2>/dev/null || true
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
 
-say "rendering backup-floor plist:"
-say "  label     = $LABEL"
-say "  dept-dir  = $DEPT_DIR"
-say "  slug      = $SLUG"
-say "  interval  = ${INTERVAL}s (StartInterval — backstop, fires on wake if missed)"
-say "  stale-sec = ${STALE_SEC}s (heartbeat older than this → force-tick)"
-say "  runner    = $RUNNER"
-say "  plist     = $PLIST_PATH"
+ACTIVATE_TICK_VAL=1
+[[ "$DRY_TICK" == "1" ]] && ACTIVATE_TICK_VAL=""
 
-render_backup_plist "$LABEL" "$DEPT_DIR" "$SLUG" "$INTERVAL" "$RUNNER" "$LOG_DIR" > "$PLIST_PATH" \
+say "rendering backup-floor plist:"
+say "  label      = $LABEL"
+say "  dept-dir   = $DEPT_DIR"
+say "  slug       = $SLUG"
+say "  interval   = ${INTERVAL}s (StartInterval — backstop, fires on wake if missed)"
+say "  stale-sec  = ${STALE_SEC}s (heartbeat older than this → force-tick)"
+say "  runner     = $RUNNER"
+say "  claude-bin = ${CLAUDE_BIN:-<PATH lookup — set --claude-bin if launchd PATH is minimal>}"
+say "  workspace  = ${WORKSPACE_DIR:-<none — tick will be skill-blind unless dept is self-contained>}"
+say "  force-tick = $([[ "$DRY_TICK" == "1" ]] && echo 'DRY (detect-only)' || echo 'LIVE (actually ticks when stale)')"
+say "  plist      = $PLIST_PATH"
+
+[[ -z "$CLAUDE_BIN" ]] && say "NOTE: no --claude-bin — the tick relies on PATH finding 'claude'. Under launchd the PATH is minimal; pass --claude-bin (and/or --extra-path) or the force-tick will fail 'command not found'."
+[[ -z "$WORKSPACE_DIR" && "$DRY_TICK" != "1" ]] && say "NOTE: no --workspace-dir — a tick will not see workspace skills. Fine for a self-contained dept; pass --workspace-dir for a brain↔body dept like content (Miranda_Socials)."
+
+render_backup_plist "$LABEL" "$DEPT_DIR" "$SLUG" "$INTERVAL" "$RUNNER" "$LOG_DIR" \
+    "$CLAUDE_BIN" "$WORKSPACE_DIR" "$EXTRA_PATH" "$ACTIVATE_TICK_VAL" > "$PLIST_PATH" \
     || die "failed to render plist to $PLIST_PATH"
 say "wrote $PLIST_PATH"
 

@@ -22,6 +22,11 @@
 #       launches claude (exit 0, "would force-tick" only when stale).
 #   T5  the runner on a fresh dept exits 0 and does NOT force-tick.
 #   T6  microsecond/offset ISO form (datetime.isoformat()) is parsed correctly.
+#   T8  the force-tick command is a HEADLESS `-p /loop` tick + --add-dir <ws>
+#       (regression guard for the 2026-06-17 "bare claude, never ticked" bug).
+#   T9  WITH --activate-tick + a stub claude, claude IS launched with -p /loop
+#       and --add-dir (proves the floor actually ticks).
+#   T10 --extra-path lets a bare `claude` resolve under a minimal launchd PATH.
 #   T7  fixture safety — the dept-dir is a throwaway, not a live workspace.
 # =============================================================================
 set -uo pipefail
@@ -149,6 +154,65 @@ micro="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timez
 printf '%s tick idle\n' "$micro" > "$d/outputs/$today/heartbeat.log"
 res="$(is_heartbeat_stale "$d" "$STALE_SEC")"
 chk_eq "T6 microsecond/offset ISO form parsed → fresh" "fresh" "$res"
+
+# -----------------------------------------------------------------------------
+# T8: the force-tick command is a HEADLESS /loop tick (not a bare interactive
+#     claude). Regression guard for the 2026-06-17 bug where the runner launched
+#     `claude --dangerously-skip-permissions` with NO prompt (never ticked) and
+#     was skill-blind. The dry output must show the real command shape.
+# -----------------------------------------------------------------------------
+d="$(make_dept stale3)"
+write_hb "$d" "$(iso_ago $((STALE_SEC + 600)))"
+WS="$WORK/ws-skills"; mkdir -p "$WS/.claude/skills"
+out="$WORK/run-cmd.log"
+"$RUNNER" --dept-dir "$d" --slug stale3 --stale-sec "$STALE_SEC" \
+    --workspace-dir "$WS" >"$out" 2>&1
+want "T8 dry force-tick invokes /loop headless"      '\-p /loop' "$out"
+want "T8b dry force-tick grants workspace --add-dir" "add-dir $WS" "$out"
+
+# -----------------------------------------------------------------------------
+# T9: WITH --activate-tick + a stub claude, the runner ACTUALLY launches claude,
+#     passing `-p /loop` and `--add-dir <ws>`. Proves the floor really ticks
+#     (the missing --activate-tick + bad command were why it never did).
+# -----------------------------------------------------------------------------
+d="$(make_dept stale4)"
+write_hb "$d" "$(iso_ago $((STALE_SEC + 600)))"
+STUB="$WORK/stub"; mkdir -p "$STUB"
+ARGS_LOG="$WORK/claude-args.log"
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+echo "\$@" > "$ARGS_LOG"
+exit 0
+EOF
+chmod +x "$STUB/claude"
+out="$WORK/run-activate.log"
+"$RUNNER" --dept-dir "$d" --slug stale4 --stale-sec "$STALE_SEC" \
+    --claude-bin "$STUB/claude" --workspace-dir "$WS" --activate-tick >"$out" 2>&1
+rc=$?
+chk    "T9 runner --activate-tick on stale dept exits 0" 0 "$rc"
+want   "T9b claude WAS launched (args captured)" "." "$ARGS_LOG"
+want   "T9c claude got -p /loop"     '\-p /loop' "$ARGS_LOG"
+want   "T9d claude got --add-dir ws" "add-dir $WS" "$ARGS_LOG"
+
+# -----------------------------------------------------------------------------
+# T10: --extra-path makes a bare `claude` on a NON-PATH dir resolve (the launchd
+#      "command not found" bug). Stub lives in a dir NOT on PATH; pass it via
+#      --extra-path + bare --claude-bin claude; the tick must still find it.
+# -----------------------------------------------------------------------------
+d="$(make_dept stale5)"
+write_hb "$d" "$(iso_ago $((STALE_SEC + 600)))"
+HIDDEN="$WORK/hidden-bin"; mkdir -p "$HIDDEN"
+HIT="$WORK/extra-path-hit.log"
+cat > "$HIDDEN/claude" <<EOF
+#!/usr/bin/env bash
+echo "found via extra-path" > "$HIT"
+exit 0
+EOF
+chmod +x "$HIDDEN/claude"
+out="$WORK/run-extrapath.log"
+env -i HOME="$HOME" PATH="/usr/bin:/bin" bash "$RUNNER" --dept-dir "$d" --slug stale5 \
+    --stale-sec "$STALE_SEC" --claude-bin claude --extra-path "$HIDDEN" --activate-tick >"$out" 2>&1 || true
+want "T10 --extra-path lets a bare claude resolve" "." "$HIT"
 
 # -----------------------------------------------------------------------------
 # T7: fixture safety — dept-dir is a throwaway, not a live workspace
