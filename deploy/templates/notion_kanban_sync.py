@@ -15,7 +15,7 @@ Architecture:
 Data model:
   - Notion page <-> kanban structured["notion:<page_id>"] = inline card dict
   - New kanban cards (no notion_id) -> create Notion pages
-  - morty-agentic-audit entries: never synced to Notion (auto-generated noise)
+  - all tasks are synced to Notion (no filtering — incl. morty/security audits)
 """
 
 import json
@@ -40,17 +40,10 @@ MAC_KANBAN_PATH = "/Users/joris/claude-workspaces/Rick_RnD/monitoring/kanban_sta
 STATE_DIR = "/home/claude/bubble-ops-loop/state"
 STATE_FILE = os.path.join(STATE_DIR, "notion_kanban_sync.json")
 
-# Tasks to skip when creating Notion pages (auto-generated noise)
-SKIP_NOTION_CREATE_TASKS = {
-    "morty-agentic-audit",
-    "morty-security-audit",
-    "skills-audit-security",
-    "skills-audit-content",
-    "skills-audit-invest",
-    "skills-audit-main",
-    "skills-audit-claudette",
-    "security-daily-audit",
-}
+# No task filtering — sync ALL tasks to Notion ({{OPERATOR}} 2026-06-16: "don't filter
+# out morty audit, it's important"). Kept as an explicit empty set so the
+# create-page path below stays unchanged.
+SKIP_NOTION_CREATE_TASKS = set()
 
 # Tasks to skip entirely (not even notion->kanban updates for these)
 SKIP_KANBAN_TASKS = set()
