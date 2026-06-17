@@ -662,3 +662,78 @@ def test_materialize_skips_daily_risk_audit_when_called_at_07h():
         [daily_risk_audit], now=now_utc, last_fired_per_mission={}
     )
     assert items == []
+
+
+# ============================================================================
+# SECTION 7 — Re-materialization regression (poison-jam / deaf-restart storm)
+# ============================================================================
+
+def _write_dept_yaml(repo_dir: Path, missions: list[dict]) -> None:
+    import yaml as _yaml
+    (repo_dir / "dept.yaml").write_text(
+        _yaml.dump({"recurring_missions": missions}, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def test_for_tick_stamps_last_run_even_when_card_already_queued(tmp_path):
+    """Regression for the 2026-06-16 Maya deaf-restart storm.
+
+    A due daily mission whose card is STILL LIVE in the queue (already_queued)
+    must still get its mission .last-run stamped. Before the fix, the
+    `already_queued: continue` path skipped the stamp, so the mission stayed
+    last_fired=None → due=True every tick → the dispatcher fire-spun on it
+    hourly (heavy re-dispatch → CC-core notification drop #61797 → watchdog
+    restart). Orphan-kind cards (no draining layer) made this permanent.
+
+    The mission has effectively "fired" for the day the moment its card exists,
+    so .last-run must be written whether or not we created a new card this tick.
+    """
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    today_dir = tmp_path / "outputs" / date.today().isoformat()
+    today_dir.mkdir(parents=True)
+
+    mission = {
+        "id": "warming_batch",
+        "layer": 3,
+        "cadence": "daily",
+        "time": "07:00",
+        "description": "Daily warming batch.",
+        "output_queue": "queues/research/",
+        "creates": ["warming_outcome"],
+    }
+    _write_dept_yaml(repo_dir, [mission])
+
+    # Pre-seed a LIVE card for this mission in the queue (simulates a card the
+    # draining layer hasn't consumed yet, or an orphan kind it never will).
+    import yaml as _yaml
+    qdir = repo_dir / "queues" / "research"
+    qdir.mkdir(parents=True)
+    (qdir / "warming_outcome-warming_batch-existing.yaml").write_text(
+        _yaml.dump({"mission_id": "warming_batch", "kind": "warming_outcome"}),
+        encoding="utf-8",
+    )
+
+    now_utc = datetime.now(timezone.utc).replace(hour=9, minute=0, second=0,
+                                                 microsecond=0)
+    created = dispatch_helpers.materialize_due_missions_for_tick(
+        repo_dir, today_dir, now_utc
+    )
+
+    # No NEW card (already_queued) ...
+    assert created == []
+    # ... but .last-run IS stamped, so the next tick sees the mission as fired.
+    stamp = dispatch_helpers.read_last_run(today_dir / "missions" / "warming_batch")
+    assert stamp is not None, (
+        "already_queued mission must still stamp .last-run — otherwise it "
+        "re-materializes / fire-spins every tick (deaf-restart storm)."
+    )
+
+    # End-to-end idempotence: a second tick produces nothing and the mission is
+    # now correctly suppressed as already-fired-today.
+    last_fired = {"warming_batch": stamp}
+    due_again = dispatch_helpers.materialize_due_missions(
+        [mission], now=now_utc, last_fired_per_mission=last_fired
+    )
+    assert due_again == []
