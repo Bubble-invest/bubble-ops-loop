@@ -114,6 +114,7 @@ def scaffold_isolation_surface(
     enabled_skills: Iterable[str],
     all_dept_slugs: Iterable[str],
     model: str = DEFAULT_MODEL,
+    subagent_model: str = "opus",
 ) -> list[Path]:
     """Write the full isolation + anti-regression surface into `dept_root`.
 
@@ -135,6 +136,12 @@ def scaffold_isolation_surface(
         "enabled_skills": list(enabled_skills),
         "other_dept_slugs": other_dept_slugs,
         "model": model,
+        # The dept ORCHESTRATOR runs `model` (Sonnet for cost). The reasoning-heavy
+        # subagents (executor = mission execution, task-orchestrator = planning,
+        # mandate-guardian = judgment) run the BEST model so the cheap orchestrator
+        # delegates the hard thinking up, not down. Joris 2026-06-19. opus is
+        # entitled (opus[1m] too); sonnet[1m] is NOT — never pin sonnet[1m].
+        "subagent_model": subagent_model,
     }
 
     written: list[Path] = []
