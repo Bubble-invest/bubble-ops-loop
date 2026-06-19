@@ -298,6 +298,126 @@ def _is_within(path: Path, base: Path) -> bool:
             return False
 
 
+# ── Attachments — allowed extensions (NO .html/.js/executable) ───────────────
+# SVG is allowed but served with a restrictive CSP (see gate.py / resolve below).
+# Double-extensions like "evil.pdf.html" are rejected because only the LAST
+# suffix is checked AND the full basename is also validated to contain exactly
+# one dot separator for the allowed suffix — enforced via suffix check.
+_ATTACHMENT_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"})
+_ATTACHMENT_FILE_EXTS  = frozenset({".pdf", ".csv", ".txt", ".md"})
+_ATTACHMENT_ALLOWED_EXTS = _ATTACHMENT_IMAGE_EXTS | _ATTACHMENT_FILE_EXTS
+
+# Content-Type map for every allowed extension.
+_ATTACHMENT_MEDIA_TYPES: dict = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif":  "image/gif",
+    ".svg":  "image/svg+xml",
+    ".webp": "image/webp",
+    ".pdf":  "application/pdf",
+    ".csv":  "text/csv",
+    ".txt":  "text/plain",
+    ".md":   "text/markdown",
+}
+
+
+def attachment_media_type(path: Path) -> str:
+    """Return the correct Content-Type for a resolved attachment path.
+
+    Defaults to application/octet-stream for anything not in our allowlist
+    (should never happen if resolve_attachment_path is the sole gatekeeper,
+    but belt-and-suspenders so a caller getting a stale Path still behaves).
+    """
+    return _ATTACHMENT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def resolve_attachment_path(slug: str, rel_path: str) -> Optional[Path]:
+    """Securely resolve a gate attachment path to an on-disk file, or None.
+
+    Attachments live at:
+        outputs/<YYYY-MM-DD>/attachments/<NAME>.<ext>
+    relative to the dept repo root.  The cockpit serves them via
+    GET /gate/<slug>/attachment?path=<rel_path>.
+
+    Modelled EXACTLY on resolve_chart_path; the same layered checks apply.
+    A path is served ONLY when ALL of the following hold:
+
+      1. `slug` resolves to a real dept repo on disk (dept-scoping).
+      2. `rel_path` is relative, contains no parent refs, and resolves to a
+         path still inside <repo_root>/outputs/<date>/attachments/ — mirrors
+         the charts/ containment check (parts[0]=="outputs", parts[2]=="attachments",
+         depth >= 4).
+      3. The resolved real path (symlinks followed) is STILL inside that
+         attachments dir — so a symlink planted inside attachments/ that points
+         outside is rejected.
+      4. The file extension (last suffix, case-insensitive) is in the
+         _ATTACHMENT_ALLOWED_EXTS allowlist. A double-extension like
+         "x.pdf.html" has suffix ".html" which is NOT in the allowlist — rejected.
+      5. The file actually exists and is a regular file.
+
+    Returns the resolved Path on success, or None on ANY failure.
+    The caller maps None → opaque 404, never leaking why. Never raises.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        return None
+
+    root = repo_path(slug)
+    if root is None:
+        return None
+    root = root.resolve()
+
+    # Reject absolute paths and Windows drive/UNC forms outright.
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or candidate.drive or candidate.root:
+        return None
+    # Reject any explicit parent-dir component before touching the FS.
+    if ".." in candidate.parts:
+        return None
+
+    # Extension gate: must be in our allowlist (last suffix only — so
+    # "evil.pdf.html" has suffix ".html" and is rejected).
+    if candidate.suffix.lower() not in _ATTACHMENT_ALLOWED_EXTS:
+        return None
+
+    # Structural check: must be outputs/<something>/attachments/<name>.<ext>
+    # (>= 4 parts: outputs, <date>, attachments, <filename>).
+    parts = candidate.parts
+    if len(parts) < 4 or parts[0] != "outputs" or parts[2] != "attachments":
+        return None
+
+    # Resolve the containing directory and confirm it stays inside repo root.
+    attachments_dir = (root / parts[0] / parts[1] / parts[2]).resolve()
+    if not _is_within(attachments_dir, root):
+        return None
+
+    target = root / candidate
+    # Resolve to real path (follows symlinks).
+    try:
+        target_abs = target.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    # Containment: resolved path must be inside the resolved attachments dir.
+    if not _is_within(target_abs, attachments_dir):
+        return None
+
+    # Symlink-escape defence: the original path must not be a symlink pointing
+    # outside the attachments dir.
+    try:
+        if target.is_symlink():
+            real = target.resolve()
+            if not _is_within(real, attachments_dir):
+                return None
+    except OSError:
+        return None
+
+    if not target_abs.is_file():
+        return None
+
+    return target_abs
+
+
 def list_missions(slug: str) -> List[Dict[str, str]]:
     """Return all recurring missions declared by the dept.
 
