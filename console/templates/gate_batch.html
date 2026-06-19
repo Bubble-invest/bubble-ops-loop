@@ -42,37 +42,40 @@
         </span>
       </div>
 
-      {# Structured trade facts first (readable grid), then the thesis prose. #}
+      {# Structured trade facts first (readable grid), then the collapsible
+         thesis + price chart. #}
       {% include "components/trade-details.html" %}
 
-      {# ─── Price-context chart inline on the LISTING card (Ben's chart_path) ──
-         The /dept/<slug> listing renders full cards (facts + thesis + approve),
-         so the chart belongs here too, not only on the standalone detail page —
-         Joris reviews from the listing and expects the price graph alongside the
-         thesis. Same auth-gated, path-traversal-proof /gate/<slug>/chart route
-         and graceful no-op (absent without chart_path; 404 → browser shows
-         nothing, page never errors). Mirrors gate_card.html's chart block. #}
-      {% if gate.chart_path %}
-      <figure class="gate-chart" style="margin:0 0 12px;">
-        <a href="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
-           target="_blank" rel="noopener" title="Ouvrir le graphique en grand">
-          <img src="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
-               alt="Graphique — {{ gate.ticker or 'cours' }} vs pairs"
-               loading="lazy"
-               style="display:block; width:100%; height:auto; border:1px solid var(--line);
-                      border-radius:3px; background: var(--paper-soft);">
-        </a>
-        <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
-                    color: var(--body-muted);">
-          Cours rebasé à 100 — {{ gate.ticker or 'titre' }} vs pairs. Cliquer pour agrandir.
-        </figcaption>
-      </figure>
-      {% endif %}
-
-      {% if gate.summary %}
+      {# Thesis prose AND Ben's price-context chart (chart_path) live INSIDE the
+         same collapsible <details> so the chart is hidable together with the
+         thesis — collapsed by default for trade proposals (kind == trade_proposal
+         or a ticker), open otherwise. Chart uses the auth-gated,
+         path-traversal-proof /gate/<slug>/chart route (slug = DEPT slug);
+         graceful no-op when chart_path is absent or the file 404s. Render the
+         <details> if there's a thesis OR a chart so a chart-only gate still has
+         a container. Mirrors gate_card.html's chart block. #}
+      {% if gate.summary or gate.chart_path %}
         <details {% if not (gate.kind == 'trade_proposal' or gate.ticker) %}open{% endif %} style="margin:0 0 10px;">
-          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement</summary>
+          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}</summary>
+          {% if gate.summary %}
           <p style="margin:6px 0 0; font-size:14px; line-height:1.55; color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</p>
+          {% endif %}
+          {% if gate.chart_path %}
+          <figure class="gate-chart" style="margin:10px 0 0;">
+            <a href="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
+               target="_blank" rel="noopener" title="Ouvrir le graphique en grand">
+              <img src="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
+                   alt="Graphique — {{ gate.ticker or 'cours' }} vs pairs"
+                   loading="lazy"
+                   style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                          border-radius:3px; background: var(--paper-soft);">
+            </a>
+            <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
+                        color: var(--body-muted);">
+              Cours rebasé à 100 — {{ gate.ticker or 'titre' }} vs pairs. Cliquer pour agrandir.
+            </figcaption>
+          </figure>
+          {% endif %}
         </details>
       {% endif %}
 
