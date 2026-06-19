@@ -54,9 +54,9 @@
          graceful no-op when chart_path is absent or the file 404s. Render the
          <details> if there's a thesis OR a chart so a chart-only gate still has
          a container. Mirrors gate_card.html's chart block. #}
-      {% if gate.summary or gate.chart_path %}
+      {% if gate.summary or gate.chart_path or gate.attachments %}
         <details {% if not (gate.kind == 'trade_proposal' or gate.ticker) %}open{% endif %} style="margin:0 0 10px;">
-          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}</summary>
+          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}{% if gate.attachments %} & pièces jointes{% endif %}</summary>
           {% if gate.summary %}
           <p style="margin:6px 0 0; font-size:14px; line-height:1.55; color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</p>
           {% endif %}
@@ -75,6 +75,43 @@
               Cours rebasé à 100 — {{ gate.ticker or 'titre' }} vs pairs. Cliquer pour agrandir.
             </figcaption>
           </figure>
+          {% endif %}
+          {# ─── General attachments (additive — back-compat with chart_path) ─
+             Mirrors gate_card.html's attachments block. Image types render
+             inline; everything else renders as a labeled download link.
+             Served via auth-gated /gate/<slug>/attachment route. Graceful
+             no-op when list absent or file missing. #}
+          {% if gate.attachments %}
+          <div class="gate-attachments" style="margin:10px 0 0;">
+            {% for att in gate.attachments %}
+              {% if att.path.lower().endswith('.png') or att.path.lower().endswith('.jpg')
+                  or att.path.lower().endswith('.jpeg') or att.path.lower().endswith('.gif')
+                  or att.path.lower().endswith('.svg') or att.path.lower().endswith('.webp') %}
+              <figure class="gate-chart" style="margin:0 0 8px;">
+                <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+                   target="_blank" rel="noopener" title="Ouvrir en grand">
+                  <img src="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+                       alt="{{ att.caption or att.path.split('/')[-1] }}"
+                       loading="lazy"
+                       style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                              border-radius:3px; background: var(--paper-soft);">
+                </a>
+                {% if att.caption %}
+                <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
+                            color: var(--body-muted);">{{ att.caption }} — Cliquer pour agrandir.</figcaption>
+                {% endif %}
+              </figure>
+              {% else %}
+              <div style="margin-bottom:6px;">
+                <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+                   target="_blank" rel="noopener"
+                   style="font-size:13px; color: var(--ochre); text-decoration:none;">
+                  📎 {{ att.caption or att.path.split('/')[-1] }}
+                </a>
+              </div>
+              {% endif %}
+            {% endfor %}
+          </div>
           {% endif %}
         </details>
       {% endif %}

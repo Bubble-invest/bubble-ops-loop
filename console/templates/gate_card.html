@@ -87,6 +87,53 @@
   </figure>
   {% endif %}
 
+  {# ─── General attachments (additive, back-compat — chart_path still works) ─
+     An agent may attach images or files to a gate via the `attachments:` list
+     in the gate YAML.  Each item has a `path` (dept-repo-relative, must be
+     inside outputs/<date>/attachments/) and an optional `caption`.
+     Images (.png .jpg .jpeg .gif .svg .webp) render inline; everything else
+     (.pdf .csv .txt .md) renders as a labeled download/open link.
+     Served by the auth-gated, path-traversal-proof /gate/<slug>/attachment
+     route.  Graceful no-op when the list is absent or a file is 404 —
+     the browser shows nothing/a broken link, the page never errors. #}
+  {% if gate.attachments %}
+  <div class="gate-attachments" style="margin:0 0 16px;">
+    {% for att in gate.attachments %}
+      {# Decide image-vs-file by the last extension of the path (lowercase).
+         SVG is treated as an image and rendered inline via <img> — the route
+         sets a tight CSP so any embedded script is blocked. #}
+      {% if att.path.lower().endswith('.png') or att.path.lower().endswith('.jpg')
+          or att.path.lower().endswith('.jpeg') or att.path.lower().endswith('.gif')
+          or att.path.lower().endswith('.svg') or att.path.lower().endswith('.webp') %}
+      <figure class="gate-chart" style="margin:0 0 12px;">
+        <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+           target="_blank" rel="noopener"
+           title="Ouvrir en grand">
+          <img src="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+               alt="{{ att.caption or att.path.split('/')[-1] }}"
+               loading="lazy"
+               style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                      border-radius:3px; background: var(--paper-soft);">
+        </a>
+        {% if att.caption %}
+        <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
+                    color: var(--body-muted);">{{ att.caption }} — Cliquer pour agrandir.</figcaption>
+        {% endif %}
+      </figure>
+      {% else %}
+      {# Non-image: PDF, CSV, TXT, MD — labeled download/open link #}
+      <div style="margin-bottom:8px;">
+        <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+           target="_blank" rel="noopener"
+           style="font-size:14px; color: var(--ochre); text-decoration:none;">
+          📎 {{ att.caption or att.path.split('/')[-1] }}
+        </a>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if gate.summary %}
   <div class="gate-thesis" style="margin:0 0 16px; font-size:15px; line-height:1.6;
        color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
