@@ -193,6 +193,111 @@ def load_gate_raw(slug: str, gate_id: str) -> Optional[str]:
     return None
 
 
+def resolve_chart_path(slug: str, rel_path: str) -> Optional[Path]:
+    """Securely resolve a gate card's `chart_path` to an on-disk PNG, or None.
+
+    Ben's data contract (fixed): chart PNGs live at
+        outputs/<YYYY-MM-DD>/charts/<NAME>-90d.png
+    relative to the dept repo root. The cockpit serves these inline in the
+    gate detail view via GET /gate/<slug>/chart?path=<rel_path>.
+
+    This is the ONE place a bug becomes an arbitrary-file-disclosure vuln, so
+    the validation is deliberately strict and layered. A path is served ONLY
+    when ALL of the following hold:
+
+      1. `slug` resolves to a real dept repo on disk (dept-scoping: the chart
+         can only ever come from THIS dept's repo root, never another dept's
+         or an arbitrary host path).
+      2. `rel_path` is relative (no leading "/", no drive), contains no parent
+         refs, and after resolution still sits *inside* the repo root —
+         specifically inside `<repo_root>/outputs/<date>/charts/`.
+      3. The resolved real path (symlinks followed) is STILL inside that
+         charts dir — so a symlink planted inside charts/ that points outside
+         the repo is rejected.
+      4. The basename ends in `.png` (case-insensitive) — exactly one
+         extension, so `evil.png.txt` and `passwd` are rejected.
+      5. The file actually exists and is a regular file.
+
+    Returns the resolved Path on success, or None on ANY failure (caller maps
+    None → 404, never leaking *why*). Never raises.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        return None
+
+    root = repo_path(slug)
+    if root is None:
+        return None
+    root = root.resolve()
+
+    # Reject absolute paths and Windows drive/UNC forms outright. We only ever
+    # accept a repo-relative path.
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or candidate.drive or candidate.root:
+        return None
+    # Reject any explicit parent-dir component before we even touch the FS.
+    if ".." in candidate.parts:
+        return None
+
+    # Extension gate: exactly a .png basename (case-insensitive).
+    if candidate.suffix.lower() != ".png":
+        return None
+
+    # Resolve against the repo root WITHOUT requiring existence first, then
+    # confirm containment. We require the path to be:
+    #   <root>/outputs/<something>/charts/<name>.png  (>= depth 4 components)
+    parts = candidate.parts
+    if len(parts) < 4 or parts[0] != "outputs" or parts[2] != "charts":
+        return None
+
+    charts_dir = (root / parts[0] / parts[1] / parts[2]).resolve()
+    # The expected charts dir must itself be inside the repo root (defends
+    # against a weird parts[1] that resolves out — belt and suspenders).
+    if not _is_within(charts_dir, root):
+        return None
+
+    target = (root / candidate)
+    # Lexical containment check on the *unresolved* path (catches ../ that
+    # slipped past the parts check via odd encodings).
+    try:
+        target_abs = target.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not _is_within(target_abs, charts_dir):
+        return None
+
+    # Symlink-escape defence: the REAL path (all symlinks resolved) must still
+    # be inside the charts dir. `.resolve()` already followed symlinks above;
+    # re-confirm the real charts dir contains it.
+    if not _is_within(target_abs, charts_dir):
+        return None
+
+    if not target_abs.is_file():
+        return None
+    # Final paranoia: the real file's parent must be the real charts dir, and
+    # the file must not be a symlink pointing elsewhere (lstat the original).
+    try:
+        if target.is_symlink():
+            real = target.resolve()
+            if not _is_within(real, charts_dir):
+                return None
+    except OSError:
+        return None
+
+    return target_abs
+
+
+def _is_within(path: Path, base: Path) -> bool:
+    """True iff `path` is `base` or a descendant of it (both already resolved)."""
+    try:
+        return path == base or path.is_relative_to(base)
+    except AttributeError:  # pragma: no cover — Path.is_relative_to is 3.9+
+        try:
+            path.relative_to(base)
+            return True
+        except ValueError:
+            return False
+
+
 def list_missions(slug: str) -> List[Dict[str, str]]:
     """Return all recurring missions declared by the dept.
 
