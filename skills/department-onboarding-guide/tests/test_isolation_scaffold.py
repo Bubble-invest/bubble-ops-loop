@@ -203,8 +203,15 @@ def test_execution_subagents_render_sonnet(tmp_path):
         txt = (dept_root / "subagents" / name).read_text()
         return next(l for l in txt.splitlines() if l.startswith("model:"))
 
-    # Execution subagents run the cheap model.
-    for persona in ("executor.md", "task-orchestrator.md", "mandate-guardian.md"):
+    # All four subagent personas run the cheap model — the Opus orchestrator
+    # delegates every layer's bounded work (curation, planning, execution,
+    # guardrail) down to Sonnet workers.
+    for persona in (
+        "data-curator.md",
+        "task-orchestrator.md",
+        "executor.md",
+        "mandate-guardian.md",
+    ):
         assert model_line(persona) == "model: sonnet", persona
 
 
