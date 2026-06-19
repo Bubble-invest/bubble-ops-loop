@@ -144,11 +144,14 @@
       <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}</span>
     </div>
     {% if whiteboard_freeform %}
-      <article class="whiteboard-free-body">{{ whiteboard_freeform }}</article>
+      {# whiteboard_freeform is sanitized markdown→HTML (markdown_render) — a
+         Markup object, rendered unescaped. The agent fills whiteboard.md with
+         any data rep: tables, headings, rich text, embedded chart images. #}
+      <article class="whiteboard-free-body markdown-body">{{ whiteboard_freeform }}</article>
     {% else %}
       <div class="whiteboard-free-empty">
-        <p class="whiteboard-free-empty-lede">Espace libre — {{ dept.display_name }} écrit ici ce qu'elle veut : notes, données du métier, liens, suivi… Rien pour l'instant.</p>
-        <p class="whiteboard-free-hint">Le contenu du fichier <code>whiteboard.md</code> du département s'affiche ici, tel quel.</p>
+        <p class="whiteboard-free-empty-lede">Espace libre — {{ dept.display_name }} écrit ici ce qu'elle veut : notes, tableaux, données du métier, graphiques, liens, suivi… Rien pour l'instant.</p>
+        <p class="whiteboard-free-hint">Le contenu du fichier <code>whiteboard.md</code> du département s'affiche ici, en markdown formaté (titres, tableaux, images de graphiques…).</p>
       </div>
     {% endif %}
   </div>

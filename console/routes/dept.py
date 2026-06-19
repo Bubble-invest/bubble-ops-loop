@@ -11,6 +11,7 @@ from console.services import (
     dept_registry,
     github_reader,
     loop_history,
+    markdown_render,
     whiteboard_series,
 )
 from console.services.gate_grouping import group_gates_by_kind
@@ -91,8 +92,14 @@ def dept_detail(slug: str, request: Request):
     # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
     # Free-space whiteboard — a blank canvas card the dept manager fills with
-    # anything (whiteboard.md, verbatim). {{OPERATOR}} msg 1174, 2026-06-01.
-    whiteboard_freeform = github_reader.load_whiteboard_freeform(slug)
+    # any data representation it wants: tables, headings, rich text, embedded
+    # chart images (whiteboard.md). Rendered as SANITIZED markdown→HTML so the
+    # agent's markdown actually formats (Ben's allocation tables rendered as raw
+    # text before — {{OPERATOR}} 2026-06-19) without allowing script injection.
+    # Original msg 1174, 2026-06-01.
+    whiteboard_freeform = markdown_render.render_markdown_safe(
+        github_reader.load_whiteboard_freeform(slug)
+    )
     # KPI graphs — time series built from the dept's Layer-4 output history
     # (one datapoint per loop run). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)

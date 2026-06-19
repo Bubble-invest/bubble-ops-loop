@@ -1,0 +1,14 @@
+# bubble-ops-console runtime deps (FastAPI cockpit).
+# Install into the venv: venv/bin/pip install -r console/requirements.txt
+fastapi==0.115.2
+starlette==0.39.2
+uvicorn==0.47.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+python-multipart==0.0.29
+PyYAML==6.0.3
+httpx==0.28.1
+# whiteboard.md → sanitized HTML (markdown_render): the dept whiteboard is an
+# agent-authored artifact rendered as markdown, sanitized to a strict allowlist.
+Markdown==3.10.2
+nh3==0.3.5
