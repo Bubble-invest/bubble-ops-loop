@@ -173,6 +173,42 @@ def test_scaffold_writes_per_dept_model_into_settings(tmp_path):
 
 
 # -------------------------------------------------------------------------
+# 4c) fleet model doctrine (2026-06-19 REVISED): Opus orchestrator delegates
+#     execution to SONNET subagents. The orchestrator model stays Opus by
+#     default; the execution subagents (executor / task-orchestrator /
+#     mandate-guardian) default to Sonnet for cost. Guards against a silent
+#     flip back to the earlier (superseded) cheap-orchestrator/opus-subagent
+#     inversion.
+# -------------------------------------------------------------------------
+def test_subagent_model_defaults_to_sonnet():
+    import inspect
+
+    sig = inspect.signature(iso.scaffold_isolation_surface)
+    assert sig.parameters["subagent_model"].default == "sonnet"
+
+
+def test_execution_subagents_render_sonnet(tmp_path):
+    dept_root = tmp_path / "bubble-ops-probe"
+    dept_root.mkdir()
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="probe",
+        display_name="Probe",
+        level="ops",
+        enabled_skills=["x"],
+        all_dept_slugs=["probe", "ben", "maya"],
+    )
+
+    def model_line(name):
+        txt = (dept_root / "subagents" / name).read_text()
+        return next(l for l in txt.splitlines() if l.startswith("model:"))
+
+    # Execution subagents run the cheap model.
+    for persona in ("executor.md", "task-orchestrator.md", "mandate-guardian.md"):
+        assert model_line(persona) == "model: sonnet", persona
+
+
+# -------------------------------------------------------------------------
 # 5) the generated anti-regression test triple is present + valid Python
 # -------------------------------------------------------------------------
 def test_scaffold_emits_anti_regression_test(scaffolded):
