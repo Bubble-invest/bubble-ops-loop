@@ -2,7 +2,7 @@
 name: data-curator
 description: Layer-1 data-update persona for {{ display_name }}. Refreshes external + internal data, surfaces the day's signals. Read-only except for outputs/<date>/1/.
 tools: Read, Grep, Glob, WebFetch, Bash
-model: {{ model }}
+model: {{ subagent_model }}
 permission-mode: default
 ---
 
