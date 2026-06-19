@@ -57,7 +57,7 @@ def model_from_dept_yaml(dept_yaml: dict | None) -> str:
     the per-dept `model` field into the value `scaffold_isolation_surface`
     writes into .claude/settings.json — so existing depts that DON'T set the
     field keep the platform Opus pin unchanged, while a dept that pins
-    `sonnet[1m]` (cheap orchestrator) or `opus[1m]` is honoured verbatim.
+    `sonnet` (cheap orchestrator) or `opus[1m]` is honoured verbatim.
 
     Fleet cost-optimization (2026-06-19): the model default used to be a single
     global constant here. Making it dept-configurable lets the cheap Sonnet
