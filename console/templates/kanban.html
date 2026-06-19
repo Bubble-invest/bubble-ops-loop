@@ -1,76 +1,359 @@
 {% extends "base.html" %}
 {% block title %}Kanban — Cabinet d'éclosion{% endblock %}
+
+{% block head_extra %}
+<style>
+/* ── View-switcher tabs ──────────────────────────────────────────── */
+.vp-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+}
+.vp-tab {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-family: inherit;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--body-muted);
+  cursor: pointer;
+  letter-spacing: .02em;
+  transition: color .15s, border-color .15s;
+  margin-bottom: -1px;  /* overlap the container border */
+}
+.vp-tab:hover { color: var(--ink); }
+.vp-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--ochre);
+  font-weight: 500;
+}
+
+/* ── Group section header ────────────────────────────────────────── */
+.vp-group {
+  margin-bottom: 32px;
+}
+.vp-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 2px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+}
+.vp-group-accent {
+  width: 4px;
+  min-width: 4px;
+  height: 22px;
+  border-radius: 2px;
+  /* color set inline per group via --vp-accent CSS var */
+  background: var(--vp-accent, #b8804a);
+}
+.vp-group-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: .01em;
+  flex: 1;
+}
+.vp-group-count {
+  font-size: 12px;
+  color: var(--body-muted);
+  font-weight: 400;
+}
+
+/* ── Card grid ───────────────────────────────────────────────────── */
+.vp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+/* ── Individual card ─────────────────────────────────────────────── */
+.vp-card {
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vp-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vp-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.35;
+  /* flex child must be allowed to shrink below its longest word, else a long
+     title gets squeezed by the priority chip and wraps one word per line. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.vp-card-title a {
+  color: inherit;
+  text-decoration: none;
+}
+.vp-card-title a:hover { text-decoration: underline; }
+
+.vp-chip {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  /* A long type/kanban_type chip (e.g. a full offer name) must NOT stay on one
+     line and crush the title — cap it and let it shrink/ellipsize. Short
+     priority chips are unaffected. */
+  flex-shrink: 1;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Priority chips */
+.vp-chip--high   { background: #d32f2f; color: #fff; }
+.vp-chip--medium { background: #ed6c02; color: #fff; }
+.vp-chip--low,
+.vp-chip--none   { background: var(--line); color: var(--ink); }
+
+/* Status chips */
+.vp-chip--status {
+  background: var(--paper-soft);
+  color: var(--body-muted);
+  border: 1px solid var(--line);
+}
+/* Dept badge */
+.vp-badge-dept {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--paper-edge, #ece6d8);
+  color: var(--ink-soft, #2b3f63);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.vp-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+.vp-card-body {
+  font-size: 13px;
+  color: var(--body-soft);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* ── View panels ─────────────────────────────────────────────────── */
+.vp-panel { display: none; }
+.vp-panel.active { display: block; }
+
+/* ── Empty state ─────────────────────────────────────────────────── */
+.vp-empty {
+  font-style: italic;
+  color: var(--body-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+</style>
+{% endblock %}
+
 {% block content %}
 
 <header class="dept-header">
   <h1 class="dept-title">Kanban</h1>
   <p class="dept-subtitle">
-    Toutes les cartes actives — triées par priorité.
-    {% if generated_at %}mis à jour {{ generated_at[:19] }}{% endif %}
+    Tableau de bord visuel — toutes les cartes actives.
+    {% if generated_at %}Mis à jour {{ generated_at[:19] }}.{% endif %}
   </p>
 </header>
 
 {% if error %}
-<div class="cabinet-section" style="padding:24px; background:var(--paper-soft); border:1px solid var(--line); border-radius:2px;">
-  <p style="color:var(--alert-red);">{{ error }}</p>
+<div class="cabinet-section" style="padding:24px; background:var(--paper-soft); border:1px solid var(--line); border-radius:2px; margin-bottom:24px;">
+  <p style="color:#d32f2f;">{{ error }}</p>
   <p class="muted-italic" style="font-size:13px;">Le dashboard (port 3847 sur le Mac) doit être accessible.</p>
 </div>
 {% endif %}
 
-{% set col_labels = {
+{# ── Jinja macros ─────────────────────────────────────────────────── #}
+
+{# Priority chip helper — called with a card dict #}
+{% macro prio_chip(item) %}
+  {% set prio = (item.priority or item.severity or '') | lower %}
+  {% if prio %}
+    <span class="vp-chip
+      {%- if 'high' in prio or 'urgent' in prio or 'critical' in prio %} vp-chip--high
+      {%- elif 'medium' in prio or 'warn' in prio %} vp-chip--medium
+      {%- else %} vp-chip--low{%- endif %}">{{ item.priority or item.severity }}</span>
+  {% endif %}
+{% endmacro %}
+
+{# Status label map #}
+{% set STATUS_LABELS = {
   'needs_attention': 'À traiter',
-  'investigating': 'En cours',
-  'waiting': 'En attente',
-  'done': 'Terminé',
+  'investigating':   'En cours',
+  'waiting':         'En attente',
+  'done':            'Terminé',
 } %}
-{% set ns = namespace(total=0) %}
-{% for col_name, items in columns.items() %}
-{% set ns.total = ns.total + (items | length) %}
-{% if items %}
-<section class="cabinet-section" style="margin-bottom:28px;">
-  <h2 class="section-heading" style="margin:0 0 12px;">
-    {{ col_labels.get(col_name, col_name) }}
-    <span style="font-weight:400; font-size:13px; color:var(--body-soft);">({{ items|length }})</span>
-  </h2>
-  <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px;">
-    {% for item in items %}
-    {% set prio = (item.priority or item.severity or '') | lower %}
-    <div style="padding:14px 16px; background:var(--paper); border:1px solid var(--line); border-radius:2px;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
-        <strong style="font-size:14px;">{{ item.title or item.summary or '(sans titre)' }}</strong>
-        {% if prio %}
-        <span style="font-size:10px; padding:2px 6px; border-radius:2px; white-space:nowrap;
-              {% if 'high' in prio or 'urgent' in prio or 'critical' in prio %}background:#d32f2f; color:#fff
-              {% elif 'medium' in prio or 'warn' in prio %}background:#ed6c02; color:#fff
-              {% else %}background:var(--line); color:var(--ink){% endif %}">
-          {{ item.priority or item.severity }}
-        </span>
-        {% endif %}
-      </div>
-      {% if item.assignee or item.task %}
-      <div style="font-size:12px; color:var(--body-soft); margin-top:4px;">
-        {% if item.assignee %}{{ item.assignee }}{% endif %}
-        {% if item.task %}{% if item.assignee %}&middot; {% endif %}{{ item.task }}{% endif %}
-      </div>
-      {% endif %}
-      {% if item.body or item.summary %}
-      <div style="font-size:13px; color:var(--body-soft); margin-top:6px; line-height:1.4;
-                  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;">
-        {{ (item.body or item.summary)[:200] }}
-      </div>
+
+{# Status chip for a card #}
+{% macro status_chip(item) %}
+  {% set st = item.column or '' %}
+  <span class="vp-chip vp-chip--status">{{ STATUS_LABELS.get(st, st) }}</span>
+{% endmacro %}
+
+{# Dept badge for a card #}
+{% macro dept_badge(item) %}
+  {% set dept = item.owner or '' %}
+  {% if dept %}
+    <span class="vp-badge-dept">{{ dept }}</span>
+  {% endif %}
+{% endmacro %}
+
+{# Single card — title + chips + body #}
+{% macro render_card(item, show_status=False, show_dept=True) %}
+<div class="vp-card">
+  <div class="vp-card-top">
+    <div class="vp-card-title">
+      {% if item.context_url %}
+        <a href="{{ item.context_url }}" target="_blank" rel="noopener">{{ item.title or item.summary or '(sans titre)' }}</a>
+      {% else %}
+        {{ item.title or item.summary or '(sans titre)' }}
       {% endif %}
     </div>
+    {{ prio_chip(item) }}
+  </div>
+  <div class="vp-card-meta">
+    {% if show_dept %}{{ dept_badge(item) }}{% endif %}
+    {% if show_status %}{{ status_chip(item) }}{% endif %}
+  </div>
+  {% if item.body or item.summary %}
+  <div class="vp-card-body">{{ (item.body or item.summary)[:140] }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# ── Group rendering helper — used by all three views ─────────────── #}
+{# accent_map is a dict {group_name -> hex_color} pre-computed in Python   #}
+{# (Jinja2 has no ord() filter, so we can't hash in the template itself)   #}
+{% macro render_group(group_name, cards, accent_map, show_status=False, show_dept=True) %}
+{% if cards %}
+<div class="vp-group">
+  <div class="vp-group-header" style="--vp-accent: {{ accent_map.get(group_name, '#b8804a') }};">
+    <div class="vp-group-accent"></div>
+    <span class="vp-group-name">{{ group_name }}</span>
+    <span class="vp-group-count">{{ cards | length }} carte{{ 's' if cards | length != 1 else '' }}</span>
+  </div>
+  <div class="vp-grid">
+    {% for item in cards %}
+      {{ render_card(item, show_status=show_status, show_dept=show_dept) }}
     {% endfor %}
   </div>
-</section>
+</div>
 {% endif %}
-{% endfor %}
+{% endmacro %}
 
-{% if ns.total == 0 and not error %}
-<p class="muted-italic">Aucune carte active. Tout est clean.</p>
-{% endif %}
+{# ─────────────────────────────────────────────────────────────────── #}
+{# View switcher tabs                                                  #}
+{# ─────────────────────────────────────────────────────────────────── #}
+
+<div class="vp-tabs" role="tablist">
+  <button class="vp-tab" data-view="projet" role="tab" aria-selected="true">Par projet</button>
+  <button class="vp-tab" data-view="statut" role="tab" aria-selected="false">Par statut</button>
+  <button class="vp-tab" data-view="dept" role="tab" aria-selected="false">Par département</button>
+</div>
+
+{# ─── VIEW: Par projet ────────────────────────────────────────────── #}
+<div class="vp-panel" id="vp-panel-projet" role="tabpanel">
+  {% set ns_proj = namespace(total=0) %}
+  {% for proj_name, cards in by_project.items() %}
+    {% set ns_proj.total = ns_proj.total + cards | length %}
+    {# In the project view, show status chip + dept badge per card #}
+    {{ render_group(proj_name, cards, accents_project, show_status=True, show_dept=True) }}
+  {% endfor %}
+  {% if ns_proj.total == 0 and not error %}
+    <p class="vp-empty">Aucune carte active.</p>
+  {% endif %}
+</div>
+
+{# ─── VIEW: Par statut ────────────────────────────────────────────── #}
+<div class="vp-panel" id="vp-panel-statut" role="tabpanel">
+  {% set ns_st = namespace(total=0) %}
+  {% for col_name, cards in by_status.items() %}
+    {% set ns_st.total = ns_st.total + cards | length %}
+    {# In the status view, labels are already translated (done in Python).  #}
+    {# Show dept badge; status chip would be redundant since it's the group. #}
+    {{ render_group(col_name, cards, accents_status, show_status=False, show_dept=True) }}
+  {% endfor %}
+  {% if ns_st.total == 0 and not error %}
+    <p class="vp-empty">Aucune carte active.</p>
+  {% endif %}
+</div>
+
+{# ─── VIEW: Par département ───────────────────────────────────────── #}
+<div class="vp-panel" id="vp-panel-dept" role="tabpanel">
+  {% set ns_dept = namespace(total=0) %}
+  {% for dept_name, cards in by_department.items() %}
+    {% set ns_dept.total = ns_dept.total + cards | length %}
+    {# In dept view, show status chip per card; dept badge would be redundant #}
+    {{ render_group(dept_name, cards, accents_dept, show_status=True, show_dept=False) }}
+  {% endfor %}
+  {% if ns_dept.total == 0 and not error %}
+    <p class="vp-empty">Aucune carte active.</p>
+  {% endif %}
+</div>
 
 <p style="margin-top:24px;">
   <a href="/" class="discreet-link">← retour</a>
 </p>
+
+<script>
+(function () {
+  // Minimal vanilla tab switcher — no framework, no deps.
+  // Persists the active view in sessionStorage so refreshes remember the tab.
+  var STORAGE_KEY = 'kanban-view';
+  var DEFAULT_VIEW = 'projet';
+
+  var tabs = document.querySelectorAll('.vp-tab');
+  var panels = document.querySelectorAll('.vp-panel');
+
+  function activate(viewId) {
+    tabs.forEach(function (btn) {
+      var isActive = btn.dataset.view === viewId;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    panels.forEach(function (panel) {
+      panel.classList.toggle('active', panel.id === 'vp-panel-' + viewId);
+    });
+    try { sessionStorage.setItem(STORAGE_KEY, viewId); } catch (_) {}
+  }
+
+  tabs.forEach(function (btn) {
+    btn.addEventListener('click', function () { activate(btn.dataset.view); });
+  });
+
+  // Restore last tab or default to project view
+  var saved;
+  try { saved = sessionStorage.getItem(STORAGE_KEY); } catch (_) {}
+  activate(saved || DEFAULT_VIEW);
+}());
+</script>
+
 {% endblock %}
