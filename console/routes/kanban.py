@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,63 +41,84 @@ _cache_data: list = []      # last fetched raw issue list
 _cache_ts: float = 0.0      # epoch-seconds when cache was populated
 
 
+# The board API token is minted by a root timer (bubble-board-token-refresh)
+# into this tmpfs file (0640, root:claude). The cockpit runs NoNewPrivileges=yes
+# so it CANNOT sudo at request time — it just reads this file. The token is
+# short-lived (~1h) + issues-scoped, never persisted to disk, refreshed every
+# ~45min. We call the GitHub REST API directly (no `gh` CLI) so there's no
+# config-dir / env-token-precedence / PrivateTmp fragility — the token is passed
+# only as an in-memory Authorization header.
+_BOARD_TOKEN_FILE = "/run/bubble-board/token"
+
+
+def _read_board_token() -> str | None:
+    """Read the short-lived board token from the tmpfs file the refresher writes.
+    Fallback to GH_TOKEN env (dev/CI). None if neither available."""
+    try:
+        tok = open(_BOARD_TOKEN_FILE).read().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    return os.environ.get("GH_TOKEN") or None
+
+
 def _fetch_issues() -> tuple[list, str | None]:
-    """Fetch open issues from the board repo via `gh issue list`.
+    """Fetch open issues from the board repo via the GitHub REST API.
 
-    Returns (issues_list, error_string_or_None).
-
-    Token strategy: on the VPS `gh` is NOT interactively authed as claude.
-    bubble-board-token.sh is installed at /usr/local/bin/ and can be called
-    passwordlessly with sudo -n. It prints a short-lived GitHub token to stdout.
-    If the mint fails (e.g. local dev without the script) we fall back to
-    whatever GH_TOKEN is already in the environment (for CI / dev machines).
+    Returns (issues_normalized, error_string_or_None). Each issue is normalized
+    to the shape the rest of this module expects (matching the old `gh --json`
+    fields): number, title, body, labels[{name}], url, updatedAt, state.
     """
     global _cache_data, _cache_ts
 
     now = time.monotonic()
     ttl = settings.GH_CACHE_TTL_SECONDS
     if now - _cache_ts < ttl and _cache_data:
-        # Cache is still warm — return the cached list directly.
         return _cache_data, None
 
-    # ── Mint a token (VPS path) ────────────────────────────────────────────────
-    env = dict(os.environ)
-    try:
-        tok_result = subprocess.run(
-            ["sudo", "-n", "/usr/local/bin/bubble-board-token.sh"],
-            capture_output=True, text=True, timeout=10,
-        )
-        tok = tok_result.stdout.strip()
-        if tok:
-            env["GH_TOKEN"] = tok
-        # If the mint returns empty or fails, env keeps whatever GH_TOKEN was set
-        # already (CI / dev machines often have it in the environment).
-    except Exception:
-        pass  # token mint is best-effort; fall through with existing env
+    token = _read_board_token()
+    if not token:
+        return [], "no board API token available (/run/bubble-board/token missing)"
 
-    # ── Call gh issue list ─────────────────────────────────────────────────────
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "bubble-ops-console",
+    }
+    issues: list = []
+    # Paginate the REST issues API (100/page). PR objects also come back from
+    # this endpoint — drop them (they carry a "pull_request" key).
     try:
-        res = subprocess.run(
-            [
-                "gh", "issue", "list",
-                "--repo", _BOARD_REPO,
-                "--state", "open",
-                "--limit", "300",
-                "--json", "number,title,body,labels,url,updatedAt,state",
-            ],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
+        for page in range(1, 6):  # up to 500 issues; the board is far smaller
+            url = (f"https://api.github.com/repos/{_BOARD_REPO}/issues"
+                   f"?state=open&per_page=100&page={page}")
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                batch = json.load(resp)
+            if not batch:
+                break
+            for it in batch:
+                if it.get("pull_request"):
+                    continue
+                issues.append({
+                    "number": it.get("number"),
+                    "title": it.get("title") or "",
+                    "body": it.get("body") or "",
+                    # REST labels are [{name,...}] — same shape gh emitted.
+                    "labels": it.get("labels") or [],
+                    # normalize REST field names → what issue_to_card expects.
+                    "url": it.get("html_url") or "",
+                    "updatedAt": it.get("updated_at") or "",
+                    "state": it.get("state") or "open",
+                })
+            if len(batch) < 100:
+                break
+    except urllib.error.HTTPError as exc:
+        return [], f"board API HTTP {exc.code}: {exc.reason}"
     except Exception as exc:
-        return [], f"gh subprocess failed: {exc}"
-
-    if res.returncode != 0:
-        stderr = (res.stderr or "").strip()[:200]
-        return [], f"gh issue list failed (rc={res.returncode}): {stderr}"
-
-    try:
-        issues = json.loads(res.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        return [], f"gh output is not valid JSON: {exc}"
+        return [], f"board API fetch failed: {exc}"
 
     _cache_data = issues
     _cache_ts = now
