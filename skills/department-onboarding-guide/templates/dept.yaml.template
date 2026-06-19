@@ -21,6 +21,18 @@ department:
   status: onboarding                       # Notion v5 line 818
   mandate: "{{ mandate_text }}"
   owner: {{ owner }}
+{% if model is defined and model %}
+  model: "{{ model }}"                     # per-dept model pin (see below)
+{% else %}
+  # model: "sonnet[1m]"                    # OPTIONAL per-dept model pin (fleet
+                                           # cost-optimization, 2026-06-19). When
+                                           # absent, isolation_scaffold falls back
+                                           # to DEFAULT_MODEL (Opus). Cheap-
+                                           # orchestrator depts set "sonnet[1m]"
+                                           # and spawn Opus subagents for heavy
+                                           # planning / mission execution; depts
+                                           # that must stay Opus set "opus[1m]".
+{% endif %}
 {% if forbidden %}
   forbidden:
 {% for item in forbidden %}

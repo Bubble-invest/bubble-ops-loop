@@ -112,6 +112,32 @@ the questions, fills the template context dicts, calls the helpers, and
 commits. This separation keeps the skill testable in pure Python without
 needing an LLM.
 
+## Model doctrine — cheap Sonnet orchestrator + Opus subagents (2026-06-19)
+
+Per-dept model is configurable via `dept.yaml::department.model` (a `--model`
+alias such as `opus[1m]` / `sonnet[1m]`, or a full id). It flows into
+`.claude/settings.json` `model` (via `isolation_scaffold.model_from_dept_yaml`)
+and into the systemd unit's `--model` pin (via `deploy-to-morty.sh --model=`,
+default `opus[1m]`). When the field is absent, depts keep the platform Opus pin
+(`DEFAULT_MODEL`) — existing depts are unchanged until they opt in.
+
+**Cost-optimization default for ops/management depts:** pin `sonnet[1m]` (the
+cheap 24/7 orchestrator) and spawn an **Opus subagent for any non-trivial
+PLANNING or MISSION EXECUTION** — do the heavy reasoning there, then act on its
+conclusion. Keep the cheap Sonnet orchestrator for routine ticks, triage, and
+coordination. Depts that must stay maximally smart (e.g. Claudette) keep
+`opus[1m]`.
+
+**Subagent model override is real and per-invocation.** Claude Code resolves a
+subagent's model as: `CLAUDE_CODE_SUBAGENT_MODEL` env → the **per-invocation
+`model` parameter** → the subagent definition's `model:` frontmatter → inherit
+(the main conversation's model). So from a Sonnet main session, spawn the Agent/
+Task tool with an explicit `model: opus` (or pin `model: opus` in the
+subagent's frontmatter) — otherwise a default `inherit` subagent would run on
+Sonnet too. Every new dept's CLAUDE.md MUST carry this instruction (the live
+Sonnet depts — Tony/Ben/Maya/Eliot/Accountant/Miranda — each got it on
+2026-06-19).
+
 ## The 7 steps
 
 For each step the section below states:

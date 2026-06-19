@@ -36,6 +36,11 @@ Synopsis:
 
 Arguments:
   --slug=<slug>      Department slug (kebab-case). REQUIRED.
+  --model=<model>    Per-dept model pin for `claude --model` in ExecStart.
+                     Default: opus[1m] (unchanged from prior behaviour). Use
+                     sonnet[1m] for cheap-orchestrator depts that spawn Opus
+                     subagents for heavy reasoning. Canonical per-dept value
+                     lives in dept.yaml::department.model.
   --remote=<host>    SSH target. Default: $BUBBLE_MORTY_HOST (fallback claude@morty).
   --dry-run          Print the rendered unit + every SSH command without
                      running them. Exits 0 if template is renderable.
@@ -59,10 +64,14 @@ USAGE
 SLUG=""
 REMOTE=""
 DRY_RUN=0
+# Default keeps prior behaviour: the live tony/ben/maya/accountant units pinned
+# opus[1m] before this flag existed. Cost-optimization depts pass --model=sonnet[1m].
+CLAUDE_MODEL="opus[1m]"
 
 for arg in "$@"; do
   case "$arg" in
     --slug=*) SLUG="${arg#*=}" ;;
+    --model=*) CLAUDE_MODEL="${arg#*=}" ;;
     --remote=*) REMOTE="${arg#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --help|-h) usage; exit 0 ;;
@@ -109,6 +118,7 @@ rendered=$(
     -e "s|\${DEPT_SLUG}|${SLUG}|g" \
     -e "s|\${TELEGRAM_STATE_DIR}|${TELEGRAM_STATE_DIR}|g" \
     -e "s|\${ENV_FILE}|${ENV_FILE}|g" \
+    -e "s|\${CLAUDE_MODEL}|${CLAUDE_MODEL}|g" \
     "$TEMPLATE"
 )
 

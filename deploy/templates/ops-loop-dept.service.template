@@ -155,7 +155,15 @@ ExecStartPre=+/usr/local/bin/apply-inject-patch.sh
 EnvironmentFile=-${ENV_FILE}
 
 # Use script(1) for pty allocation.
-ExecStart=/bin/sh -c '/usr/bin/script -qfc "/usr/bin/claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official" /dev/null'
+# --model "${CLAUDE_MODEL}" pins the per-dept model at the unit level (belt-and-
+# suspenders after the 2026-05-31 "default"-model 404 outage, where a fresh
+# session resolved to the literal model "default" and 404'd). deploy-to-morty.sh
+# substitutes ${CLAUDE_MODEL} from --model (default opus[1m]); the canonical
+# per-dept declaration is department.model in dept.yaml (-> .claude/settings.json
+# via isolation_scaffold.model_from_dept_yaml). Fleet cost-optimization
+# (2026-06-19): cheap-orchestrator depts pin "sonnet[1m]" and spawn Opus
+# subagents for heavy reasoning; Opus-pinned depts keep "opus[1m]".
+ExecStart=/bin/sh -c '/usr/bin/script -qfc "/usr/bin/claude --model \"${CLAUDE_MODEL}\" --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official" /dev/null'
 
 # G-3 fix (GAP-10): On EVERY service start (including after Restart=on-failure),
 # send a Telegram message via the dept's own bot to trigger a new /loop turn.
