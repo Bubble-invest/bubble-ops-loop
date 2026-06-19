@@ -459,6 +459,22 @@ run_backup_tick() {
 
     log "$slug: running ONE backup tick (model=$MODEL budget=\$$BUDGET_USD)"
     local runlog; runlog="$(mktemp)"
+    # ── WEDGE FIX (Rick 2026-06-19): --strict-mcp-config on the headless spawn ──
+    # Root cause of the backup tick exiting 1 (Maya/Ben 2026-06-18, MCP-WEDGE
+    # path #2): `--setting-sources user` loads the dept's user settings.json,
+    # which declares the telegram --channels plugin + its MCP server. When a
+    # `claude --print` child loads that, it spins up a SECOND bun poller against
+    # the SAME bot token + same bot.pid as the live --channels session. The two
+    # pollers collide (stale-PID SIGTERM / orphan-watchdog reparent — see
+    # MCP-WEDGE-ROOTCAUSE.md §"Recommended durable fixes" Fix E), the headless
+    # MCP load hangs or aborts, and the spawn returns non-zero → the safety net
+    # silently never executes a layer subagent.
+    #   `--strict-mcp-config` = "only use MCP servers from --mcp-config, ignore
+    # all other sources". We pass NO --mcp-config, so the headless backup tick
+    # loads ZERO MCP servers — no telegram plugin, no second poller, no
+    # collision. We KEEP `--setting-sources user` so hooks/permissions/CLAUDE.md
+    # still load; we only strip MCP. A layer subagent tick needs Bash/Edit/Read,
+    # not the Telegram channel (the wrapper relays the result to {{OPERATOR}} itself).
     # Source the dept env (brings CLAUDE_CODE_OAUTH_TOKEN + per-dept vars) in a
     # subshell so it doesn't leak across depts.
     (
@@ -471,6 +487,7 @@ run_backup_tick() {
             --print \
             --no-session-persistence \
             --setting-sources user \
+            --strict-mcp-config \
             --model "$MODEL" \
             --max-budget-usd "$BUDGET_USD" \
             --output-format json \

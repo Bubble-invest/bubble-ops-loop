@@ -15,6 +15,20 @@ Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:
 Environment=BUBBLE_BACKUP_STALE_SEC=5400
 Environment=BUBBLE_BACKUP_MODEL=sonnet
 Environment=BUBBLE_BACKUP_BUDGET_USD=3.00
+# Unit hygiene (Rick 2026-06-19): a prior tick that exited non-zero (e.g. the
+# 2026-06-18 Ben MCP-wedge spawn returning 1) leaves THIS templated instance
+# (loop-layer@N.service) stuck in `failed` state — so `systemctl list-timers` /
+# the cockpit show a permanent red even after the next tick succeeds.
+# Type=oneshot self-clears `failed` on the next SUCCESSFUL activation, so once
+# the strict-mcp-config spawn fix lands the red goes away on its own. This line
+# additionally clears any pre-existing stale failed marker at the START of each
+# run so a one-off old failure never lingers red between ticks. `-` makes it
+# non-fatal (reset-failed exits non-zero when the unit isn't currently failed,
+# and the sudo grant may be absent on an un-migrated box — either way the tick
+# must still run). %n is this instance's full unit name (loop-layer@N.service).
+# Needs the scoped sudoers grant installed by scripts/install-loop-backup.sh
+# (claude → NOPASSWD: systemctl reset-failed loop-layer@*.service).
+ExecStartPre=-/usr/bin/sudo -n /bin/systemctl reset-failed %n
 # %i is the instance number (1..4) → the forced OODA layer.
 ExecStart=/home/claude/bubble-ops-loop/scripts/loop-backup.sh --layer %i
 # A layer tick can spawn a subagent; give it room but cap it.
