@@ -183,7 +183,7 @@ $ ssh hetzner "ls /home/claude/agents/fixture/outputs/$(date +%F)/"
 
 | Symptom | First place to look | Then |
 |---|---|---|
-| `/loop` stopped ticking | `journalctl -u ops-loop-<slug> -n 100 --no-pager` | `ops-loop-watchdog.timer` should have fired Telegram (40-min threshold) |
+| `/loop` stopped ticking | `journalctl -u ops-loop-<slug> -n 100 --no-pager` | `ops-loop-watchdog.timer` should have fired Telegram (40-min threshold). The **layer floor** also auto-restarts a dead **department** (tony/ben/maya/accountant) when a backup tick can't revive it — max 3×/rolling-hour/dept, then it escalates to Telegram. **Concierges (morty/claudette) are never auto-restarted** (no loop — safety guard in `scripts/lib/auto_restart.py`). Disable with `BUBBLE_AUTORESTART=0`; opt a dept out with `BUBBLE_AUTORESTART_OPTOUT="<slug>"`. Restart history: `state/auto-restart.jsonl`. |
 | Push silently failed | `tail /var/log/bubble-git-guard/audit.jsonl` — look for `denied` or `push_failed` events | Cross-check with `gh api repos/vdk888/bubble-ops-<slug>/commits` |
 | Token mint failed | `sudo journalctl SYSLOG_IDENTIFIER=bubble-token-broker -n 20 --output=json` | Confirm `BUBBLE_BROKER_JOURNAL=on` env is present in the systemd unit |
 | Gate didn't ping Telegram | Check `tools/notify-gate/` was invoked at Layer-2 step 7; tail `outputs/<date>/2/logs.jsonl` | Inspect `tools/notify-gate/schema.yaml` for I/O contract |
