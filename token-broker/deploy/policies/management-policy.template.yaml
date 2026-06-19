@@ -70,6 +70,9 @@ github_access:
                               # mission files. Mission files are structural -> agent
                               # CANNOT push them (mission-file lock); only Joris/Jade
                               # via merged PR.
+        - whiteboard.md       # L4 cockpit free-space board — rendered VERBATIM by the cockpit
+                              # template (alongside whiteboard.yaml's kpis/notes keys). Runtime
+                              # data, NOT structural — same class as .yaml (Ben 2026-06-19).
       mode: direct_runtime_commit
 
   pull_requests:
