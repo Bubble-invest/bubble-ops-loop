@@ -140,8 +140,14 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
         try:
             doc = yaml.safe_load(p.read_text(encoding="utf-8"))
             if isinstance(doc, dict):
-                # Skip gates that have been approved — they are no longer "pending."
-                if doc.get("approved_by"):
+                # Skip gates that have been decided — they are no longer "pending."
+                # Gate resolution writes `resolved: true` + `decided_by` (not
+                # `approved_by`, which nothing ever sets), so the old single-field
+                # check was dead: a decided-but-not-yet-archived gate kept showing
+                # in the dept UI as a still-open choice. Honour all the fields the
+                # resolution actually writes. ({{OPERATOR}} 2026-06-19: approved trades
+                # still appeared as pending in each agent's cockpit dept page.)
+                if doc.get("approved_by") or doc.get("resolved") or doc.get("decided_by"):
                     continue
                 out.append(doc)
             else:
