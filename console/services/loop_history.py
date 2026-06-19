@@ -312,8 +312,12 @@ def list_decision_events(slug: str) -> List[DecisionEvent]:
                     kind_parts.append(part)
                 kind = "-".join(kind_parts) if kind_parts else stem
 
-            # Extract date: try created_at, then scan filename for YYYY-MM-DD or YYYYMMDD
-            date_str = (doc.get("created_at") or "")[:10]
+            # Extract date: try created_at, then scan filename for YYYY-MM-DD or YYYYMMDD.
+            # PyYAML auto-parses an UNQUOTED `created_at: 2026-06-04` into a
+            # datetime.date (not a str), which is not subscriptable — so coerce to
+            # str before slicing. (Live 500 on /dept/ben 2026-06-19: two gate YAMLs
+            # had unquoted created_at → 'datetime.date' object is not subscriptable.)
+            date_str = str(doc.get("created_at") or "")[:10]
             if not date_str:
                 stem = p.stem
                 # Try YYYY-MM-DD pattern first (e.g. trade-proposal-DTLA-2026-06-04)
