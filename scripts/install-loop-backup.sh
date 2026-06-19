@@ -64,6 +64,39 @@ for unit in "$TEMPLATE_SERVICE" "${LAYER_TIMERS[@]}"; do
     run "sudo install -m 0644 -o root -g root '$src' '$SYSTEMD_DIR/$unit'"
 done
 
+# 2b) Scoped sudoers grant so the layer service (User=claude) can clear its OWN
+#     stale `failed` marker via the ExecStartPre `sudo -n systemctl reset-failed`
+#     (unit hygiene — a non-zero tick must not leave the templated instance red
+#     forever once the next tick succeeds). Tightly scoped: ONLY reset-failed,
+#     ONLY the loop-layer@*.service instances. Validate with visudo before
+#     installing so a malformed drop-in can never lock sudo.
+SUDOERS_FILE="/etc/sudoers.d/bubble-loop-layer-resetfailed"
+SUDOERS_LINE='claude ALL=(root) NOPASSWD: /bin/systemctl reset-failed loop-layer@*.service'
+say "installing scoped sudoers grant ($SUDOERS_FILE)"
+if [[ "$DRY" == "1" ]]; then
+    echo "  DRY: install $SUDOERS_FILE = '$SUDOERS_LINE' (visudo-validated, mode 0440)"
+else
+    _tmp_sudoers="$(mktemp)"
+    printf '# Installed by bubble-ops-loop/scripts/install-loop-backup.sh (Rick 2026-06-19).\n# Lets the loop-layer@N.service ExecStartPre clear its OWN stale failed state.\n%s\n' "$SUDOERS_LINE" > "$_tmp_sudoers"
+    if sudo visudo -cf "$_tmp_sudoers" >/dev/null 2>&1; then
+        sudo install -m 0440 -o root -g root "$_tmp_sudoers" "$SUDOERS_FILE"
+        say "sudoers grant installed + visudo-validated"
+    else
+        echo "ERR: sudoers drop-in failed visudo validation — NOT installing" >&2
+        rm -f "$_tmp_sudoers"
+        exit 2
+    fi
+    rm -f "$_tmp_sudoers"
+fi
+
+# 2c) One-shot cleanup: clear any EXISTING stale failed-state on the four
+#     instances right now (e.g. Ben's loop-layer@4.service left failed by the
+#     2026-06-18 wedge), so the fix takes effect without waiting for the next
+#     tick. Never fatal — a clean box has nothing to reset.
+for n in 1 2 3 4; do
+    run "sudo systemctl reset-failed 'loop-layer@${n}.service' 2>/dev/null || true"
+done
+
 # 3) Reload, then enable+start each layer timer (the template service is
 #    oneshot, fired by its timer — never enabled directly).
 run "sudo systemctl daemon-reload"
