@@ -2,6 +2,8 @@
 GET  /gate/<dept>/kind/<kind>   — BATCH view: all pending gates of one kind,
                                   each with an inline action form (triage many
                                   at once; deciding one swaps just that card).
+GET  /gate/<dept>/chart         — serve a gate's price-comparison chart PNG
+                                  (auth-gated, path-traversal-proof).
 GET  /gate/<dept>/<id>          — decision card with 4 actions (single gate)
 POST /gate/<dept>/<id>/decide   — writes inbox/decisions/<id>.yaml
 """
@@ -10,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from console.services import dept_registry, github_reader
 from console.services.humanize import humanize_kind
@@ -42,6 +44,38 @@ def gate_batch(slug: str, kind: str, request: Request):
             "count": len(gates),
             "actions": sorted(ALLOWED_ACTIONS),
         },
+    )
+
+
+# IMPORTANT: declared before /gate/{slug}/{gate_id} so "chart" is never matched
+# as a gate_id. Specific routes before the catch-all (same rule as kind/ above).
+@router.get("/gate/{slug}/chart")
+def gate_chart(slug: str, path: str, request: Request):
+    """Serve a gate card's price-comparison chart PNG, inline in the detail view.
+
+    Ben (the fund agent) writes 90-day rebased charts to
+    outputs/<date>/charts/<NAME>-90d.png in his repo and points a gate's
+    optional `chart_path` field at one. The cockpit renders it via
+    <img src="/gate/<slug>/chart?path=<chart_path>">.
+
+    SECURITY — this is the one place a bug = arbitrary file disclosure:
+      - bearer auth is enforced by the global middleware (same as every route);
+      - `github_reader.resolve_chart_path` strictly validates the path is a
+        .png inside THIS dept's <repo>/outputs/*/charts/ (no traversal, no
+        symlink escape, no cross-dept reach). It returns None on ANY doubt.
+    On None we 404 WITHOUT echoing the path or the reason (no oracle).
+    """
+    if dept_registry.get_department(slug) is None:
+        raise HTTPException(404, f"Unknown dept: {slug}")
+    resolved = github_reader.resolve_chart_path(slug, path)
+    if resolved is None:
+        # Single opaque outcome for every rejection class (missing, traversal,
+        # wrong-extension, cross-dept, symlink-escape) — no disclosure oracle.
+        raise HTTPException(404, "Chart not found")
+    return FileResponse(
+        str(resolved),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
     )
 
 
