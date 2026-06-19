@@ -145,8 +145,8 @@ def test_model_from_dept_yaml_defaults_when_absent():
 
 
 def test_model_from_dept_yaml_honours_explicit_pin():
-    dept_yaml = {"department": {"slug": "ben", "model": "sonnet[1m]"}}
-    assert iso.model_from_dept_yaml(dept_yaml) == "sonnet[1m]"
+    dept_yaml = {"department": {"slug": "ben", "model": "sonnet"}}
+    assert iso.model_from_dept_yaml(dept_yaml) == "sonnet"
     # A dept that must stay Opus pins it explicitly.
     assert (
         iso.model_from_dept_yaml({"department": {"model": "claude-opus-4-8[1m]"}})
@@ -158,7 +158,7 @@ def test_scaffold_writes_per_dept_model_into_settings(tmp_path):
     # The resolved per-dept model lands in .claude/settings.json `model`.
     dept_root = tmp_path / "bubble-ops-ben"
     dept_root.mkdir()
-    dept_yaml = {"department": {"slug": "ben", "model": "sonnet[1m]"}}
+    dept_yaml = {"department": {"slug": "ben", "model": "sonnet"}}
     iso.scaffold_isolation_surface(
         dept_root,
         slug="ben",
@@ -169,7 +169,7 @@ def test_scaffold_writes_per_dept_model_into_settings(tmp_path):
         model=iso.model_from_dept_yaml(dept_yaml),
     )
     data = json.loads((dept_root / ".claude" / "settings.json").read_text())
-    assert data["model"] == "sonnet[1m]"
+    assert data["model"] == "sonnet"
 
 
 # -------------------------------------------------------------------------

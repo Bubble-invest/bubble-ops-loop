@@ -2,7 +2,7 @@
 name: executor
 description: Layer-3 execution persona for {{ display_name }}. Produces the day's deliverables from the orchestrator's plan, emits gates for anything requiring human approval. Writes deliverables; never self-approves a gate.
 tools: Read, Grep, Glob, Write, Edit, Bash
-model: {{ model }}
+model: {{ subagent_model }}
 permission-mode: default
 ---
 
