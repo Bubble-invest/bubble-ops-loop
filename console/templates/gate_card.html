@@ -57,6 +57,36 @@
 
   {# ─── Trade details + thesis (trade_proposal gates) ───────────── #}
   {% include "components/trade-details.html" %}
+
+  {# ─── Price-context chart (Ben's optional chart_path) ───────────
+     Ben writes a 90-day rebased price-comparison PNG (ticker vs 2 peers)
+     to outputs/<date>/charts/ and points the gate's `chart_path` at it.
+     We render it inline ABOVE the thesis so Joris sees the price context
+     while reviewing the trade approval, instead of hunting in Telegram.
+     The PNG is served by the auth-gated, path-traversal-proof
+     /gate/<slug>/chart route (NOT a raw file path). Graceful no-op:
+     absent on every gate without a chart_path. If the file is missing the
+     route 404s and the browser simply shows nothing — the page never errors.
+     Click/tap opens the full-size PNG in a new tab (cheap lightbox). #}
+  {% if gate.chart_path %}
+  <figure class="gate-chart" style="margin:0 0 16px;">
+    <a href="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
+       target="_blank" rel="noopener"
+       title="Ouvrir le graphique en grand">
+      <img src="/gate/{{ slug }}/chart?path={{ gate.chart_path | urlencode }}"
+           alt="Graphique 90 jours — {{ gate.ticker or 'cours' }} vs pairs"
+           loading="lazy"
+           style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                  border-radius:3px; background: var(--paper-soft);">
+    </a>
+    <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
+                color: var(--body-muted);">
+      Cours sur 90 jours, rebasé à 100 — {{ gate.ticker or 'titre' }} vs pairs.
+      Cliquer pour agrandir.
+    </figcaption>
+  </figure>
+  {% endif %}
+
   {% if gate.summary %}
   <div class="gate-thesis" style="margin:0 0 16px; font-size:15px; line-height:1.6;
        color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
