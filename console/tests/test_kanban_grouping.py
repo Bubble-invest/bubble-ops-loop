@@ -17,6 +17,7 @@ from console.routes.kanban import (
     group_accent,
     build_accent_map,
     _flatten_columns,
+    issue_to_card,
 )
 
 # ── Fixture: a mini /api/inbox-shaped response ────────────────────────────────
@@ -233,6 +234,136 @@ def test_build_accent_map():
     assert set(result.keys()) == {"Alpha", "Beta", "Gamma"}
     for v in result.values():
         assert v.startswith("#")
+
+
+# ── issue_to_card mapping self-tests (fake GitHub issues, no live fetch) ──────
+# These verify the label-extraction → card-dict mapping without hitting the
+# GitHub API. We build raw issue dicts exactly as `gh issue list --json` returns.
+
+def _make_issue(number, title, body="", labels=(), url=None, updated="2026-06-20T10:00:00Z"):
+    """Helper: build a minimal gh-shaped issue dict."""
+    return {
+        "number": number,
+        "title": title,
+        "body": body,
+        "labels": [{"name": lbl} for lbl in labels],
+        "url": url or f"https://github.com/Bubble-invest/bubble-ops-board/issues/{number}",
+        "updatedAt": updated,
+        "state": "OPEN",
+    }
+
+
+def test_issue_to_card_dept_label():
+    """dept:ben label → owner "ben"."""
+    issue = _make_issue(1, "Ben task", labels=["dept:ben", "status:in-progress"])
+    card = issue_to_card(issue)
+    assert card["owner"] == "ben"
+    assert card["column"] == "investigating"
+    assert card["id"] == "1"
+
+
+def test_issue_to_card_status_triage():
+    """status:triage → column "needs_attention"."""
+    issue = _make_issue(2, "Triage task", labels=["status:triage"])
+    card = issue_to_card(issue)
+    assert card["column"] == "needs_attention"
+
+
+def test_issue_to_card_status_blocked():
+    """status:blocked → column "waiting"."""
+    issue = _make_issue(3, "Blocked", labels=["status:blocked"])
+    card = issue_to_card(issue)
+    assert card["column"] == "waiting"
+
+
+def test_issue_to_card_status_done():
+    """status:done → column "done"."""
+    issue = _make_issue(4, "Done", labels=["status:done"])
+    card = issue_to_card(issue)
+    assert card["column"] == "done"
+
+
+def test_issue_to_card_no_status_defaults_needs_attention():
+    """No status: label → default column "needs_attention"."""
+    issue = _make_issue(5, "No status")
+    card = issue_to_card(issue)
+    assert card["column"] == "needs_attention"
+
+
+def test_issue_to_card_risk_label():
+    """risk:high → priority "high"."""
+    issue = _make_issue(6, "Critical", labels=["risk:high"])
+    card = issue_to_card(issue)
+    assert card["priority"] == "high"
+
+
+def test_issue_to_card_type_label():
+    """type:research → kanban_type "research"."""
+    issue = _make_issue(7, "Research task", labels=["type:research"])
+    card = issue_to_card(issue)
+    assert card["kanban_type"] == "research"
+
+
+def test_issue_to_card_proj_label_wins_over_keywords():
+    """proj:infra label → project "Infra & Plateforme" even if title doesn't match."""
+    issue = _make_issue(8, "Some generic task", labels=["proj:infra"])
+    card = issue_to_card(issue)
+    assert card["project"] == "Infra & Plateforme"
+
+
+def test_issue_to_card_proj_label_overrides_keyword_heuristic():
+    """proj:fund forces "Fund & Investissement", even if keyword would suggest another bucket."""
+    issue = _make_issue(9, "Wiki fund compile", labels=["proj:fund"])
+    card = issue_to_card(issue)
+    # proj: label wins: must be Fund, not Wiki & Mémoire
+    assert card["project"] == "Fund & Investissement"
+    # And group_by_project respects the stored project field
+    groups = group_by_project([card])
+    assert "Fund & Investissement" in groups
+
+
+def test_issue_to_card_no_proj_label_falls_back_to_keyword():
+    """No proj: label → project is empty → derive_project used in group_by_project."""
+    issue = _make_issue(10, "Wiki memory compile", body="synthesis of shared wiki pages")
+    card = issue_to_card(issue)
+    assert card["project"] == ""  # no label set
+    groups = group_by_project([card])
+    assert "Wiki & Mémoire" in groups
+
+
+def test_issue_to_card_context_url_is_issue_url():
+    """context_url must equal the issue html url."""
+    url = "https://github.com/Bubble-invest/bubble-ops-board/issues/42"
+    issue = _make_issue(42, "Link test", url=url)
+    card = issue_to_card(issue)
+    assert card["context_url"] == url
+
+
+def test_issue_to_card_ts_display_format():
+    """ts_display should be the first 16 chars of updatedAt with T→space."""
+    issue = _make_issue(11, "Ts test", updated="2026-06-20T14:30:00Z")
+    card = issue_to_card(issue)
+    assert card["ts_display"] == "2026-06-20 14:30"
+
+
+def test_group_by_project_proj_label_bucket():
+    """End-to-end: 3 fake issues with mixed labels land in the right buckets."""
+    issues = [
+        _make_issue(100, "Cockpit thing",   labels=["proj:cockpit", "dept:rnd"]),
+        _make_issue(101, "Fund thing",      labels=["proj:fund",    "dept:ben"]),
+        _make_issue(102, "No proj, wiki body",  body="wiki memory compile",
+                    labels=["dept:rnd"]),
+    ]
+    cards = [issue_to_card(i) for i in issues]
+    groups = group_by_project(cards)
+    assert "Cockpit & Dashboard" in groups
+    assert "Fund & Investissement" in groups
+    assert "Wiki & Mémoire" in groups
+    # Dept grouping is unaffected
+    dept_groups = group_by_department(cards)
+    assert "rnd" in dept_groups
+    assert "ben" in dept_groups
+    assert len(dept_groups["rnd"]) == 2
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
