@@ -131,6 +131,48 @@ def test_scaffold_persona_present_and_scoped(scaffolded, persona):
 
 
 # -------------------------------------------------------------------------
+# 4b) per-dept model pin (fleet cost-optimization, 2026-06-19)
+#     - absent in dept.yaml  -> DEFAULT_MODEL (existing depts unchanged)
+#     - present in dept.yaml  -> honoured verbatim and flows into settings.json
+# -------------------------------------------------------------------------
+def test_model_from_dept_yaml_defaults_when_absent():
+    # No `department.model` -> existing depts keep the platform Opus pin.
+    assert iso.model_from_dept_yaml({"department": {"slug": "ben"}}) == iso.DEFAULT_MODEL
+    assert iso.model_from_dept_yaml({}) == iso.DEFAULT_MODEL
+    assert iso.model_from_dept_yaml(None) == iso.DEFAULT_MODEL
+    # Empty / whitespace-only is treated as unset.
+    assert iso.model_from_dept_yaml({"department": {"model": "  "}}) == iso.DEFAULT_MODEL
+
+
+def test_model_from_dept_yaml_honours_explicit_pin():
+    dept_yaml = {"department": {"slug": "ben", "model": "sonnet[1m]"}}
+    assert iso.model_from_dept_yaml(dept_yaml) == "sonnet[1m]"
+    # A dept that must stay Opus pins it explicitly.
+    assert (
+        iso.model_from_dept_yaml({"department": {"model": "claude-opus-4-8[1m]"}})
+        == "claude-opus-4-8[1m]"
+    )
+
+
+def test_scaffold_writes_per_dept_model_into_settings(tmp_path):
+    # The resolved per-dept model lands in .claude/settings.json `model`.
+    dept_root = tmp_path / "bubble-ops-ben"
+    dept_root.mkdir()
+    dept_yaml = {"department": {"slug": "ben", "model": "sonnet[1m]"}}
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="ben",
+        display_name="Ben",
+        level="ops",
+        enabled_skills=["alpaca"],
+        all_dept_slugs=["ben", "tony", "maya"],
+        model=iso.model_from_dept_yaml(dept_yaml),
+    )
+    data = json.loads((dept_root / ".claude" / "settings.json").read_text())
+    assert data["model"] == "sonnet[1m]"
+
+
+# -------------------------------------------------------------------------
 # 5) the generated anti-regression test triple is present + valid Python
 # -------------------------------------------------------------------------
 def test_scaffold_emits_anti_regression_test(scaffolded):

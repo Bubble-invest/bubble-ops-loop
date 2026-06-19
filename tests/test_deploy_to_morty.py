@@ -103,6 +103,37 @@ def test_dry_run_prints_ssh_commands(tmp_path):
     assert "/etc/systemd/system" in combined
 
 
+def test_template_has_claude_model_placeholder():
+    body = TEMPLATE.read_text(encoding="utf-8")
+    # Per-dept model pin (fleet cost-optimization, 2026-06-19): ExecStart must
+    # carry --model "${CLAUDE_MODEL}" so deploy-to-morty.sh can substitute it.
+    assert "${CLAUDE_MODEL}" in body
+    assert '--model \\"${CLAUDE_MODEL}\\"' in body
+
+
+def test_dry_run_default_model_is_opus_1m():
+    """No --model flag -> ExecStart pins opus[1m] (unchanged prior behaviour)."""
+    res = subprocess.run(
+        ["bash", str(SCRIPT), "--slug=fixture", "--dry-run"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    combined = res.stdout + res.stderr
+    assert '/usr/bin/claude --model \\"opus[1m]\\"' in combined
+
+
+def test_dry_run_model_override_to_sonnet_1m():
+    """--model=sonnet[1m] -> ExecStart pins sonnet[1m] (cost-optimization dept)."""
+    res = subprocess.run(
+        ["bash", str(SCRIPT), "--slug=fixture", "--model=sonnet[1m]", "--dry-run"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    combined = res.stdout + res.stderr
+    assert '/usr/bin/claude --model \\"sonnet[1m]\\"' in combined
+    assert 'opus[1m]' not in combined.split("ExecStart=/bin/sh")[1].split("\n")[0]
+
+
 def test_dry_run_does_not_touch_morty_unit(tmp_path):
     res = subprocess.run(
         [
