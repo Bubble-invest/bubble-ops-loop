@@ -118,6 +118,39 @@ def test_series_accepts_kpis_snapshot_block(disk_root):
     assert series["drafts_pending"].label == "Drafts en attente"
 
 
+def test_series_accepts_curated_block_nested_under_export(disk_root):
+    """Ben (and any dept that wraps its export under a top-level `export:` key)
+    declares its curated KPIs at `export.top_kpis`. The loader must look inside
+    `export:` for the curated block, not only at the doc root — otherwise it
+    silently falls back to flattening every risk-kpis leaf (the 12-chart clutter
+    {{OPERATOR}} flagged 2026-06-19)."""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path)
+    for day, nav in (("2026-05-30", 238_000), ("2026-05-31", 239_300)):
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True)
+        (d / "management-export.yaml").write_text(
+            yaml.safe_dump({
+                "export": {                       # everything nested under export:
+                    "dept": "demo", "date": day,
+                    "top_kpis": {
+                        "consolidated_nav_usd": nav,
+                        "cash_pct": 36.2,
+                    },
+                    "nav_summary": {"unused": 999},  # other blocks ignored
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+        # many risk-kpis leaves that must NOT be used (curated block wins)
+        (d / "risk-kpis.yaml").write_text(
+            yaml.safe_dump({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}), encoding="utf-8")
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+    assert set(series) == {"consolidated_nav_usd", "cash_pct"}  # only the curated few
+    assert series["consolidated_nav_usd"].trend == "up"         # 238k → 239.3k
+
+
 def test_series_capped_to_max(disk_root):
     """A risk-kpis fallback with many leaves is capped, keeping the movers."""
     tmp_path = disk_root
