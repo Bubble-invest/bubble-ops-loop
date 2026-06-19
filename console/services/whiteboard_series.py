@@ -154,12 +154,23 @@ def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
     `<date>/4/management-export.yaml` (where the live dept PROMPT.md writes
     it). Fallback: flatten `<date>/4/risk-kpis.yaml`.
     """
-    # 1) management-export curated KPIs (preferred — flat, console-intended)
+    # 1) management-export curated KPIs (preferred — the dept declares the few
+    #    KPIs it wants charted via a `top_kpis`/`kpis_snapshot` block; the cockpit
+    #    only renders what the dept curates). Depts wrap their export under a
+    #    top-level `export:` key (e.g. Ben), so look for the curated block BOTH at
+    #    the doc root AND one level down under `export:`. We do NOT synthesize a
+    #    default curation here — absent a declared block we fall through to the
+    #    risk-kpis fallback (curation is the dept's call, not the cockpit's).
     for rel in ("management-export.yaml", "4/management-export.yaml"):
         data = _safe_load_yaml(date_dir / rel)
-        if isinstance(data, dict):
+        if not isinstance(data, dict):
+            continue
+        scopes = [data]
+        if isinstance(data.get("export"), dict):
+            scopes.append(data["export"])
+        for scope in scopes:
             for block in _CURATED_KEYS:
-                curated = data.get(block)
+                curated = scope.get(block)
                 if isinstance(curated, dict):
                     flat = _flatten_numeric(curated)
                     if flat:
