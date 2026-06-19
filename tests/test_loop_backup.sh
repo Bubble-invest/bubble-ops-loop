@@ -106,10 +106,13 @@ chmod +x "$NOTIFY_STUB"
 # are non-zero, which is all the script's eligibility gate checks.
 SYSTEMCTL_STUB="$WORK/systemctl-stub.sh"
 ENABLED_FILE="$WORK/enabled-depts.txt"
-: > "$ENABLED_FILE"
+RESTART_LOG="$WORK/systemctl-restart.log"      # records each `systemctl restart` (auto-restart tests)
+: > "$ENABLED_FILE"; : > "$RESTART_LOG"
 cat > "$SYSTEMCTL_STUB" <<EOF
 #!/usr/bin/env bash
-# Expected call: systemctl is-enabled ops-loop-<slug>.service
+# Calls we emulate:
+#   systemctl is-enabled ops-loop-<slug>.service  (eligibility gate)
+#   systemctl restart    ops-loop-<slug>.service  (auto-restart — recorded)
 if [[ "\$1" == "is-enabled" ]]; then
     unit="\$2"                       # ops-loop-<slug>.service
     slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
@@ -118,6 +121,11 @@ if [[ "\$1" == "is-enabled" ]]; then
         if [[ "\$e" == "\$slug" ]]; then echo "enabled"; exit 0; fi
     done
     echo "disabled"; exit 1
+fi
+if [[ "\$1" == "restart" ]]; then
+    unit="\$2"; slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
+    echo "\$slug" >> "$RESTART_LOG"
+    exit 0
 fi
 exit 0
 EOF
@@ -693,6 +701,115 @@ else
     bad "J3 floor wrote a truthful line for a FRESH dept; heartbeat=$(cat "$HB_JFRESH" 2>/dev/null)"
 fi
 unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J
+# K. Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved). Fires
+#    ONLY when the backup tick FAILED to revive the dept (exit != 0). Scope:
+#      • departments (tony/ben/maya/accountant) restart;
+#      • concierges (morty/claudette) are NEVER restarted (safety guard);
+#      • guardrail: 3 restarts/rolling-hour/dept, the 4th ESCALATES.
+# A FAILING claude stub forces tick_exit != 0 so the auto-restart path runs.
+# =============================================================================
+# A claude stub that FAILS (exit 1) so the backup tick can't revive the dept.
+FAIL_CLAUDE="$WORK/claude-fail-k.sh"
+cat > "$FAIL_CLAUDE" <<'EOF'
+#!/usr/bin/env bash
+echo '{"type":"result","result":"could not revive"}'
+exit 1
+EOF
+chmod +x "$FAIL_CLAUDE"
+
+# K1: a dead DEPT (ben) whose backup tick FAILS → systemctl restart fired once.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+make_dept ben 10800; make_layer ben 1
+set_enabled ben
+export BUBBLE_BACKUP_DEPTS="ben"
+: > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if [[ "$(grep -c '^ben$' "$RESTART_LOG" || true)" == "1" ]]; then
+    ok "K1 dead dept (ben) + failed backup tick → systemctl restart ops-loop-ben fired once"
+else
+    bad "K1 expected 1 restart of ben; restart.log=$(cat "$RESTART_LOG" 2>/dev/null); err=$ERR"
+fi
+
+# K2: a CONCIERGE (morty) is NEVER restarted, even dead with a failed tick.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+make_dept morty 10800; make_layer morty 1
+set_enabled morty
+export BUBBLE_BACKUP_DEPTS="morty"
+: > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if ! grep -q '^morty$' "$RESTART_LOG" 2>/dev/null \
+   && [[ "$ALL" == *"REFUSED (concierge"* ]]; then
+    ok "K2 concierge (morty) NEVER restarted — refused as concierge (safety invariant)"
+else
+    bad "K2 morty was restarted or not refused; restart.log=$(cat "$RESTART_LOG" 2>/dev/null); log=$ALL"
+fi
+
+# K3: guardrail — with 3 restarts already in the rolling hour, the 4th ESCALATES
+#     (no restart fired this run). Pre-seed the state file with 3 recent restarts.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-k3.jsonl"
+"$PY" - "$BUBBLE_AUTORESTART_STATE" <<'PYEOF'
+import sys, time
+sys.path.insert(0, ".")
+from scripts.lib.auto_restart import append_restart_event, format_restart_event, now_iso
+state = sys.argv[1]
+for _ in range(3):
+    append_restart_event(state, format_restart_event("maya", "restart", "prior"))
+PYEOF
+make_dept maya 10800; make_layer maya 1
+set_enabled maya
+export BUBBLE_BACKUP_DEPTS="maya"
+: > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if ! grep -q '^maya$' "$RESTART_LOG" 2>/dev/null \
+   && [[ "$ALL" == *"GUARDRAIL TRIPPED"* ]]; then
+    ok "K3 guardrail: 4th restart in the hour ESCALATES (no restart) for maya"
+else
+    bad "K3 expected escalate (no restart) for maya; restart.log=$(cat "$RESTART_LOG" 2>/dev/null); log=$ALL"
+fi
+
+# K4: a SUCCESSFUL backup tick (exit 0) does NOT trigger a restart (the dept was
+#     revived by the gentle tick). Use the normal (succeeding) claude stub.
+reset_fixtures
+common_env
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-k4.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+make_dept ben 10800; make_layer ben 1
+set_enabled ben
+export BUBBLE_BACKUP_DEPTS="ben"
+: > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if ! grep -q '^ben$' "$RESTART_LOG" 2>/dev/null; then
+    ok "K4 successful backup tick (exit 0) → NO restart (dept revived gently)"
+else
+    bad "K4 restart fired despite a successful tick; restart.log=$(cat "$RESTART_LOG" 2>/dev/null)"
+fi
+
+# K5: feature kill-switch — BUBBLE_AUTORESTART=0 disables the whole path.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-k5.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+export BUBBLE_AUTORESTART=0
+make_dept ben 10800; make_layer ben 1
+set_enabled ben
+export BUBBLE_BACKUP_DEPTS="ben"
+: > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if ! grep -q '^ben$' "$RESTART_LOG" 2>/dev/null \
+   && [[ "$ALL" == *"auto-restart disabled"* ]]; then
+    ok "K5 BUBBLE_AUTORESTART=0 disables the auto-restart path entirely"
+else
+    bad "K5 kill-switch failed; restart.log=$(cat "$RESTART_LOG" 2>/dev/null); log=$ALL"
+fi
+unset BUBBLE_AUTORESTART BUBBLE_AUTORESTART_STATE BUBBLE_BACKUP_CLAUDE_BIN
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="

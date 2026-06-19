@@ -354,6 +354,124 @@ if not receipt.success:
 PYEOF
 }
 
+# ── Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved) ──────────
+# When the backup tick could NOT revive a dead dept (tick exited non-zero — the
+# loop is down AND the safety net couldn't run a layer), restart the dept's
+# systemd unit. EXACT {{OPERATOR}}-approved scope (enforced by scripts/lib/auto_restart.py):
+#   • ONLY departments (tony, ben, maya, accountant); NEVER concierges
+#     (morty, claudette) — {{OPERATOR}} msg 4636. The concierge exclusion is a GUARD in
+#     the decision module (refuses anything not a dept), not just this default.
+#   • Guardrail: max 3 restarts/rolling-hour/dept; the 4th ESCALATES to Telegram.
+#   • DEFAULT-ON for the 4 depts; opt-out per dept via
+#     BUBBLE_AUTORESTART_OPTOUT="<slug> <slug>"; the whole feature can be turned
+#     off with BUBBLE_AUTORESTART=0.
+# The restart history lives in its own state file so the guardrail survives across
+# floor invocations. systemctl is the same overridable $SYSTEMCTL the eligibility
+# gate uses (test harness stubs it). Never fatal — a restart/escalation failure
+# must not abort the floor.
+AUTORESTART_ENABLED="${BUBBLE_AUTORESTART:-1}"
+AUTORESTART_STATE="${BUBBLE_AUTORESTART_STATE:-${REPO_ROOT}/state/auto-restart.jsonl}"
+AUTORESTART_MAX_PER_HOUR="${BUBBLE_AUTORESTART_MAX_PER_HOUR:-3}"
+AUTORESTART_OPTOUT="${BUBBLE_AUTORESTART_OPTOUT:-}"
+
+# maybe_auto_restart <slug> — called ONLY when a backup tick failed to revive the
+# dept (tick_exit != 0). Consults the pure decision (concierge guard + guardrail),
+# then on ACT_RESTART runs `systemctl restart ops-loop-<slug>.service` and records
+# the restart; on ACT_ESCALATE pings a human; on any refuse it just logs. The
+# Telegram env must already be sourced by the caller (same posture as notify).
+maybe_auto_restart() {
+    local slug="$1"
+    [[ "$AUTORESTART_ENABLED" == "1" ]] || { log "$slug: auto-restart disabled (BUBBLE_AUTORESTART=0)"; return 0; }
+
+    # opt-out check (space-separated slug list)
+    local opted_out=0 o
+    for o in $AUTORESTART_OPTOUT; do [[ "$o" == "$slug" ]] && opted_out=1; done
+
+    # Pure decision (concierge guard + per-dept rolling-hour guardrail).
+    local decision action reason
+    decision="$("$PY" - "$AUTORESTART_STATE" "$slug" "$AUTORESTART_MAX_PER_HOUR" "$opted_out" 2>/dev/null <<'PYEOF'
+import sys, time
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.auto_restart import decide_restart, read_restart_events
+state, slug, maxph, opted = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1"
+hist = read_restart_events(state)
+d = decide_restart(slug, hist, time.time(), max_per_hour=maxph, opted_out=opted)
+print(d["action"] + "\t" + d["reason"])
+PYEOF
+)"
+    # Fail-closed: a python/decision error yields an empty result → refuse (never
+    # restart on an unparseable decision).
+    [[ -n "$decision" ]] || decision=$'refuse-not-dept\tdecision error (fail-closed)'
+    action="$(cut -f1 <<<"$decision")"
+    reason="$(cut -f2 <<<"$decision")"
+
+    case "$action" in
+        restart)
+            log "$slug: AUTO-RESTART — $reason"
+            if "$SYSTEMCTL" restart "ops-loop-${slug}.service" ; then
+                _record_restart_event "$slug" "restart" "$reason"
+                # Surface the restart on Telegram (best-effort) so a human knows
+                # the dept was revived by force, not by the gentle backup tick.
+                notify_autorestart "$slug" "restarted" "$reason"
+            else
+                log "$slug: AUTO-RESTART FAILED — systemctl restart returned non-zero"
+                _record_restart_event "$slug" "restart-failed" "$reason"
+                notify_autorestart "$slug" "restart-FAILED" "systemctl restart ops-loop-${slug}.service failed — needs a human"
+            fi
+            ;;
+        escalate)
+            log "$slug: AUTO-RESTART GUARDRAIL TRIPPED — $reason"
+            _record_restart_event "$slug" "escalate" "$reason"
+            notify_autorestart "$slug" "GUARDRAIL — human needed" "$reason"
+            ;;
+        refuse-concierge)
+            log "$slug: auto-restart REFUSED (concierge — safety invariant): $reason"
+            ;;
+        *)
+            log "$slug: auto-restart not applied ($action): $reason"
+            ;;
+    esac
+}
+
+_record_restart_event() {
+    local slug="$1" action="$2" reason="$3"
+    "$PY" - "$AUTORESTART_STATE" "$slug" "$action" "$reason" <<'PYEOF' 2>/dev/null || log "$slug: warn — could not record restart event"
+import sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.auto_restart import append_restart_event, format_restart_event
+state, slug, action, reason = sys.argv[1:5]
+append_restart_event(state, format_restart_event(slug, action, reason))
+PYEOF
+}
+
+# notify_autorestart <slug> <subject-tail> <reason> — Telegram ping for an
+# auto-restart / escalation. Reuses the same TelegramBackend + chat_id as the
+# backup-fired ping (caller has the env sourced). Never fatal.
+notify_autorestart() {
+    local slug="$1" what="$2" reason="$3"
+    local subject="🔁 auto-restart [${slug}] — ${what}"
+    if [[ -n "${BUBBLE_BACKUP_NOTIFY_CMD:-}" ]]; then
+        "${BUBBLE_BACKUP_NOTIFY_CMD}" "$slug" "$BACKUP_CHAT_ID" "${subject}"$'\n'"${reason}" \
+            || log "$slug: warn — auto-restart notify stub failed"
+        return 0
+    fi
+    "$PY" - "$BACKUP_CHAT_ID" "$subject" "$reason" <<'PYEOF' || log "$slug: warn — could not send auto-restart Telegram ping"
+import sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.notify import TelegramBackend, NotificationPayload
+chat_id, subject = sys.argv[1], sys.argv[2]
+body = sys.argv[3] if len(sys.argv) > 3 else ""
+receipt = TelegramBackend({}).send(
+    NotificationPayload(subject=subject, markdown_body=body,
+                        metadata={"kind": "auto_restart"}),
+    chat_id,
+)
+if not receipt.success:
+    sys.stderr.write(f"auto-restart ping not delivered: {receipt.error}\n")
+    sys.exit(1)
+PYEOF
+}
+
 # ── Tick prompt ──────────────────────────────────────────────────────────────
 # Two shapes. In layer-floor mode the prompt FORCES Layer N (no decide_dispatch);
 # in generic mode it runs the dispatcher's choice. Both end with the concise
@@ -737,6 +855,15 @@ PYEOF2
         [[ -f "$envfile" ]] && . "$envfile"
         set +a
         notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
+        # Auto-restart the dead DEPT only when the backup tick FAILED to revive it
+        # (tick_exit != 0 = loop down AND the safety net couldn't run a layer).
+        # The pure decision enforces the concierge guard + the 3/hour guardrail.
+        # A successful backup tick (exit 0) revived the dept's work for this cycle
+        # → no restart needed. Runs in the same env-sourced subshell so the
+        # escalation Telegram ping has the token.
+        if [[ "$tick_exit" != "0" ]]; then
+            maybe_auto_restart "$slug"
+        fi
     )
 done
 
