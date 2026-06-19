@@ -4,6 +4,8 @@ GET  /gate/<dept>/kind/<kind>   — BATCH view: all pending gates of one kind,
                                   at once; deciding one swaps just that card).
 GET  /gate/<dept>/chart         — serve a gate's price-comparison chart PNG
                                   (auth-gated, path-traversal-proof).
+GET  /gate/<dept>/attachment    — serve a general gate attachment (image or file)
+                                  (auth-gated, path-traversal-proof, ext-allowlisted).
 GET  /gate/<dept>/<id>          — decision card with 4 actions (single gate)
 POST /gate/<dept>/<id>/decide   — writes inbox/decisions/<id>.yaml
 """
@@ -77,6 +79,46 @@ def gate_chart(slug: str, path: str, request: Request):
         media_type="image/png",
         headers={"Cache-Control": "private, max-age=300"},
     )
+
+
+# IMPORTANT: declared BEFORE /gate/{slug}/{gate_id} so "attachment" is never
+# matched as a gate_id (same ordering rule as "kind" and "chart" above).
+@router.get("/gate/{slug}/attachment")
+def gate_attachment(slug: str, path: str, request: Request):
+    """Serve a general gate attachment (image or file) inline or as download.
+
+    Agents attach files to decision gates via the gate YAML `attachments:` list.
+    Supported: images (.png .jpg .jpeg .gif .svg .webp) and documents (.pdf
+    .csv .txt .md). Each is served with a tight CSP header so an SVG (which
+    can carry embedded script) cannot execute in the cockpit origin.
+
+    SECURITY — same model as /gate/{slug}/chart:
+      - bearer auth enforced globally by middleware;
+      - `github_reader.resolve_attachment_path` strictly validates the path is
+        inside THIS dept's <repo>/outputs/*/attachments/, extension is in the
+        allowlist, no traversal, no symlink escape, no cross-dept reach.
+        Returns None on ANY doubt.
+    None → opaque 404 without echoing path or reason (no oracle).
+    """
+    if dept_registry.get_department(slug) is None:
+        raise HTTPException(404, f"Unknown dept: {slug}")
+    resolved = github_reader.resolve_attachment_path(slug, path)
+    if resolved is None:
+        # Single opaque outcome for all rejection classes — no disclosure oracle.
+        raise HTTPException(404, "Attachment not found")
+    media_type = github_reader.attachment_media_type(resolved)
+    # CSP is mandatory for SVG (SVGs can contain <script>). We apply it to ALL
+    # attachment responses — harmless for images/PDFs, essential for SVG.
+    # `default-src 'none'` blocks script, fetch, and frame; `style-src
+    # 'unsafe-inline'` allows the SVG to render its own style attributes.
+    # X-Content-Type-Options: nosniff prevents browsers from sniffing the MIME
+    # type and executing a misidentified SVG as something else.
+    headers = {
+        "Cache-Control": "private, max-age=300",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return FileResponse(str(resolved), media_type=media_type, headers=headers)
 
 
 @router.get("/gate/{slug}/{gate_id}", response_class=HTMLResponse)
