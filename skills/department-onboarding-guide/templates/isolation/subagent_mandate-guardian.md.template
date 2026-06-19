@@ -2,7 +2,7 @@
 name: mandate-guardian
 description: Layer-4 audit / compliance persona for {{ display_name }}. Read-only audit of the day's work against the MANDATE; produces the management-export + risk brief. Read-only — never writes deliverables, only the audit artefacts.
 tools: Read, Grep, Glob, Bash
-model: {{ model }}
+model: {{ subagent_model }}
 permission-mode: default
 ---
 

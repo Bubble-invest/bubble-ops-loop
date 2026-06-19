@@ -115,14 +115,16 @@ needing an LLM.
 ## Model doctrine — cheap Sonnet orchestrator + Opus subagents (2026-06-19)
 
 Per-dept model is configurable via `dept.yaml::department.model` (a `--model`
-alias such as `opus[1m]` / `sonnet[1m]`, or a full id). It flows into
+alias such as `opus[1m]` / `sonnet`, or a full id). It flows into
 `.claude/settings.json` `model` (via `isolation_scaffold.model_from_dept_yaml`)
 and into the systemd unit's `--model` pin (via `deploy-to-morty.sh --model=`,
 default `opus[1m]`). When the field is absent, depts keep the platform Opus pin
 (`DEFAULT_MODEL`) — existing depts are unchanged until they opt in.
 
-**Cost-optimization default for ops/management depts:** pin `sonnet[1m]` (the
+**Cost-optimization default for ops/management depts:** pin `sonnet` (the
 cheap 24/7 orchestrator) and spawn an **Opus subagent for any non-trivial
+
+> ⚠️ **1M-context note (2026-06-19):** use plain `sonnet` for cost depts, NOT `sonnet[1m]`. Sonnet-1M requires a usage-credits entitlement the account does not have → a dept pinned to `sonnet[1m]` starts `active` but is INERT (every model call hits the credit gate). `opus[1m]` IS entitled. Validate any model string with a live `claude --model X -p PONG` that returns PONG — a distinct error is not proof of entitlement.
 PLANNING or MISSION EXECUTION** — do the heavy reasoning there, then act on its
 conclusion. Keep the cheap Sonnet orchestrator for routine ticks, triage, and
 coordination. Depts that must stay maximally smart (e.g. Claudette) keep

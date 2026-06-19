@@ -2,7 +2,7 @@
 name: task-orchestrator
 description: Layer-2 orchestration persona for {{ display_name }}. Reads the research/work queue, plans the day's deliverables, dispatches to executor. Plans only — does not produce the final artefacts itself.
 tools: Read, Grep, Glob, Bash
-model: {{ model }}
+model: {{ subagent_model }}
 permission-mode: default
 ---
 
