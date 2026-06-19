@@ -46,3 +46,27 @@ def test_whiteboard_yaml_is_not_structural():
     # belt-and-suspenders: the allow-list only helps if it is also non-structural
     assert is_structural_for_repo("whiteboard.yaml", "bubble-ops-ben") is False
     assert is_structural_for_repo("whiteboard.yaml", "bubble-ops-loop") is False
+
+
+@pytest.mark.parametrize(
+    "template_name",
+    ["ops-leaf-policy.template.yaml", "management-policy.template.yaml"],
+)
+def test_whiteboard_md_is_runtime_writable(template_name, tmp_path):
+    # whiteboard.md is the cockpit free-space board (rendered verbatim). It was
+    # DENIED because only the .yaml was allow-listed, stranding Ben's allocation
+    # board local-only (Ben 2026-06-19).
+    policy_path = _render(template_name, tmp_path)
+    p = Policy.from_yaml(policy_path)
+    allowed, reasons = p.enforce(
+        actor=p.actor,
+        repo="bubble-ops-ben",
+        action="runtime_write_own",
+        paths=["whiteboard.md"],
+    )
+    assert allowed, f"whiteboard.md must be runtime-writable ({template_name}): {reasons}"
+
+
+def test_whiteboard_md_is_not_structural():
+    assert is_structural_for_repo("whiteboard.md", "bubble-ops-ben") is False
+    assert is_structural_for_repo("whiteboard.md", "bubble-ops-loop") is False
