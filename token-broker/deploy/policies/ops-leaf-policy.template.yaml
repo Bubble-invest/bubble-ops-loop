@@ -49,6 +49,11 @@ github_access:
                               # dept.yaml, skills/**, ...) are structural -> agent
                               # CANNOT push them (mission-file lock); only {{OPERATOR}}/{{OPERATOR_2}}
                               # via merged PR.
+        - whiteboard.md       # L4 cockpit free-space board — rendered VERBATIM by the cockpit
+                              # template (alongside whiteboard.yaml's kpis/notes keys). Ben's
+                              # allocation board lives here; it was DENIED because only the
+                              # .yaml was allow-listed, stranding the board local-only (Ben
+                              # 2026-06-19). Runtime data, NOT structural — same class as .yaml.
       mode: direct_runtime_commit
 
   pull_requests:
