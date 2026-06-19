@@ -627,6 +627,73 @@ else
     bad "I4 missing clear host:local skip line; got: $ALL"
 fi
 
+# =============================================================================
+# J. Truthful external heartbeat (Rick 2026-06-19) — when the floor intervenes
+#    on a STALE dept it appends a TRUTHFUL outcome line to the dept's OWN
+#    outputs/<today>/heartbeat.log:
+#      backup ran OK    → `tick BACKUP-RAN-FOR-DEPT layer=N exit=0`
+#      backup FAILED    → `tick BACKUP-FAILED exit=N — dept DOWN`
+#    A FRESH dept (healthy live loop) gets NO floor line (it writes its own).
+# =============================================================================
+# J1: a stale dept whose backup tick succeeds → BACKUP-RAN line appended.
+reset_fixtures
+common_env
+make_dept jran 10800; make_layer jran 2
+set_enabled jran
+export BUBBLE_BACKUP_DEPTS="jran"
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+TODAY="$(date -u +%Y-%m-%d)"
+HB_JRAN="$AGENTS_ROOT/bubble-ops-jran/outputs/$TODAY/heartbeat.log"
+if grep -q 'BACKUP-RAN-FOR-DEPT layer=2 exit=0' "$HB_JRAN" 2>/dev/null; then
+    ok "J1 stale dept + backup OK → truthful 'BACKUP-RAN-FOR-DEPT layer=2 exit=0' appended to its heartbeat.log"
+else
+    bad "J1 missing BACKUP-RAN line; heartbeat=$(cat "$HB_JRAN" 2>/dev/null)"
+fi
+
+# J2: a stale dept whose backup tick FAILS → BACKUP-FAILED '… dept DOWN' line.
+#     Override the claude stub with a failing one for this run.
+FAIL_STUB="$WORK/claude-fail.sh"
+cat > "$FAIL_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "CLAUDE_STUB_RAN" >> "$CLAUDE_LOG_J"
+echo '{"type":"result","result":"boom"}'
+exit 1
+EOF
+chmod +x "$FAIL_STUB"
+reset_fixtures
+common_env
+export CLAUDE_LOG_J="$CLAUDE_LOG"
+make_dept jfail 10800; make_layer jfail 2
+set_enabled jfail
+export BUBBLE_BACKUP_DEPTS="jfail"
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_STUB"
+: > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+HB_JFAIL="$AGENTS_ROOT/bubble-ops-jfail/outputs/$TODAY/heartbeat.log"
+if grep -q 'BACKUP-FAILED exit=1' "$HB_JFAIL" 2>/dev/null \
+   && grep -q 'dept DOWN' "$HB_JFAIL" 2>/dev/null; then
+    ok "J2 stale dept + backup FAIL → truthful 'BACKUP-FAILED exit=1 — dept DOWN' appended (the missing 'I'm down' signal)"
+else
+    bad "J2 missing BACKUP-FAILED line; heartbeat=$(cat "$HB_JFAIL" 2>/dev/null)"
+fi
+
+# J3: a FRESH dept (healthy live loop) gets NO floor heartbeat line — it writes
+#     its own. The floor must not stamp a fresh dept's heartbeat.
+reset_fixtures
+common_env
+make_dept jfresh 600; make_layer jfresh 2   # 10 min old → fresh, skipped
+set_enabled jfresh
+export BUBBLE_BACKUP_DEPTS="jfresh"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+HB_JFRESH="$AGENTS_ROOT/bubble-ops-jfresh/outputs/$TODAY/heartbeat.log"
+if ! grep -qE 'BACKUP-RAN-FOR-DEPT|BACKUP-FAILED' "$HB_JFRESH" 2>/dev/null; then
+    ok "J3 fresh (healthy) dept gets NO floor heartbeat line (it writes its own)"
+else
+    bad "J3 floor wrote a truthful line for a FRESH dept; heartbeat=$(cat "$HB_JFRESH" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]

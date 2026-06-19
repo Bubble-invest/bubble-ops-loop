@@ -27,9 +27,15 @@ import json
 import pytest
 
 from scripts.lib.loop_backup import (
+    HB_BACKUP_FAILED,
+    HB_BACKUP_RAN,
+    HB_DEGRADED_L4,
     append_event,
+    append_external_heartbeat,
     backup_decision,
     format_event,
+    format_external_heartbeat,
+    latest_heartbeat_epoch,
     latest_per_dept,
     read_events,
 )
@@ -217,3 +223,138 @@ def test_latest_heartbeat_picks_newest_across_formats(tmp_path):
     ep = latest_heartbeat_epoch(str(tmp_path))
     got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
     assert got.day == 4
+
+
+# ── Truthful external heartbeat (Rick 2026-06-19) ─────────────────────────
+#
+# When the live loop is stale the floor writes a TRUTHFUL liveness line into
+# the dept's OWN heartbeat.log encoding the real OUTCOME (ran / failed /
+# degraded), collapsing the two channels (freshness vs loop-backup.jsonl) into
+# one signal. The line must keep the `<iso> tick ...` shape so the existing
+# freshness parser (_ISO_RE) and every consumer keep working.
+
+
+def test_external_hb_backup_ran_shape():
+    line = format_external_heartbeat(
+        HB_BACKUP_RAN, layer=2, exit_code=0, ts="2026-06-18T20:00:00Z")
+    assert line == "2026-06-18T20:00:00Z tick BACKUP-RAN-FOR-DEPT layer=2 exit=0"
+
+
+def test_external_hb_backup_failed_says_dept_down():
+    line = format_external_heartbeat(
+        HB_BACKUP_FAILED, exit_code=1, ts="2026-06-18T20:00:00Z")
+    assert line == "2026-06-18T20:00:00Z tick BACKUP-FAILED exit=1 — dept DOWN"
+    assert "dept DOWN" in line  # the honest "I'm down" signal that was missing
+
+
+def test_external_hb_degraded_l4():
+    line = format_external_heartbeat(HB_DEGRADED_L4, ts="2026-06-18T21:00:00Z")
+    assert line == "2026-06-18T21:00:00Z tick DEGRADED-L4 carried-over"
+
+
+def test_external_hb_unknown_outcome_raises():
+    with pytest.raises(ValueError):
+        format_external_heartbeat("NOT-A-REAL-OUTCOME")
+
+
+def test_external_hb_line_is_parseable_by_freshness_reader(tmp_path):
+    """A BACKUP-RAN truthful line the floor writes MUST be read back as the
+    latest heartbeat by latest_heartbeat_epoch — i.e. it doubles as a real
+    freshness signal, not just human text (the dept WAS serviced)."""
+    import datetime as _dt
+    d = tmp_path / "2026-06-18"
+    d.mkdir()
+    hb = d / "heartbeat.log"
+    # The dept's own last (stale) line, then the floor's truthful append.
+    hb.write_text("2026-06-18T07:30:00Z tick L1 ok\n", encoding="utf-8")
+    written = append_external_heartbeat(
+        str(hb), HB_BACKUP_RAN, layer=2, exit_code=0, ts="2026-06-18T22:00:00Z")
+    assert written == "2026-06-18T22:00:00Z tick BACKUP-RAN-FOR-DEPT layer=2 exit=0"
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    # The floor's 22:00 BACKUP-RAN line is now the freshest — parser reads it.
+    assert (got.hour, got.day) == (22, 18)
+
+
+def test_append_external_heartbeat_creates_parent_and_appends(tmp_path):
+    hb = tmp_path / "2026-06-18" / "heartbeat.log"  # parent missing on purpose
+    append_external_heartbeat(str(hb), HB_BACKUP_RAN, layer=3, exit_code=0,
+                              ts="2026-06-18T18:00:00Z")
+    append_external_heartbeat(str(hb), HB_DEGRADED_L4, ts="2026-06-18T21:00:00Z")
+    lines = hb.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "2026-06-18T18:00:00Z tick BACKUP-RAN-FOR-DEPT layer=3 exit=0",
+        "2026-06-18T21:00:00Z tick DEGRADED-L4 carried-over",
+    ]
+
+
+def test_external_hb_backup_ran_defaults_exit_zero():
+    """The OK path always records exit=0 explicitly even if not passed."""
+    line = format_external_heartbeat(HB_BACKUP_RAN, layer=1, ts="t")
+    assert line.endswith("BACKUP-RAN-FOR-DEPT layer=1 exit=0")
+
+
+# ── BACKUP-FAILED must NOT read as fresh (the false-fresh trap) ────────────
+#
+# The crux of the truthful-heartbeat fix: a BACKUP-FAILED line carries a
+# CURRENT timestamp, but it means "dept DOWN". The freshness reader must NOT
+# treat it as a liveness signal — otherwise the floor would stop re-firing and
+# the watchdog would read the dead dept as alive (the exact false-fresh bug).
+
+
+def test_backup_failed_line_does_not_read_as_fresh(tmp_path):
+    """A fresh BACKUP-FAILED line must fall back to the prior REAL heartbeat,
+    NOT count as a new fresh tick."""
+    import datetime as _dt
+    d = tmp_path / "2026-06-18"
+    d.mkdir()
+    (d / "heartbeat.log").write_text(
+        "2026-06-18T07:30:00Z tick L1 ok\n"                          # real, stale
+        "2026-06-18T22:00:00Z tick BACKUP-FAILED exit=1 — dept DOWN\n",  # fresh-but-down
+        encoding="utf-8",
+    )
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    # Must be the 07:30 REAL tick (stale), NOT the 22:00 down-marker.
+    assert (got.hour, got.day) == (7, 18), (
+        "BACKUP-FAILED leaked through as a fresh liveness signal (false-fresh)"
+    )
+
+
+def test_backup_ran_line_does_read_as_fresh(tmp_path):
+    """BACKUP-RAN means the dept WAS serviced → it IS a fresh liveness signal."""
+    import datetime as _dt
+    d = tmp_path / "2026-06-18"
+    d.mkdir()
+    (d / "heartbeat.log").write_text(
+        "2026-06-18T07:30:00Z tick L1 ok\n"
+        "2026-06-18T18:00:00Z tick BACKUP-RAN-FOR-DEPT layer=3 exit=0\n",
+        encoding="utf-8",
+    )
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert (got.hour, got.day) == (18, 18)
+
+
+def test_only_backup_failed_lines_never_fall_back_to_mtime(tmp_path):
+    """A file with ONLY down-markers must NOT use mtime (false-fresh) — it
+    returns None (no real liveness ever seen) so the dept stays stale."""
+    d = tmp_path / "2026-06-18"
+    d.mkdir()
+    hb = d / "heartbeat.log"
+    hb.write_text(
+        "2026-06-18T22:00:00Z tick BACKUP-FAILED exit=1 — dept DOWN\n",
+        encoding="utf-8",
+    )
+    # mtime is "now" (fresh); the down-marker must still win → None.
+    assert latest_heartbeat_epoch(str(tmp_path)) is None
+
+
+def test_no_iso_lines_still_falls_back_to_mtime(tmp_path):
+    """Back-compat: a heartbeat with no ISO ts (and no down-marker) still falls
+    back to mtime as before."""
+    d = tmp_path / "2026-06-18"
+    d.mkdir()
+    (d / "heartbeat.log").write_text("heartbeat\n", encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    assert ep is not None  # mtime fallback preserved

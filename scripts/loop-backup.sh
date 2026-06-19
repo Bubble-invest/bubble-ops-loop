@@ -247,6 +247,43 @@ append_event(path, ev)
 PYEOF
 }
 
+# ── Truthful external heartbeat (Rick 2026-06-19) ────────────────────────────
+# The fleet liveness signal is a free-text line each dept writes ITSELF into
+# outputs/<date>/heartbeat.log; every consumer (watchdog, this floor's freshness
+# gate, cockpit) only checks the timestamp FRESHNESS, never the truth. So when a
+# session dies the thing that writes the heartbeat dies with it → a SILENT hole,
+# no "I'm down" signal (Maya 2026-06-18: 13h hole; Ben 2026-06-18: 0 heartbeat
+# lines — the degraded honesty lived only in state/loop-backup.jsonl, which the
+# watchdog ignores).
+#
+# When the floor intervenes on a STALE dept, it (the external observer that
+# already detected the staleness) becomes the AUTHORITATIVE writer of a TRUTHFUL
+# line into the dept's OWN heartbeat.log, encoding the real OUTCOME:
+#   loop stale + backup ran OK     → `tick BACKUP-RAN-FOR-DEPT layer=N exit=0`
+#   loop stale + backup FAILED     → `tick BACKUP-FAILED exit=N — dept DOWN`
+#   degraded L4 carried-over       → `tick DEGRADED-L4 carried-over`
+# This collapses the two channels (heartbeat freshness vs loop-backup.jsonl
+# truth) into ONE signal a downstream consumer can read straight off the tail.
+# The line keeps the `<iso> tick ...` shape so latest_heartbeat_epoch and every
+# freshness reader keep working unchanged. Never fatal — a write failure must
+# not abort the safety net.
+write_external_heartbeat() {
+    local slug="$1" outcome="$2" layer="${3:-}" exit_code="${4:-}"
+    local hb="${AGENTS_ROOT}/bubble-ops-${slug}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    "$PY" - "$hb" "$outcome" "$layer" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write truthful heartbeat to $hb"
+import sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.loop_backup import append_external_heartbeat
+hb, outcome, layer, exit_code = sys.argv[1:5]
+line = append_external_heartbeat(
+    hb, outcome,
+    layer=int(layer) if layer not in ("", "None") else None,
+    exit_code=int(exit_code) if exit_code not in ("", "None") else None,
+)
+print(line)
+PYEOF
+}
+
 # ── Notify-on-fire ──────────────────────────────────────────────────────────
 # When the safety net ACTUALLY RUNS a backup tick for a dept (NOT on a skip /
 # fresh loop), ping {{OPERATOR}} on Telegram so he knows a primary loop was down and
@@ -674,6 +711,21 @@ PYEOF2
     fi
     emit_event "$slug" "run" "$reason" "$age" "$tick_exit"
     [[ "$tick_exit" == "0" ]] || OVERALL=1
+    # Truthful external heartbeat: encode the real OUTCOME of this intervention
+    # into the dept's OWN heartbeat.log so a downstream consumer (watchdog,
+    # cockpit) reading the tail sees whether the dept is actually up — the
+    # "I'm down" signal that was missing when the session that writes the
+    # heartbeat died with the loop (Maya/Ben 2026-06-18). Three cases:
+    #   degraded L4              → DEGRADED-L4 carried-over
+    #   backup ran, exit 0       → BACKUP-RAN-FOR-DEPT layer=N exit=0
+    #   backup tick failed (≠0)  → BACKUP-FAILED exit=N — dept DOWN
+    if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
+        write_external_heartbeat "$slug" "DEGRADED-L4"
+    elif [[ "$tick_exit" == "0" ]]; then
+        write_external_heartbeat "$slug" "BACKUP-RAN-FOR-DEPT" "${FORCE_LAYER:-}" "$tick_exit"
+    else
+        write_external_heartbeat "$slug" "BACKUP-FAILED" "${FORCE_LAYER:-}" "$tick_exit"
+    fi
     # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
     # dept in DEPTS, both success and failure exit). Source the dept env in a
     # subshell so TELEGRAM_BOT_TOKEN is available to the send without leaking
