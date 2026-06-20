@@ -19,6 +19,8 @@ from scripts.lib.dispatch_helpers import (
     increment_round_counter,
     write_l1_baseline,
     write_last_run,
+    write_last_mgmt_scan,
+    _scan_mgmt_notes,
 )
 
 
@@ -534,4 +536,244 @@ def test_materialize_respects_per_mission_last_run_today(tmp_path: Path):
     assert len(items) == 0, (
         f"mission already fired today must not re-materialize; "
         f"got {len(items)} items: {[p.name for p in items]}"
+    )
+
+
+# ── Issue #176 — management note heartbeat coverage ──────────────────────────
+#
+# PROBLEM (2026-06-15, {{OPERATOR}} catch): inbound management notes in
+# queues/management/ are only read inside a real layer's STEP 0-ter.  A note
+# arriving during a heartbeat-only stretch sits unread until the next L1/L2/L3
+# natural fire — up to many hours on an overnight quiet stretch.
+#
+# FIX (issue #176, PART 2): the dispatcher reads queues/management/ on EVERY
+# tick (including heartbeat ticks) via _scan_mgmt_notes() and exposes
+# `has_unconsumed_mgmt_notes` in the ctx.  decide_dispatch's new C.mgmt branch
+# routes to "layer_1" when unconsumed notes exist and the morning floor
+# (>=07:00 Paris) has been reached — so a directive arriving in a quiet
+# afternoon is consumed within one tick (up to ~1h), not deferred until the
+# next natural L1 floor or full cycle gate.
+#
+# The marker file `queues/management/.last-mgmt-scan` is written by L1 after
+# its STEP 0-ter; notes with created_at strictly after the marker are "new".
+# Absent marker → any note is new (safe default for fresh depts).
+
+# 08:30 Paris = 06:30 UTC in June (CEST, UTC+2) — after the 07:00 floor.
+_MGMT_MORNING = datetime(2026, 6, 20, 6, 30, tzinfo=timezone.utc)
+# 16:30 Paris = 14:30 UTC in June — past L2 floor (12:00) but before L4 (19:00).
+# Used for quiet-stretch tests: no research items, no inbox decisions, no L4 window.
+_MGMT_AFTERNOON = datetime(2026, 6, 20, 14, 30, tzinfo=timezone.utc)
+# 04:00 Paris = 02:00 UTC in June — before the 07:00 morning floor.
+_MGMT_PREDAWN = datetime(2026, 6, 20, 2, 0, tzinfo=timezone.utc)
+
+
+def _write_mgmt_note(repo: Path, name: str, created_at: datetime) -> None:
+    """Write a minimal inbound management note into queues/management/."""
+    mgmt = repo / "queues" / "management"
+    mgmt.mkdir(parents=True, exist_ok=True)
+    (mgmt / name).write_text(
+        f"id: {name.replace('.yaml', '')}\n"
+        f"kind: management_note\n"
+        f"created_at: '{created_at.isoformat()}'\n"
+        f"created_by: tony\n"
+        f"title: Test directive\n"
+        f"detail: Some instructions.\n"
+        f"status: open\n",
+        encoding="utf-8",
+    )
+
+
+# ── _scan_mgmt_notes unit tests ──────────────────────────────────────────────
+
+def test_scan_mgmt_notes_no_dir_returns_false(tmp_path: Path):
+    """Missing queues/management/ → False (no notes)."""
+    assert _scan_mgmt_notes(tmp_path, since=None) is False
+
+
+def test_scan_mgmt_notes_no_marker_any_note_is_new(tmp_path: Path):
+    """With no .last-mgmt-scan marker, any note is treated as new."""
+    _write_mgmt_note(tmp_path, "tony-directive-20260620.yaml", _MGMT_MORNING)
+    assert _scan_mgmt_notes(tmp_path, since=None) is True
+
+
+def test_scan_mgmt_notes_note_after_marker_is_new(tmp_path: Path):
+    """A note with created_at after the marker → new."""
+    earlier = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 6, 20, 7, 0, tzinfo=timezone.utc)
+    _write_mgmt_note(tmp_path, "tony-directive-20260620.yaml", later)
+    # marker was written at `earlier` → note (created at `later`) is new
+    assert _scan_mgmt_notes(tmp_path, since=earlier) is True
+
+
+def test_scan_mgmt_notes_note_before_marker_is_seen(tmp_path: Path):
+    """A note with created_at before (or equal to) the marker → already seen."""
+    earlier = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 6, 20, 7, 0, tzinfo=timezone.utc)
+    _write_mgmt_note(tmp_path, "tony-directive-20260620.yaml", earlier)
+    # marker was written at `later` → note (created at `earlier`) is already seen
+    assert _scan_mgmt_notes(tmp_path, since=later) is False
+
+
+def test_scan_mgmt_notes_dotfiles_ignored(tmp_path: Path):
+    """Dotfiles (.consumed.json, .gitkeep, .last-mgmt-scan) are ignored."""
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+    (mgmt / ".gitkeep").write_text("")
+    (mgmt / ".consumed.json").write_text("{}")
+    (mgmt / ".last-mgmt-scan").write_text(datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc).isoformat())
+    assert _scan_mgmt_notes(tmp_path, since=None) is False
+
+
+def test_scan_mgmt_notes_unparseable_created_at_is_fail_open(tmp_path: Path):
+    """A note with an unparseable created_at is treated as unconsumed (fail-open)."""
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+    (mgmt / "bad-note.yaml").write_text("id: bad\ncreated_at: not-a-date\n")
+    since = datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc)
+    assert _scan_mgmt_notes(tmp_path, since=since) is True
+
+
+def test_scan_mgmt_notes_missing_created_at_is_fail_open(tmp_path: Path):
+    """A note with no created_at field is treated as unconsumed (fail-open)."""
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+    (mgmt / "legacy-note.yaml").write_text("id: x\nkind: management_note\n")
+    since = datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc)
+    assert _scan_mgmt_notes(tmp_path, since=since) is True
+
+
+# ── build_dispatch_ctx integration tests ─────────────────────────────────────
+
+def test_build_ctx_exposes_has_unconsumed_mgmt_notes_key(tmp_path: Path):
+    """build_dispatch_ctx must always expose has_unconsumed_mgmt_notes."""
+    repo = _mk_repo(tmp_path)
+    ctx = build_dispatch_ctx(repo, now_utc=NOON)
+    assert "has_unconsumed_mgmt_notes" in ctx
+
+
+def test_build_ctx_no_mgmt_notes_is_false(tmp_path: Path):
+    """Empty queues/management/ → has_unconsumed_mgmt_notes is False."""
+    repo = _mk_repo(tmp_path)
+    (repo / "queues" / "management").mkdir(parents=True)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_MORNING)
+    assert ctx["has_unconsumed_mgmt_notes"] is False
+
+
+def test_build_ctx_new_mgmt_note_no_marker_is_true(tmp_path: Path):
+    """A note with no .last-mgmt-scan marker → has_unconsumed_mgmt_notes True."""
+    repo = _mk_repo(tmp_path)
+    _write_mgmt_note(repo, "tony-test-20260620.yaml", _MGMT_MORNING)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+
+
+def test_build_ctx_note_after_marker_is_true(tmp_path: Path):
+    """A note with created_at after .last-mgmt-scan → has_unconsumed_mgmt_notes True."""
+    repo = _mk_repo(tmp_path)
+    scan_time = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+    note_time = datetime(2026, 6, 20, 7, 0, tzinfo=timezone.utc)
+    write_last_mgmt_scan(repo, scan_time)
+    _write_mgmt_note(repo, "tony-late-note-20260620.yaml", note_time)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+
+
+def test_build_ctx_note_before_marker_is_false(tmp_path: Path):
+    """A note with created_at before .last-mgmt-scan → has_unconsumed_mgmt_notes False."""
+    repo = _mk_repo(tmp_path)
+    note_time = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+    scan_time = datetime(2026, 6, 20, 7, 0, tzinfo=timezone.utc)
+    write_last_mgmt_scan(repo, scan_time)
+    _write_mgmt_note(repo, "tony-old-note-20260620.yaml", note_time)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is False
+
+
+# ── decide_dispatch C.mgmt branch tests ──────────────────────────────────────
+
+def test_decide_dispatch_unconsumed_mgmt_note_fires_l1_in_afternoon(tmp_path: Path):
+    """C.mgmt: unconsumed note + time>=07:00 Paris → layer_1, even if L1 already
+    ran this morning (issue #176 — directive arriving in afternoon quiet stretch
+    must not wait until tomorrow's floor).
+    """
+    repo = _mk_repo(tmp_path)
+    # L1 already fired this morning (morning floor satisfied).
+    _fire(repo, 1, _MGMT_MORNING)
+    # A new management note arrived after L1 ran → no .last-mgmt-scan stamp yet.
+    _write_mgmt_note(repo, "tony-afternoon-20260620.yaml", _MGMT_AFTERNOON)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+    result = decide_dispatch(ctx)
+    assert result == "layer_1", (
+        "a new management note arriving in a quiet afternoon must route to "
+        "layer_1 (C.mgmt branch) so it is consumed this tick, not deferred"
+    )
+
+
+def test_decide_dispatch_mgmt_note_not_fired_before_morning_floor(tmp_path: Path):
+    """C.mgmt is gated at >=07:00 Paris: a note in a pre-dawn tick must not
+    fire L1 (the morning floor hasn't opened yet).
+    """
+    repo = _mk_repo(tmp_path)
+    _write_mgmt_note(repo, "tony-predawn-20260620.yaml", _MGMT_PREDAWN)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_PREDAWN)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+    result = decide_dispatch(ctx)
+    # Before 07:00 Paris no layer fires → heartbeat
+    assert result == "heartbeat", (
+        "C.mgmt must NOT fire before the 07:00 Paris morning floor"
+    )
+
+
+def test_decide_dispatch_mgmt_note_outranked_by_inbox_decisions(tmp_path: Path):
+    """C.3 (inbox decisions) outranks C.mgmt: a real trade to execute takes
+    priority over reading a management note.
+    """
+    repo = _mk_repo_real_inbox(tmp_path)
+    _fire(repo, 1, _MGMT_MORNING)
+    _write_mgmt_note(repo, "tony-note-20260620.yaml", _MGMT_MORNING)
+    (repo / "inbox" / "decisions" / "gate-42.yaml").write_text("decision: approve\n")
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+    assert ctx["has_inbox_decisions"] is True
+    result = decide_dispatch(ctx)
+    assert result == "layer_3", (
+        "inbox decisions (C.3) must outrank management notes (C.mgmt)"
+    )
+
+
+def test_decide_dispatch_mgmt_note_outranked_by_research_items(tmp_path: Path):
+    """C.2 (research queue) outranks C.mgmt: pending research work takes
+    priority over reading a management note.
+    """
+    repo = _mk_repo(tmp_path)
+    _fire(repo, 1, _MGMT_MORNING)
+    _write_mgmt_note(repo, "tony-note-20260620.yaml", _MGMT_MORNING)
+    (repo / "queues" / "research" / "warming-1.yaml").write_text("kind: warming_task\n")
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is True
+    assert ctx["has_research_items"] is True
+    result = decide_dispatch(ctx)
+    assert result == "layer_2", (
+        "research items (C.2) must outrank management notes (C.mgmt)"
+    )
+
+
+def test_decide_dispatch_mgmt_note_seen_after_l1_scan_is_heartbeat(tmp_path: Path):
+    """After L1 writes .last-mgmt-scan and there are no newer notes,
+    has_unconsumed_mgmt_notes is False → back to heartbeat on the next tick.
+    """
+    repo = _mk_repo(tmp_path)
+    _fire(repo, 1, _MGMT_MORNING)
+    note_time = datetime(2026, 6, 20, 7, 0, tzinfo=timezone.utc)
+    _write_mgmt_note(repo, "tony-note-20260620.yaml", note_time)
+    # L1 ran and stamped .last-mgmt-scan after the note
+    scan_time = datetime(2026, 6, 20, 8, 0, tzinfo=timezone.utc)
+    write_last_mgmt_scan(repo, scan_time)
+    ctx = build_dispatch_ctx(repo, now_utc=_MGMT_AFTERNOON)
+    assert ctx["has_unconsumed_mgmt_notes"] is False
+    result = decide_dispatch(ctx)
+    assert result == "heartbeat", (
+        "once .last-mgmt-scan is stamped after the note, the dispatcher "
+        "must stop routing to L1 and fall through to heartbeat"
     )
