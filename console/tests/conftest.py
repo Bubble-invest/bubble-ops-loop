@@ -205,45 +205,15 @@ def app(monkeypatch, fixture_root: Path):
     """
     Build the FastAPI app with READ_FROM_DISK=<fixture_root> so all services
     read from local fixtures rather than calling `gh`/SSH.
-
-    On a fresh clone the runtime deps (nh3, Markdown) may not be installed.
-    console.services.markdown_render imports both at module level, so without
-    them the fresh reimport of console.main raises ImportError at this fixture's
-    setup — causing the 2 route-level tests to ERROR rather than run.
-
-    Fix: inject a lightweight stub for markdown_render into sys.modules BEFORE
-    the console package is reimported.  The stub returns None for any call to
-    render_markdown_safe — this is fine for all graph/route tests because they
-    verify KPI chart HTML, not the freeform whiteboard markdown output.
-    When the real packages ARE installed the stub is never reached (the real
-    module is already present and is re-used after the purge below takes the
-    console.* namespace clean but leaves the third-party packages in place).
     """
     monkeypatch.setenv("CONSOLE_BEARER_TOKEN", TEST_BEARER)
     monkeypatch.setenv("READ_FROM_DISK", str(fixture_root))
 
     # Force a fresh import so env vars are picked up.
     import sys
-    import types
-
-    # Stub markdown_render if nh3 or Markdown are not installed, so the
-    # console.main reimport below does not raise ImportError at setup.
-    _needs_stub = False
-    try:
-        import nh3  # noqa: F401
-        import markdown  # noqa: F401
-    except ImportError:
-        _needs_stub = True
-
     for mod in list(sys.modules):
         if mod == "console" or mod.startswith("console."):
             del sys.modules[mod]
-
-    if _needs_stub:
-        _stub = types.ModuleType("console.services.markdown_render")
-        _stub.render_markdown_safe = lambda text: None  # type: ignore[attr-defined]
-        sys.modules["console.services.markdown_render"] = _stub
-
     from console.main import create_app  # noqa: WPS433
     return create_app()
 
