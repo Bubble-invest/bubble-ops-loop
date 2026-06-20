@@ -190,17 +190,16 @@ code, .code {
   text-transform: uppercase;
 }
 .sidebar-nav {
-  flex: 1;
   padding: 12px 0;
   overflow-y: auto;
 }
 .sidebar-section-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(232,236,244,0.35);
+  color: rgba(232,236,244,0.45);
   padding: 12px 20px 6px;
 }
 .sidebar-agent {
@@ -251,16 +250,17 @@ code, .code {
 .sidebar-bottom {
   border-top: 1px solid rgba(255,255,255,0.06);
   padding: 14px 20px;
+  margin-top: 8px;
 }
 .sidebar-bottom-link {
   display: block;
-  padding: 4px 0;
-  font-size: 12px;
-  color: rgba(232,236,244,0.45);
+  padding: 6px 0;
+  font-size: 14px;
+  color: rgba(232,236,244,0.55);
   text-decoration: none;
   transition: color 0.15s;
 }
-.sidebar-bottom-link:hover { color: rgba(232,236,244,0.7); }
+.sidebar-bottom-link:hover { color: rgba(232,236,244,0.85); }
 
 
 
