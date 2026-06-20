@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+import json
+
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx,
     decide_dispatch,
@@ -21,6 +23,7 @@ from scripts.lib.dispatch_helpers import (
     write_last_run,
     write_last_mgmt_scan,
     _scan_mgmt_notes,
+    _load_consumed_ids,
     _drainable_kinds_for_queue,
 )
 
@@ -921,4 +924,188 @@ def test_issue_204_orphan_kind_still_excluded(tmp_path: Path):
     assert decide_dispatch(ctx) == "heartbeat", (
         "orphan kind in queues/research/ must NOT cause layer_2 dispatch — "
         "the fire-spin guard (#61797) must remain intact after the #204 fix"
+    )
+
+
+# ── Issue #198 — Fix 1: consumed check inside _scan_mgmt_notes ───────────────
+#
+# BUG: a management note with an unparseable or missing created_at hits the
+# fail-open path in _scan_mgmt_notes and returns True every tick until the
+# note is physically removed — even after L1 already acted on it. This causes
+# wasteful L1 re-triggers on every daytime tick.
+#
+# FIX: load .consumed.json INSIDE _scan_mgmt_notes BEFORE attempting to parse
+# created_at. If a note's `id` appears in the consumed set, skip it
+# unconditionally — a bad/missing timestamp on an already-consumed note must
+# not cause re-triggers. The fail-open logic is preserved for notes that have
+# NOT been consumed yet (better to fire L1 once than to silently miss a live note).
+#
+# EVALUATION (from issue #198): "A malformed note fires L1 at most once (not
+# every tick)."
+
+def test_consumed_note_bad_created_at_no_retrigger(tmp_path: Path):
+    """Fix #198 — consumed note with bad/missing created_at must NOT re-trigger L1.
+
+    Scenario (the pre-fix bug):
+      1. A management note lands with an unparseable created_at (or none at all).
+      2. L1 fires, consumes the note, and records its id in .consumed.json.
+      3. On the NEXT tick, _scan_mgmt_notes still returns True (fail-open on the
+         bad timestamp) → C.mgmt fires L1 AGAIN → and again → and again, every
+         tick until the file is removed.
+
+    After the fix: the consumed check runs BEFORE the timestamp parse, so an
+    already-consumed note is skipped — even if created_at is garbage. L1 fires
+    at most once for this note (the first tick, before it was consumed).
+    """
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+
+    # A note with a completely unparseable created_at field.
+    (mgmt / "bad-ts-note.yaml").write_text(
+        "id: bad-ts-note-001\n"
+        "kind: management_note\n"
+        "created_at: definitely-not-a-date\n"  # unparseable → old code: fail-open re-trigger
+        "created_by: tony\n"
+        "title: Test directive with bad timestamp\n",
+        encoding="utf-8",
+    )
+
+    since = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+
+    # BEFORE consuming: fail-open → returns True (note must fire L1 at least once).
+    assert _scan_mgmt_notes(tmp_path, since=since) is True, (
+        "a note with unparseable created_at must be treated as unconsumed "
+        "(fail-open) before it appears in .consumed.json"
+    )
+
+    # L1 fires, acts on the note, and records it in .consumed.json.
+    consumed = {"bad-ts-note-001": {"consumed_at": "2026-06-20T06:00:00+00:00"}}
+    (mgmt / ".consumed.json").write_text(json.dumps(consumed), encoding="utf-8")
+
+    # AFTER consuming: even though created_at is garbage, the consumed check
+    # runs first → the note is skipped → returns False (no re-trigger).
+    assert _scan_mgmt_notes(tmp_path, since=since) is False, (
+        "a note already in .consumed.json must NOT re-trigger L1, even if "
+        "its created_at is unparseable — fix #198: consumed check before "
+        "created_at parse"
+    )
+
+
+def test_consumed_note_missing_created_at_no_retrigger(tmp_path: Path):
+    """Fix #198 variant: consumed note with a completely absent created_at
+    field must also not re-trigger once consumed.
+
+    This is the 'missing created_at' counterpart to the 'bad created_at' case.
+    Both paths (missing and unparseable) hit the fail-open branch; both must
+    be short-circuited by the consumed check.
+    """
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+
+    # Note with NO created_at field at all.
+    (mgmt / "no-ts-note.yaml").write_text(
+        "id: no-ts-note-002\n"
+        "kind: management_note\n"
+        "created_by: tony\n"
+        "title: Directive without timestamp\n",
+        encoding="utf-8",
+    )
+
+    since = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+
+    # Pre-consume: fail-open fires.
+    assert _scan_mgmt_notes(tmp_path, since=since) is True
+
+    # Post-consume: consumed check silences the re-trigger.
+    consumed = {"no-ts-note-002": {"consumed_at": "2026-06-20T06:30:00+00:00"}}
+    (mgmt / ".consumed.json").write_text(json.dumps(consumed), encoding="utf-8")
+
+    assert _scan_mgmt_notes(tmp_path, since=since) is False, (
+        "a note already consumed (in .consumed.json) with no created_at must "
+        "not re-trigger L1 — fix #198"
+    )
+
+
+def test_unconsumed_note_bad_created_at_still_triggers(tmp_path: Path):
+    """Fix #198 preservation: fail-open is still active for NON-consumed notes.
+
+    A note with a bad created_at that has NOT been consumed must still return
+    True (fail-open). The fix only short-circuits notes that appear in
+    .consumed.json; it must not suppress unconsumed malformed notes.
+    """
+    mgmt = tmp_path / "queues" / "management"
+    mgmt.mkdir(parents=True)
+
+    (mgmt / "bad-ts-live.yaml").write_text(
+        "id: bad-ts-live-003\n"
+        "kind: management_note\n"
+        "created_at: not-a-date\n"
+        "created_by: tony\n"
+        "title: Live directive with bad timestamp\n",
+        encoding="utf-8",
+    )
+
+    since = datetime(2026, 6, 20, 5, 0, tzinfo=timezone.utc)
+
+    # .consumed.json exists but does NOT include this note's id.
+    other_consumed = {"some-other-note-999": {"consumed_at": "2026-06-20T05:00:00+00:00"}}
+    (mgmt / ".consumed.json").write_text(json.dumps(other_consumed), encoding="utf-8")
+
+    # Must still return True — fail-open is preserved for unconsumed notes.
+    assert _scan_mgmt_notes(tmp_path, since=since) is True, (
+        "a note with bad created_at that is NOT in .consumed.json must still "
+        "trigger L1 (fail-open preserved for unconsumed notes)"
+    )
+
+
+# ── Issue #198 — Fix 2: C.1 (L4) outranks C.mgmt ────────────────────────────
+#
+# The priority tree in decide_dispatch is: C.1 (L4) > C.3 (L3) > C.2 (L2) >
+# C.mgmt (L1 for mgmt notes) > C.0 (L1 floor). This was verified manually in
+# the #92 review but no test pinned it. A management note must NOT block L4 from
+# firing when L4's prerequisites are met — the end-of-day debrief outranks a
+# management note that arrived during the day.
+#
+# EVALUATION (from issue #198): "a test pins C.1 > C.mgmt."
+
+def test_c1_l4_outranks_c_mgmt_management_note(tmp_path: Path):
+    """C.1 (Layer 4) outranks C.mgmt: when L4 conditions are met AND an
+    unconsumed management note exists, decide_dispatch must return 'layer_4',
+    not 'layer_1'.
+
+    Fleet-wide blast radius: if C.mgmt could block C.1, any management note
+    arriving after 19:00 Paris would defer the end-of-day debrief indefinitely
+    (until the note is consumed), potentially skipping the risk aggregation that
+    guards overnight positions. This test pins the priority order.
+    """
+    repo = _mk_repo_real_inbox(tmp_path)
+
+    # L4 window: 19:30 Paris = 17:30 UTC in June (CEST, UTC+2).
+    AFTER_L4 = datetime(2026, 6, 20, 17, 30, tzinfo=timezone.utc)
+
+    # L1 already ran today (L4 prerequisite).
+    _fire(repo, 1, AFTER_L4.replace(hour=6))  # morning
+    # L2 and L3 fired today (L4 prerequisites — no research items, no decisions).
+    _fire(repo, 2, AFTER_L4.replace(hour=10))
+    _fire(repo, 3, AFTER_L4.replace(hour=14))
+    # L4 has NOT fired yet.
+
+    # An unconsumed management note exists (C.mgmt condition met).
+    _write_mgmt_note(repo, "tony-note-at-l4-window.yaml", AFTER_L4.replace(hour=16))
+
+    ctx = build_dispatch_ctx(repo, now_utc=AFTER_L4)
+
+    # Both conditions must be visible in the ctx.
+    assert ctx["has_unconsumed_mgmt_notes"] is True, (
+        "management note must be visible to confirm C.mgmt condition is met"
+    )
+    assert ctx["layer_4_last_run_today"] is None, (
+        "L4 must not have fired yet — C.1 condition requires l4_fired=False"
+    )
+
+    result = decide_dispatch(ctx)
+    assert result == "layer_4", (
+        "C.1 (Layer 4 end-of-day debrief) must outrank C.mgmt (management note) "
+        "when L4 prerequisites are satisfied — a management note must NOT block "
+        "the risk aggregator (issue #198, fleet-wide blast radius)"
     )
