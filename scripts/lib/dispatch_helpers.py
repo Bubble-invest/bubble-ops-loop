@@ -421,10 +421,21 @@ def is_mission_due(mission: dict, *, now: datetime,
 
     if cadence == "weekly":
         t_str = mission.get("time")
-        day = mission.get("day", "").lower()
-        if not t_str or day not in _WEEKDAY_NAMES:
+        # `day` may be a single string ("monday") or a list (["tuesday", "friday"]).
+        # Normalise to a set of lowercase weekday names so the membership test
+        # works uniformly for both shapes.  An absent or empty value produces an
+        # empty set, which correctly falls through to the "not in _WEEKDAY_NAMES"
+        # guard below and returns False (no valid day specified).
+        raw_day = mission.get("day", "")
+        if isinstance(raw_day, list):
+            day_names = {d.lower() for d in raw_day if isinstance(d, str)}
+        else:
+            day_names = {raw_day.lower()} if raw_day else set()
+        # Filter to only known weekday names (guards against typos / empty strings).
+        valid_days = {d for d in day_names if d in _WEEKDAY_NAMES}
+        if not t_str or not valid_days:
             return False
-        if now_paris.weekday() != _WEEKDAY_NAMES[day]:
+        if now_paris.weekday() not in {_WEEKDAY_NAMES[d] for d in valid_days}:
             return False
         target = _parse_hhmm(t_str)
         if now_paris.time() < target:
