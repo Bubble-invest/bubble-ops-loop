@@ -1,6 +1,7 @@
 """GET / — cabinet d'éclosion home (décisions awaiting + équipe + KPIs)."""
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request
@@ -17,6 +18,40 @@ router = APIRouter()
 # dept.py so / and /dept/<slug> apply identical grouping rules (msg 3030).
 def _group_gates_by_kind(gates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return group_gates_by_kind(gates)
+
+
+def _kanban_queue_counts() -> Dict[str, int]:
+    """Return kanban queue counts by status, reusing the kanban route's in-process cache.
+
+    Imports lazily to avoid a circular-import at module load time (home and
+    kanban are both registered on the same router set, but neither imports the
+    other at the top level).  The cache (_cache_data / _cache_ts) lives in
+    kanban.py and is shared — hitting / does NOT add a second uncached network
+    call when /kanban has already populated the cache.
+
+    Returns a dict with keys:
+      total_open, needs_attention, investigating, waiting, done
+    All values are int (0 if the board is unreachable or empty).
+    """
+    from console.routes import kanban as _kanban  # lazy — avoids circular import
+
+    issues, _err = _kanban._fetch_issues()
+
+    counts: Dict[str, int] = defaultdict(int)
+    for issue in issues:
+        card = _kanban.issue_to_card(issue)
+        counts[card["column"]] += 1
+
+    total_open = sum(
+        counts[col] for col in ("needs_attention", "investigating", "waiting")
+    )
+    return {
+        "total_open":      total_open,
+        "needs_attention": counts["needs_attention"],
+        "investigating":   counts["investigating"],
+        "waiting":         counts["waiting"],
+        "done":            counts["done"],
+    }
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -42,6 +77,8 @@ def home(request: Request):
     # Concierges (Morty, Claudette) — reactive assistants, not loop-depts;
     # listed in their own home sub-section with a link to their live page.
     concierges = concierge_reader.list_concierges()
+    # Kanban queue counts — reuse kanban.py's in-process cache (no added latency).
+    kanban_counts = _kanban_queue_counts()
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -52,5 +89,6 @@ def home(request: Request):
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
             "backup_rollup": backup_rollup,
             "concierges": concierges,
+            "kanban_counts": kanban_counts,
         },
     )
