@@ -90,6 +90,121 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# .last-mgmt-scan file I/O  (issue #176 — mgmt-note heartbeat coverage)
+# ---------------------------------------------------------------------------
+#
+# Track when the dept last consumed its queues/management/*.yaml inbound notes.
+# The file lives at `<repo_dir>/queues/management/.last-mgmt-scan` (alongside
+# the note files themselves) so it is only ever written by Layer 1 (after its
+# STEP 0-ter reads the notes) and read by build_dispatch_ctx on every tick.
+#
+# Using a timestamp-marker (Option A) rather than a consumed-flag on each YAML:
+#  • no mutation of the note files (no churn, no consumed_at field sprawl)
+#  • atomic: one file written once per L1 tick
+#  • naturally handles batches of notes — all notes with created_at ≤ marker
+#    are considered seen, regardless of how many files exist
+#
+# Interaction with .consumed.json (dept-level): .consumed.json tracks which
+# note IDs L1 has acted on in its reasoning loop (the dept's own bookkeeping).
+# .last-mgmt-scan is the DISPATCHER's signal: "has ANY new note arrived since
+# the last time a real layer ran STEP 0-ter?" — it does not track actions.
+
+_MGMT_SCAN_MARKER = ".last-mgmt-scan"
+
+
+def read_last_mgmt_scan(repo_dir: "Path | str") -> "datetime | None":
+    """Read the ISO-8601 timestamp from `<repo_dir>/queues/management/.last-mgmt-scan`.
+
+    Returns None if the marker does not exist (never scanned → any note is new).
+    """
+    f = Path(repo_dir) / "queues" / "management" / _MGMT_SCAN_MARKER
+    if not f.exists():
+        return None
+    body = f.read_text(encoding="utf-8").strip()
+    if not body:
+        return None
+    try:
+        return datetime.fromisoformat(body)
+    except ValueError:
+        return None
+
+
+def write_last_mgmt_scan(repo_dir: "Path | str", when: "datetime | None" = None) -> None:
+    """Write the ISO-8601 timestamp to `<repo_dir>/queues/management/.last-mgmt-scan`.
+
+    Called by Layer 1 at the end of STEP 0-ter (after reading inbound notes),
+    so the dispatcher knows the notes have been seen and stops routing to L1
+    on heartbeat ticks. `when` defaults to now (UTC).
+    """
+    if when is None:
+        when = datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        raise ValueError("write_last_mgmt_scan requires a tz-aware datetime")
+    mgmt_dir = Path(repo_dir) / "queues" / "management"
+    mgmt_dir.mkdir(parents=True, exist_ok=True)
+    (mgmt_dir / _MGMT_SCAN_MARKER).write_text(when.isoformat(), encoding="utf-8")
+
+
+def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
+    """Return True if `queues/management/` contains at least one inbound note
+    with `created_at` strictly after `since` (or any note if `since` is None).
+
+    "Inbound" = a regular `*.yaml` file whose `audience` includes the dept slug
+    OR whose `created_by`/`from` field is a manager (non-dept author). Because
+    the dispatcher cannot know the dept slug here, we take the conservative
+    approach: ANY `*.yaml` in `queues/management/` that is NOT a dotfile and is
+    NOT written by the dept itself (i.e. not a Rick-request escalation from the
+    dept — those have `audience: [rick, joris]` and are outbound) counts as a
+    potential inbound note.
+
+    Practical heuristic (matches the deployed PROMPT.md STEP 0-ter wording):
+      - Exclude dotfiles (`.last-mgmt-scan`, `.consumed.json`, `.gitkeep`, …)
+      - Exclude subdirectories (e.g. `.processed/`)
+      - For each remaining file: parse `created_at`; if `since` is None OR
+        `created_at > since` → this note has not been scanned yet → return True
+      - Files that are unparseable or have no `created_at` → treat as unconsumed
+        (fail-open: better to fire L1 unnecessarily than to silently miss a note)
+
+    The scan intentionally does NOT read `audience` or `created_by` to avoid
+    false negatives from structural variation across note kinds (directive vs
+    management_note). A dept's own outbound Rick-request files live in the same
+    directory but are typically processed quickly; the rare false positive (L1
+    fired when only a Rick-request is in the queue and L1 was already going to run
+    anyway) is acceptable.
+    """
+    mgmt_dir = Path(repo_dir) / "queues" / "management"
+    if not mgmt_dir.is_dir():
+        return False
+
+    for p in mgmt_dir.glob("*.yaml"):
+        if p.name.startswith("."):
+            continue
+        if not p.is_file():
+            continue
+        if since is None:
+            # Marker absent → any note is considered new
+            return True
+        # Parse created_at from the note; fail-open on unreadable/missing field
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return True  # unreadable → treat as unconsumed
+        raw_ts = data.get("created_at")
+        if raw_ts is None:
+            return True  # no timestamp → treat as unconsumed
+        try:
+            note_ts = datetime.fromisoformat(str(raw_ts))
+            if note_ts.tzinfo is None:
+                note_ts = note_ts.replace(tzinfo=timezone.utc)
+            if note_ts > since:
+                return True
+        except (ValueError, TypeError):
+            return True  # unparseable timestamp → treat as unconsumed
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # round_counter.json file I/O
 # ---------------------------------------------------------------------------
 #
@@ -584,6 +699,7 @@ def build_dispatch_ctx(
       - outputs/<today>/1/.last-run    -> layer_1_last_run_today (L1 daily floor)
       - outputs/<today>/round_counter.json -> round_counter (L1 cycle gate)
       - outputs/<today>/.l1-baseline.json  -> layer_1_baseline_counter (L1 cycle gate)
+      - queues/management/.last-mgmt-scan  -> has_unconsumed_mgmt_notes (issue #176)
 
     THE ebb03972 FIX (2026-06-02): earlier builds injected neither
     `layer_1_last_run_today` nor `layer_1_baseline_counter`, so decide_dispatch's
@@ -638,6 +754,13 @@ def build_dispatch_ctx(
         "round_counter": read_round_counter(today_dir),
         "layer_1_baseline_counter": read_l1_baseline(today_dir),
         "fire_after_rounds": fire_after_rounds,
+        # Issue #176: flag unconsumed inbound management notes so the dispatcher
+        # routes to L1 even on heartbeat ticks (not just when L1's daily floor
+        # or cycle gate fires). Layer 1 writes .last-mgmt-scan at the end of its
+        # STEP 0-ter; any note with created_at strictly after that marker is new.
+        "has_unconsumed_mgmt_notes": _scan_mgmt_notes(
+            repo, since=read_last_mgmt_scan(repo)
+        ),
     }
 
 
@@ -649,6 +772,8 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
       now_utc: tz-aware UTC datetime — required
       has_research_items: bool
       has_inbox_decisions: bool
+      has_unconsumed_mgmt_notes: bool — True if queues/management/ has notes with
+        created_at > queues/management/.last-mgmt-scan (or any notes if marker absent)
       layer_4_last_run_today: datetime | None — set if outputs/<today>/4/.last-run exists
       layer_1_last_run_today: datetime | None — set if outputs/<today>/1/.last-run exists
       round_counter: dict[str, int] — per-layer round counts for today
@@ -665,6 +790,10 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
             no-trade day) AND L4 not yet run (aggregator last)
       C.3 — Layer 3 if time>=16:00 Paris AND inbox decisions have items
       C.2 — Layer 2 if time>=12:00 Paris AND research queue has items
+      C.mgmt — Layer 1 if time>=07:00 Paris AND unconsumed management notes
+               exist AND L1 not already fired this same tick's daily-floor slot
+               (issue #176: a directive arriving in a quiet stretch is not
+               delayed until the next natural L1 floor or cycle gate)
       C.0 — Layer 1 if time>=07:00 Paris AND (not yet run today  OR  each other
             layer has fired a fresh round since L1 last fired)
       C.4 — heartbeat (default)
@@ -691,6 +820,7 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     now_paris_t = _to_paris(now_utc).time()
     has_research = bool(ctx.get("has_research_items", False))
     has_decisions = bool(ctx.get("has_inbox_decisions", False))
+    has_mgmt_notes = bool(ctx.get("has_unconsumed_mgmt_notes", False))
     l1_last = ctx.get("layer_1_last_run_today")
     counts = ctx.get("round_counter") or {}
     baseline = ctx.get("layer_1_baseline_counter") or {}
@@ -738,6 +868,17 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     # C.2 — Layer 2: time reached AND research queue has items (re-fireable).
     if _time_reached(now_paris_t, 2) and has_research:
         return "layer_2"
+
+    # C.mgmt — Layer 1: unconsumed management notes exist AND morning floor
+    # reached. Routes to L1 so its STEP 0-ter consumes the notes on THIS tick,
+    # instead of waiting for the next natural L1 floor or cycle gate (issue #176).
+    # Gated at L1's 07:00 Paris floor (not fired during night-quiet hours where
+    # no normal L1 would run either). Does NOT require L1 to be unfired today:
+    # if a new note arrives AFTER L1 ran this morning, this branch re-fires L1
+    # so the note is read within the next tick (up to ~1h), not deferred to
+    # tomorrow's floor or the next full cycle gate (which could be many hours).
+    if _time_reached(now_paris_t, 1) and has_mgmt_notes:
+        return "layer_1"
 
     # C.0 — Layer 1: time reached AND (morning floor not yet run today OR a
     # fresh full cycle of L2/L3/L4 has completed since L1 last fired).
