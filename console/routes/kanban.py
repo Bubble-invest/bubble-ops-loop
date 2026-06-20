@@ -205,6 +205,28 @@ def _parse_visual_fields(body_text: str) -> tuple[str, list[str]]:
     return mermaid_src, attachments
 
 
+def _parse_body_sections(body_text: str) -> dict[str, str]:
+    """Extract named sections from a kanban issue body (Job, Inputs, etc.).
+
+    Returns a dict like {'Job': '...', 'Inputs': '...', ...}.
+    Sections are defined by '## SectionName' headers.
+    """
+    sections: dict[str, str] = {}
+    if not body_text:
+        return sections
+    # Split on ## headers, keeping the header with its content
+    parts = re.split(r"\n(?=## )", body_text)
+    for part in parts:
+        m = re.match(r"##\s+(\S.*?)(?:\s*\n|$)", part)
+        if m:
+            name = m.group(1).strip()
+            content = part[m.end():].strip()
+            # Drop visual-only sections (already rendered separately)
+            if name.lower() not in ("diagram", "visual attachments"):
+                sections[name] = content
+    return sections
+
+
 def issue_to_card(issue: dict) -> dict:
     """Map one GitHub Issue dict → the card dict the three views consume.
 
@@ -416,7 +438,47 @@ def _flatten_columns(columns: dict) -> list:
     return all_cards
 
 
-# ── Route ──────────────────────────────────────────────────────────────────────
+# ── Single-issue detail fetch ─────────────────────────────────────────────────
+
+def _fetch_single_issue(number: int) -> tuple[dict | None, str | None]:
+    """Fetch ONE board issue by number (no cache) + its comments.
+
+    Returns (issue_dict, error_string). issue_dict is the raw GitHub REST API
+    issue object, plus a 'comments' key with the issue's comment list."""
+    token = _read_board_token()
+    if not token:
+        return None, "no board API token available"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "bubble-ops-console",
+    }
+    try:
+        url = f"https://api.github.com/repos/{_BOARD_REPO}/issues/{number}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            issue = json.load(resp)
+        # Fetch comments
+        comments_url = f"https://api.github.com/repos/{_BOARD_REPO}/issues/{number}/comments"
+        req2 = urllib.request.Request(comments_url, headers=headers)
+        comments: list = []
+        with urllib.request.urlopen(req2, timeout=15) as resp2:
+            comments = json.load(resp2)
+        issue["comments_list"] = comments
+        # Normalize the timestamp field name so issue_to_card (which expects the
+        # _fetch_issues-normalized "updatedAt") shows the detail-view timestamp.
+        issue["updatedAt"] = issue.get("updated_at") or ""
+        return issue, None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, "issue not found"
+        return None, f"GitHub API error: {e.code}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return None, f"network error: {e}"
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/kanban/attachment")
 def kanban_attachment(repo: str, path: str, request: Request):
@@ -445,6 +507,38 @@ def kanban_attachment(repo: str, path: str, request: Request):
         "X-Content-Type-Options": "nosniff",
     }
     return FileResponse(str(resolved), media_type=media_type, headers=headers)
+
+
+@router.get("/kanban/card/{number}", response_class=HTMLResponse)
+def kanban_card_detail(number: int, request: Request):
+    """Single kanban card detail view — in-cockpit, not GitHub.
+
+    Mirrors gate.py's gate_card route: fetches one issue + its comments,
+    maps to a card dict (reusing issue_to_card + _parse_visual_fields),
+    renders a detail template so the card body, Mermaid diagram,
+    attachments, and comment thread are all visible in one cockpit page.
+    """
+    issue, error = _fetch_single_issue(number)
+    if error or issue is None:
+        raise HTTPException(404, "Issue not found" if not error else error)
+
+    card = issue_to_card(issue)
+    comments = issue.get("comments_list") or []
+
+    # Extract structured sections from body for readable layout
+    body_text = issue.get("body") or ""
+    sections = _parse_body_sections(body_text)
+
+    return request.app.state.templates.TemplateResponse(
+        "kanban_card.html",
+        {
+            "request": request,
+            "card": card,
+            "sections": sections,
+            "comments": comments,
+            "issue_url": issue.get("html_url") or issue.get("url") or "",
+        },
+    )
 
 
 @router.get("/kanban", response_class=HTMLResponse)
