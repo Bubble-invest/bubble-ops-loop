@@ -466,6 +466,9 @@ def _fetch_single_issue(number: int) -> tuple[dict | None, str | None]:
         with urllib.request.urlopen(req2, timeout=15) as resp2:
             comments = json.load(resp2)
         issue["comments_list"] = comments
+        # Normalize the timestamp field name so issue_to_card (which expects the
+        # _fetch_issues-normalized "updatedAt") shows the detail-view timestamp.
+        issue["updatedAt"] = issue.get("updated_at") or ""
         return issue, None
     except urllib.error.HTTPError as e:
         if e.code == 404:
