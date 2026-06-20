@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Carte #{{ card.id }} — Kanban{% endblock %}
+{% block head_extra %}
+<!-- Mermaid diagram renderer (client-side, CDN + SRI) — visual-planning ROUND2 B1 -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"
+        integrity="sha384-qX9VvWkP79m/O121ZE6sOYp0nf/pldQgtvWDbkpzi+3mUo4Wn4Ix4cFzNPay3VaB"
+        crossorigin="anonymous"></script>
+{% endblock %}
+
+{% block content %}
+
+<header class="dept-header">
+  <h1 class="dept-title">
+    {{ card.title or '(sans titre)' }}
+  </h1>
+  <p class="dept-subtitle">
+    Carte #{{ card.id }}
+    {% if card.owner %} · {{ card.owner }}{% endif %}
+    {% if card.priority %} · {{ card.priority }}{% endif %}
+    {% if card.kanban_type %} · {{ card.kanban_type }}{% endif %}
+    <br>
+    <a href="/kanban" class="discreet-link">← retour au kanban</a>
+    {% if issue_url %}
+    &nbsp;·&nbsp;
+    <a href="{{ issue_url }}" target="_blank" rel="noopener" class="discreet-link">voir sur GitHub ↗</a>
+    {% endif %}
+  </p>
+</header>
+
+{# ── Structured body sections ──────────────────────────────────────────── #}
+{% if sections %}
+<div class="gate-card" style="margin-bottom:24px;">
+  {% for name, content in sections.items() %}
+  <div style="margin-bottom:20px;">
+    <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px;">
+      {{ name }}
+    </h3>
+    <div style="font-size:14px; line-height:1.55; color:var(--body-soft); white-space:pre-line;">
+      {{ content[:2000] }}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+{# Fallback: render raw body #}
+<div class="gate-card" style="margin-bottom:24px;">
+  <p style="font-size:14px; line-height:1.55; color:var(--body-soft); white-space:pre-line;">
+    {{ card.body or '(pas de contenu)' }}
+  </p>
+</div>
+{% endif %}
+
+{# ── Mermaid diagram (reuses #89 render) ──────────────────────────────── #}
+{% if card.mermaid_src %}
+<div class="gate-card" style="margin-bottom:24px;">
+  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">Diagramme</h3>
+  <div class="mermaid">{{ card.mermaid_src }}</div>
+</div>
+{% endif %}
+
+{# ── Visual attachments (reuses #89 render) ───────────────────────────── #}
+{% if card.visual_attachments %}
+<div class="gate-card" style="margin-bottom:24px;">
+  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">Pièces jointes</h3>
+  {% for att_path in card.visual_attachments %}
+  {% set ext = att_path.lower().split('.')[-1] if '.' in att_path else '' %}
+  {% if ext in ('png', 'jpg', 'jpeg', 'gif', 'svg', 'webp') %}
+  <figure class="gate-chart" style="margin:6px 0 0;">
+    <a href="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
+       target="_blank" rel="noopener" title="Ouvrir en grand">
+      <img src="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
+           alt="Pièce jointe — {{ att_path.split('/')[-1] }}"
+           loading="lazy"
+           style="display:block; max-width:100%; height:auto; border:1px solid var(--line);
+                  border-radius:3px; background: var(--paper-soft);">
+    </a>
+  </figure>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Comment thread ───────────────────────────────────────────────────── #}
+{% if comments %}
+<div class="gate-card" style="margin-bottom:24px;">
+  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 12px;">
+    Commentaires ({{ comments | length }})
+  </h3>
+  {% for c in comments %}
+  <div style="margin-bottom:12px; padding:10px 12px; background:var(--paper-soft); border:1px solid var(--line); border-radius:3px;">
+    <div style="font-size:12px; color:var(--body-muted); margin-bottom:4px;">
+      <strong>{{ c.user.login if c.user else 'inconnu' }}</strong>
+      · {{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}
+    </div>
+    <div style="font-size:13px; line-height:1.5; color:var(--body-soft); white-space:pre-line;">
+      {{ c.body[:3000] }}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<footer style="margin-top:24px; padding-top:12px; border-top:1px solid var(--line);">
+  <a href="/kanban" class="discreet-link">← retour au kanban</a>
+  {% if issue_url %}
+  &nbsp;·&nbsp;
+  <a href="{{ issue_url }}" target="_blank" rel="noopener" class="discreet-link">voir sur GitHub ↗</a>
+  {% endif %}
+</footer>
+
+{# Initialise Mermaid #}
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+}());
+</script>
+
+{% endblock %}
