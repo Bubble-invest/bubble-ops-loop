@@ -175,7 +175,13 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                 # Also skip if a decision file already exists in inbox/decisions/
                 # for this gate — the operator has acted but the agent hasn't
                 # processed the inbox yet (see decided_ids computation above).
-                if p.stem in decided_ids:
+                # Use doc.get('id') so that a gate whose YAML id field differs
+                # from its filename is still correctly matched against the
+                # decision file written by write_gate_decision (which keys on
+                # the gate's logical id, not the stem).  Fallback to p.stem
+                # only when the YAML has no id field, for safety.
+                gate_id = doc.get("id", p.stem)
+                if gate_id in decided_ids:
                     continue
                 out.append(doc)
             else:
