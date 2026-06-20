@@ -52,13 +52,48 @@ _L1 = """# Moment 1 — The morning (Layer 1 — data update)
 
 The main session spawned you at the current tick to **prepare the day**: refresh \
 the state, spot what has moved since yesterday, and surface a short prioritized \
-worklist for {display_name}'s day.
+worklist for {display_name}'s day. You may also be called mid-day when an inbound \
+management note arrives (issue #176 — C.mgmt dispatch branch), in which case your \
+primary purpose is STEP 0-ter below; the rest of your steps still run.
 
 ## Required reads at start (STEP 0)
 
 1. `../CLAUDE.md` + `../MANDATE.md` — who you are, your scope
 2. `../dept.yaml` — recurring missions + data sources
 3. {l1_sources}
+
+### Inbound management notes (STEP 0-ter — run on EVERY L1 tick)
+
+Tony (management) issues instructions through `queues/management/`. Notes arrive as \
+`directive-<id>.yaml` OR under other names (e.g. `tony-<topic>-<date>.yaml` with \
+`kind: management_note`). Do NOT rely on the `directive-` prefix alone.
+
+1. List ALL `queues/management/*.yaml`. Keep the inbound ones addressed to you: \
+   an inbound note is one whose `audience` includes `{slug}` OR whose `created_by`/`from` \
+   is a manager (`tony`, `joris`, `jade`) — i.e. NOT authored by you. \
+   EXCLUDE your own outbound escalations (files you wrote, e.g. `rick-*.yaml`).
+   For each inbound note NOT already in `queues/management/.consumed.json` \
+   (tracked by `directive_id` or `id` field):
+   - Read it. A directive has `directive_id`, `from`, `body`; a `management_note` \
+     has `id`, `created_by`, `title`, `detail`.
+   - **Act on it within your mandate this cycle** — fold the instruction into your \
+     work. A directive is an order from management, not a suggestion; honour it unless \
+     it conflicts with a hard guardrail (if so, do NOT act — log it and raise a \
+     `strategic_question` card for Joris).
+   - Log outcome: append `{{"ts": ..., "directive_id": ..., "action": "applied|deferred|conflict", "note": ...}}` \
+     to `logs.jsonl` and add the id to `.consumed.json`.
+2. If no unconsumed inbound notes: continue silently.
+3. **After reading (whether or not there were notes)**: stamp the scan marker so the \
+   dispatcher knows this tick covered the queue:
+
+```python
+from scripts.lib.dispatch_helpers import write_last_mgmt_scan
+from pathlib import Path
+write_last_mgmt_scan(Path("."))  # writes queues/management/.last-mgmt-scan
+```
+
+Never block the tick on a directive read failure — log `[context-skip directives]` \
+and proceed. Proceed immediately to STEP 1.
 
 ## First mandatory action (STEP 1 — idempotence)
 
