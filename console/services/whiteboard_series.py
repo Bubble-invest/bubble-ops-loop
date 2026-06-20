@@ -20,6 +20,14 @@ dept has no management-export we fall back to flattening risk-kpis.yaml.
 A "metric" is one KPI tracked over time. We return a list of MetricSeries,
 each with the points sorted oldest→newest plus precomputed SVG geometry so
 the template stays logic-free.
+
+Ben (family-office dept) special case (#139):
+  Ben's management-export.yaml wraps everything under an `export:` key and
+  emits NO `top_kpis` block — it uses richer named sub-dicts (`nav_summary`,
+  `performance`, `sleeve_allocation_pct_nav`).  We synthesise the curated
+  KPI set from those known blocks rather than requiring Ben to restructure his
+  L4 prompt.  The synthesised keys are stable short names so the chart labels
+  are human-readable and the series are comparable across dates.
 """
 from __future__ import annotations
 
@@ -116,6 +124,18 @@ def _humanize_key(key: str) -> str:
         "validation_latency_p50_hours": "Latence validation p50 (h)",
         "drafts_pending": "Drafts en attente",
         "drafts_over_3d": "Drafts bloqués > 3j",
+        # Ben (family-office) synthesised KPIs — from nav_summary + performance
+        # + sleeve_allocation_pct_nav blocks in management-export.yaml (#139).
+        "nav_usd": "NAV (USD)",
+        "cash_pct": "Cash (%)",
+        "return_itd_pct": "Rendement ITD (%)",
+        "return_mtd_pct": "Rendement MTD (%)",
+        "drawdown_pct": "Drawdown en cours (%)",
+        "max_drawdown_pct": "Drawdown max ITD (%)",
+        "sharpe_itd": "Sharpe ITD",
+        "sleeve_etf_pct": "ETF backbone (% NAV)",
+        "sleeve_single_stock_pct": "Actions single-stock (% NAV)",
+        "sleeve_crypto_pct": "Crypto (% NAV)",
     }
     if key in known:
         return known[key]
@@ -142,6 +162,87 @@ def _flatten_numeric(obj: Any, prefix: str = "") -> Dict[str, float]:
             if leaf in _SKIP_LEAF:
                 continue
             out[key] = float(v)
+    return out
+
+
+def _ben_kpis_from_export(export: Dict[str, Any]) -> Dict[str, float]:
+    """Synthesise the curated KPI set for Ben (family-office dept) from the
+    named sub-dicts he already emits in management-export.yaml.
+
+    Ben does not emit a `top_kpis` block (#139 fix) — instead he writes
+    `nav_summary`, `performance` (or `performance_vs_benchmark`), and
+    `sleeve_allocation_pct_nav`.  We extract a stable, flat set of chartable
+    KPIs from those, returning an empty dict when the export doesn't look like
+    Ben's structure (so the caller falls through gracefully).
+
+    Key design choices:
+    - NAV: try both `consolidated_nav_usd` (recent) and
+      `consolidated_nav_usd_true` (older weekly-review format).
+    - Only pick *numeric, non-bool* values; skip string/None fields.
+    - Keep the key set small (9 series) and stable across dates.
+    """
+    out: Dict[str, float] = {}
+
+    nav = export.get("nav_summary")
+    if isinstance(nav, dict):
+        # NAV headline — field name drifted heavily across Ben's L4 versions.
+        # Priority order: prefer the "true" consolidated NAV with the most
+        # informative name, falling back to est/reference variants.
+        for field_name in (
+            "consolidated_nav_usd",         # standard since 06-10
+            "consolidated_nav_usd_true",    # weekly-review format (06-13)
+            "consolidated_nav_usd_corrected",  # saxo-degrade-corrected (06-09)
+            "consolidated_nav_usd_est",     # early format (06-05, 06-07)
+            "consolidated_nav_usd_reference",  # reference-only variant
+        ):
+            v = nav.get(field_name)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out["nav_usd"] = float(v)
+                break
+        # If none of the known names matched, try any key containing
+        # "consolidated_nav" (forward-compat for future field-name drift).
+        if "nav_usd" not in out:
+            for k, v in nav.items():
+                if "consolidated_nav" in k and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out["nav_usd"] = float(v)
+                    break
+        v = nav.get("cash_pct")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out["cash_pct"] = float(v)
+
+    # performance block — named `performance` (recent) or
+    # `performance_vs_benchmark` (older weekly-review format).
+    perf = export.get("performance") or export.get("performance_vs_benchmark")
+    if isinstance(perf, dict):
+        _perf_map = {
+            "total_return_itd_pct": "return_itd_pct",
+            "total_return_mtd_pct": "return_mtd_pct",
+            "current_drawdown_pct": "drawdown_pct",
+            "max_drawdown_itd_pct": "max_drawdown_pct",
+            "sharpe_itd": "sharpe_itd",
+        }
+        for src, dst in _perf_map.items():
+            v = perf.get(src)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[dst] = float(v)
+
+    sleeve = export.get("sleeve_allocation_pct_nav")
+    if isinstance(sleeve, dict):
+        # Sleeve keys also drifted: `single_stock` vs `single_stock_3a` etc.
+        _sleeve_map: List[Tuple[str, str]] = [
+            ("etf_backbone", "sleeve_etf_pct"),
+            ("single_stock", "sleeve_single_stock_pct"),
+            ("single_stock_3a", "sleeve_single_stock_pct"),
+            ("crypto_true", "sleeve_crypto_pct"),
+            ("crypto_3b", "sleeve_crypto_pct"),
+        ]
+        for src, dst in _sleeve_map:
+            if dst in out:
+                continue  # first match wins
+            v = sleeve.get(src)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[dst] = float(v)
+
     return out
 
 
@@ -175,6 +276,18 @@ def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
                     flat = _flatten_numeric(curated)
                     if flat:
                         return flat
+            # 1b) Ben-specific: synthesise from nav_summary + performance +
+            #     sleeve_allocation_pct_nav when no top_kpis block present.
+            #     Triggered whenever `nav_summary` is present (Ben-signature
+            #     block).  This fires across ALL of Ben's historical date dirs
+            #     (even older ones that lack sleeve_allocation) so the pivot
+            #     accumulates a consistent `nav_usd` series rather than mixing
+            #     synthesised keys with the risk-kpis fallback's `nav.*`
+            #     sub-keys.  No other dept uses a `nav_summary` dict.  (#139)
+            if isinstance(scope.get("nav_summary"), dict):
+                ben_kpis = _ben_kpis_from_export(scope)
+                if ben_kpis:
+                    return ben_kpis
 
     # 2) fallback: risk-kpis.yaml (richer nested), flatten under its `kpis`
     #    block if present, else the whole doc.

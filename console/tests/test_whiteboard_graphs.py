@@ -207,6 +207,113 @@ def test_ignores_dry_run_and_non_date_dirs(disk_root):
     assert not health.has_chart                       # single real point
 
 
+def test_ben_kpis_synthesised_from_nav_perf_sleeve(disk_root):
+    """Ben's management-export.yaml has no top_kpis block — the cockpit must
+    synthesise NAV, performance, and sleeve-allocation series from his existing
+    nav_summary / performance / sleeve_allocation_pct_nav sub-dicts.  (#139)"""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path)
+    # day, nav, cash, dd, use_perf_vs_bench_key, sharpe, etf, ss, crypto
+    days = [
+        # 2026-06-13 uses `performance_vs_benchmark` (weekly-review format),
+        # no current_drawdown — mirrors real Ben L4 weekly export structure.
+        ("2026-06-13", 237_400, 37.6, None,  True,  0.99, 66.7, 3.0,  4.6),
+        ("2026-06-16", 239_271, 36.2, -0.5,  False, 0.99, 58.9, 3.07, 4.4),
+        ("2026-06-17", 239_352, 36.2,  0.0,  False, 1.00, 58.9, 3.06, 4.4),
+        ("2026-06-19", 238_435, 26.2, -2.7,  False, 0.60, 67.0, 2.3,  4.7),
+    ]
+    for day, nav, cash, dd, use_pvb, sharpe, etf, ss, crypto in days:
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True, exist_ok=True)
+        perf_block = {"sharpe_itd": sharpe, "risk_status": "clean"}
+        if dd is not None:
+            perf_block["current_drawdown_pct"] = dd
+        perf_key = "performance_vs_benchmark" if use_pvb else "performance"
+        export_data: dict = {
+            "dept": "demo", "date": day, "generated_by": "layer4",
+            "nav_summary": {
+                "consolidated_nav_usd": nav,
+                "cash_pct": cash,
+                "note": "ignore this string",
+            },
+            perf_key: perf_block,
+            "sleeve_allocation_pct_nav": {
+                "etf_backbone": etf,
+                "single_stock": ss,
+                "crypto_true": crypto,
+                "limits_4_status": "no_breach",  # string — must be skipped
+            },
+        }
+        (d / "management-export.yaml").write_text(
+            yaml.safe_dump({"export": export_data}, sort_keys=False),
+            encoding="utf-8",
+        )
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+
+    # NAV history must be present across all 4 dates.
+    assert "nav_usd" in series
+    nav_s = series["nav_usd"]
+    assert nav_s.label == "NAV (USD)"
+    assert len(nav_s.points) == 4
+    assert nav_s.has_chart
+    # Trend: started 237400, ended 238435 → up.
+    assert nav_s.trend == "up"
+
+    # Sleeve allocation must be present.
+    assert "sleeve_etf_pct" in series
+    assert "sleeve_single_stock_pct" in series
+    assert "sleeve_crypto_pct" in series
+    assert series["sleeve_etf_pct"].label == "ETF backbone (% NAV)"
+
+    # Strings must never appear as series.
+    for s in series.values():
+        assert isinstance(s.last_value, (int, float)) or s.last_value is None
+    # Boolean/string guard: no "limits_4_status", no "risk_status", no "note"
+    bad_keys = {"limits_4_status", "risk_status", "note"}
+    assert not bad_keys.intersection(series.keys())
+
+    # Cash % must be a series across all 4 dates.
+    assert "cash_pct" in series
+    assert series["cash_pct"].label == "Cash (%)"
+    assert len(series["cash_pct"].points) == 4
+
+    # Drawdown only appears on dates where the performance block has it
+    # (06-16, 06-17, 06-19 = 3 points).
+    assert "drawdown_pct" in series
+    assert len(series["drawdown_pct"].points) == 3
+
+
+def test_ben_kpis_sleeve_field_drift(disk_root):
+    """Older Ben exports use `single_stock_3a` / `crypto_3b` naming.
+    The synthesiser must pick those up via its alias list."""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path)
+    for day, nav in (("2026-06-13", 237_400), ("2026-06-14", 238_000)):
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True)
+        (d / "management-export.yaml").write_text(
+            yaml.safe_dump({
+                "export": {
+                    "dept": "demo", "date": day,
+                    "nav_summary": {"consolidated_nav_usd_true": nav, "cash_pct": 37.0},
+                    "performance_vs_benchmark": {"sharpe_itd": 0.99},
+                    "sleeve_allocation_pct_nav": {
+                        "etf_backbone": 66.7,
+                        "single_stock_3a": 3.0,  # old field name
+                        "crypto_3b": 4.6,         # old field name
+                    },
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+    assert "sleeve_single_stock_pct" in series   # alias resolved
+    assert "sleeve_crypto_pct" in series          # alias resolved
+    assert "nav_usd" in series                    # consolidated_nav_usd_true picked up
+
+
 def test_no_history_returns_empty(disk_root):
     tmp_path = disk_root
     _build_repo(tmp_path)
