@@ -270,8 +270,8 @@
       <img src="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
            alt="Pièce jointe — {{ att_path.split('/')[-1] }}"
            loading="lazy"
-           style="display:block; width:100%; height:auto; border:1px solid var(--line);
-                  border-radius:3px; background: var(--paper-soft);">
+           style="display:block; max-height:200px; width:auto; object-fit:contain;
+                  border:1px solid var(--line); border-radius:3px; background: var(--paper-soft);">
     </figure>
     {% endif %}
     {% endfor %}
