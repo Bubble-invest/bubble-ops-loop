@@ -418,6 +418,108 @@ def resolve_attachment_path(slug: str, rel_path: str) -> Optional[Path]:
     return target_abs
 
 
+# ── Kanban attachment resolver ──────────────────────────────────────────────
+# Mirror of resolve_attachment_path but repo-scoped instead of dept-slug-scoped.
+# The kanban board (Bubble-invest/bubble-ops-board) and any fleet repo can have
+# images in outputs/*/(diagrams|attachments|charts)/ that decision cards reference
+# via visual_attachments: in the issue body. The cockpit serves them through
+# GET /kanban/attachment?repo=<org/repo>&path=<rel_path>.
+
+_KANBAN_ATTACHMENT_SUBDIRS = frozenset({"diagrams", "attachments", "charts"})
+
+
+def resolve_kanban_attachment_path(repo: str, rel_path: str) -> Optional[Path]:
+    """Securely resolve a kanban-card `visual_attachments` path to a file, or None.
+
+    Attachments live at:
+        outputs/<YYYY-MM-DD>/(diagrams|attachments|charts)/<NAME>.<ext>
+    relative to the repo root. The cockpit serves them via
+    GET /kanban/attachment?repo=<org/repo>&path=<rel_path>.
+
+    Modelled EXACTLY on resolve_attachment_path; the same layered checks apply.
+    The caller maps None → opaque 404, never leaking why. Never raises.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        return None
+    if not repo or not isinstance(repo, str):
+        return None
+
+    # Resolve repo root: look up via dept_registry.repo_root_for_org_repo(),
+    # which normalises org/repo → on-disk checkout. Falls back to the board repo
+    # itself (REPOS_ROOT / "bubble-ops-board") for cross-repo kanban attachments.
+    root = repo_path_for_org_repo(repo)
+    if root is None:
+        return None
+    root = root.resolve()
+
+    # Reject absolute paths and Windows drive/UNC forms outright.
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or candidate.drive or candidate.root:
+        return None
+    # Reject any explicit parent-dir component before touching the FS.
+    if ".." in candidate.parts:
+        return None
+
+    # Extension gate: must be in the same allowlist used for gate attachments.
+    if candidate.suffix.lower() not in _ATTACHMENT_ALLOWED_EXTS:
+        return None
+
+    # Structural check: outputs/<date>/(diagrams|attachments|charts)/<name>.<ext>
+    # (>= 4 parts: outputs, <date>, <subdir>, <filename>)
+    parts = candidate.parts
+    if len(parts) < 4 or parts[0] != "outputs" or parts[2] not in _KANBAN_ATTACHMENT_SUBDIRS:
+        return None
+
+    # Resolve the container dir and confirm it stays inside repo root.
+    container_dir = (root / parts[0] / parts[1] / parts[2]).resolve()
+    if not _is_within(container_dir, root):
+        return None
+
+    target = root / candidate
+    # Resolve to real path (follows symlinks).
+    try:
+        target_abs = target.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    # Containment: resolved path must be inside the resolved container dir.
+    if not _is_within(target_abs, container_dir):
+        return None
+
+    # Symlink-escape defence.
+    try:
+        if target.is_symlink():
+            real = target.resolve()
+            if not _is_within(real, container_dir):
+                return None
+    except OSError:
+        return None
+
+    if not target_abs.is_file():
+        return None
+
+    return target_abs
+
+
+def repo_path_for_org_repo(org_repo: str) -> Optional[Path]:
+    """Resolve an org/repo string (e.g. 'Bubble-invest/bubble-ops-board') to a
+    local checkout path. Returns None if the repo is not checked out on this host.
+    Uses the same disk_root() base as repo_path() for dept repos."""
+    import re
+    if not re.match(r'^[\w.-]+/[\w.-]+$', org_repo):
+        return None
+    repo_name = org_repo.split("/", 1)[1]
+    # Try as a dept repo first (bubble-ops-<slug> or <slug>)
+    candidate = settings.disk_root() / f"bubble-ops-{repo_name}"
+    if candidate.is_dir():
+        return candidate
+    # Try unprefixed (for the board repo and concierges)
+    candidate = settings.disk_root() / repo_name
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
 def list_missions(slug: str) -> List[Dict[str, str]]:
     """Return all recurring missions declared by the dept.
 
