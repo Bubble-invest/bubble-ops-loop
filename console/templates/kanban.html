@@ -2,6 +2,10 @@
 {% block title %}Kanban — Cabinet d'éclosion{% endblock %}
 
 {% block head_extra %}
+<!-- Mermaid diagram renderer (client-side, CDN + SRI) — visual-planning ROUND2 B1 -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"
+        integrity="sha384-qX9VvWkP79m/O121ZE6sOYp0nf/pldQgtvWDbkpzi+3mUo4Wn4Ix4cFzNPay3VaB"
+        crossorigin="anonymous"></script>
 <style>
 /* ── View-switcher tabs ──────────────────────────────────────────── */
 .vp-tabs {
@@ -246,6 +250,30 @@
   {% if item.body or item.summary %}
   <div class="vp-card-body">{{ (item.body or item.summary)[:140] }}</div>
   {% endif %}
+  {% if item.mermaid_src %}
+  <div class="vp-card-mermaid" style="margin-top:8px;">
+    <div class="mermaid">{{ item.mermaid_src }}</div>
+  </div>
+  {% endif %}
+  {% if item.visual_attachments %}
+  <div class="vp-card-attachments" style="margin-top:8px;">
+    {% for att_path in item.visual_attachments %}
+    {% set ext = att_path.lower().split('.')[-1] if '.' in att_path else '' %}
+    {% if ext in ('png', 'jpg', 'jpeg', 'gif', 'svg', 'webp') %}
+    <figure class="gate-chart" style="margin:6px 0 0;">
+      <a href="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
+         target="_blank" rel="noopener" title="Ouvrir en grand">
+        <img src="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
+             alt="Pièce jointe — {{ att_path.split('/')[-1] }}"
+             loading="lazy"
+             style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                    border-radius:3px; background: var(--paper-soft);">
+      </a>
+    </figure>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endmacro %}
 
@@ -353,6 +381,14 @@
   var saved;
   try { saved = sessionStorage.getItem(STORAGE_KEY); } catch (_) {}
   activate(saved || DEFAULT_VIEW);
+}());
+</script>
+
+{# Initialize Mermaid diagrams on page load (client-side render) #}
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
 }());
 </script>
 
