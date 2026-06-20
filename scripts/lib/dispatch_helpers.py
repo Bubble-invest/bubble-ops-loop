@@ -501,9 +501,30 @@ def materialize_due_missions(missions: Iterable[dict], *,
         {"mission_id": str, "output_queue": str, "kind": str}
 
     Layer-4 missions are filtered out (they're owned by STEP C.1).
+
+    input_kinds allow-list (fix #175):
+    If ANY mission in the dept declares ``input_kinds: [...]``, only kinds
+    that appear in at least one mission's ``input_kinds`` list are emitted.
+    Kinds not consumed by any downstream layer (e.g. ``warming_outcome``,
+    ``sent_confirmation``) are silently skipped — they are output-only
+    artefacts, not queue items for the cockpit.
+
+    Backward-compatibility: depts without any ``input_kinds`` declaration
+    get the original behaviour (all creates[] are emitted).
     """
+    # Consume the iterable once; we need two passes.
+    missions_list = list(missions)
+
+    # Build the global allowed_kinds set from all missions' input_kinds.
+    allowed_kinds: set[str] = set()
+    for m in missions_list:
+        for k in m.get("input_kinds", []) or []:
+            allowed_kinds.add(k)
+    # Empty set → no mission declared input_kinds → backward-compat mode.
+    gate_active = bool(allowed_kinds)
+
     out: list[dict] = []
-    for m in missions:
+    for m in missions_list:
         # WS3: materialize layers 1-3 (L4 is owned by the L4/debrief branch).
         if int(m.get("layer", 0)) not in (1, 2, 3):
             continue
@@ -513,6 +534,9 @@ def materialize_due_missions(missions: Iterable[dict], *,
             continue
         oq = m.get("output_queue", "")
         for kind in m.get("creates", []) or []:
+            if gate_active and kind not in allowed_kinds:
+                # Output-only kind — no layer consumes it as input.
+                continue
             out.append({
                 "mission_id": mid,
                 "output_queue": oq,
