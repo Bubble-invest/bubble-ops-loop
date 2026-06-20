@@ -210,9 +210,10 @@ def test_ignores_dry_run_and_non_date_dirs(disk_root):
 def test_ben_kpis_synthesised_from_nav_perf_sleeve(disk_root):
     """Ben's management-export.yaml has no top_kpis block — the cockpit must
     synthesise NAV, performance, and sleeve-allocation series from his existing
-    nav_summary / performance / sleeve_allocation_pct_nav sub-dicts.  (#139)"""
+    nav_summary / performance / sleeve_allocation_pct_nav sub-dicts.  (#139)
+    Gate is now slug=="ben" (not field presence) per #199."""
     tmp_path = disk_root
-    repo = _build_repo(tmp_path)
+    repo = _build_repo(tmp_path, slug="ben")
     # day, nav, cash, dd, use_perf_vs_bench_key, sharpe, etf, ss, crypto
     days = [
         # 2026-06-13 uses `performance_vs_benchmark` (weekly-review format),
@@ -230,7 +231,7 @@ def test_ben_kpis_synthesised_from_nav_perf_sleeve(disk_root):
             perf_block["current_drawdown_pct"] = dd
         perf_key = "performance_vs_benchmark" if use_pvb else "performance"
         export_data: dict = {
-            "dept": "demo", "date": day, "generated_by": "layer4",
+            "dept": "ben", "date": day, "generated_by": "layer4",
             "nav_summary": {
                 "consolidated_nav_usd": nav,
                 "cash_pct": cash,
@@ -249,7 +250,7 @@ def test_ben_kpis_synthesised_from_nav_perf_sleeve(disk_root):
             encoding="utf-8",
         )
 
-    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("ben")}
 
     # NAV history must be present across all 4 dates.
     assert "nav_usd" in series
@@ -286,16 +287,17 @@ def test_ben_kpis_synthesised_from_nav_perf_sleeve(disk_root):
 
 def test_ben_kpis_sleeve_field_drift(disk_root):
     """Older Ben exports use `single_stock_3a` / `crypto_3b` naming.
-    The synthesiser must pick those up via its alias list."""
+    The synthesiser must pick those up via its alias list.
+    Gate is now slug=="ben" per #199."""
     tmp_path = disk_root
-    repo = _build_repo(tmp_path)
+    repo = _build_repo(tmp_path, slug="ben")
     for day, nav in (("2026-06-13", 237_400), ("2026-06-14", 238_000)):
         d = repo / "outputs" / day / "4"
         d.mkdir(parents=True)
         (d / "management-export.yaml").write_text(
             yaml.safe_dump({
                 "export": {
-                    "dept": "demo", "date": day,
+                    "dept": "ben", "date": day,
                     "nav_summary": {"consolidated_nav_usd_true": nav, "cash_pct": 37.0},
                     "performance_vs_benchmark": {"sharpe_itd": 0.99},
                     "sleeve_allocation_pct_nav": {
@@ -308,10 +310,62 @@ def test_ben_kpis_sleeve_field_drift(disk_root):
             encoding="utf-8",
         )
 
-    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("demo")}
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("ben")}
     assert "sleeve_single_stock_pct" in series   # alias resolved
     assert "sleeve_crypto_pct" in series          # alias resolved
     assert "nav_usd" in series                    # consolidated_nav_usd_true picked up
+
+
+def test_ben_synth_gate_is_slug_not_field_presence(disk_root):
+    """#199 — the Ben KPI synthesiser must ONLY fire for dept slug 'ben'.
+
+    A future dept that emits a nav_summary block (e.g. a second fund dept or
+    any dept that happens to use that field name) must NOT get Ben's
+    fund-office synthesiser applied.  Previously the gate was `isinstance(
+    scope.get('nav_summary'), dict)` — a naming convention, not a contract.
+    After #199 the gate is `dept_slug == 'ben'`.
+
+    This test creates a non-ben dept with a nav_summary block and asserts:
+    - the synthesised keys (nav_usd, cash_pct, ...) are ABSENT,
+    - the dept falls through to the risk-kpis fallback instead.
+    """
+    tmp_path = disk_root
+    # dept slug is "other-fund" — has nav_summary just like Ben, but is not Ben
+    repo = _build_repo(tmp_path, slug="other-fund")
+    for day, nav in (("2026-06-18", 500_000), ("2026-06-19", 501_000)):
+        d = repo / "outputs" / day / "4"
+        d.mkdir(parents=True)
+        (d / "management-export.yaml").write_text(
+            yaml.safe_dump({
+                "export": {
+                    "dept": "other-fund", "date": day,
+                    # nav_summary present — would have triggered Ben synth pre-#199
+                    "nav_summary": {
+                        "consolidated_nav_usd": nav,
+                        "cash_pct": 20.0,
+                    },
+                    "performance": {"sharpe_itd": 1.2},
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+        # Provide a risk-kpis fallback so we can confirm the dept falls through
+        (d / "risk-kpis.yaml").write_text(
+            yaml.safe_dump({"ops_score": 90 + (1 if day == "2026-06-19" else 0)}),
+            encoding="utf-8",
+        )
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("other-fund")}
+
+    # Ben's synthesised keys must NOT appear for a non-ben dept.
+    ben_synth_keys = {"nav_usd", "cash_pct", "return_itd_pct", "sleeve_etf_pct",
+                      "sleeve_single_stock_pct", "sleeve_crypto_pct"}
+    assert not ben_synth_keys.intersection(series), (
+        f"Ben synthesiser wrongly fired for 'other-fund': "
+        f"{ben_synth_keys.intersection(series)}"
+    )
+    # The dept should have fallen through to its risk-kpis fallback instead.
+    assert "ops_score" in series
 
 
 def test_no_history_returns_empty(disk_root):
