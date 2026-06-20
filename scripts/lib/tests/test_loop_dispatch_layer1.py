@@ -258,6 +258,91 @@ def test_cadence_due_weekly_right_day_after_time(tmp_outputs_root):
     assert dispatch_helpers.is_mission_due(mission, now=monday_now, last_fired=None) is True
 
 
+# ---------- is_mission_due: list-day weekly (fix #214) ----------------------
+#
+# Fleet-wide crash: content's newsletter_redaction had day:['tuesday','friday']
+# which made is_mission_due() call ''.lower() on a list → AttributeError on
+# every tick.  The fix normalises `day` to a set of lowercase strings before
+# doing any membership test, accepting both str and list shapes.
+
+def test_cadence_due_weekly_list_day_in_list_is_due(tmp_outputs_root):
+    """A weekly mission with day:[tuesday, friday] IS due on a tuesday.
+
+    This is the exact crash reported in #214 — calling .lower() on a list
+    was the AttributeError. After the fix, list-day missions must work.
+    """
+    # 2026-06-16 is a Tuesday.
+    tuesday_now = datetime(2026, 6, 16, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    mission = {
+        "id": "newsletter_redaction",
+        "cadence": "weekly",
+        "time": "07:00",
+        "day": ["tuesday", "friday"],
+    }
+    assert dispatch_helpers.is_mission_due(
+        mission, now=tuesday_now, last_fired=None
+    ) is True, (
+        "day:['tuesday','friday'] mission must be due on a tuesday — "
+        "the AttributeError from list.lower() was the #214 fleet crash"
+    )
+
+
+def test_cadence_due_weekly_list_day_not_in_list_is_not_due(tmp_outputs_root):
+    """A weekly mission with day:[tuesday, friday] is NOT due on a monday."""
+    # 2026-06-15 is a Monday.
+    monday_now = datetime(2026, 6, 15, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    mission = {
+        "id": "newsletter_redaction",
+        "cadence": "weekly",
+        "time": "07:00",
+        "day": ["tuesday", "friday"],
+    }
+    assert dispatch_helpers.is_mission_due(
+        mission, now=monday_now, last_fired=None
+    ) is False, (
+        "day:['tuesday','friday'] mission must NOT be due on a monday"
+    )
+
+
+def test_cadence_due_weekly_list_day_second_entry_is_due(tmp_outputs_root):
+    """A weekly mission with day:[tuesday, friday] IS due on a friday."""
+    # 2026-06-19 is a Friday.
+    friday_now = datetime(2026, 6, 19, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    mission = {
+        "id": "newsletter_redaction",
+        "cadence": "weekly",
+        "time": "07:00",
+        "day": ["tuesday", "friday"],
+    }
+    assert dispatch_helpers.is_mission_due(
+        mission, now=friday_now, last_fired=None
+    ) is True, (
+        "day:['tuesday','friday'] mission must be due on a friday (second list entry)"
+    )
+
+
+def test_cadence_due_weekly_single_string_day_still_works(tmp_outputs_root):
+    """Regression: single-string day:'monday' still works exactly as before.
+
+    The fix must not change any behaviour for the many existing missions
+    that use day as a plain string.
+    """
+    mission = {"id": "m", "cadence": "weekly", "time": "07:00", "day": "monday"}
+    monday_now = datetime(2026, 5, 25, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    sunday_now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris
+    assert dispatch_helpers.is_mission_due(mission, now=monday_now, last_fired=None) is True
+    assert dispatch_helpers.is_mission_due(mission, now=sunday_now, last_fired=None) is False
+
+
+def test_cadence_due_weekly_empty_list_day_returns_false(tmp_outputs_root):
+    """A weekly mission with day:[] (empty list) is never due — no valid day."""
+    mission = {"id": "m", "cadence": "weekly", "time": "07:00", "day": []}
+    monday_now = datetime(2026, 5, 25, 6, 0, tzinfo=timezone.utc)
+    assert dispatch_helpers.is_mission_due(
+        mission, now=monday_now, last_fired=None
+    ) is False
+
+
 # ============================================================================
 # SECTION 2 — Template text (STEP C.0) — operating CLAUDE.md
 # ============================================================================
