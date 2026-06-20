@@ -74,12 +74,19 @@ def _build_client(monkeypatch, root: Path):
 
 
 def _extract_kpi_values(body: str) -> list[str]:
-    """Extract every <div class="kpi-value">N</div> integer."""
+    """Extract <div class="kpi-value">N</div> integers from the dept-KPI section
+    only (id="dept-kpi-grid").  The page has a second kpi-grid for the task
+    queue (Section 4 — File des tâches) which must NOT be counted here."""
     import re
-    return re.findall(
-        r'<div class="kpi-value">\s*(\d+)\s*</div>',
-        body,
-    )
+    # Isolate the dept-KPI section by slicing from its id to the next </section>.
+    m = re.search(r'id="dept-kpi-grid"', body)
+    if not m:
+        # Fallback: return all values so the assertion message is visible.
+        return re.findall(r'<div class="kpi-value">\s*(\d+)\s*</div>', body)
+    # Find the closing </section> tag after the dept-kpi-grid marker.
+    section_end = body.find("</section>", m.start())
+    scoped = body[m.start(): section_end] if section_end != -1 else body[m.start():]
+    return re.findall(r'<div class="kpi-value">\s*(\d+)\s*</div>', scoped)
 
 
 def test_kpis_reflect_live_fixture_3_depts_0_eclore_7_gates(monkeypatch, tmp_path):

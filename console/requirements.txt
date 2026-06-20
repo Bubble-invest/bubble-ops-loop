@@ -12,3 +12,6 @@ httpx==0.28.1
 # agent-authored artifact rendered as markdown, sanitized to a strict allowlist.
 Markdown==3.10.2
 nh3==0.3.5
+# jsonschema is required by the dry-run simulator (activate-dept path).
+# ModuleNotFoundError was masking 409 responses during activation tests.
+jsonschema>=4.0.0

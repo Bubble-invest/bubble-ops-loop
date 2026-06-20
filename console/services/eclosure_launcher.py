@@ -108,12 +108,18 @@ def render_systemd_unit(slug: str) -> str:
     # ${DEPT_SLUG_UPPER} survived rendering and a cockpit-launched dept shipped a
     # malformed env name (test_eclosure_launcher_v2 placeholder failures).
     slug_upper = slug.upper().replace("-", "_")
+    # CLAUDE_MODEL — the model pin written into the ExecStart line. Read from
+    # env at render time (deploy-to-morty.sh exports it; cockpit falls back to
+    # the fleet-wide default). Matching deploy-to-morty.sh line 69: canonical
+    # fleet default is "opus[1m]" (1 M-context Opus).
+    claude_model = os.environ.get("CLAUDE_MODEL", "opus[1m]")
     rendered = (
         template
         .replace("${DEPT_SLUG_UPPER}", slug_upper)
         .replace("${DEPT_SLUG}", slug)
         .replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
         .replace("${ENV_FILE}", env_file)
+        .replace("${CLAUDE_MODEL}", claude_model)
     )
     return rendered
 
