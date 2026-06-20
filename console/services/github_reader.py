@@ -135,6 +135,29 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     gates_dir = root / "queues" / "gates"
     if not gates_dir.exists():
         return []
+    # Pre-compute the set of gate ids that already have a decision recorded in
+    # inbox/decisions/.  The approval path (write_gate_decision) writes the
+    # decision file there immediately when Joris clicks Approve/Reject in the
+    # cockpit — BEFORE the dept's agent loop processes and resolves the gate
+    # (which is when resolved:true would normally appear in the gate YAML).
+    # Without this check there is a window — between Joris approving and the
+    # dept agent draining the inbox — where the gate still appears as pending
+    # in "Décisions qu'on attend de toi".  Skipping it as soon as its decision
+    # file exists closes that window immediately.
+    #
+    # This check applies to host=vps depts (decision file written to disk by
+    # write_gate_decision).  For host=local depts the decision is committed to
+    # GitHub, not to the cockpit's local disk, so the inbox/ directory here may
+    # not yet reflect it — but host=local gates are a separate case (Miranda on
+    # Jade's Mac).  The live bug is Maya = vps, so the disk check fixes the
+    # reported issue.  A future improvement could call the GitHub API for
+    # host=local depts, but we keep the scope narrow here.
+    decisions_dir = root / "inbox" / "decisions"
+    decided_ids: set = set()
+    if decisions_dir.is_dir():
+        for dp in decisions_dir.glob("*.yaml"):
+            decided_ids.add(dp.stem)
+
     out: List[Dict[str, Any]] = []
     for p in sorted(gates_dir.glob("*.yaml")):
         try:
@@ -148,6 +171,11 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                 # resolution actually writes. (Joris 2026-06-19: approved trades
                 # still appeared as pending in each agent's cockpit dept page.)
                 if doc.get("approved_by") or doc.get("resolved") or doc.get("decided_by"):
+                    continue
+                # Also skip if a decision file already exists in inbox/decisions/
+                # for this gate — the operator has acted but the agent hasn't
+                # processed the inbox yet (see decided_ids computation above).
+                if p.stem in decided_ids:
                     continue
                 out.append(doc)
             else:
