@@ -58,6 +58,129 @@
   {# ─── Trade details + thesis (trade_proposal gates) ───────────── #}
   {% include "components/trade-details.html" %}
 
+  {# ─── Content gate — Miranda's LinkedIn post proposals ──────────
+     When Miranda submits a `social_post` or `content_publish` gate she
+     populates structured fields beyond the generic summary/draft_body:
+       channel   : "linkedin" (badge)
+       pillar    : content pillar tag (e.g. "thought_leadership")
+       summary   : structured dict or plain string (hook, theme, compliance…)
+       draft_body: full post text — rendered formatted, not as a YAML blob
+       hashtags  : list of hashtags (optional)
+       attachments: preview PNG (already handled by the general block below)
+
+     This block renders those fields in a readable layout — channel badge,
+     pillar tag, structured summary sections, then the full post body.
+     It renders only for content-kind gates; all other gates skip it and
+     keep the existing summary/draft_body fallback blocks below.
+
+     No new infra: uses the same CSS vars, inline styles, and attachment
+     route (/gate/<slug>/attachment) already in production.
+  ─────────────────────────────────────────────────────────────── #}
+  {% if gate.kind in ('social_post', 'content_publish') %}
+  <div class="gate-content-proposal" style="margin:0 0 18px;">
+
+    {# ── Channel + pillar badges ── #}
+    {% if gate.channel or gate.pillar %}
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+      {% if gate.channel %}
+      <span style="display:inline-flex; align-items:center; gap:5px;
+                   background: #0077B5; color:#fff; padding:3px 10px;
+                   border-radius:2px; font-size:12px; font-weight:600;
+                   letter-spacing:.3px; text-transform:uppercase;">
+        {{ gate.channel | upper }}
+      </span>
+      {% endif %}
+      {% if gate.pillar %}
+      <span style="display:inline-flex; align-items:center; gap:5px;
+                   background: var(--paper-soft); color: var(--ochre);
+                   border:1px solid var(--ochre); padding:3px 10px;
+                   border-radius:2px; font-size:12px; font-weight:500;">
+        {{ gate.pillar | replace('_', ' ') | title }}
+      </span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Structured summary (dict or plain string) ── #}
+    {% if gate.summary %}
+      {% if gate.summary is mapping %}
+      {# Miranda emits summary as a structured dict: hook, theme, pillar,
+         compliance (list of checks), blockers (list or None).
+         Render each key as a labeled row — easy to scan on mobile. #}
+      <div class="gate-content-summary" style="background: var(--paper-soft);
+           border:1px solid var(--line); border-radius:2px; padding:12px 14px;
+           margin-bottom:14px; font-size:14px; line-height:1.6;">
+        {% if gate.summary.hook %}
+        <div style="margin-bottom:8px;">
+          <span class="muted-italic" style="font-size:12px;">Accroche</span><br>
+          <span style="color: var(--ink); font-weight:500;">{{ gate.summary.hook }}</span>
+        </div>
+        {% endif %}
+        {% if gate.summary.theme %}
+        <div style="margin-bottom:8px;">
+          <span class="muted-italic" style="font-size:12px;">Thème</span><br>
+          <span style="color: var(--body-soft);">{{ gate.summary.theme }}</span>
+        </div>
+        {% endif %}
+        {% if gate.summary.pillar %}
+        <div style="margin-bottom:8px;">
+          <span class="muted-italic" style="font-size:12px;">Pilier</span><br>
+          <span style="color: var(--body-soft);">{{ gate.summary.pillar | replace('_', ' ') | title }}</span>
+        </div>
+        {% endif %}
+        {% if gate.summary.compliance %}
+        <div style="margin-bottom:8px;">
+          <span class="muted-italic" style="font-size:12px;">Conformité</span>
+          <ul style="margin:4px 0 0; padding-left:18px;">
+            {% for item in gate.summary.compliance %}
+            <li style="color: var(--body-soft); font-size:13px;">{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% if gate.summary.blockers %}
+        <div>
+          <span class="muted-italic" style="font-size:12px; color: var(--danger, #c0392b);">Bloquants</span>
+          <ul style="margin:4px 0 0; padding-left:18px;">
+            {% for item in gate.summary.blockers %}
+            <li style="color: var(--danger, #c0392b); font-size:13px;">{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+      {% else %}
+      {# Plain-string summary — same render as generic gate, but styled for content #}
+      <div class="gate-thesis" style="margin:0 0 14px; font-size:14px; line-height:1.6;
+           color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
+      {% endif %}
+    {% endif %}
+
+    {# ── Formatted post body (draft_body) ── #}
+    {% if gate.draft_body %}
+    <div class="gate-content-draft" style="margin:0 0 14px; padding:14px 16px;
+         background: var(--paper-soft); border:1px solid var(--line);
+         border-left:3px solid #0077B5; border-radius:2px;">
+      <div class="gate-draft-label muted-italic"
+           style="font-size:11px; margin-bottom:8px; color: var(--body-muted);">
+        Texte du post
+      </div>
+      <div class="gate-draft-body"
+           style="font-family: var(--font-body); font-size:15px; line-height:1.65;
+                  color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body }}</div>
+      {% if gate.hashtags %}
+      <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);">
+        {% for tag in gate.hashtags %}
+        <span style="font-size:13px; color: #0077B5; margin-right:6px;">#{{ tag | replace('#', '') }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+  </div>
+  {% endif %}
+
   {# ─── Price-context chart (Ben's optional chart_path) ───────────
      Ben writes a 90-day rebased price-comparison PNG (ticker vs 2 peers)
      to outputs/<date>/charts/ and points the gate's `chart_path` at it.
@@ -134,18 +257,21 @@
   </div>
   {% endif %}
 
-  {% if gate.summary %}
+  {# Generic summary — shown for all gates EXCEPT content-kind gates which
+     already render summary inside their dedicated proposal block above. #}
+  {% if gate.summary and gate.kind not in ('social_post', 'content_publish') %}
   <div class="gate-thesis" style="margin:0 0 16px; font-size:15px; line-height:1.6;
        color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
   {% endif %}
 
   {# ─── Draft + angles (prospect_dm / warming_comment) ────────────
-     Rendered prominently ONLY when the gate carries a draft. {{OPERATOR}}
-     triages from his phone: he must read the message + see the chosen
-     angle + the alternatives, and know that typing a variant (e.g. V2)
-     in the comment asks Maya to redraft (a fresh gate, no auto-send).
+     Rendered prominently ONLY when the gate carries a draft AND it is not
+     a content-kind gate (content gates render draft_body in their own block
+     above). {{OPERATOR}} triages from his phone: he must read the message + see
+     the chosen angle + the alternatives, and know that typing a variant
+     (e.g. V2) in the comment asks Maya to redraft (a fresh gate, no auto-send).
      Graceful: absent on echo-style gates with no draft_body. #}
-  {% if gate.draft_body or gate.comment_body %}
+  {% if (gate.draft_body or gate.comment_body) and gate.kind not in ('social_post', 'content_publish') %}
   <div class="gate-draft-block" style="margin:18px 0; padding:14px 16px;
        background: var(--paper-soft); border:1px solid var(--line);
        border-radius:2px;">
