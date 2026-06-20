@@ -25,8 +25,13 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
+
+from console.services.github_reader import (
+    attachment_media_type,
+    resolve_kanban_attachment_path,
+)
 
 from console import settings
 
@@ -165,6 +170,41 @@ def _extract_label_value(labels: list[dict], prefix: str) -> str | None:
     return None
 
 
+def _parse_visual_fields(body_text: str) -> tuple[str, list[str]]:
+    """Extract optional visual fields from a kanban issue body.
+
+    Returns (mermaid_source, visual_attachments_list).
+    - mermaid_source: the raw content of a fenced ```mermaid ... ``` block,
+      or "" if none found.
+    - visual_attachments_list: paths from a "## Visual Attachments" section
+      (one path per line, stripped), or [] if none found.
+    """
+    mermaid_src = ""
+    attachments: list[str] = []
+
+    if not body_text:
+        return mermaid_src, attachments
+
+    # ── Mermaid block ──────────────────────────────────────────────────────
+    m = re.search(r"```mermaid\s*\n(.*?)```", body_text, re.DOTALL | re.IGNORECASE)
+    if m:
+        mermaid_src = m.group(1).strip()
+
+    # ── Visual Attachments list ────────────────────────────────────────────
+    # Lines under "## Visual Attachments" that start with "- " or "* "
+    va_match = re.search(
+        r"##\s+Visual Attachments\s*\n((?:\s*[-*]\s*[^\n]+\n?)+)",
+        body_text, re.IGNORECASE
+    )
+    if va_match:
+        for line in va_match.group(1).strip().splitlines():
+            stripped = re.sub(r"^\s*[-*]\s*", "", line).strip()
+            if stripped:
+                attachments.append(stripped)
+
+    return mermaid_src, attachments
+
+
 def issue_to_card(issue: dict) -> dict:
     """Map one GitHub Issue dict → the card dict the three views consume.
 
@@ -201,6 +241,9 @@ def issue_to_card(issue: dict) -> dict:
     body_text = (issue.get("body") or "").strip()
     summary   = body_text[:140] + ("…" if len(body_text) > 140 else "")
 
+    # ── Visual fields (Mermaid diagram + repo image paths) ─────────────────────
+    mermaid_src, visual_attachments = _parse_visual_fields(body_text)
+
     raw_ts    = issue.get("updatedAt") or ""
     # updatedAt is ISO-8601 with Z: "2026-06-19T12:34:56Z" → show first 16 chars
     ts_display = raw_ts[:16].replace("T", " ") if raw_ts else ""
@@ -219,6 +262,9 @@ def issue_to_card(issue: dict) -> dict:
         # Resolved project bucket (used by group_by_project; "" means fall through
         # to derive_project keyword heuristic).
         "project":      project,
+        # Visual planning fields (B1 — ROUND2)
+        "mermaid_src":          mermaid_src,
+        "visual_attachments":   visual_attachments,
     }
     return card
 
@@ -371,6 +417,35 @@ def _flatten_columns(columns: dict) -> list:
 
 
 # ── Route ──────────────────────────────────────────────────────────────────────
+
+@router.get("/kanban/attachment")
+def kanban_attachment(repo: str, path: str, request: Request):
+    """Serve a kanban card's visual attachment (image or diagram) inline.
+
+    Cards reference repo images via `visual_attachments:` in the issue body.
+    The cockpit renders them via
+    <img src="/kanban/attachment?repo=<org/repo>&path=<rel_path>">.
+
+    SECURITY — mirrors /gate/<slug>/attachment EXACTLY:
+      - bearer auth is enforced by the global middleware;
+      - `resolve_kanban_attachment_path` strictly validates the path is inside
+        <repo>/outputs/*/(diagrams|attachments|charts)/, extension in allowlist,
+        no traversal, no symlink escape. Returns None on ANY doubt.
+    None → opaque 404 without echoing path or reason (no oracle).
+    """
+    resolved = resolve_kanban_attachment_path(repo, path)
+    if resolved is None:
+        raise HTTPException(404, "Attachment not found")
+    media_type = attachment_media_type(resolved)
+    # Same CSP header as gate.py's attachment route — mandatory for SVG
+    # (SVGs can carry embedded <script>; CSP blocks execution).
+    headers = {
+        "Cache-Control": "private, max-age=300",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return FileResponse(str(resolved), media_type=media_type, headers=headers)
+
 
 @router.get("/kanban", response_class=HTMLResponse)
 async def kanban_board(request: Request):
