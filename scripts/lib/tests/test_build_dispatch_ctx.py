@@ -1109,3 +1109,61 @@ def test_c1_l4_outranks_c_mgmt_management_note(tmp_path: Path):
         "when L4 prerequisites are satisfied — a management note must NOT block "
         "the risk aggregator (issue #198, fleet-wide blast radius)"
     )
+
+
+# ── Issue #214 — is_mission_due list-day integration test ────────────────────
+#
+# Fleet-wide crash: a dept.yaml with a weekly mission whose `day` is a LIST
+# (e.g. day: [tuesday, friday]) caused build_dispatch_ctx() → materialize_due_
+# missions_for_tick() → is_mission_due() to crash with AttributeError: 'list'
+# object has no attribute 'lower' on EVERY tick.
+#
+# This integration test runs build_dispatch_ctx against a real dept.yaml fixture
+# containing such a mission and asserts it does NOT crash and returns a valid ctx.
+
+def test_build_dispatch_ctx_does_not_crash_on_list_day_mission(tmp_path: Path):
+    """INTEGRATION — fix #214: build_dispatch_ctx must not crash when dept.yaml
+    contains a weekly mission with day as a list.
+
+    This reproduces the fleet-wide crash verbatim: content's newsletter_redaction
+    mission had day:['tuesday','friday'], which caused AttributeError on every
+    tick of build_dispatch_ctx → materialize_due_missions_for_tick →
+    is_mission_due (the weekly branch called .lower() on the list).
+
+    Asserts:
+      - No AttributeError or any other exception is raised.
+      - The returned ctx is a dict (valid ctx shape).
+      - The function completes and returns all mandatory keys.
+    """
+    repo = _mk_repo(tmp_path)
+
+    # Fixture dept.yaml with the exact list-day pattern from issue #214.
+    list_day_dept = {
+        "recurring_missions": [
+            {
+                "id": "newsletter_redaction",
+                "layer": 1,
+                "cadence": "weekly",
+                "time": "07:00",
+                "day": ["tuesday", "friday"],  # <-- the crashing shape
+                "description": "Bi-weekly newsletter redaction.",
+                "output_queue": "queues/research/",
+                "creates": ["newsletter_draft"],
+            },
+        ]
+    }
+    (tmp_path / "dept.yaml").write_text(
+        yaml.dump(list_day_dept, allow_unicode=True, default_flow_style=False)
+    )
+
+    # Must NOT raise — this is the crash guard.
+    ctx = build_dispatch_ctx(tmp_path, now_utc=NOON)
+
+    # Returned value is a valid ctx dict with the mandatory keys.
+    assert isinstance(ctx, dict), "build_dispatch_ctx must return a dict"
+    assert "now_utc" in ctx
+    assert "today" in ctx
+    assert "has_research_items" in ctx
+    assert "has_inbox_decisions" in ctx
+    # No crash = fix confirmed. The specific dispatch decision is secondary.
+    assert "layer_1_last_run_today" in ctx
