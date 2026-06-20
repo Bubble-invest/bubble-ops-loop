@@ -25,3 +25,15 @@ jobs:
         run: python3 -m pytest token-broker/tests/ -q --tb=short
       - name: Git-guard tests
         run: python3 -m pytest git-guard/tests/ -q --tb=short
+
+  console-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install console deps
+        run: python3 -m pip install --quiet pytest -r console/requirements.txt
+      - name: Console tests
+        run: python3 -m pytest console/tests/ -q --tb=short
