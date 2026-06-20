@@ -284,11 +284,24 @@ echo "${PROG}: structural paths: ${REL_PATHS[*]}" >&2
 # commit. claude:claude is the correct owner; dept repos are checked out under
 # the claude user's home, and claude needs read+write for normal ops.
 _restore_git_ownership() {
-  local root="$1"
+  local root="$1"; local _ret=$?
   if [[ -d "${root}/.git" ]]; then
     chown -R claude:claude "${root}/.git" 2>/dev/null || true
     echo "${PROG}: .git ownership restored to claude:claude in ${root}" >&2
   fi
+  # Also chown the work-tree files that were written/staged as root
+  # (cp --content-from and git apply/git add touch work-tree files at
+  # REL_PATHS, leaving them root-owned; the dept agent needs to edit them later).
+  # Scope: only REPO_ROOT + the named REL_PATHS — never a broad path.
+  if [[ ${#REL_PATHS[@]} -gt 0 ]]; then
+    for _rp in "${REL_PATHS[@]}"; do
+      local _fp="${root}/${_rp}"
+      if [[ -e "$_fp" ]]; then
+        chown claude:claude "$_fp" 2>/dev/null || true
+      fi
+    done
+  fi
+  return $_ret
 }
 # Arm the trap BEFORE the first git mutation so any failure below still heals.
 trap '_restore_git_ownership "$REPO_ROOT"' EXIT
