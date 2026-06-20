@@ -145,9 +145,32 @@ def write_last_mgmt_scan(repo_dir: "Path | str", when: "datetime | None" = None)
     (mgmt_dir / _MGMT_SCAN_MARKER).write_text(when.isoformat(), encoding="utf-8")
 
 
+def _load_consumed_ids(mgmt_dir: "Path") -> "set[str]":
+    """Return the set of note IDs already recorded in `.consumed.json`.
+
+    `.consumed.json` is the dept-level bookkeeping file written by L1's STEP
+    0-ter to record which note IDs it has acted on. It may be a JSON object
+    (keys are note IDs, values are metadata) or a JSON array (a list of IDs).
+    Returns an empty set if the file is absent, unreadable, or malformed.
+    """
+    consumed_file = mgmt_dir / ".consumed.json"
+    if not consumed_file.is_file():
+        return set()
+    try:
+        raw = json.loads(consumed_file.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if isinstance(raw, dict):
+        return set(raw.keys())
+    if isinstance(raw, list):
+        return {str(x) for x in raw if x}
+    return set()
+
+
 def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     """Return True if `queues/management/` contains at least one inbound note
-    with `created_at` strictly after `since` (or any note if `since` is None).
+    with `created_at` strictly after `since` (or any note if `since` is None)
+    that has NOT already been consumed.
 
     "Inbound" = a regular `*.yaml` file whose `audience` includes the dept slug
     OR whose `created_by`/`from` field is a manager (non-dept author). Because
@@ -160,10 +183,18 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     Practical heuristic (matches the deployed PROMPT.md STEP 0-ter wording):
       - Exclude dotfiles (`.last-mgmt-scan`, `.consumed.json`, `.gitkeep`, …)
       - Exclude subdirectories (e.g. `.processed/`)
-      - For each remaining file: parse `created_at`; if `since` is None OR
-        `created_at > since` → this note has not been scanned yet → return True
-      - Files that are unparseable or have no `created_at` → treat as unconsumed
-        (fail-open: better to fire L1 unnecessarily than to silently miss a note)
+      - For each remaining file:
+          1. Check `.consumed.json` FIRST — if the note's `id` is already in
+             the consumed set, skip it regardless of its timestamp. This is the
+             fix for issue #198: a note with a bad/missing `created_at` that
+             hits the fail-open path would previously re-trigger L1 every tick
+             until removed. Now an already-consumed note is silently skipped
+             no matter what its timestamp looks like.
+          2. If `since` is None → treat as unconsumed.
+          3. Parse `created_at`; if `created_at > since` → unconsumed.
+          4. Files still unparseable or missing `created_at` after the consumed
+             check → fail-open (better to fire L1 once than to silently miss a
+             note that hasn't been acted on yet).
 
     The scan intentionally does NOT read `audience` or `created_by` to avoid
     false negatives from structural variation across note kinds (directive vs
@@ -176,19 +207,38 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     if not mgmt_dir.is_dir():
         return False
 
+    # Load the consumed-IDs set ONCE before the file loop (O(1) per note).
+    consumed_ids = _load_consumed_ids(mgmt_dir)
+
     for p in mgmt_dir.glob("*.yaml"):
         if p.name.startswith("."):
             continue
         if not p.is_file():
             continue
-        if since is None:
-            # Marker absent → any note is considered new
-            return True
-        # Parse created_at from the note; fail-open on unreadable/missing field
+
+        # Parse the note to get its id and created_at. We need the data dict
+        # for both the consumed-check and the timestamp-check below, so we
+        # parse it now. Fail-open on unreadable files (treat as unconsumed).
         try:
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         except Exception:
-            return True  # unreadable → treat as unconsumed
+            # Unreadable YAML → we can't determine id, so we can't consumed-
+            # check it. Fall through to unconsumed (fail-open).
+            return True
+
+        # Fix #198 — consumed check BEFORE created_at parse:
+        # If the note's id appears in .consumed.json, L1 has already acted on
+        # it. Skip it unconditionally — a bad/missing created_at on a consumed
+        # note must not cause an infinite re-trigger.
+        note_id = data.get("id")
+        if note_id and str(note_id) in consumed_ids:
+            continue  # already consumed → not unconsumed, skip this note
+
+        if since is None:
+            # Marker absent → any non-consumed note is considered new
+            return True
+
+        # Parse created_at; fail-open on missing or unparseable timestamp.
         raw_ts = data.get("created_at")
         if raw_ts is None:
             return True  # no timestamp → treat as unconsumed
