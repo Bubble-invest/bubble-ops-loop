@@ -166,6 +166,41 @@
   </div>
 </section>
 
+{# ─── Section 4 — File kanban (profondeur de file à la volée) ──── #}
+<section class="cabinet-section" aria-labelledby="kanban-heading">
+  <h2 id="kanban-heading" class="section-heading">
+    <span class="section-heading-number">4.</span>
+    File kanban — <a href="/kanban" class="discreet-link">voir le tableau →</a>
+  </h2>
+  <div class="kpi-grid">
+    {% with value=kanban_counts.total_open,
+            label="Total ouvert",
+            note="Tickets actifs sur le board (hors Terminé)." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=kanban_counts.needs_attention,
+            label="À traiter",
+            note="En attente de triage ou d'action." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=kanban_counts.investigating,
+            label="En cours",
+            note="Travail en cours par un agent." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=kanban_counts.waiting,
+            label="En attente / Bloqué",
+            note="Bloqués ou en attente de dépendance." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+    {% with value=kanban_counts.done,
+            label="Terminé",
+            note="Clos depuis le dernier rafraîchissement du cache." %}
+      {% include "components/kpi-summary.html" %}
+    {% endwith %}
+  </div>
+</section>
+
 <p>
   <a href="/health" class="discreet-link">Voir le carnet de bord détaillé →</a>
 </p>
