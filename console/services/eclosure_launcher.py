@@ -110,11 +110,9 @@ def render_systemd_unit(slug: str) -> str:
     slug_upper = slug.upper().replace("-", "_")
     # CLAUDE_MODEL — the model pin written into the ExecStart line. Read from
     # env at render time (deploy-to-morty.sh exports it; cockpit falls back to
-    # the fleet-wide default). Matching deploy-to-morty.sh behaviour: if the
-    # env var is unset we default to "claude-opus-4-5" (cost-optimised default
-    # for ops-loop depts — same as the fleet-wide setting post-2026-06-19
-    # cost-optimization pass).
-    claude_model = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
+    # the fleet-wide default). Matching deploy-to-morty.sh line 69: canonical
+    # fleet default is "opus[1m]" (1 M-context Opus).
+    claude_model = os.environ.get("CLAUDE_MODEL", "opus[1m]")
     rendered = (
         template
         .replace("${DEPT_SLUG_UPPER}", slug_upper)
