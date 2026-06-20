@@ -403,3 +403,122 @@ def test_dept_page_graphs_empty_state(client):
     # Section may be present (if whiteboard.yaml exists) or absent; either way
     # the page must render and not contain a stray broken chart.
     assert "kpi-chart-svg" not in r.text
+
+
+# ─── Option A: current-keys restriction (Bug A #180) ────────────────────────
+
+def _write_ben_legacy_export(repo: Path, day: str, nav: float, sleeve_etf: float) -> None:
+    """Write a Ben-style legacy management-export (no top_kpis, uses nav_summary
+    + sleeve_allocation_pct_nav) as existed for dates 06-13→06-19."""
+    d = repo / "outputs" / day / "4"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "management-export.yaml").write_text(
+        yaml.safe_dump({
+            "export": {
+                "dept": "ben", "date": day,
+                "nav_summary": {"consolidated_nav_usd": nav, "cash_pct": 36.0},
+                "performance": {"sharpe_itd": 0.99},
+                "sleeve_allocation_pct_nav": {
+                    "etf_backbone": sleeve_etf,
+                    "single_stock": 3.0,
+                    "crypto_true": 4.5,
+                },
+            },
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _write_ben_curated_export(repo: Path, day: str, top_kpis: dict) -> None:
+    """Write a Ben-style curated management-export (with top_kpis) as emitted
+    from 06-20 onward (lean 13 KPI set)."""
+    d = repo / "outputs" / day / "4"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "management-export.yaml").write_text(
+        yaml.safe_dump({
+            "export": {
+                "dept": "ben", "date": day,
+                "top_kpis": top_kpis,
+                # legacy blocks still present but must be ignored once top_kpis exists
+                "nav_summary": {"consolidated_nav_usd": 999_999, "cash_pct": 0.0},
+                "sleeve_allocation_pct_nav": {"etf_backbone": 0.0},
+            },
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_ben_graph_series_restricted_to_current_curated_keys(disk_root):
+    """Bug A (#180) — Option A fix.
+
+    Scenario: 06-13→06-19 have legacy Ben exports (nav_summary + sleeve_*,
+    no top_kpis).  06-20 has a curated top_kpis block with lean KPIs.
+
+    Before the fix: the pivot unioned ALL keys over all dates, so
+    sleeve_etf_pct / sleeve_single_stock_pct / sleeve_crypto_pct from the
+    legacy synthesiser appeared alongside the lean KPIs — exactly the bug.
+
+    After the fix (Option A): the series is restricted to the keys in the
+    MOST RECENT curated block (06-20's top_kpis).  Legacy sleeve_* keys are
+    dropped.  The lean KPIs are present; nav_usd/cash_pct from the legacy
+    synthesiser are dropped because they're not in the current curated set.
+    """
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path, slug="ben")
+
+    # Legacy dates (06-13 → 06-19): only nav_summary + sleeve_* in export
+    _write_ben_legacy_export(repo, "2026-06-13", nav=237_400, sleeve_etf=66.7)
+    _write_ben_legacy_export(repo, "2026-06-16", nav=239_271, sleeve_etf=58.9)
+    _write_ben_legacy_export(repo, "2026-06-19", nav=238_435, sleeve_etf=67.0)
+
+    # Curated date (06-20): lean 13 KPIs via top_kpis block (numeric subset)
+    lean_kpis = {
+        "ops_health_score": 95,
+        "open_gates": 0,
+        "nav_total_usd": 238_435,
+    }
+    _write_ben_curated_export(repo, "2026-06-20", top_kpis=lean_kpis)
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("ben")}
+
+    # The lean curated KPIs must be present.
+    assert "ops_health_score" in series, "lean curated key missing"
+    assert "open_gates" in series, "lean curated key missing"
+    assert "nav_total_usd" in series, "lean curated key missing"
+
+    # Legacy sleeve_* series must NOT appear (they're not in today's top_kpis).
+    legacy_keys = {"sleeve_etf_pct", "sleeve_single_stock_pct", "sleeve_crypto_pct"}
+    assert not legacy_keys.intersection(series), (
+        f"Legacy sleeve keys leaked into graph: {legacy_keys.intersection(series)}"
+    )
+
+    # Legacy synthesiser keys not in the lean set must also be absent.
+    assert "nav_usd" not in series, (
+        "nav_usd (legacy synthesiser) leaked — should be excluded by current-key filter"
+    )
+    assert "cash_pct" not in series, (
+        "cash_pct (legacy synthesiser) leaked — should be excluded by current-key filter"
+    )
+
+    # The curated KPIs may be sparse (only 1 point from 06-20 if not in legacy).
+    # That's fine — sparse lines are acceptable per Option A spec.
+    assert len(series["ops_health_score"].points) == 1   # only 06-20 has this key
+    assert not series["ops_health_score"].has_chart      # single point, no line yet
+
+
+def test_current_keys_restriction_does_not_break_depts_without_curated_block(disk_root):
+    """Option A fall-through: if NO date has a curated block, all keys pass
+    through as before — existing behavior for depts that never curated."""
+    tmp_path = disk_root
+    repo = _build_repo(tmp_path, slug="ben")
+
+    # Only legacy dates, no top_kpis ever
+    _write_ben_legacy_export(repo, "2026-06-13", nav=237_400, sleeve_etf=66.7)
+    _write_ben_legacy_export(repo, "2026-06-16", nav=239_271, sleeve_etf=58.9)
+
+    series = {s.key: s for s in whiteboard_series.load_whiteboard_series("ben")}
+
+    # Legacy synthesiser keys MUST still appear (no curated anchor → no filter).
+    assert "nav_usd" in series, "nav_usd missing: no-curated fallback broken"
+    assert "sleeve_etf_pct" in series, "sleeve_etf_pct missing: no-curated fallback broken"
+    assert len(series["nav_usd"].points) == 2

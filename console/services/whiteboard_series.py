@@ -246,8 +246,16 @@ def _ben_kpis_from_export(export: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
-def _kpis_for_date(date_dir: Path, *, dept_slug: str = "") -> Dict[str, float]:
+def _kpis_for_date(
+    date_dir: Path, *, dept_slug: str = ""
+) -> Tuple[Dict[str, float], bool]:
     """Extract the numeric KPIs for one date dir.
+
+    Returns ``(kpis, is_curated)`` where *is_curated* is True when the result
+    came from a dept-declared curated block (``top_kpis`` / ``kpis_snapshot``).
+    False means the result came from either the Ben legacy synthesiser or the
+    risk-kpis fallback.  The caller uses this flag to determine which date
+    established the *current* key set.
 
     Primary source: management-export.yaml's curated KPI block (`top_kpis` or
     `kpis_snapshot` — depts drifted on the name). Looked for both at
@@ -280,7 +288,7 @@ def _kpis_for_date(date_dir: Path, *, dept_slug: str = "") -> Dict[str, float]:
                 if isinstance(curated, dict):
                     flat = _flatten_numeric(curated)
                     if flat:
-                        return flat
+                        return flat, True   # curated — caller can use as anchor
             # 1b) Ben-specific: synthesise from nav_summary + performance +
             #     sleeve_allocation_pct_nav when no top_kpis block present.
             #     GATE: only fires when dept_slug == "ben" — an explicit
@@ -290,7 +298,7 @@ def _kpis_for_date(date_dir: Path, *, dept_slug: str = "") -> Dict[str, float]:
             if dept_slug == "ben" and isinstance(scope.get("nav_summary"), dict):
                 ben_kpis = _ben_kpis_from_export(scope)
                 if ben_kpis:
-                    return ben_kpis
+                    return ben_kpis, False  # legacy synthesiser, not curated
 
     # 2) fallback: risk-kpis.yaml (richer nested), flatten under its `kpis`
     #    block if present, else the whole doc.
@@ -299,9 +307,9 @@ def _kpis_for_date(date_dir: Path, *, dept_slug: str = "") -> Dict[str, float]:
         inner = rk.get("kpis") if isinstance(rk.get("kpis"), dict) else rk
         flat = _flatten_numeric(inner)
         if flat:
-            return flat
+            return flat, False  # risk-kpis fallback, not curated
 
-    return {}
+    return {}, False
 
 
 def _safe_load_yaml(p: Path) -> Optional[Any]:
@@ -369,9 +377,11 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
     if not outputs_dir.exists():
         return []
 
-    # Collect (date, kpis) for every YYYY-MM-DD output dir, newest first then
-    # trimmed to _MAX_POINTS, then re-sorted oldest→newest for plotting.
-    dated: List[Tuple[date, Dict[str, float]]] = []
+    # Collect (date, kpis, is_curated) for every YYYY-MM-DD output dir.
+    # is_curated=True when the kpis came from a dept-declared top_kpis /
+    # kpis_snapshot block; False for the Ben legacy synthesiser or risk-kpis
+    # fallback.  We use this to anchor the "current key set" (Option A fix).
+    dated: List[Tuple[date, Dict[str, float], bool]] = []
     for child in outputs_dir.iterdir():
         if not child.is_dir():
             continue
@@ -379,9 +389,9 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
             d = date.fromisoformat(child.name)
         except ValueError:
             continue  # skips dry-run/, onboarding/, etc.
-        kpis = _kpis_for_date(child, dept_slug=slug)
+        kpis, is_curated = _kpis_for_date(child, dept_slug=slug)
         if kpis:
-            dated.append((d, kpis))
+            dated.append((d, kpis, is_curated))
 
     if not dated:
         return []
@@ -389,11 +399,34 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
     dated.sort(key=lambda t: t[0])
     dated = dated[-_MAX_POINTS:]
 
+    # Option A — current-keys restriction:
+    # If ANY date in the window has a curated block, restrict the historical
+    # series to the keys declared by the MOST RECENT curated date.  This
+    # prevents legacy synthesiser keys (e.g. sleeve_* from pre-top_kpis Ben
+    # exports) from polluting the graph once the dept adopts a curated block.
+    # Sparse early history (keys present only from the curated date onward) is
+    # intentional and preferable to mixing legacy series.
+    # If NO date has a curated block at all (dept never curated), current_keys
+    # stays None and we keep the existing behaviour — all keys pass through.
+    current_keys: Optional[set] = None
+    for d, kpis, is_curated in reversed(dated):
+        if is_curated:
+            current_keys = set(kpis.keys())
+            _log.debug(
+                "whiteboard_series[%s]: current_keys anchor on %s (%d keys): %s",
+                slug, d.isoformat(), len(current_keys), sorted(current_keys),
+            )
+            break
+
     # Pivot: {metric_key: [(iso_date, value), ...]}. A KPI present on some
     # days but not others simply has fewer points — we don't forward-fill.
+    # When current_keys is set, only keys in that set are admitted; legacy
+    # keys from non-curated dates are silently dropped.
     pivot: Dict[str, List[Tuple[str, float]]] = {}
-    for d, kpis in dated:
+    for d, kpis, _curated in dated:
         for key, val in kpis.items():
+            if current_keys is not None and key not in current_keys:
+                continue  # drop legacy key — not in the current curated set
             pivot.setdefault(key, []).append((d.isoformat(), val))
 
     # Cap to keep the page readable. Prefer series that actually MOVE (a
