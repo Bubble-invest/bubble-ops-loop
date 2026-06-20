@@ -175,3 +175,57 @@ def test_gate_already_resolved_in_yaml_still_excluded(tmp_path, monkeypatch):
     gates = github_reader.list_pending_gates("maya")
     ids = [g.get("id") for g in gates]
     assert gate_id not in ids, "resolved:true gate must still be excluded"
+
+
+def test_gate_id_differs_from_filename_is_excluded_when_decision_matches_id(
+    tmp_path, monkeypatch
+):
+    """Card #206 — gate whose YAML `id` field differs from its filename stem.
+
+    When write_gate_decision uses the gate's logical id (not the filename stem)
+    to name the decision file, the exclusion filter must key on doc.get('id')
+    so the gate is still suppressed.
+
+    Scenario:
+      - Gate file:   queues/gates/gate-filename.yaml
+      - YAML id:     gate-logical-id          ← differs from filename stem
+      - Decision:    inbox/decisions/gate-logical-id.yaml  ← written by cockpit
+
+    Before the fix list_pending_gates checked p.stem ('gate-filename') against
+    the decision file name ('gate-logical-id') — they never matched, so the gate
+    kept reappearing even after {{OPERATOR}} approved it.  After the fix it checks
+    doc.get('id') and the gate is correctly excluded.
+    """
+    from console.services import github_reader
+
+    repo = _make_dept_repo(tmp_path)
+
+    # Gate file whose stem does NOT match its internal id field
+    filename_stem = "gate-filename"
+    logical_id = "gate-logical-id"
+    gate_file = repo / "queues" / "gates" / f"{filename_stem}.yaml"
+    gate_file.write_text(
+        yaml.safe_dump({
+            "id": logical_id,         # ← logical id differs from filename
+            "kind": "strategic_question",
+            "source_layer": 1,
+            "target_layer": 2,
+            "risk_level": "medium",
+            "requires_human": True,
+            "current_mode": "manual_required",
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    # Decision file named after the logical id (as write_gate_decision does)
+    _write_decision(repo, logical_id)
+
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+
+    gates = github_reader.list_pending_gates("maya")
+    ids = [g.get("id") for g in gates]
+    assert logical_id not in ids, (
+        "Gate whose YAML id differs from filename must be excluded when a "
+        "decision file exists for the logical id — filter must key on "
+        "doc.get('id'), not p.stem"
+    )
