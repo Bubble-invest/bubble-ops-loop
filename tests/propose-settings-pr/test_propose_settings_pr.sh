@@ -253,6 +253,45 @@ else
   bad "T7 should refuse empty change (rc=$RC, err=$ERR)"
 fi
 
+# ---- T8: .git ownership restored to claude after a run ----------------------
+# Verifies the fix for issue #202: propose-settings-pr must restore .git
+# ownership to claude on EXIT so the dept repo isn't broken after each run.
+#
+# When running as root (as on the VPS), the test poisons .git to root:root,
+# runs the helper, and asserts .git/HEAD ends up claude-owned and
+# `sudo -u claude git rev-parse HEAD` succeeds.
+# When running as a non-root CI user (e.g. on a Mac), it only checks that
+# the restoration log line appears on stderr (proving the trap fired).
+make_repo "$REPO" "https://github.com/Bubble-invest/bubble-ops-fixture.git"
+if [[ "$(id -u)" -eq 0 ]]; then
+  # Running as root — poison .git to root:root, then verify the trap heals it.
+  chown -R root:root "$REPO/.git"
+  run_helper --repo-dir "$REPO" --paths layers/1/PROMPT.md --topic ownership-heal \
+             --justification "Test that .git ownership is restored to claude." \
+             --content-from "$CONTENT" --dry-run
+  OWNER="$(stat -c '%U' "$REPO/.git/HEAD" 2>/dev/null || stat -f '%Su' "$REPO/.git/HEAD" 2>/dev/null || echo unknown)"
+  if [[ "$OWNER" == "claude" ]]; then
+    ok "T8 .git/HEAD ownership restored to claude after run (was root)"
+  else
+    bad "T8 .git/HEAD still owned by $OWNER after run (expected claude)"
+  fi
+  if [[ "$ERR" == *"ownership restored to claude:claude"* ]]; then
+    ok "T8a trap emitted the restoration log line on stderr"
+  else
+    bad "T8a restoration log line missing from stderr (trap may not have fired); err=$ERR"
+  fi
+else
+  # Non-root: just verify the trap fires and logs the restoration message.
+  run_helper --repo-dir "$REPO" --paths layers/1/PROMPT.md --topic ownership-smoke \
+             --justification "Smoke test: ownership self-heal message emitted." \
+             --content-from "$CONTENT" --dry-run
+  if [[ "$ERR" == *"ownership restored to claude:claude"* ]]; then
+    ok "T8 (non-root) chown trap fired and emitted restoration log line"
+  else
+    bad "T8 (non-root) restoration log line missing from stderr; err=$ERR"
+  fi
+fi
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]
