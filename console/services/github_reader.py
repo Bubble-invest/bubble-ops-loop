@@ -508,15 +508,30 @@ def repo_path_for_org_repo(org_repo: str) -> Optional[Path]:
     import re
     if not re.match(r'^[\w.-]+/[\w.-]+$', org_repo):
         return None
-    repo_name = org_repo.split("/", 1)[1]
+    org, name = org_repo.split("/", 1)
+    # Reject ".." and "." as either component — the regex above allows them
+    # because [\w.-]+ matches "..", but they enable path traversal.
+    if org in ("..", ".") or name in ("..", "."):
+        return None
+    disk_root = settings.disk_root().resolve()
     # Try as a dept repo first (bubble-ops-<slug> or <slug>)
-    candidate = settings.disk_root() / f"bubble-ops-{repo_name}"
+    candidate = disk_root / f"bubble-ops-{name}"
     if candidate.is_dir():
-        return candidate
+        # Defensive containment: the resolved candidate must STAY inside disk_root
+        try:
+            if _is_within(candidate.resolve(), disk_root):
+                return candidate
+        except (OSError, RuntimeError):
+            pass
+        return None
     # Try unprefixed (for the board repo and concierges)
-    candidate = settings.disk_root() / repo_name
+    candidate = disk_root / name
     if candidate.is_dir():
-        return candidate
+        try:
+            if _is_within(candidate.resolve(), disk_root):
+                return candidate
+        except (OSError, RuntimeError):
+            pass
     return None
 
 
