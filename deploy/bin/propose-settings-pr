@@ -266,6 +266,46 @@ fi
 echo "${PROG}: dept=${SLUG} repo=${REPO_NAME} branch=${BRANCH} base=${BASE}" >&2
 echo "${PROG}: structural paths: ${REL_PATHS[*]}" >&2
 
+# --- ownership self-heal: restore .git to claude before we exit --------------
+# The script runs as root (WS5 unsandboxed path). Every git operation below
+# (checkout -b, add, commit) writes .git entries (HEAD, index, refs/*, logs/*,
+# objects/*) owned by root (or the userns-mapped nobody:nogroup). Without a
+# chown-back, the claude user loses access to its own repo after every run
+# ("not a git repository" / permission denied).
+#
+# WHY trap+chown rather than "run git as sudo -u claude":
+#   The sandbox note in this header confirms (a) .git/config is a READ-ONLY
+#   bind-mount inside the bwrap jail, and (b) sudo CANNOT escalate inside the
+#   jail.  Running git as claude would fight the bind-mount or require a sudo
+#   that the jail refuses.  The chown-back path needs only root — which the
+#   helper already has — so it is the safe, minimal fix.
+#
+# SCOPE: chown the entire .git tree — safest, catches objects/* written by the
+# commit. claude:claude is the correct owner; dept repos are checked out under
+# the claude user's home, and claude needs read+write for normal ops.
+_restore_git_ownership() {
+  local root="$1"; local _ret=$?
+  if [[ -d "${root}/.git" ]]; then
+    chown -R claude:claude "${root}/.git" 2>/dev/null || true
+    echo "${PROG}: .git ownership restored to claude:claude in ${root}" >&2
+  fi
+  # Also chown the work-tree files that were written/staged as root
+  # (cp --content-from and git apply/git add touch work-tree files at
+  # REL_PATHS, leaving them root-owned; the dept agent needs to edit them later).
+  # Scope: only REPO_ROOT + the named REL_PATHS — never a broad path.
+  if [[ ${#REL_PATHS[@]} -gt 0 ]]; then
+    for _rp in "${REL_PATHS[@]}"; do
+      local _fp="${root}/${_rp}"
+      if [[ -e "$_fp" ]]; then
+        chown claude:claude "$_fp" 2>/dev/null || true
+      fi
+    done
+  fi
+  return $_ret
+}
+# Arm the trap BEFORE the first git mutation so any failure below still heals.
+trap '_restore_git_ownership "$REPO_ROOT"' EXIT
+
 # --- create the branch from current HEAD ------------------------------------
 git -C "$REPO_ROOT" checkout -b "$BRANCH" >&2
 # DO NOT set the branch upstream here: under the OS-sandbox .git/config is a

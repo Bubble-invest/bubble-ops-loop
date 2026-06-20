@@ -253,6 +253,87 @@ else
   bad "T7 should refuse empty change (rc=$RC, err=$ERR)"
 fi
 
+# ---- T8: .git ownership restored to claude after a run ----------------------
+# Verifies the fix for issue #202: propose-settings-pr must restore .git
+# ownership to claude on EXIT so the dept repo isn't broken after each run.
+#
+# T8 (happy-path): asserts the successful run exits 0 AND .git ownership is
+#   restored (root path) / restoration log line emitted (non-root path).
+# T8a: asserts the restoration log line appears on stderr (trap fired).
+# T8b (exit-code-masking regression): triggers a post-trap-arm failure (no
+#   staged changes → die) and asserts the script still exits NON-zero.
+#   This pins the bug where the EXIT trap's return value replaced the real
+#   exit code, making every die() after trap-arm exit 0 (false SUCCESS).
+#
+# When running as root (as on the VPS), the test poisons .git to root:root,
+# runs the helper, and asserts .git/HEAD ends up claude-owned and
+# `sudo -u claude git rev-parse HEAD` succeeds.
+# When running as a non-root CI user (e.g. on a Mac), it only checks that
+# the restoration log line appears on stderr (proving the trap fired).
+make_repo "$REPO" "https://github.com/Bubble-invest/bubble-ops-fixture.git"
+if [[ "$(id -u)" -eq 0 ]]; then
+  # Running as root — poison .git to root:root, then verify the trap heals it.
+  chown -R root:root "$REPO/.git"
+  run_helper --repo-dir "$REPO" --paths layers/1/PROMPT.md --topic ownership-heal \
+             --justification "Test that .git ownership is restored to claude." \
+             --content-from "$CONTENT" --dry-run
+  # (a) assert the happy-path run exits 0
+  if [[ $RC -eq 0 ]]; then
+    ok "T8 happy-path exits 0 after .git ownership heal"
+  else
+    bad "T8 happy-path should exit 0 (rc=$RC)"
+  fi
+  OWNER="$(stat -c '%U' "$REPO/.git/HEAD" 2>/dev/null || stat -f '%Su' "$REPO/.git/HEAD" 2>/dev/null || echo unknown)"
+  if [[ "$OWNER" == "claude" ]]; then
+    ok "T8 .git/HEAD ownership restored to claude after run (was root)"
+  else
+    bad "T8 .git/HEAD still owned by $OWNER after run (expected claude)"
+  fi
+  if [[ "$ERR" == *"ownership restored to claude:claude"* ]]; then
+    ok "T8a trap emitted the restoration log line on stderr"
+  else
+    bad "T8a restoration log line missing from stderr (trap may not have fired); err=$ERR"
+  fi
+else
+  # Non-root: just verify the trap fires and logs the restoration message.
+  run_helper --repo-dir "$REPO" --paths layers/1/PROMPT.md --topic ownership-smoke \
+             --justification "Smoke test: ownership self-heal message emitted." \
+             --content-from "$CONTENT" --dry-run
+  # (a) assert the happy-path run exits 0
+  if [[ $RC -eq 0 ]]; then
+    ok "T8 happy-path exits 0"
+  else
+    bad "T8 happy-path should exit 0 (rc=$RC, err=$ERR)"
+  fi
+  if [[ "$ERR" == *"ownership restored to claude:claude"* ]]; then
+    ok "T8a (non-root) chown trap fired and emitted restoration log line"
+  else
+    bad "T8a (non-root) restoration log line missing from stderr; err=$ERR"
+  fi
+fi
+
+# ---- T8b: exit-code-masking regression — post-trap-arm failure exits NON-zero
+# After the trap is armed (post git checkout -b), trigger a die() by supplying
+# content identical to the existing file so nothing is staged.
+# Before the fix, _restore_git_ownership ended with `echo`, and the EXIT
+# trap's exit status replaced the script's real exit code → the script exited
+# 0 even after die(). This test pins that regression.
+make_repo "$REPO" "https://github.com/Bubble-invest/bubble-ops-fixture.git"
+SAME="$WORK/same2.txt"; cp "$REPO/layers/1/PROMPT.md" "$SAME"
+run_helper --repo-dir "$REPO" --paths layers/1/PROMPT.md --topic noop-posttrap \
+           --justification "Trigger post-trap-arm die via empty change." \
+           --content-from "$SAME" --dry-run
+if [[ $RC -ne 0 ]]; then
+  ok "T8b post-trap-arm failure (no staged changes) exits NON-zero (exit-code masking fixed)"
+else
+  bad "T8b post-trap-arm die() should exit non-zero but got rc=$RC (exit-code masking regression!)"
+fi
+if [[ "$ERR" == *"no staged changes"* ]]; then
+  ok "T8b correct error message emitted (no staged changes)"
+else
+  bad "T8b expected 'no staged changes' in stderr; err=$ERR"
+fi
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]
