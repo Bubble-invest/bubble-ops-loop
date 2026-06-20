@@ -49,7 +49,26 @@ def client(tmp_path, monkeypatch):
                         lambda name, n=30, agents_root=str(agents): _real_read(name, n, str(agents)))
 
     app = FastAPI()
-    app.state.templates = Jinja2Templates(directory=str(CONSOLE_DIR / "templates"))
+    templates = Jinja2Templates(directory=str(CONSOLE_DIR / "templates"))
+    # Register sidebar_agents and humanize globals that base.html requires.
+    # main.py sets these on create_app(); this minimal test app must mirror
+    # that setup so base.html doesn't raise UndefinedError.
+    from console.services import dept_registry
+    templates.env.globals["sidebar_agents"] = dept_registry.sidebar_agents
+    from console.services.humanize import (
+        capitalize_fr, humanize_cadence, humanize_future_modes,
+        humanize_kind, humanize_mode, humanize_risk, humanize_substep,
+        shadow_autonomy_label,
+    )
+    templates.env.globals["humanize_kind"] = humanize_kind
+    templates.env.globals["humanize_risk"] = humanize_risk
+    templates.env.globals["humanize_mode"] = humanize_mode
+    templates.env.globals["humanize_future_modes"] = humanize_future_modes
+    templates.env.globals["humanize_substep"] = humanize_substep
+    templates.env.globals["humanize_cadence"] = humanize_cadence
+    templates.env.globals["shadow_autonomy_label"] = shadow_autonomy_label
+    templates.env.globals["capitalize_fr"] = capitalize_fr
+    app.state.templates = templates
     from console.routes import concierge as concierge_route
     app.include_router(concierge_route.router)
     return TestClient(app)

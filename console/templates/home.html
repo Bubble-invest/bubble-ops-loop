@@ -147,7 +147,7 @@
     <span class="section-heading-number">3.</span>
     Cette semaine en bref
   </h2>
-  <div class="kpi-grid">
+  <div class="kpi-grid" id="dept-kpi-grid">
     {% with value=total_gates,
             label="Décisions en attente",
             note="Ce que l'équipe te demande en ce moment." %}
@@ -166,11 +166,11 @@
   </div>
 </section>
 
-{# ─── Section 4 — File kanban (profondeur de file à la volée) ──── #}
-<section class="cabinet-section" aria-labelledby="kanban-heading">
-  <h2 id="kanban-heading" class="section-heading">
+{# ─── Section 4 — File des tâches (profondeur de file à la volée) ──── #}
+<section class="cabinet-section" aria-labelledby="file-taches-heading">
+  <h2 id="file-taches-heading" class="section-heading">
     <span class="section-heading-number">4.</span>
-    File kanban — <a href="/kanban" class="discreet-link">voir le tableau →</a>
+    File des tâches — <a href="/kanban" class="discreet-link">voir le tableau →</a>
   </h2>
   <div class="kpi-grid">
     {% with value=kanban_counts.total_open,
