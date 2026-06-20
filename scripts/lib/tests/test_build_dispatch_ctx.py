@@ -21,6 +21,7 @@ from scripts.lib.dispatch_helpers import (
     write_last_run,
     write_last_mgmt_scan,
     _scan_mgmt_notes,
+    _drainable_kinds_for_queue,
 )
 
 
@@ -776,4 +777,148 @@ def test_decide_dispatch_mgmt_note_seen_after_l1_scan_is_heartbeat(tmp_path: Pat
     assert result == "heartbeat", (
         "once .last-mgmt-scan is stamped after the note, the dispatcher "
         "must stop routing to L1 and fall through to heartbeat"
+    )
+
+
+# ── Issue #204 — research_item starvation fix ────────────────────────────────
+#
+# ROOT CAUSE: `has_research_items` was computed using
+# `_drainable_kinds_for_layer(repo, 2)`, which returns L2's OWN creates[]
+# (e.g. `{investment_case, proposal}` for Ben). Items in `queues/research/`
+# are PRODUCED by L1 (kind: `research_item`) and CONSUMED by L2. Because
+# `research_item ∉ L2-creates-set`, `_queue_has_items` returned False →
+# `has_research_items=False` → L2 never fired. Ben had 8 stuck items (all
+# kind: research_item) as live proof (2026-06-20).
+#
+# FIX: use `_drainable_kinds_for_queue(repo, "queues/research/")` which
+# returns the union of creates[] of ALL missions whose output_queue is
+# "queues/research/" — the producer-side view. This correctly includes
+# `research_item` (from L1's data_update mission) without knowing which layer
+# consumes the queue.
+#
+# ANTI-FIRE-SPIN guarantee (issue #61797): a kind present in NO mission's
+# creates[] is still an orphan (not produced by any mission) → excluded →
+# cannot pin the dispatcher in a fire-spin loop.
+
+# Reuse the AFTER_L2 timestamp (12:30 Paris — past L2 min-time 12:00).
+_I204_AFTER_L2 = datetime(2026, 6, 20, 10, 30, tzinfo=timezone.utc)  # 12:30 Paris
+
+
+def _mk_ben_dept_yaml(repo: Path) -> None:
+    """Write a minimal dept.yaml that mimics Ben's real mission structure:
+    - data_update (L1, output_queue=queues/research/, creates=[situation_brief, research_item])
+    - research    (L2, output_queue=queues/gates/,    creates=[investment_case, proposal])
+    This is the schema that triggered issue #204.
+    """
+    dept = {
+        "recurring_missions": [
+            {
+                "id": "data_update",
+                "layer": 1,
+                "cadence": "daily",
+                "time": "07:30",
+                "output_queue": "queues/research/",
+                "creates": ["situation_brief", "research_item"],
+            },
+            {
+                "id": "research",
+                "layer": 2,
+                "cadence": "daily",
+                "time": "18:00",
+                "output_queue": "queues/gates/",
+                "creates": ["investment_case", "proposal"],
+            },
+        ]
+    }
+    (repo / "dept.yaml").write_text(
+        yaml.dump(dept, allow_unicode=True, default_flow_style=False)
+    )
+
+
+def test_issue_204_research_item_in_queue_triggers_layer_2(tmp_path: Path):
+    """Starvation-fix: research_item in queues/research/ must set
+    has_research_items=True and dispatch to layer_2.
+
+    This is the EXACT failure mode from issue #204: Ben had 8 stuck
+    research_item files in queues/research/, all with kind: research_item
+    (produced by L1's data_update mission). The old code checked L2's own
+    creates[] ({investment_case, proposal}), found no match, returned False
+    → L2 starved. The fix uses the producer-side view (creates[] of missions
+    that write to queues/research/) which correctly includes research_item.
+
+    Red against the pre-fix build_dispatch_ctx, green after.
+    """
+    repo = _mk_repo(tmp_path)
+    _mk_ben_dept_yaml(repo)
+
+    # Write a research_item identical to the stuck items on VPS
+    (repo / "queues" / "research" / "research_item-data_update-20260620-054639.yaml").write_text(
+        yaml.dump({
+            "id": "research_item-data_update-20260620-054639",
+            "kind": "research_item",
+            "mission_id": "data_update",
+            "created_at": "2026-06-20T05:46:39Z",
+            "created_by": "materialize_due_missions",
+        }, allow_unicode=True, default_flow_style=False)
+    )
+
+    # L1 already ran so the morning floor does not steal the dispatch.
+    _fire(repo, 1, _I204_AFTER_L2)
+    ctx = build_dispatch_ctx(repo, now_utc=_I204_AFTER_L2)
+
+    assert ctx["has_research_items"] is True, (
+        "research_item in queues/research/ must be seen as drainable — "
+        "its absence IS the issue #204 starvation bug"
+    )
+    assert decide_dispatch(ctx) == "layer_2", (
+        "a research_item in queues/research/ after L2's min-time must "
+        "dispatch to layer_2, not heartbeat (issue #204)"
+    )
+
+
+def test_issue_204_orphan_kind_still_excluded(tmp_path: Path):
+    """Anti-fire-spin regression (issue #61797): a kind that no mission
+    produces must NOT count as drainable, so it cannot pin the dispatcher.
+
+    We drop a YAML with kind='orphan_mystery_kind' into queues/research/.
+    That kind appears in NO mission's creates[], so it is an orphan.
+    has_research_items must remain False — the orphan kind is excluded.
+
+    This proves the fix cannot reintroduce the fire-spin that drove the
+    2026-06-16 deaf-restart storm.
+    """
+    repo = _mk_repo(tmp_path)
+    _mk_ben_dept_yaml(repo)
+
+    # Pre-stamp all missions' .last-run for today so materialize_due_missions_for_tick
+    # skips them — we want to test only the orphan quarantine, not materialisation.
+    today_str = _I204_AFTER_L2.strftime("%Y-%m-%d")
+    for mission_id in ("data_update", "research"):
+        write_last_run(
+            repo / "outputs" / today_str / "missions" / mission_id,
+            _I204_AFTER_L2,
+        )
+
+    # Drop an orphan kind that no mission creates
+    (repo / "queues" / "research" / "orphan-20260620.yaml").write_text(
+        yaml.dump({
+            "id": "orphan-20260620",
+            "kind": "orphan_mystery_kind",  # not in any mission's creates[]
+            "created_at": "2026-06-20T05:00:00Z",
+        }, allow_unicode=True, default_flow_style=False)
+    )
+
+    # L1 already ran so the morning floor does not steal the dispatch.
+    _fire(repo, 1, _I204_AFTER_L2)
+    ctx = build_dispatch_ctx(repo, now_utc=_I204_AFTER_L2)
+
+    assert ctx["has_research_items"] is False, (
+        "a kind not produced by any mission must NOT count as drainable — "
+        "orphan kinds must still be excluded to prevent fire-spin (#61797)"
+    )
+    # With no real drainable items, L1 daily floor already satisfied, and
+    # no inbox decisions, the result must be heartbeat (not layer_2).
+    assert decide_dispatch(ctx) == "heartbeat", (
+        "orphan kind in queues/research/ must NOT cause layer_2 dispatch — "
+        "the fire-spin guard (#61797) must remain intact after the #204 fix"
     )

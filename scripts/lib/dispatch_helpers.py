@@ -674,6 +674,59 @@ def _drainable_kinds_for_layer(repo_dir: Path, layer: int) -> "set[str]":
     return kinds
 
 
+def _drainable_kinds_for_queue(repo_dir: Path, queue_rel_path: str) -> "set[str]":
+    """Kinds that legitimately land in an input queue = union of `creates[]`
+    from all missions whose `output_queue` matches `queue_rel_path`.
+
+    This is the producer-side view: "what kinds do upstream missions deposit
+    into this queue?" It replaces the incorrect consumer-side view
+    (`_drainable_kinds_for_layer`) for INPUT queue checks.
+
+    Context — Issue #204 (2026-06-20): `build_dispatch_ctx` was computing
+    `has_research_items` using `_drainable_kinds_for_layer(repo, 2)`, which
+    returns L2's OWN creates[] (`{investment_case, proposal}` for Ben).
+    But items in `queues/research/` are PRODUCED by L1 (kind: `research_item`)
+    and CONSUMED by L2. `research_item` is in L1's creates[], not L2's, so
+    `_queue_has_items` always returned False → L2 starved.
+
+    The correct model for an INPUT queue check:
+      drainable_kinds = union of creates[] of all missions with
+                        output_queue == that queue
+
+    This naturally includes cross-layer producer→queue relationships (L1→research,
+    L2→gates, etc.) without knowing which layer consumes the queue.
+
+    Anti-fire-spin guarantee (issue #61797): a kind produced by NO mission's
+    `creates[]` (an orphan kind — e.g. a manually dropped YAML of unknown type)
+    is still excluded because it appears in no mission's `creates[]`. The
+    quarantine added in June-2026 is preserved: only kinds that SOME mission
+    actively produces count as drainable.
+
+    `queue_rel_path` should be the raw `output_queue` string from dept.yaml
+    (e.g. `"queues/research/"` or `"queues/gates/"`). Trailing slashes are
+    stripped for comparison so both forms match.
+
+    Returns an empty set if dept.yaml is absent or unreadable (caller falls back
+    to kind-blind, fail-open behaviour via the `drainable_kinds=None` path in
+    `_queue_has_items`).
+    """
+    dept_yaml = Path(repo_dir) / "dept.yaml"
+    if not dept_yaml.is_file():
+        return set()
+    try:
+        dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    target = queue_rel_path.rstrip("/")
+    kinds: set[str] = set()
+    for m in dept.get("recurring_missions") or []:
+        oq = (m.get("output_queue") or "").rstrip("/")
+        if oq == target:
+            for k in m.get("creates", []) or []:
+                kinds.add(k)
+    return kinds
+
+
 def build_dispatch_ctx(
     repo_dir: "Path | str" = ".",
     *,
@@ -727,12 +780,16 @@ def build_dispatch_ctx(
         # the real date was 2026-06-04 (see docs/FLOWCHART-SPEC.md BUG-DATE).
         "today": today,
         "today_dir": str(today_dir),
-        # Kind-aware: only L2-drainable kinds in queues/research count, so an
-        # orphan kind (e.g. a discovery_sweep that only L3 drains) can no longer
-        # pin L2 every tick. Falls back to kind-blind if dept.yaml is absent.
+        # Kind-aware: only kinds PRODUCED into queues/research/ count, so an
+        # orphan kind (a card no mission produces) can no longer pin L2 every
+        # tick. Uses the producer-side view (_drainable_kinds_for_queue) rather
+        # than the broken consumer-side view (_drainable_kinds_for_layer(repo,2))
+        # — issue #204 fix: research_item is in L1's creates[], not L2's.
+        # Falls back to kind-blind (drainable_kinds=None) if dept.yaml is absent
+        # so a repo without a dept.yaml is fail-open (never silently starves).
         "has_research_items": _queue_has_items(
             repo / "queues" / "research",
-            drainable_kinds=(_drainable_kinds_for_layer(repo, 2) or None),
+            drainable_kinds=(_drainable_kinds_for_queue(repo, "queues/research/") or None),
         ),
         # Approved decisions land in the dept top-level `inbox/decisions/`
         # — that is where the cockpit approve-click writes (console
