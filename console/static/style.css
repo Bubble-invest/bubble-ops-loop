@@ -1309,6 +1309,11 @@ code, .code {
   /* Section headings */
   .section-heading { font-size: 22px; gap: 12px; }
   .dept-title { font-size: clamp(24px, 5.5vw, 30px); }
+
+  /* KPI cards — intermediate tablet step (shrink value, not yet phone-tiny) */
+  .kpi-value { font-size: 34px; }
+  .kpi-chart-value { font-size: 22px; }
+  .kpi-chart-value .kpi-trend { font-size: 15px; }
 }
 
 @media (max-width: 480px) {
@@ -1340,6 +1345,23 @@ code, .code {
   .gate-actions { flex-direction: column; }
   .gate-actions .btn-ochre,
   .gate-actions .btn-ghost { width: 100%; text-align: center; }
+
+  /* KPI cards — phone sizing (44px value → 30px, tighter padding) */
+  .kpi-card { padding: 16px 16px; }
+  .kpi-value { font-size: 30px; letter-spacing: -0.01em; }
+  .kpi-label { font-size: 15px; }
+  .kpi-note { font-size: 12px; }
+
+  /* KPI chart grid — force single column on phones, shrink type */
+  .kpi-chart-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .kpi-chart-card { padding: 12px 14px 10px; }
+  .kpi-chart-value { font-size: 19px; }
+  .kpi-chart-value .kpi-trend { font-size: 13px; }
+  .kpi-chart-label { font-size: 13px; }
+  .kpi-chart-svg { width: 100%; }
 }
 
 /* ─── Mission cards ({{OPERATOR}} flag msg 3137) ────────────────────────
