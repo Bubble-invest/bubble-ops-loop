@@ -246,7 +246,7 @@ def _ben_kpis_from_export(export: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
-def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
+def _kpis_for_date(date_dir: Path, *, dept_slug: str = "") -> Dict[str, float]:
     """Extract the numeric KPIs for one date dir.
 
     Primary source: management-export.yaml's curated KPI block (`top_kpis` or
@@ -254,6 +254,11 @@ def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
     `<date>/management-export.yaml` (Notion v4 spec) and
     `<date>/4/management-export.yaml` (where the live dept PROMPT.md writes
     it). Fallback: flatten `<date>/4/risk-kpis.yaml`.
+
+    dept_slug is the canonical dept identifier (e.g. "ben").  It gates the
+    Ben-specific KPI synthesiser: the synthesiser fires ONLY for slug=="ben",
+    so a future dept that happens to emit a `nav_summary` block never gets
+    Ben's fund-office synthesiser applied to it.  (#199)
     """
     # 1) management-export curated KPIs (preferred — the dept declares the few
     #    KPIs it wants charted via a `top_kpis`/`kpis_snapshot` block; the cockpit
@@ -278,13 +283,11 @@ def _kpis_for_date(date_dir: Path) -> Dict[str, float]:
                         return flat
             # 1b) Ben-specific: synthesise from nav_summary + performance +
             #     sleeve_allocation_pct_nav when no top_kpis block present.
-            #     Triggered whenever `nav_summary` is present (Ben-signature
-            #     block).  This fires across ALL of Ben's historical date dirs
-            #     (even older ones that lack sleeve_allocation) so the pivot
-            #     accumulates a consistent `nav_usd` series rather than mixing
-            #     synthesised keys with the risk-kpis fallback's `nav.*`
-            #     sub-keys.  No other dept uses a `nav_summary` dict.  (#139)
-            if isinstance(scope.get("nav_summary"), dict):
+            #     GATE: only fires when dept_slug == "ben" — an explicit
+            #     contract on the dept identity, NOT on field presence.
+            #     A future dept that emits nav_summary must not get Ben's
+            #     fund-office synthesiser applied to it.  (#139, hardened #199)
+            if dept_slug == "ben" and isinstance(scope.get("nav_summary"), dict):
                 ben_kpis = _ben_kpis_from_export(scope)
                 if ben_kpis:
                     return ben_kpis
@@ -376,7 +379,7 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
             d = date.fromisoformat(child.name)
         except ValueError:
             continue  # skips dry-run/, onboarding/, etc.
-        kpis = _kpis_for_date(child)
+        kpis = _kpis_for_date(child, dept_slug=slug)
         if kpis:
             dated.append((d, kpis))
 
