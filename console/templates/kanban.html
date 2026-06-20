@@ -232,7 +232,11 @@
 
 {# Single card — title + chips + body #}
 {% macro render_card(item, show_status=False, show_dept=True) %}
-<a class="vp-card" href="/kanban/card/{{ item.id }}" style="text-decoration:none; color:inherit; display:block;">
+<div class="vp-card" role="link" tabindex="0"
+     data-card-href="/kanban/card/{{ item.id }}"
+     onclick="if(!event.target.closest('a')) window.location='/kanban/card/{{ item.id }}'"
+     onkeydown="if(event.key==='Enter'){window.location='/kanban/card/{{ item.id }}'}"
+     style="cursor:pointer;">
   <div class="vp-card-top">
     <div class="vp-card-title">
       {{ item.title or item.summary or '(sans titre)' }}
@@ -249,8 +253,8 @@
        title="Voir sur GitHub">GitHub ↗</a>
     {% endif %}
   </div>
-  {% if item.body or item.summary %}
-  <div class="vp-card-body">{{ (item.body or item.summary)[:140] }}</div>
+  {% if item.summary %}
+  <div class="vp-card-body">{{ item.summary }}</div>
   {% endif %}
   {% if item.mermaid_src %}
   <div class="vp-card-mermaid" style="margin-top:8px;">
@@ -273,7 +277,7 @@
     {% endfor %}
   </div>
   {% endif %}
-</a>
+</div>
 {% endmacro %}
 
 {# ── Group rendering helper — used by all three views ─────────────── #}

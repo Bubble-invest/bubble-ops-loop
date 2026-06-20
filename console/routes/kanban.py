@@ -261,7 +261,22 @@ def issue_to_card(issue: dict) -> dict:
 
     # ── Scalar fields ──────────────────────────────────────────────────────────
     body_text = (issue.get("body") or "").strip()
-    summary   = body_text[:140] + ("…" if len(body_text) > 140 else "")
+    # Card-face preview: show clean prose, NOT the raw "## Job / ## Inputs (none) /
+    # ## Allowed …" scaffolding (which bled into the card face and read as noise).
+    # Prefer the Job section's content; fall back to the first non-header,
+    # non-"(none)"/"(to be scoped…)" line; finally the raw body.
+    _sections = _parse_body_sections(body_text)
+    _preview_src = (_sections.get("Job") or "").strip()
+    if not _preview_src:
+        for _line in body_text.splitlines():
+            _l = _line.strip()
+            if _l and not _l.startswith("#") and not _l.startswith("---") \
+               and _l.lower() not in ("(none)",) and not _l.lower().startswith("(to be scoped"):
+                _preview_src = _l
+                break
+    if not _preview_src:
+        _preview_src = body_text
+    summary   = _preview_src[:140] + ("…" if len(_preview_src) > 140 else "")
 
     # ── Visual fields (Mermaid diagram + repo image paths) ─────────────────────
     mermaid_src, visual_attachments = _parse_visual_fields(body_text)
