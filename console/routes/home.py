@@ -25,7 +25,15 @@ def home(request: Request):
     # /agents and their gates are stale by definition. Regression caught
     # 2026-05-24 msg 3041: after retiring fixture, its 9 stale gates kept
     # surfacing on home and fixture itself was listed as "en éclosion".
-    depts = [d for d in dept_registry.list_departments() if not d.is_ancien]
+    # Also exclude concierges (morty, claudette) — they are surfaced separately
+    # via concierge_reader.list_concierges() in the "Les concierges" subsection
+    # below. Including them in list_departments() caused them to render twice
+    # (once here in "L'équipe" and once in "Les concierges"). Fix #212.
+    depts = [
+        d for d in dept_registry.list_departments()
+        if not d.is_ancien
+        and d.slug not in dept_registry.KNOWN_CONCIERGE_SLUGS
+    ]
     columns = []
     for d in depts:
         gates = github_reader.list_pending_gates(d.slug)
