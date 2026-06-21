@@ -287,10 +287,15 @@
         <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
            target="_blank" rel="noopener"
            title="Ouvrir en grand">
+          {# Preview thumbnail — capped so a tall portrait post screenshot
+             doesn't render full-bleed. max-width keeps it card-sized, max-height
+             stops tall images blowing up; click opens full size in a new tab. #}
           <img src="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
                alt="{{ att.caption or att.path.split('/')[-1] }}"
                loading="lazy"
-               style="display:block; width:100%; height:auto; border:1px solid var(--line);
+               style="display:block; width:auto; max-width:min(100%, 360px);
+                      height:auto; max-height:460px; object-fit:contain;
+                      border:1px solid var(--line);
                       border-radius:3px; background: var(--paper-soft);">
         </a>
         {% if att.caption %}
