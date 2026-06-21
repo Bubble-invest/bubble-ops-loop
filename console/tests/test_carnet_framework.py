@@ -99,7 +99,24 @@ def test_graph_includes_local_agents_without_telemetry(client):
     locals_ = [n for n in g["nodes"] if n["kind"] == "local"]
     assert locals_, "Mac-local agents must be drawn (Notion wishlist)"
     assert all(n.get("telemetry") is False for n in locals_)
-    assert {"rick", "miranda"} <= {n["id"].split(":", 1)[1] for n in locals_}
+    local_ids = {n["id"].split(":", 1)[1] for n in locals_}
+    # Rick + Tony-local have no dept registration → they stay in the Mac-local
+    # tier. Miranda is NOT here anymore: she's a live `content` dept (host:local)
+    # rendered as a real dept node, not a telemetry-less ghost. (Card #221.)
+    assert {"rick", "tony-local"} <= local_ids
+    assert "miranda" not in local_ids, (
+        "Miranda must not be a ghost Mac-local node — she's a live content dept"
+    )
+
+
+def test_local_dept_carries_host_field(client):
+    """A dept running on a Mac (host:'local', e.g. content/Miranda) exposes
+    host on its dept node so the frontend can badge it. VPS depts are 'vps'."""
+    g = client.get("/health/graph.json").json()
+    dept_nodes = [n for n in g["nodes"] if n["kind"] in ("ops", "mgmt")]
+    assert dept_nodes, "expected at least one dept node"
+    # every dept node must carry a host field, defaulting to 'vps'
+    assert all(n.get("host") in ("vps", "local") for n in dept_nodes)
 
 
 def test_graph_two_rails(client):
