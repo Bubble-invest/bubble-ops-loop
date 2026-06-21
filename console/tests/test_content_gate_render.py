@@ -355,3 +355,101 @@ def test_gate_card_content_publish_kind_also_renders(client, fixture_repo):
     assert "LINKEDIN" in r.text
     assert "Texte du post" in r.text
     assert "Post à publier via content_publish." in r.text
+
+
+# ── 11. Maya — news_post (LinkedIn post via post_body) — #193 extended ─────────
+
+def test_gate_card_renders_maya_news_post(client, fixture_repo):
+    """Maya's news_post gate (post_body, no channel field) gets the content
+    render: implicit LINKEDIN badge, formatted body, why_it_matters context."""
+    _write_gate(fixture_repo, "news_post-maya-1", {
+        "id": "news_post-maya-1",
+        "kind": "news_post",
+        "source_layer": 2,
+        "target_layer": 3,
+        "risk_level": "low",
+        "requires_human": True,
+        "current_mode": "manual_required",
+        "account_used": "{{OPERATOR}}",
+        "post_body": "Un agent IA qui code: une demo.\n\nCent agents: une usine.",
+        "why_it_matters": "La bascule agent unique vers maillage est notre these.",
+        "summary": "Relais news du jour : Factory 2.0.",
+        "actions": ["approve", "reject", "modify"],
+    })
+    r = client.get("/gate/fixture/news_post-maya-1")
+    assert r.status_code == 200, r.text
+    assert "LINKEDIN" in r.text                          # implicit channel
+    assert "Texte du post" in r.text
+    assert "Cent agents: une usine." in r.text             # post_body rendered
+    assert "Pourquoi c'est pertinent" in r.text          # why_it_matters context
+    assert "Compte" in r.text                            # account_used
+
+
+def test_gate_batch_renders_maya_news_post(client, fixture_repo):
+    """gate_batch must render Maya's news_post content block too."""
+    _write_gate(fixture_repo, "news_post-maya-2", {
+        "id": "news_post-maya-2",
+        "kind": "news_post",
+        "source_layer": 2, "target_layer": 3,
+        "risk_level": "low", "requires_human": True,
+        "current_mode": "manual_required",
+        "post_body": "Corps du post Maya batch.",
+        "actions": ["approve", "reject", "modify"],
+    })
+    r = client.get("/gate/fixture/kind/news_post")
+    assert r.status_code == 200, r.text
+    assert "LINKEDIN" in r.text
+    assert "Corps du post Maya batch." in r.text
+
+
+# ── 12. Maya — prospect_dm (cold message via draft_message) ───────────────────
+
+def test_gate_card_renders_maya_prospect_dm(client, fixture_repo):
+    """Maya's prospect_dm gate (draft_message + recipient/angle) renders the
+    message body + recipient context; label says 'Texte du message'."""
+    _write_gate(fixture_repo, "prospect_dm-maya-1", {
+        "id": "prospect_dm-maya-1",
+        "kind": "prospect_dm",
+        "source_layer": 2, "target_layer": 3,
+        "risk_level": "medium", "requires_human": True,
+        "current_mode": "manual_required",
+        "channel": "linkedin",
+        "account_used": "Maya",
+        "recipient": "Isabelle Portal Correia",
+        "recipient_role": "Recruteuse independante (Lyon)",
+        "angle": "relationship-first / networking (zero vente)",
+        "fit_note": "Influenceuse, relation long terme, ROI tri faible.",
+        "draft_message": "Bonjour Isabelle, votre commentaire m'a parle.",
+        "actions": ["approve", "reject", "modify"],
+    })
+    r = client.get("/gate/fixture/prospect_dm-maya-1")
+    assert r.status_code == 200, r.text
+    assert "LINKEDIN" in r.text
+    assert "Texte du message" in r.text                  # DM-specific label
+    assert "Bonjour Isabelle" in r.text                  # draft_message rendered
+    assert "Destinataire" in r.text
+    assert "Isabelle Portal Correia" in r.text
+    assert "Angle" in r.text
+    assert "Note de pertinence" in r.text
+
+
+def test_maya_dm_summary_not_double_rendered_in_batch(client, fixture_repo):
+    """A Maya content-kind gate must render its summary once (in the proposal
+    block), not also in the generic thesis <details>."""
+    _write_gate(fixture_repo, "prospect_dm-maya-2", {
+        "id": "prospect_dm-maya-2",
+        "kind": "prospect_dm",
+        "source_layer": 2, "target_layer": 3,
+        "risk_level": "low", "requires_human": True,
+        "current_mode": "manual_required",
+        "recipient": "Test Lead",
+        "draft_message": "Bonjour, message de test.",
+        "summary": "DM relation-first unique-marker-xyz.",
+        "actions": ["approve", "reject", "modify"],
+    })
+    r = client.get("/gate/fixture/kind/prospect_dm")
+    assert r.status_code == 200, r.text
+    # summary string must appear AT MOST once (the generic thesis <details>
+    # block is skipped for content kinds).
+    assert r.text.count("unique-marker-xyz") <= 1
+    assert "Bonjour, message de test." in r.text
