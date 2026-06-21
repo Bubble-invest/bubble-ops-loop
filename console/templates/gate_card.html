@@ -76,18 +76,29 @@
      No new infra: uses the same CSS vars, inline styles, and attachment
      route (/gate/<slug>/attachment) already in production.
   ─────────────────────────────────────────────────────────────── #}
-  {% if gate.kind in ('social_post', 'content_publish') %}
+  {# Content-style proposals that get the rich render: Miranda's content gates
+     PLUS Maya's LinkedIn post / prospect-DM proposals (#193 extended to Maya).
+     Maya names the body field differently (post_body for news_post,
+     draft_message for prospect_dm/followup) — `post_text` normalizes across
+     all three so the body always renders formatted, never as a YAML blob. #}
+  {% set content_kinds = ('social_post', 'content_publish',
+                          'news_post', 'news_post_task',
+                          'prospect_dm', 'followup_draft', 'draft_task') %}
+  {% set post_text = gate.draft_body or gate.post_body or gate.draft_message %}
+  {% if gate.kind in content_kinds %}
   <div class="gate-content-proposal" style="margin:0 0 18px;">
 
     {# ── Channel + pillar badges ── #}
-    {% if gate.channel or gate.pillar %}
+    {% set channel_label = gate.channel or ('linkedin' if gate.kind in
+         ('news_post', 'news_post_task', 'prospect_dm', 'followup_draft') else None) %}
+    {% if channel_label or gate.pillar %}
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
-      {% if gate.channel %}
+      {% if channel_label %}
       <span style="display:inline-flex; align-items:center; gap:5px;
                    background: #0077B5; color:#fff; padding:3px 10px;
                    border-radius:2px; font-size:12px; font-weight:600;
                    letter-spacing:.3px; text-transform:uppercase;">
-        {{ gate.channel | upper }}
+        {{ channel_label | upper }}
       </span>
       {% endif %}
       {% if gate.pillar %}
@@ -97,6 +108,50 @@
                    border-radius:2px; font-size:12px; font-weight:500;">
         {{ gate.pillar | replace('_', ' ') | title }}
       </span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Recipient + context (Maya's prospect DMs / posts) ──────────
+       Maya's prospect_dm/followup gates carry who the message is for and
+       the chosen angle; news_post gates carry why-it-matters + source.
+       Render these as labeled rows so Joris sees the context at a glance
+       before reading the draft. All optional / additive — Miranda's
+       content gates simply don't set them and skip this cleanly. #}
+    {% if gate.recipient or gate.recipient_role or gate.angle
+          or gate.fit_note or gate.why_it_matters or gate.account_used %}
+    <div class="gate-content-context" style="background: var(--paper-soft);
+         border:1px solid var(--line); border-radius:2px; padding:12px 14px;
+         margin-bottom:14px; font-size:14px; line-height:1.6;">
+      {% if gate.recipient %}
+      <div style="margin-bottom:8px;">
+        <span class="muted-italic" style="font-size:12px;">Destinataire</span><br>
+        <span style="color: var(--ink); font-weight:500;">{{ gate.recipient }}{% if gate.recipient_role %} — <span style="font-weight:400; color: var(--body-soft);">{{ gate.recipient_role }}</span>{% endif %}</span>
+      </div>
+      {% endif %}
+      {% if gate.account_used %}
+      <div style="margin-bottom:8px;">
+        <span class="muted-italic" style="font-size:12px;">Compte</span><br>
+        <span style="color: var(--body-soft);">{{ gate.account_used }}</span>
+      </div>
+      {% endif %}
+      {% if gate.angle %}
+      <div style="margin-bottom:8px;">
+        <span class="muted-italic" style="font-size:12px;">Angle</span><br>
+        <span style="color: var(--body-soft);">{{ gate.angle }}</span>
+      </div>
+      {% endif %}
+      {% if gate.fit_note %}
+      <div style="margin-bottom:8px;">
+        <span class="muted-italic" style="font-size:12px;">Note de pertinence</span><br>
+        <span style="color: var(--body-soft);">{{ gate.fit_note }}</span>
+      </div>
+      {% endif %}
+      {% if gate.why_it_matters %}
+      <div>
+        <span class="muted-italic" style="font-size:12px;">Pourquoi c'est pertinent</span><br>
+        <span style="color: var(--body-soft);">{{ gate.why_it_matters }}</span>
+      </div>
       {% endif %}
     </div>
     {% endif %}
@@ -156,18 +211,18 @@
       {% endif %}
     {% endif %}
 
-    {# ── Formatted post body (draft_body) ── #}
-    {% if gate.draft_body %}
+    {# ── Formatted post / message body (draft_body | post_body | draft_message) ── #}
+    {% if post_text %}
     <div class="gate-content-draft" style="margin:0 0 14px; padding:14px 16px;
          background: var(--paper-soft); border:1px solid var(--line);
          border-left:3px solid #0077B5; border-radius:2px;">
       <div class="gate-draft-label muted-italic"
            style="font-size:11px; margin-bottom:8px; color: var(--body-muted);">
-        Texte du post
+        {% if gate.kind in ('prospect_dm', 'followup_draft') %}Texte du message{% else %}Texte du post{% endif %}
       </div>
       <div class="gate-draft-body"
            style="font-family: var(--font-body); font-size:15px; line-height:1.65;
-                  color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body }}</div>
+                  color: var(--ink); white-space:pre-wrap;">{{ post_text }}</div>
       {% if gate.hashtags %}
       <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);">
         {% for tag in gate.hashtags %}
