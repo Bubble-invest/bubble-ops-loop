@@ -15,6 +15,19 @@
 </header>
 
 <div class="gate-card">
+  {# ─── "En révision" banner — shown when {{OPERATOR}} asked for a redraft (modify) ──
+     _revision_requested is set by list_pending_gates when a modify decision
+     file exists but the gate has not yet been resolved by the agent. {{OPERATOR}}
+     sees it is awaiting a redraft; the decide form stays so he can decide again
+     once the agent re-submits. #}
+  {% if gate._revision_requested %}
+  <div class="gate-revision-banner" style="margin-bottom:16px; padding:10px 14px;
+       background: var(--paper-soft); border:1px solid var(--ochre);
+       border-left:4px solid var(--ochre); border-radius:2px;
+       color: var(--ochre); font-size:14px; font-weight:500;">
+    En révision — tu as demandé une modif{% if gate._revision_comment %} : {{ gate._revision_comment }}{% endif %}
+  </div>
+  {% endif %}
   <div class="gate-meta">
     <div>moment d'origine <b>{{ gate.source_layer }}</b></div>
     <div>moment cible <b>{{ gate.target_layer }}</b></div>

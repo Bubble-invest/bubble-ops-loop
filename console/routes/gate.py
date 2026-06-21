@@ -171,3 +171,49 @@ def gate_decide(
             "out_path": str(out_path),
         },
     )
+
+
+@router.post("/gate/{slug}/{gate_id}/undo", response_class=HTMLResponse)
+def gate_undo(slug: str, gate_id: str, request: Request):
+    """Undo a gate decision — delete the un-processed decision file so the gate
+    becomes pending again. Refused if the gate was already resolved by the agent
+    (resolved/decided_by in the gate YAML means it is too late to undo).
+
+    host=local depts: out of scope (decision committed to GitHub, not on disk here).
+    """
+    if dept_registry.get_department(slug) is None:
+        raise HTTPException(404, f"Unknown dept: {slug}")
+
+    # Guard: if the gate YAML already has resolved/decided_by, the agent has
+    # already acted — we must NOT undo at this point.
+    gate_doc = github_reader.load_gate_direct(slug, gate_id)
+    if gate_doc is not None and (
+        gate_doc.get("resolved") or gate_doc.get("decided_by")
+    ):
+        return HTMLResponse(
+            content=(
+                '<div style="font-size:13px; color: var(--danger, #c0392b); '
+                'padding:6px 0;">Trop tard — déjà traité par l’agent.</div>'
+            ),
+            status_code=200,
+        )
+
+    deleted = github_reader.delete_gate_decision(slug, gate_id)
+    if deleted:
+        return HTMLResponse(
+            content=(
+                '<div style="font-size:13px; color: var(--sage); padding:6px 0;">'
+                'Décision annulée — la porte est de nouveau en attente.'
+                '</div>'
+            ),
+            status_code=200,
+        )
+    # Decision file not found (already processed or never existed).
+    return HTMLResponse(
+        content=(
+            '<div style="font-size:13px; color: var(--body-muted); padding:6px 0;">'
+            'Aucune décision non traitée à annuler.'
+            '</div>'
+        ),
+        status_code=200,
+    )
