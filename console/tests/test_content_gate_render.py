@@ -453,3 +453,23 @@ def test_maya_dm_summary_not_double_rendered_in_batch(client, fixture_repo):
     # block is skipped for content kinds).
     assert r.text.count("unique-marker-xyz") <= 1
     assert "Bonjour, message de test." in r.text
+
+
+# ── 13. Attachment preview images are size-capped (not full-bleed) ─────────────
+
+def test_attachment_preview_image_is_size_capped(client, fixture_repo):
+    """A tall post-screenshot attachment must render as a capped preview
+    thumbnail (max-width/max-height), not full card width — #193 follow-up."""
+    date = "2026-06-21"
+    relpath = _write_attachment_png(fixture_repo, date, "post-preview.png")
+    _write_gate(fixture_repo, "content-att-cap-1", _base_content_gate(
+        "content-att-cap-1",
+        draft_body="Post avec preview image.",
+        attachments=[{"path": relpath, "caption": "Apercu du post"}],
+    ))
+    r = client.get("/gate/fixture/content-att-cap-1")
+    assert r.status_code == 200, r.text
+    # The attachment <img> must carry a max-height cap so portrait screenshots
+    # don't blow up the card.
+    assert "max-height:460px" in r.text
+    assert "post-preview.png" in r.text or "attachment?path=" in r.text

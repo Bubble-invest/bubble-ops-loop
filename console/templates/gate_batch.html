@@ -93,10 +93,14 @@
               <figure class="gate-chart" style="margin:0 0 8px;">
                 <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
                    target="_blank" rel="noopener" title="Ouvrir en grand">
+                  {# Capped preview thumbnail (see gate_card.html note) — keeps a
+                     tall post screenshot card-sized; click opens full size. #}
                   <img src="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
                        alt="{{ att.caption or att.path.split('/')[-1] }}"
                        loading="lazy"
-                       style="display:block; width:100%; height:auto; border:1px solid var(--line);
+                       style="display:block; width:auto; max-width:min(100%, 360px);
+                              height:auto; max-height:460px; object-fit:contain;
+                              border:1px solid var(--line);
                               border-radius:3px; background: var(--paper-soft);">
                 </a>
                 {% if att.caption %}
