@@ -57,10 +57,41 @@ for pair in "${MAP[@]}"; do
     fi
   fi
 done
+
+# Fleet-wide kanban-emit capability — a DELIBERATE new shared surface for EVERY
+# dept (unlike MAP above, which only fills existing dirs). Every agent must be
+# able to file a board card; Ben hit this gap 2026-06-21 (no emit-kanban skill →
+# fell back to an unwired local DB). So here we CREATE the dest dirs. The skill
+# makes the capability discoverable; the tool is the executable; emit.sh is the
+# portable wrapper the skill calls.
+KANBAN_MAP=(
+  "skills/emit-kanban-task/SKILL.md          skills/emit-kanban-task/SKILL.md"
+  "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"
+  "tools/kanban/emit_kanban_item.sh          tools/kanban/emit_kanban_item.sh"
+)
+for pair in "${KANBAN_MAP[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $pair
+  src="$FRAMEWORK/$1"; dst="$DEPT/$2"
+  [[ -f "$src" ]] || { log "skip $1 — not in framework"; continue; }
+  mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+  if ! cmp -s "$src" "$dst" 2>/dev/null; then
+    if cp -f "$src" "$dst" 2>/dev/null; then
+      chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
+      chown claude:claude "$dst" 2>/dev/null || true
+      log "re-vendored kanban $2 (was stale/missing)"
+      vendored=$((vendored+1))
+    else
+      log "WARN: could not copy $2 (fail-open)"
+    fi
+  fi
+done
+
 # skip-worktree the vendored TRACKED files so the loop's git add never picks up
 # the framework-overwrite (else it commits structural libs → push 403; Tony
-# 2026-06-07). Best-effort, fail-open.
-for pair in "${MAP[@]}"; do
+# 2026-06-07). Best-effort, fail-open. Covers BOTH the core libs and the
+# kanban-capability files.
+for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
   # shellcheck disable=SC2086
   set -- $pair
   dst="$DEPT/$2"
