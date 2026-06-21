@@ -2431,6 +2431,21 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 }
 .fw-rf-sub { font-size: 10.5px; color: var(--body-muted); }
 
+/* "Mac local" badge on a dept that runs on a Mac (host:"local", e.g. Miranda
+   /content on {{OPERATOR_2}}'s Mac) — distinguishes hybrid local depts from VPS ones. */
+.fw-rf-hostbadge {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--body-muted);
+  border: 1px solid var(--hairline, rgba(0,0,0,.15));
+  border-radius: 999px;
+}
+
 /* status dot next to the name */
 .fw-rf-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .fw-rf-dot--ok      { background: var(--sage); }
