@@ -1,0 +1,8 @@
+{
+  "skill_name": "emit-kanban-task",
+  "evals": [
+    {"id": 1, "prompt": "While reviewing the fund I noticed the auto-commit cron that versions the positions snapshot has been dead since last week — that's out of scope for what I'm doing now but we can't lose it. Track it for follow-up.", "expected_output": "Emits one board card (type=bug/incident, owner set) describing the dead cron with self-contained context; confirms it landed via gh issue list.", "files": []},
+    {"id": 2, "prompt": "Add to the kanban: we should review the Saxo funding gap on the pending orders tomorrow.", "expected_output": "Emits one board card (type=findings/decision, priority normal/high) self-contained; verifies on the board.", "files": []},
+    {"id": 3, "prompt": "Flag this for {{OPERATOR}} as a decision he needs to make: do we revive the old newsletter auto-commit or accept manual versioning?", "expected_output": "Emits a card type=decision owner=joris with actions like revive,accept; lands as needs:human.", "files": []}
+  ]
+}
