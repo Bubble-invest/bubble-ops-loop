@@ -35,10 +35,16 @@ LAYERS = [
 # follow-up (see STATUS / FOLLOWUP-local-agents-phonehome) will wire their
 # heartbeats via the SPEC-015 phone-home pattern, after which build_graph()
 # can fold real status in the same way it does for VPS depts.
+# NOTE (2026-06-21): Miranda was removed from this list. She is now a LIVE ops
+# department (`content`, host:local on Jade's Mac) registered via dept.yaml, so
+# she already renders as a real dept node with live telemetry. Keeping her here
+# too made her appear TWICE — once as a live dept, once as a ghost Mac-local
+# node. The Mac-local tier is now ONLY for agents with no dept registration at
+# all (Rick, Tony-local). A dept that runs on the Mac is flagged via its
+# `host: "local"` field (see _dept_node below), not duplicated here.
 LOCAL_AGENTS = [
     {"id": "rick", "name": "Rick", "role": "R&D / Dev", "host": "Mac local"},
     {"id": "tony-local", "name": "Tony (local)", "role": "Management — 2e instance", "host": "Mac local"},
-    {"id": "miranda", "name": "Miranda", "role": "ChromeTab + images", "host": "Mac de Jade"},
 ]
 
 
@@ -174,6 +180,9 @@ def build_graph() -> Dict[str, Any]:
             "id": f"dept:{d.slug}", "kind": kind, "tier": tier,
             "title": d.display_name, "role": "Département management" if kind == "mgmt" else None,
             "slug": d.slug, "href": f"/dept/{d.slug}",
+            # "vps" | "local" — hybrid Mac-local depts (e.g. Miranda/content on
+            # Jade's Mac) carry host:"local" so the frontend can badge them.
+            "host": getattr(d, "host", "vps"),
             "status": _dept_status(alive, age_sec, lrows),
             "pulse": {
                 "alive": alive,

@@ -203,6 +203,12 @@
     parts.push(
       '<span class="fw-rf-name"><span class="fw-rf-dot fw-rf-dot--' +
       n.status + '" aria-hidden="true"></span>' + (n.title || "") + "</span>");
+    // A dept that runs on a Mac (host:"local", e.g. Miranda/content on Jade's
+    // Mac) gets a small "Mac local" badge so the hybrid topology is visible
+    // without giving it a separate ghost node in the Mac-local tier.
+    if ((n.kind === "ops" || n.kind === "mgmt") && n.host === "local") {
+      parts.push('<span class="fw-rf-hostbadge">Mac local</span>');
+    }
     if (n.kind === "ops" || n.kind === "mgmt") {
       parts.push('<span class="fw-rf-layers">' + layersBadge(n.layers, n.slug) + "</span>");
     } else if (n.kind === "local") {
