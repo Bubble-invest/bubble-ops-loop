@@ -128,7 +128,17 @@ def load_layer_prompt_md(slug: str, layer_num: int) -> Optional[str]:
 
 
 def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
-    """Return all gate YAMLs in queues/gates/ for the dept."""
+    """Return all gate YAMLs in queues/gates/ for the dept.
+
+    Gates are hidden (excluded) when they have a terminal decision, EXCEPT
+    when action == 'modify': a modify decision means "redraft, I'll re-review",
+    so the gate is kept visible and annotated with _revision_requested=True and
+    _revision_comment so the UI can show it as pending-but-awaiting-redraft.
+
+    NOTE: a true end-to-end "agent links the redraft to the original gate id"
+    requires a dept-side convention (out of scope here). The cockpit side is
+    correct: modify stays visible + flagged until the agent resolves the gate.
+    """
     root = repo_path(slug)
     if root is None:
         return []
@@ -153,10 +163,18 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     # reported issue.  A future improvement could call the GitHub API for
     # host=local depts, but we keep the scope narrow here.
     decisions_dir = root / "inbox" / "decisions"
-    decided_ids: set = set()
+    # Map gate_id → decision doc (for modify detection).
+    decided_map: Dict[str, Any] = {}
     if decisions_dir.is_dir():
         for dp in decisions_dir.glob("*.yaml"):
-            decided_ids.add(dp.stem)
+            try:
+                ddoc = yaml.safe_load(dp.read_text(encoding="utf-8"))
+                if isinstance(ddoc, dict):
+                    decided_map[dp.stem] = ddoc
+                else:
+                    decided_map[dp.stem] = {}
+            except yaml.YAMLError:
+                decided_map[dp.stem] = {}
 
     out: List[Dict[str, Any]] = []
     for p in sorted(gates_dir.glob("*.yaml")):
@@ -174,14 +192,23 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                     continue
                 # Also skip if a decision file already exists in inbox/decisions/
                 # for this gate — the operator has acted but the agent hasn't
-                # processed the inbox yet (see decided_ids computation above).
+                # processed the inbox yet (see decided_map computation above).
                 # Use doc.get('id') so that a gate whose YAML id field differs
                 # from its filename is still correctly matched against the
                 # decision file written by write_gate_decision (which keys on
                 # the gate's logical id, not the stem).  Fallback to p.stem
                 # only when the YAML has no id field, for safety.
                 gate_id = doc.get("id", p.stem)
-                if gate_id in decided_ids:
+                if gate_id in decided_map:
+                    ddoc = decided_map[gate_id]
+                    if ddoc.get("action") == "modify":
+                        # modify is NOT terminal: keep the gate visible so {{OPERATOR}}
+                        # can re-review after the agent redrafts it. Flag it so
+                        # the UI can show the "En révision" banner.
+                        doc["_revision_requested"] = True
+                        doc["_revision_comment"] = ddoc.get("comment", "")
+                        out.append(doc)
+                    # approve / reject / defer → hide (terminal decisions)
                     continue
                 out.append(doc)
             else:
@@ -215,6 +242,38 @@ def load_gate(slug: str, gate_id: str) -> Optional[Dict[str, Any]]:
         if g.get("id") == gate_id:
             return g
     return None
+
+
+def load_gate_direct(slug: str, gate_id: str) -> Optional[Dict[str, Any]]:
+    """Return the raw gate YAML as a dict, ignoring decision-filter state.
+
+    Unlike load_gate (which goes through list_pending_gates and hides decided
+    gates), this reads the gate YAML on disk directly. Used by the undo route
+    to check whether the gate was already resolved by the agent (resolved/
+    decided_by set in the YAML means the agent has acted and undo is too late).
+    Returns None if the gate YAML does not exist or cannot be parsed.
+
+    SECURITY: gate_id is validated to contain no path separators or parent-dir
+    components before being used to construct a filesystem path.
+    """
+    # Reject gate_ids that could escape the gates directory.
+    if not gate_id or "/" in gate_id or "\\" in gate_id or ".." in gate_id:
+        return None
+    root = repo_path(slug)
+    if root is None:
+        return None
+    gates_dir = (root / "queues" / "gates").resolve()
+    p = (root / "queues" / "gates" / f"{gate_id}.yaml").resolve()
+    # Containment check: the resolved path must stay inside the gates dir.
+    if not _is_within(p, gates_dir):
+        return None
+    if not p.exists():
+        return None
+    try:
+        doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else None
+    except yaml.YAMLError:
+        return None
 
 
 def load_gate_raw(slug: str, gate_id: str) -> Optional[str]:
@@ -1056,6 +1115,121 @@ def load_whiteboard(slug: str) -> Optional[Dict[str, Any]]:
                 return None
 
     return None
+
+
+def list_recent_decisions(slugs: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+    """Return the most recent gate decisions across all listed dept slugs.
+
+    Reads each dept's inbox/decisions/*.yaml (unprocessed) AND
+    inbox/decisions/.processed/*.yaml (already drained by the agent), parses
+    gate_id / action / decided_at / comment, sorts by decided_at descending,
+    returns up to `limit` entries. Malformed / missing fields are skipped
+    safely (no crash).
+
+    Each returned dict has at minimum:
+        slug        str   — dept this decision belongs to
+        gate_id     str
+        action      str   — approve | reject | modify | defer
+        decided_at  str   — ISO timestamp (may be absent → empty string)
+        comment     str   — operator comment (may be empty)
+        processed   bool  — True if the file came from .processed/ subdir
+    """
+    results: List[Dict[str, Any]] = []
+
+    for slug in slugs:
+        root = repo_path(slug)
+        if root is None:
+            continue
+        decisions_dir = root / "inbox" / "decisions"
+        if not decisions_dir.is_dir():
+            continue
+
+        # Scan both the live inbox and the .processed/ sub-directory.
+        for processed, glob_dir in (
+            (False, decisions_dir),
+            (True, decisions_dir / ".processed"),
+        ):
+            if not glob_dir.is_dir():
+                continue
+            for dp in glob_dir.glob("*.yaml"):
+                try:
+                    raw = dp.read_text(encoding="utf-8")
+                    ddoc = yaml.safe_load(raw)
+                    if not isinstance(ddoc, dict):
+                        continue
+                    gate_id = ddoc.get("gate_id") or dp.stem
+                    action = ddoc.get("action", "")
+                    decided_at = ddoc.get("decided_at", "")
+                    comment = ddoc.get("comment", "")
+                    results.append({
+                        "slug": slug,
+                        "gate_id": str(gate_id),
+                        "action": str(action),
+                        "decided_at": str(decided_at) if decided_at else "",
+                        "comment": str(comment) if comment else "",
+                        "processed": processed,
+                    })
+                except Exception:  # noqa: BLE001 — skip malformed files silently
+                    _log.debug("list_recent_decisions: skipping malformed %s", dp)
+
+    # Sort by decided_at descending (ISO strings sort lexicographically correctly).
+    results.sort(key=lambda d: d["decided_at"], reverse=True)
+    return results[:limit]
+
+
+def delete_gate_decision(slug: str, gate_id: str) -> bool:
+    """Delete the un-processed decision file for a gate, if it exists.
+
+    Only removes inbox/decisions/<gate_id>.yaml (the live, un-processed file).
+    Does NOT touch inbox/decisions/.processed/ — once the agent has moved the
+    file there, we must NOT undo it here (the agent already acted).
+
+    host=local depts: out of scope — the decision lives on GitHub, not on
+    the cockpit disk.  Guard and return False with a log.
+
+    SECURITY: gate_id is validated to contain no path separators or parent-dir
+    components, and the resolved path is confirmed inside inbox/decisions/
+    before any delete is attempted.
+
+    Returns True on success (file existed and was deleted), False otherwise.
+    """
+    # Reject gate_ids that could escape the decisions directory via traversal.
+    if not gate_id or "/" in gate_id or "\\" in gate_id or ".." in gate_id:
+        _log.warning("delete_gate_decision: rejected unsafe gate_id %r for dept %s", gate_id, slug)
+        return False
+
+    from console.services import dept_registry as _dr
+    dept = _dr.get_department(slug)
+    host = getattr(dept, "host", "vps") if dept is not None else "vps"
+
+    if host == "local":
+        # host=local: decision was committed to GitHub by write_gate_decision;
+        # we have no on-disk copy to delete from here.
+        _log.info("delete_gate_decision: host=local dept %s — no-op (decision on GitHub)", slug)
+        return False
+
+    root = repo_path(slug)
+    if root is None:
+        return False
+
+    decisions_dir = (root / "inbox" / "decisions").resolve()
+    decision_file = (root / "inbox" / "decisions" / f"{gate_id}.yaml").resolve()
+    # Containment check: the resolved path must stay inside inbox/decisions/.
+    if not _is_within(decision_file, decisions_dir):
+        _log.warning(
+            "delete_gate_decision: path traversal attempt — gate_id %r resolved outside decisions dir",
+            gate_id,
+        )
+        return False
+
+    if not decision_file.exists():
+        return False
+    try:
+        decision_file.unlink()
+        return True
+    except OSError as exc:
+        _log.warning("delete_gate_decision: failed to delete %s: %s", decision_file, exc)
+        return False
 
 
 def group_missions_by_layer(
