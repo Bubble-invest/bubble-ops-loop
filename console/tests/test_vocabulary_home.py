@@ -35,21 +35,17 @@ def test_home_uses_collegue_vocabulary(client):
 
 
 def test_home_drops_kanban_label_from_visible_copy(client):
-    """No 'Kanban' / 'Cross-dept board' label in *visible* copy.
+    """No 'Cross-dept board' jargon label in *visible* copy.
 
-    The route MAY still link to /kanban (the href URL is not visible text), but
-    the jargon word must not appear as a heading, label, or any text node the
-    user reads.  We strip HTML tags before asserting so that href="/kanban"
-    attributes do not trigger a false positive.
+    NOTE (2026-06-21, Joris): the word "kanban" IS now allowed as visible copy —
+    it's the deliberate label of the /kanban nav link (card #222). We keep
+    guarding against the older "Cross-dept board" jargon only.
     """
     import re as _re
     r = client.get("/")
     raw = r.text
     # Strip all HTML tags — leaves only the visible text nodes.
     visible = _re.sub(r"<[^>]+>", " ", raw).lower()
-    assert "kanban" not in visible, (
-        "home must not use the word 'kanban' in visible copy (headings / labels / text)"
-    )
     assert "cross-dept board" not in visible, \
         "home must not say 'Cross-dept board'"
 
