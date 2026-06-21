@@ -55,6 +55,50 @@
   {% endif %}
 </section>
 
+{# ─── Section 1b — Décidé récemment ──────────────────────────── #}
+{% if recent_decisions %}
+<section class="cabinet-section" aria-labelledby="recentes-heading">
+  <h2 id="recentes-heading" class="section-heading">
+    <span class="section-heading-number">1b.</span>
+    Décidé récemment
+  </h2>
+  <div style="display:flex; flex-direction:column; gap:8px;">
+  {% for dec in recent_decisions %}
+    {% set action_color =
+      'var(--sage)' if dec.action == 'approve'
+      else 'var(--danger, #c0392b)' if dec.action == 'reject'
+      else 'var(--ochre)' if dec.action == 'modify'
+      else 'var(--body-muted)' %}
+    <div style="display:flex; align-items:center; gap:10px; padding:8px 12px;
+         background: var(--paper-soft); border:1px solid var(--line);
+         border-radius:2px; font-size:13px; flex-wrap:wrap;">
+      <span style="color: var(--body-muted); min-width:60px;">{{ dec.slug }}</span>
+      <span style="color: var(--ink); flex:1;">{{ dec.gate_id }}</span>
+      <span style="color: {{ action_color }}; font-weight:600; min-width:60px;">{{ dec.action }}</span>
+      {% if dec.decided_at %}
+      <span class="muted-italic" style="font-size:12px; color: var(--body-muted);">{{ dec.decided_at[:16] | replace('T', ' ') }}</span>
+      {% endif %}
+      {# Undo control — only for unprocessed decisions (still in inbox/decisions/, not .processed/) #}
+      {% if not dec.processed %}
+      <form hx-post="/gate/{{ dec.slug }}/{{ dec.gate_id }}/undo"
+            hx-target="#undo-result-{{ loop.index }}"
+            hx-swap="outerHTML"
+            style="margin:0;">
+        <button type="submit"
+                style="font-size:12px; color: var(--body-muted); background:none;
+                       border:1px solid var(--line); border-radius:2px;
+                       padding:2px 8px; cursor:pointer;">
+          Annuler
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    <div id="undo-result-{{ loop.index }}"></div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {# ─── Section 2 — L'équipe ────────────────────────────────────── #}
 <section class="cabinet-section" aria-labelledby="equipe-heading">
   <h2 id="equipe-heading" class="section-heading">

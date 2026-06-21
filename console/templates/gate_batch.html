@@ -28,6 +28,15 @@
        (outerHTML) for a compact 'done' stub, so the operator flows through
        the whole pile without leaving the page (2026-06-01 fix). #}
     <div class="gate-card" id="gatecard-{{ gid }}">
+      {# ─── "En révision" banner (mirrors gate_card.html) ── #}
+      {% if gate._revision_requested %}
+      <div class="gate-revision-banner" style="margin-bottom:12px; padding:8px 12px;
+           background: var(--paper-soft); border:1px solid var(--ochre);
+           border-left:4px solid var(--ochre); border-radius:2px;
+           color: var(--ochre); font-size:13px; font-weight:500;">
+        En révision — tu as demandé une modif{% if gate._revision_comment %} : {{ gate._revision_comment }}{% endif %}
+      </div>
+      {% endif %}
       <div class="gate-batch-head" style="display:flex; justify-content:space-between;
                   align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
                   padding-bottom:8px; margin-bottom:12px;">

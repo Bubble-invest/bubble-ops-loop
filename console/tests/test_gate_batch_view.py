@@ -154,11 +154,18 @@ def test_batch_view_empty_kind_renders_empty_state(tmp_path, monkeypatch):
 def test_decision_ok_partial_offers_inline_dismiss(tmp_path, monkeypatch):
     """When a decision is made FROM the batch view, the returned partial must
     be a compact 'done' stub (not the full single-card retour flow). We assert
-    the decide endpoint still returns 200 and names the action — the batch
-    template handles the in-place swap via hx-swap on the card."""
+    the decide endpoint still returns 200 and acknowledges the action — the
+    batch template handles the in-place swap via hx-swap on the card.
+
+    Part A changed the fragment to use action-specific French labels instead of
+    echoing the raw action name. For defer the message is now "Reporte" — we
+    assert that French label rather than the raw "defer" string.
+    """
     gates = [_gate(1)]
     c = _build_app_with_gates(tmp_path, monkeypatch, gates)
     r = c.post("/gate/fixture/prospect_dm-person-001/decide",
                data={"action": "defer", "comment": ""})
     assert r.status_code == 200, r.text
-    assert "defer" in r.text
+    # Part A: defer now renders "Reporté" (French label) not the raw action word.
+    # "Report" is an accent-free prefix safe to assert against "Reporté".
+    assert "Report" in r.text or "defer" in r.text

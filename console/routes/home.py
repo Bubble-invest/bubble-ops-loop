@@ -87,6 +87,9 @@ def home(request: Request):
     concierges = concierge_reader.list_concierges()
     # Kanban queue counts — reuse kanban.py's in-process cache (no added latency).
     kanban_counts = _kanban_queue_counts()
+    # Recent decisions tray — last ~10 decisions across all live depts, newest first.
+    all_slugs = [col["dept"].slug for col in columns]
+    recent_decisions = github_reader.list_recent_decisions(all_slugs, limit=10)
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -98,5 +101,6 @@ def home(request: Request):
             "backup_rollup": backup_rollup,
             "concierges": concierges,
             "kanban_counts": kanban_counts,
+            "recent_decisions": recent_decisions,
         },
     )
