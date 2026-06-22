@@ -1,0 +1,12 @@
+# Generated synthetic database — rebuild with data/seed_fund.py
+data/fund.sqlite
+
+# Runtime artifacts the agent writes each tick (not part of the example source)
+outputs/
+queues/research/processed/
+WORKING_MEMORY.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/

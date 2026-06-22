@@ -1,0 +1,183 @@
+# =============================================================================
+# Ben — example portfolio-manager dept (generic + synthetic).
+# This is a REFERENCE dept.yaml on the bubble-ops-loop framework. Replace the
+# mandate, missions, skills and gate policies with your own before live use.
+# =============================================================================
+department:
+  slug: ben
+  display_name: Ben
+  level: ops
+  status: example                          # example | onboarding | live
+  mandate: Grow the value of a consolidated portfolio within the risk perimeter,
+    demonstrate it through the KPIs, and route every real-capital action through
+    the human execution gate — proposals-only until the mandate is signed and
+    secrets are armed.
+  owner: principal
+  # model: "sonnet"                         # OPTIONAL per-dept model pin. A cheap
+                                            # orchestrator dept sets "sonnet" and
+                                            # spawns Opus subagents for heavy
+                                            # planning / mission execution.
+  forbidden:
+  - Submit any broker order without completing the 4-step execution gate (propose -> surface -> human-decide -> execute)
+  - Arm allow_live execution while the mandate is unsigned or broker secrets are absent (proposals-only mode)
+  - Breach a hard risk limit (§4) or propose an action that would breach one
+  - Write to a read-only broker, or call any withdrawal endpoint
+  - Touch host infrastructure the dept does not own
+
+layers:
+  subscribed:
+  - 1
+  - 2
+  - 3
+  - 4
+
+recurring_missions:
+- id: data_update
+  layer: 1
+  cadence: daily
+  description: Layer 1 (Observe). Sync positions/cash/P&L across the broker(s), price
+    the watchlist, consolidate by sleeve, reconcile expected-vs-actual, compute the
+    KPI base row, then JUDGE which tickers/themes deserve research today. Emits the
+    daily situation brief + the justified Research List. Reads WORKING_MEMORY.md at
+    start. Broker reads are fenced/fail-loud until secrets are armed.
+  output_queue: queues/research/
+  creates:
+  - situation_brief
+  - research_item
+  input_sources:
+  - broker_positions
+  - vault_watchlist
+  - fund_sqlite
+  - working_memory
+  - layer4_feedback
+- id: research
+  layer: 2
+  cadence: daily
+  description: Layer 2 (Orient). For each Research List item, Wave 1 reads the vault
+    thesis + the web and writes a structured Investment Case to the vault BEFORE
+    filtering (every research has value). Wave 2 applies the mandate filter (sleeve
+    caps, concentration, tradability, correlation) + position-sizer, assigns a
+    decision risk level, and turns surviving ideas into PROPOSAL gate cards. Never
+    executes — proposals only. Reads WORKING_MEMORY.md at start.
+  output_queue: queues/gates/
+  creates:
+  - investment_case
+  - proposal
+  gate_policy_id: trade_proposal
+  input_sources:
+  - research_queue
+  - vault_investment_cases
+  - fund_sqlite
+  - mandate
+  - working_memory
+- id: execution
+  layer: 3
+  cadence: daily
+  description: 'Layer 3 (Act). Runs only on approved decisions (status=''approved''
+    in fund.sqlite, surfaced from the L2->L3 human gate). Plan -> validate -> execute:
+    builds an orders file, validates it by script (idempotency key, slippage/staleness
+    re-check, kill-switches, §4 limits) BEFORE any broker call. Executes via the
+    fenced broker adapter with allow_live only when secrets are armed AND the mandate
+    is signed; otherwise reports the validated plan and stops.'
+  output_queue: queues/management/
+  creates:
+  - executed_trade
+  input_sources:
+  - approved_decisions
+  - fund_sqlite
+  - broker_apis
+- id: risk_control
+  layer: 4
+  cadence: daily
+  description: Layer 4 (independent audit, senior-analyst not compliance-script).
+    Re-reads the day's chain (Research List, investment cases, decisions, executions,
+    rejects), controls exposures vs mandate (code computes, agent interprets), plays
+    devil's advocate on the top positions (counter-briefs), scans the horizon, checks
+    execution quality + reconciliation + system health, and produces the agent
+    scorecard. Writes risk-brief.md + risk-kpis.yaml; injects feedback items into
+    tomorrow's Research List.
+  output_queue: queues/management/
+  creates:
+  - risk_brief
+  - feedback_item
+  input_sources:
+  - outputs_today
+  - fund_sqlite
+  - mandate
+  - vault_investment_cases
+- id: weekly_review
+  layer: 4
+  cadence: weekly
+  day: friday
+  description: Layer 4 weekly retrospective. Measures the §5 KPI scoreboard over the
+    week, reviews decision outcomes, and proposes prompt/policy improvements (logged,
+    never self-applied). Surfaces a senior-employee weekly note with one strategic
+    question.
+  output_queue: queues/management/
+  creates:
+  - weekly_kpi_review
+  - improvement_proposal
+  input_sources:
+  - fund_sqlite
+  - kpi_snapshots
+  - decision_log
+  - mandate
+
+skills:
+  layer_2:
+  - fund-catalyst-calendar
+  - fund-research-posture
+  - fund-source-verification
+  - fund-thesis-format
+  - fund-thesis-scorecard
+  layer_3:
+  - broker-adapter
+
+tools: []
+
+gate_policies:
+  trade_proposal:
+    current_mode: manual_required
+    eligible_future_modes:
+    - manual_unless_policy_passed
+    - auto_if_policy_passed
+    - auto_with_veto_window
+    authorization_band: Every trade gates through the principal (MANDATE §6). After
+      a number of consecutive PROPOSAL approvals on a deployment-gate class, that
+      class is a candidate for an autonomous band by explicit principal signature.
+      Fenced while secrets absent or mandate unsigned.
+    kpi_guardrail_set: example_fund_v1
+  high_risk_trade:
+    current_mode: manual_required
+    eligible_future_modes:
+    - manual_unless_policy_passed
+    - auto_with_veto_window
+    authorization_band: New sleeve, volatile crypto, or illiquid name. Reinforced
+      validation; rarely eligible for auto. Always the principal.
+    kpi_guardrail_set: example_fund_v1
+  critical_risk_action:
+    current_mode: manual_required
+    eligible_future_modes:
+    - auto_if_policy_passed
+    - auto_with_veto_window
+    authorization_band: Emergency de-risk / stop-loss (e.g. §4 max-drawdown
+      auto-proposal to raise cash). Specific gate; may become pre-authorized by
+      principal signature for speed.
+    kpi_guardrail_set: example_fund_v1
+
+hierarchy:
+  level: ops
+  parent: principal
+  children: []
+  visibility:
+    read_outputs: []
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false
+  directive_policy:
+    can_open_priority_prs: false
+    target_queue: queues/management/
+    requires_human_gate_for: []
+
+optional_domain_ledger: null
