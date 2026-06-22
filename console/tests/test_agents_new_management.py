@@ -56,7 +56,7 @@ def test_level_radios_use_radio_stack_layout(client):
     """The level radio cluster must use the .radio-stack wrapper so the
     labels don't wrap mid-word on narrow viewports.
 
-    Regression: 2026-05-24 Joris msg 3046 — the inline display:inline-flex
+    Regression: 2026-05-24 {{OPERATOR}} msg 3046 — the inline display:inline-flex
     layout combined with .cabinet-field input { width: 100% } pushed the
     radio dot to full-row width and broke 'Collègue opérationnel' /
     'Manager d'une équipe' into vertical word-stacks on iPhone."""
@@ -87,7 +87,7 @@ def test_post_with_invalid_level_returns_400(client, mock_bootstrap):
         data={
             "slug": "newdept",
             "display_name": "NewDept",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "principal",   # not a valid scaffold level
             "children": "",
@@ -104,7 +104,7 @@ def test_post_management_without_children_returns_400(client, mock_bootstrap):
         data={
             "slug": "tony",
             "display_name": "Tony",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "",
@@ -121,7 +121,7 @@ def test_post_ops_with_children_returns_400(client, mock_bootstrap):
         data={
             "slug": "newleaf",
             "display_name": "NewLeaf",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "ops",
             "children": "ben,maya",
@@ -138,7 +138,7 @@ def test_post_children_with_invalid_slug_chars_returns_400(client, mock_bootstra
         data={
             "slug": "tony",
             "display_name": "Tony",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "BEN,Maya!",   # uppercase + special chars
@@ -162,7 +162,7 @@ def test_post_ops_stores_level_ops_for_callback(client, monkeypatch):
         data={
             "slug": "newleaf",
             "display_name": "NewLeaf",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "ops",
             "children": "",
@@ -187,7 +187,7 @@ def test_post_management_stores_children_for_callback(client, monkeypatch):
         data={
             "slug": "tony",
             "display_name": "Tony",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "fixture,ben",
@@ -210,7 +210,7 @@ def test_post_management_whitespace_in_children_is_normalized(client, monkeypatc
         data={
             "slug": "tony",
             "display_name": "Tony",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "  fixture , ben  ",
@@ -235,7 +235,7 @@ def test_post_without_level_defaults_to_ops(client, monkeypatch):
         data={
             "slug": "newleaf",
             "display_name": "NewLeaf",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             # no level field
             # no children field

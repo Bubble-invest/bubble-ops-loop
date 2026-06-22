@@ -9,7 +9,7 @@ Notion v5 lines 920-924 mandate 3 lines visible on EVERY gate surface:
 
 The current gate_card.html shows only `current_mode` (humanized).
 `future_eligible_modes` and the shadow-autonomy state are absent.
-Joris validates Maya gates from his phone — he needs the full trajectory
+{{OPERATOR}} validates Maya gates from his phone — he needs the full trajectory
 to evaluate "where this gate type is going".
 
 Gate-level shadow autonomy state does NOT live on the gate itself in v3
@@ -100,7 +100,7 @@ def test_gate_card_with_future_modes_renders_humanized_future(tmp_path,
     (live / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture", "display_name": "Fixture",
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

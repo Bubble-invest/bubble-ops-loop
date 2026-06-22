@@ -119,7 +119,7 @@ done
 cat > "$YAML_PATH" <<YAML_EOF
 id: rick-${SLUG}-${TODAY}
 kind: management_note
-audience: [rick, joris]
+audience: [rick, operator]
 created_at: '${TIMESTAMP}'
 created_by: ${DEPT}
 title: "${TITLE}"

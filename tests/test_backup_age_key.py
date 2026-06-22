@@ -4,7 +4,7 @@ test_backup_age_key.py — Security/backup sprint, deliverable A.
 Tests the `scripts/backup-age-key.sh` + `scripts/restore-age-key.sh` pair.
 
 These scripts back up Morty's /etc/age/key.txt by re-encrypting it with a
-Joris-supplied passphrase (symmetric, separate from the SOPS chain) and
+{{OPERATOR}}-supplied passphrase (symmetric, separate from the SOPS chain) and
 writing the ciphertext to bubble-vps-data/disaster-recovery/. They do NOT
 write any cleartext to disk and do NOT auto-commit.
 

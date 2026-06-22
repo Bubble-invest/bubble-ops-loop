@@ -4,7 +4,7 @@ artifact_tests/activation_pr.py — Refonte #1 of 3, Deliverable D.
 Verifies that the activation PR body built by
 `skill_lib.activation_pr.build_activation_pr_body()` is the humanized
 French Bureau-de-Cadre version (not the legacy English one). This
-tester is what Step 7 calls before showing the PR body to Joris on
+tester is what Step 7 calls before showing the PR body to {{OPERATOR}} on
 Telegram — if FAILED the runner blocks.
 
 Notion v5 lines 977-995 specify the PR body sections (the heading

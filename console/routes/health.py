@@ -1,7 +1,7 @@
 """GET /health — the Carnet de bord: real per-dept loop activity.
 
 Reads live on-disk loop traces (heartbeat + per-layer .last-run) via
-morty_reader — no longer a stub (Joris msg 1180, 2026-06-01)."""
+morty_reader — no longer a stub ({{OPERATOR}} msg 1180, 2026-06-01)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Request

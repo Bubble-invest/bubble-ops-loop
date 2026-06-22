@@ -1,6 +1,6 @@
 {# components/trade-details.html — readable structured block for trade_proposal gates.
    Expects `gate` in context (full YAML doc). Renders nothing for non-trade gates.
-   Joris msg 4005 (2026-06-07): trade cards were a wall of text; surface the key
+   {{OPERATOR}} msg 4005 (2026-06-07): trade cards were a wall of text; surface the key
    facts as a scannable grid + the thesis below. #}
 {% if gate.kind == 'trade_proposal' or gate.ticker %}
 {% set _side = (gate.side or '') | upper %}

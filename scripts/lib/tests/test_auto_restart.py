@@ -1,8 +1,8 @@
-"""test_auto_restart.py — auto-restart dead DEPARTMENTS (PR3, Joris-approved).
+"""test_auto_restart.py — auto-restart dead DEPARTMENTS (PR3, {{OPERATOR}}-approved).
 
-Scope (Joris):
+Scope ({{OPERATOR}}):
   • ONLY departments (tony, ben, maya, accountant) are auto-restarted.
-  • NEVER concierges (morty, claudette) — Joris msg 4636. SAFETY INVARIANT,
+  • NEVER concierges (morty, claudette) — {{OPERATOR}} msg 4636. SAFETY INVARIANT,
     enforced as a GUARD (refusal), not just a config default.
   • Guardrail: max 3 restarts per rolling hour per dept; the 4th ESCALATES.
   • Default-on for the 4 depts; opt-out per dept; concierges hard-excluded.

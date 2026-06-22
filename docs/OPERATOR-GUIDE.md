@@ -81,13 +81,13 @@ Every gated action class declares an autonomy mode in `dept.yaml::gate_policies.
 
 | # | Mode | Behaviour | Realistic example |
 |---|---|---|---|
-| 1 | `manual_required` | Every instance creates a gate; Joris approves/rejects in the console. v1 default for every domain action. | Maya sending a prospect DM today — every draft pings Telegram. |
+| 1 | `manual_required` | Every instance creates a gate; {{OPERATOR}} approves/rejects in the console. v1 default for every domain action. | Maya sending a prospect DM today — every draft pings Telegram. |
 | 2 | `manual_unless_policy_passed` | Gate raised only when an authorization-band check fails (e.g. cold prospect, off-hours). Warm/in-band instances still gate. | Same Maya DM, but warm-prospect instances skip the gate after KPIs stay green for 14 days. |
 | 3 | `auto_if_policy_passed` | Action auto-fires if the policy passes; otherwise gates. Layer-4 monitors reply-rate / negative-reply / human-edit. | After Maya proves <2% negative-reply rate for 30 days, warm prospect DMs auto-send. |
-| 4 | `auto_with_veto_window` | Action queued with a delay (e.g. 5 min); Joris can veto via Telegram before it fires. | Ben Layer 3 trade-order placement — auto-fires unless vetoed in 60s. |
+| 4 | `auto_with_veto_window` | Action queued with a delay (e.g. 5 min); {{OPERATOR}} can veto via Telegram before it fires. | Ben Layer 3 trade-order placement — auto-fires unless vetoed in 60s. |
 | 5 | `disabled` | Action class is paused at policy level (no gates, no execution). | Used during incident response or KPI degradation. |
 
-`eligible_future_modes: []` declares a policy can **never** be raised — used by `mandate_breach_escalation` on every dept. The console refuses to raise a policy outside its declared `eligible_future_modes` whitelist. Layer 4's `management-export.yaml` carries an optional `autonomy_readiness:` block with 14/30-day shadow-autonomy deltas (would-have-auto vs human-approved/modified/rejected), which is the data Joris uses to decide whether to raise a mode.
+`eligible_future_modes: []` declares a policy can **never** be raised — used by `mandate_breach_escalation` on every dept. The console refuses to raise a policy outside its declared `eligible_future_modes` whitelist. Layer 4's `management-export.yaml` carries an optional `autonomy_readiness:` block with 14/30-day shadow-autonomy deltas (would-have-auto vs human-approved/modified/rejected), which is the data {{OPERATOR}} uses to decide whether to raise a mode.
 
 ---
 
@@ -141,7 +141,7 @@ The 7 statuses are `Idea → Configuring → Drafting → Needs validation → D
 
 **Operator entry points:**
 ```
-$ ./scripts/bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+$ ./scripts/bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 $ ./scripts/validate-step.sh --slug=miranda --step=mandate --repo-dir=/tmp/bubble-ops-miranda
 $ ./scripts/run-dry-run.sh --dept-root=/tmp/bubble-ops-miranda --seed=42
 $ ./scripts/activate-dept.sh --slug=miranda --dry-run     # preview the PR body
@@ -168,7 +168,7 @@ The script renders `deploy/templates/ops-loop-dept.service.template` with three 
 
 The deploy script **refuses** to touch `/etc/systemd/system/claude-agent-morty.service` (MD5 `ecfc78ac20e182ca302e5081e2c80943`). Production unit is sacred; deploys add sibling units only.
 
-After provisioning, pair the dept's dedicated Telegram bot (one bot per dept; the fixture uses `@bubtiktikbot`, morty uses `@ContentbubbleClawbot`) by sending `/pair` from Joris's phone. The dept's `.claude/channels/telegram-<slug>/access.json` records the chat_id.
+After provisioning, pair the dept's dedicated Telegram bot (one bot per dept; the fixture uses `@bubtiktikbot`, morty uses `@ContentbubbleClawbot`) by sending `/pair` from {{OPERATOR}}'s phone. The dept's `.claude/channels/telegram-<slug>/access.json` records the chat_id.
 
 Verify:
 ```
@@ -197,7 +197,7 @@ The 6-non-negotiables observable test (`tests/non_negotiables_observable.py`) is
 **Runbook snippet — verify schemas + the fixture's dept.yaml round-trip**
 
 ```
-$ cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
+$ cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
 $ python3 tests/validate_all.py
 Loaded 7 schemas from .../schemas-draft:
   - dept.schema.yaml
@@ -278,13 +278,13 @@ These six are structural — they must be true on day 1 of every dept or they le
 - **action class** — One of the four token-broker permission tiers: `runtime_read`, `runtime_write_own`, `open_priority_pr`, `settings_pr`. Each maps to a minimal GitHub-App permission set at mint time.
 - **filesystem-as-bus** — The architectural doctrine that all inter-layer / inter-dept communication happens via files in a git repo. No DB, no message queue, no orchestrator.
 - **belt + suspenders** — The dual-rail safety doctrine: `/loop` is the main engine, Cloud Routines are the daily safety net; broker scopes the token, guard scopes the path; CODEOWNERS guards at the GitHub side, git-guard guards at the push side.
-- **Morty** — The Hetzner CX33 VPS (`joris-cx33.tailnet`) hosting all `/loop` sessions. Provisioned by `bubble-vps-platform` (pyinfra, 209+ tests).
+- **Morty** — The Hetzner CX33 VPS (`{{VPS_HOST}}.tailnet`) hosting all `/loop` sessions. Provisioned by `bubble-vps-platform` (pyinfra, 209+ tests).
 
 ---
 
 ## 11. Operational doctrine — five rules that survived nine iterations
 
-The Notion page records nine Telegram iterations between Joris and Lab before the architecture stabilised. Five operating rules came out of those rounds and are non-obvious enough to call out:
+The Notion page records nine Telegram iterations between {{OPERATOR}} and Lab before the architecture stabilised. Five operating rules came out of those rounds and are non-obvious enough to call out:
 
 1. **The dept owns its own execution.** Cloud Routines and the Morty `/loop` both write to the same `outputs/` tree on the same git repo; they never coordinate via a third party. The "fresh enough" guard (`.last-run` newer than cadence → skip) is the only deconfliction mechanism. Notion: *"Le département cible reste propriétaire de son exécution."*
 

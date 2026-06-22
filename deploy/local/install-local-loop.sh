@@ -13,7 +13,7 @@
 #   PERSISTENT interactive `claude --dangerously-skip-permissions --channels
 #   plugin:telegram@claude-plugins-official` session inside a tmux session
 #   (ops-loop-<slug>). The dept's CLAUDE.md /loop protocol + its OWN armed /loop
-#   cron drive the STEP A-F tick; its Telegram bot reaches Jade/Joris. This is the
+#   cron drive the STEP A-F tick; its Telegram bot reaches {{OPERATOR_2}}/{{OPERATOR}}. This is the
 #   exact Mac twin of the VPS systemd dept unit's interactive `--channels` runner.
 #
 # DOCTRINE — KeepAlive (NOT StartInterval/`claude -p`): the runner is a long-lived

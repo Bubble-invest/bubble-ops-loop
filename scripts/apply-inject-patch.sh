@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # apply-inject-patch.sh — idempotently (re)apply the bubble-inject patch to the
-# telegram channel plugin's server.ts (Joris msg 4038, 2026-06-07).
+# telegram channel plugin's server.ts ({{OPERATOR}} msg 4038, 2026-06-07).
 #
 # WHY: the bubble-inject feature (a local file-watcher that delivers a message
-# INTO a running --channels session as if from Joris — closing the upstream
+# INTO a running --channels session as if from {{OPERATOR}} — closing the upstream
 # no-external-injection gap #24947/#27441/#53049) lives as a patch to the OFFICIAL
 # telegram plugin's server.ts, which sits in a non-git plugin CACHE dir that a
 # plugin UPDATE overwrites (see claude-plugin-update-mechanism). Run this at every
@@ -30,11 +30,11 @@ grep -qF "$ANCHOR" "$SRV" 2>/dev/null || { log "anchor not found in $SRV — ski
 # The patch block (kept in sync with the live edit). Inserted right after connect.
 read -r -d '' PATCH <<'PATCH_EOF' || true
 
-// ─── Local inject channel (Bubble, Joris msg 4036, 2026-06-07) ──────────────
-// Deliver a message INTO this running --channels session AS IF from Joris, via a
+// ─── Local inject channel (Bubble, {{OPERATOR}} msg 4036, 2026-06-07) ──────────────
+// Deliver a message INTO this running --channels session AS IF from {{OPERATOR}}, via a
 // local file watcher — closing the upstream no-external-injection gap
 // (#24947/#27441/#53049). Fires the SAME notifications/claude/channel event the
-// telegram getUpdates path uses, meta forged to Joris's chat_id. On-box only;
+// telegram getUpdates path uses, meta forged to {{OPERATOR}}'s chat_id. On-box only;
 // every inject logged (meta.source='bubble-inject'). Off unless BUBBLE_INJECT_FILE
 // or TELEGRAM_STATE_DIR is set.
 try {
@@ -56,7 +56,7 @@ try {
         process.stderr.write(`telegram inject: delivering as ${injectAs}: ${text.slice(0, 80)}\n`)
         mcp.notification({
           method: 'notifications/claude/channel',
-          params: { content: text, meta: { chat_id: injectAs, user: 'joris', user_id: injectAs, ts: new Date().toISOString(), source: 'bubble-inject' } },
+          params: { content: text, meta: { chat_id: injectAs, user: 'operator', user_id: injectAs, ts: new Date().toISOString(), source: 'bubble-inject' } },
         }).catch((err: unknown) => { process.stderr.write(`telegram inject: delivery failed: ${String(err)}\n`) })
       }
     }

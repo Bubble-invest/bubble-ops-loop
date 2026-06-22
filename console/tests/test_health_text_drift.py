@@ -1,5 +1,5 @@
 """
-test_health_text_drift.py — Bug A4, updated 2026-06-01 (Joris msg 1180).
+test_health_text_drift.py — Bug A4, updated 2026-06-01 ({{OPERATOR}} msg 1180).
 
 The /health page WAS a stub fed by placeholder data; its footer promised the
 "live journal wiring" was still pending (post-MVP). That promise is now

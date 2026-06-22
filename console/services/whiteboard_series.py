@@ -7,7 +7,7 @@ The whiteboard (dept_detail "Tableau de bord") shows two things:
   2. Graphs of those KPIs over time — built HERE, by walking every
      Layer-4 daily output and extracting the numeric KPIs.
 
-Layer 4 already emits, once per loop run (Joris msg 1163, 2026-06-01):
+Layer 4 already emits, once per loop run ({{OPERATOR}} msg 1163, 2026-06-01):
     outputs/<YYYY-MM-DD>/4/management-export.yaml   (top_kpis: flat numbers)
     outputs/<YYYY-MM-DD>/4/risk-kpis.yaml           (richer, nested)
 
@@ -113,7 +113,7 @@ def _humanize_key(key: str) -> str:
         "directives_emitted_today": "Directives émises / jour",
         "directives.emitted_today": "Directives émises / jour",
         "escalations_open": "Escalades ouvertes",
-        "escalations.to_joris_open": "Escalades ouvertes",
+        "escalations.to_operator_open": "Escalades ouvertes",
         "open_gates": "Gates ouvertes",
         "open_exceptions": "Exceptions ouvertes",
         "gates.open_total": "Gates ouvertes (total)",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # loop-backup.sh — daily LAYER-FLOOR + safety-net execution for ops-loop depts.
 #
-# Why (Joris 2026-06-01 → 2026-06-04): each dept runs a persistent `/loop`
+# Why ({{OPERATOR}} 2026-06-01 → 2026-06-04): each dept runs a persistent `/loop`
 # session. If that session dies for ANY reason (auth lapse, crash, OOM, parked
 # after a restart, …) the dept silently stops working while systemd still says
 # "active". This script is the FLOOR + SAFETY NET, independent of the live loop.
@@ -127,7 +127,7 @@ case "${DRY_RUN,,}" in
 esac
 
 # Event log the cockpit reads to surface this safety net in the front end
-# (Joris msg 1171). Keep in sync with console.settings.BACKUP_LOG_PATH.
+# ({{OPERATOR}} msg 1171). Keep in sync with console.settings.BACKUP_LOG_PATH.
 BACKUP_LOG="${BUBBLE_BACKUP_LOG:-${REPO_ROOT}/state/loop-backup.jsonl}"
 
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -178,8 +178,8 @@ discover_depts() {
 
 # dept_host <slug>: where does this dept's loop RUN? Reads the `host:` field from
 # its onboarding/STATE.yaml. Echoes "vps" (default) or "local".
-#   - Hybrid local/VPS agent (Joris msg 4258, 2026-06-11): a dept can declare
-#     host: local (e.g. Miranda on Jade's Mac) so its /loop runs on its OWN
+#   - Hybrid local/VPS agent ({{OPERATOR}} msg 4258, 2026-06-11): a dept can declare
+#     host: local (e.g. Miranda on {{OPERATOR_2}}'s Mac) so its /loop runs on its OWN
 #     machine (real Chrome/tools), NOT on the VPS floor. The VPS still SEES it
 #     (the synced read-only clone stays on disk for the cockpit) but must NOT
 #     try to execute its layer here — the VPS cannot run a local dept's loop.
@@ -286,7 +286,7 @@ PYEOF
 
 # ── Notify-on-fire ──────────────────────────────────────────────────────────
 # When the safety net ACTUALLY RUNS a backup tick for a dept (NOT on a skip /
-# fresh loop), ping Joris on Telegram so he knows a primary loop was down and
+# fresh loop), ping {{OPERATOR}} on Telegram so he knows a primary loop was down and
 # the net caught it. Rides the SAME shared send path as WS3's per-layer pings:
 # the promoted, dept-agnostic `scripts/lib/notify.py` TelegramBackend (direct
 # api.telegram.org POST, reads TELEGRAM_BOT_TOKEN from env, per-channel failure
@@ -294,10 +294,10 @@ PYEOF
 # message shape is layer-specific (`🔁 <dept> · L<N> fired`); this is a distinct
 # safety-net event (`🛟`).
 #
-# Recipient: Joris's Telegram chat_id. tony/cgp have no config.yaml (only maya
+# Recipient: {{OPERATOR}}'s Telegram chat_id. tony/cgp have no config.yaml (only maya
 # does), so we can't lean on per-dept `resolve_recipients`; the backup net pings
-# ONE human (Joris) regardless of dept. chat_id is overridable via
-# BUBBLE_BACKUP_TELEGRAM_CHAT_ID (default = Joris, confirmed msg 1946).
+# ONE human ({{OPERATOR}}) regardless of dept. chat_id is overridable via
+# BUBBLE_BACKUP_TELEGRAM_CHAT_ID (default = {{OPERATOR}}, confirmed msg 1946).
 #
 # TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
 # envfile (which carries it) before invoking this. Never fatal: a notify failure
@@ -317,7 +317,7 @@ notify_backup_fired() {
     local what="backup tick"
     [[ -n "$FORCE_LAYER" ]] && what="L${FORCE_LAYER} floor tick"
     local msg="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
-    # Append the tick's work summary so Joris sees WHAT the layer mission did,
+    # Append the tick's work summary so {{OPERATOR}} sees WHAT the layer mission did,
     # not just that the net fired. Empty summary (parse failed / heartbeat with
     # no text) falls back to the bare line above.
     if [[ -n "$summary" && "$summary" != "None" ]]; then
@@ -354,12 +354,12 @@ if not receipt.success:
 PYEOF
 }
 
-# ── Auto-restart dead DEPARTMENTS (Rick 2026-06-19, Joris-approved) ──────────
+# ── Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved) ──────────
 # When the backup tick could NOT revive a dead dept (tick exited non-zero — the
 # loop is down AND the safety net couldn't run a layer), restart the dept's
-# systemd unit. EXACT Joris-approved scope (enforced by scripts/lib/auto_restart.py):
+# systemd unit. EXACT {{OPERATOR}}-approved scope (enforced by scripts/lib/auto_restart.py):
 #   • ONLY departments (tony, ben, maya, accountant); NEVER concierges
-#     (morty, claudette) — Joris msg 4636. The concierge exclusion is a GUARD in
+#     (morty, claudette) — {{OPERATOR}} msg 4636. The concierge exclusion is a GUARD in
 #     the decision module (refuses anything not a dept), not just this default.
 #   • Guardrail: max 3 restarts/rolling-hour/dept; the 4th ESCALATES to Telegram.
 #   • DEFAULT-ON for the 4 depts; opt-out per dept via
@@ -475,7 +475,7 @@ PYEOF
 # ── Tick prompt ──────────────────────────────────────────────────────────────
 # Two shapes. In layer-floor mode the prompt FORCES Layer N (no decide_dispatch);
 # in generic mode it runs the dispatcher's choice. Both end with the concise
-# report the wrapper relays to Joris on Telegram.
+# report the wrapper relays to {{OPERATOR}} on Telegram.
 build_tick_prompt() {
     if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
         cat <<PROMPT
@@ -495,7 +495,7 @@ risk-brief.md) marked degraded=true, so Tony's morning brief can read it.
 Execute EXACTLY ONE tick, then: 1. If your /loop cron is NOT armed, arm it NOW (CronCreate, every 1h). 2. Write heartbeat. 3. STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your final
-message to Joris automatically. END your turn with a concise report (max ~6
+message to {{OPERATOR}} automatically. END your turn with a concise report (max ~6
 lines): confirm the degraded L4, what carried-over state you summarized, and
 any delayed time-sensitive item.
 PROMPT
@@ -515,13 +515,13 @@ ${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then:
   3. Then STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your
-final message to Joris automatically. Instead, END your turn with a
+final message to {{OPERATOR}} automatically. Instead, END your turn with a
 concise report (max ~6 lines) the wrapper will forward verbatim:
   • Confirm you ran Layer ${FORCE_LAYER}.
   • What the layer mission actually DID — the concrete result/output
     (e.g. "scored 4 prospects, 1 promoted to draft"; "no new signals";
     "risk check: 2 positions flagged"). Be specific, not "ran L${FORCE_LAYER}".
-  • Any gate created or subagent failure (and what it needs from Joris).
+  • Any gate created or subagent failure (and what it needs from {{OPERATOR}}).
   • If there was nothing for this layer to do, say so in one line and why.
 PROMPT
     else
@@ -533,13 +533,13 @@ subagent (if any), validate its output, commit+push. Then STOP. Do
 NOT start a /loop. Do NOT run more than one tick.
 
 Do NOT send your own Telegram message — the backup wrapper relays your
-final message to Joris automatically. Instead, END your turn with a
+final message to {{OPERATOR}} automatically. Instead, END your turn with a
 concise report (max ~6 lines) the wrapper will forward verbatim:
   • Which layer dispatch chose (L1/L2/L3/L4 or heartbeat).
   • What the layer mission actually DID — the concrete result/output
     (e.g. "scored 4 prospects, 1 promoted to draft"; "no new signals";
     "risk check: 2 positions flagged"). Be specific, not "ran L2".
-  • Any gate created or subagent failure (and what it needs from Joris).
+  • Any gate created or subagent failure (and what it needs from {{OPERATOR}}).
   • If decide_dispatch returned heartbeat: say so in one line and why
     (e.g. "queues empty, L1 already ran today").
 PROMPT
@@ -548,13 +548,13 @@ PROMPT
 TICK_PROMPT="$(build_tick_prompt)"
 
 
-# ── Wake the LIVE session via bubble-inject, if it's alive (Joris msg 4045) ──
+# ── Wake the LIVE session via bubble-inject, if it's alive ({{OPERATOR}} msg 4045) ──
 # A floor fire usually means the in-session cron lapsed, NOT that the session
 # died. In that case the live --channels session is still up and can run the tick
 # itself — cheaper (no new session) and keeps context. We detect "session alive"
 # by a bun poller in the dept's systemd cgroup (same signal the watchdog uses),
 # then drop "run your loop" into <state_dir>/inject (the bubble-inject patch
-# delivers it as a message from Joris). We confirm it actually ticked by watching
+# delivers it as a message from {{OPERATOR}}). We confirm it actually ticked by watching
 # the heartbeat.log mtime advance; if not (session wedged/dead), the caller falls
 # back to a `claude -p` backup tick.
 inject_live_loop() {
@@ -581,7 +581,7 @@ inject_live_loop() {
     # Wait up to ~240s for the live session to tick (heartbeat mtime advances).
     # 90s was too short: the inject IS delivered but a quiet session can take a
     # couple minutes to wake + run a tick (esp. opus depts), so the floor fell back
-    # to -p even when the inject would have worked (Joris 2026-06-08, all 3 depts).
+    # to -p even when the inject would have worked ({{OPERATOR}} 2026-06-08, all 3 depts).
     local i after
     for i in $(seq 1 48); do
         sleep 5
@@ -629,7 +629,7 @@ run_backup_tick() {
     # loads ZERO MCP servers — no telegram plugin, no second poller, no
     # collision. We KEEP `--setting-sources user` so hooks/permissions/CLAUDE.md
     # still load; we only strip MCP. A layer subagent tick needs Bash/Edit/Read,
-    # not the Telegram channel (the wrapper relays the result to Joris itself).
+    # not the Telegram channel (the wrapper relays the result to {{OPERATOR}} itself).
     # Source the dept env (brings CLAUDE_CODE_OAUTH_TOKEN + per-dept vars) in a
     # subshell so it doesn't leak across depts.
     (
@@ -696,11 +696,11 @@ else
 fi
 
 # ── CEO directive dispatch (runs once per tick, BEFORE the per-dept loop) ─────
-# Deliver Joris-approved directives from the manager dept's outbound queue into
+# Deliver {{OPERATOR}}-approved directives from the manager dept's outbound queue into
 # the target children's queues/management/ inboxes. This is the ONLY actor that
 # crosses repo boundaries (the manager is isolated to its own repo). Pure
 # mechanical relay (NOT claude -p — template Ban #2). Gated: only directives with
-# approved_by=joris AND status=approved ship. Idempotent + never-fatal so it is
+# approved_by=operator AND status=approved ship. Idempotent + never-fatal so it is
 # safe on every layer-floor moment. Disable with BUBBLE_DISPATCH_DIRECTIVES=0.
 if [[ "${BUBBLE_DISPATCH_DIRECTIVES:-1}" == "1" ]]; then
     _dispatcher="$(dirname "${BASH_SOURCE[0]}")/dispatch_directives.py"
@@ -759,7 +759,7 @@ PYEOF
         continue
     fi
     log "$slug: $reason"
-    # Forced-layer BACKUP-OFFSET + PREREQUISITE gate (Joris msgs 3904 + 3911,
+    # Forced-layer BACKUP-OFFSET + PREREQUISITE gate ({{OPERATOR}} msgs 3904 + 3911,
     # 2026-06-06). The backup cron is a SAFETY NET, not a replacement: it must
     # give the live /loop a head start, then only catch up on a STALE loop.
     #   (a) BACKUP OFFSET: a forced layer N is withheld until now >= its Paris
@@ -797,7 +797,7 @@ PYEOF2
         elif [[ "$layer_ok" == "PREREQ" ]]; then
             # L1/L2/L3 did NOT all fire today AND the loop is stale (we only reach
             # here for stale depts). Rather than skip L4 entirely — which leaves
-            # Tony with NO export and a false "dept silent" reading (Joris 2026-06-07,
+            # Tony with NO export and a false "dept silent" reading ({{OPERATOR}} 2026-06-07,
             # Ben/Maya 06-06) — run a DEGRADED L4: a short, honest "loop was down,
             # earlier layers did not run" debrief from last-known state. Tony always
             # gets SOMETHING; the dept never disappears from the morning brief.

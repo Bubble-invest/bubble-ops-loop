@@ -116,7 +116,7 @@ ctx = {
     "display_name": "Miranda",
     "level": "ops",
     "mandate_text": "Produire, planifier et auditer du contenu social pour Bubble.",
-    "owner": "joris",
+    "owner": "operator",
     "forbidden": [
         "publier informations confidentielles",
         "donner conseil financier personnalise",

@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-20
 **Operator:** Rick (R&D)
-**Trigger:** Joris Telegram msg 2676 — *"Ok pour la step 9 tu peux assouplir."*
+**Trigger:** {{OPERATOR}} Telegram msg 2676 — *"Ok pour la step 9 tu peux assouplir."*
 **Verdict:** ALL-GREEN
 
 ---
@@ -15,7 +15,7 @@ The first manual Layer 4 run on `bubble-ops-fixture` (2026-05-20) produced a
 1. `needs_management_attention[]` items as **strings** (not objects)
 2. `links.*` containing **extra keys** beyond risk_kpis/risk_brief/gates
 
-Joris approved relaxing both. v3.1 of the schema accepts both shapes; root
+{{OPERATOR}} approved relaxing both. v3.1 of the schema accepts both shapes; root
 remains strict (no smuggling).
 
 ## Changes

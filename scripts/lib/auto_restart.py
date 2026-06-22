@@ -1,11 +1,11 @@
-"""auto_restart.py — auto-restart dead DEPARTMENTS (Joris-approved doctrine).
+"""auto_restart.py — auto-restart dead DEPARTMENTS ({{OPERATOR}}-approved doctrine).
 
 Background (Rick 2026-06-19, Maya/Ben 2026-06-18): the watchdog/floor doctrine
 was ALERTING-ONLY — a dead dept stayed dead until a human ran
-`systemctl restart`. Joris approved auto-restart with an EXACT, narrow scope:
+`systemctl restart`. {{OPERATOR}} approved auto-restart with an EXACT, narrow scope:
 
   • ONLY departments (the agents that have loops): tony, ben, maya, accountant.
-  • NEVER the concierges (morty, claudette) — Joris msg 4636: "only depts need
+  • NEVER the concierges (morty, claudette) — {{OPERATOR}} msg 4636: "only depts need
     restarts, concierges don't have loops". This is a SAFETY INVARIANT, enforced
     as a GUARD (an allowlist check that REFUSES anything not a dept), not merely a
     config default — a misconfigured/compromised caller still cannot restart a
@@ -43,7 +43,7 @@ from typing import List, Optional
 DEPT_ALLOWLIST = frozenset({"tony", "ben", "maya", "accountant"})
 CONCIERGE_DENYLIST = frozenset({"morty", "claudette"})
 
-# Joris-approved guardrail: at most this many auto-restarts per rolling hour
+# {{OPERATOR}}-approved guardrail: at most this many auto-restarts per rolling hour
 # per dept; the next one escalates instead.
 DEFAULT_MAX_PER_HOUR = 3
 ROLLING_WINDOW_SEC = 3600

@@ -17,7 +17,7 @@ The runner:
   - On `édite` / `raffine`: records the request and stays not-done.
 
 Invariant pinned by tests: the legacy English PR body must NEVER reach
-Joris. The Step 7 runner is the last line of defense before the
+{{OPERATOR}}. The Step 7 runner is the last line of defense before the
 operator-facing surface.
 """
 from __future__ import annotations
@@ -237,7 +237,7 @@ class ActivationRunner(StepRunner):
             # failure blurb so `next_prompt()` surfaces WHY the operator's
             # approve didn't take. Captured stderr is summarized (clipped
             # to ~200 chars to stay readable on Telegram).
-            # Persona-aware failure copy (Joris directive msg 2770, 2026-05-21):
+            # Persona-aware failure copy ({{OPERATOR}} directive msg 2770, 2026-05-21):
             # operator-facing message must NOT leak sysadmin jargon (journalctl,
             # sudo, Morty hostname, systemd unit names). Refer operator to
             # "votre équipe technique" instead — a neutral phrasing that maps

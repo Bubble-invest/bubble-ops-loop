@@ -59,7 +59,7 @@ properties:
       REQUIRED field. Per Notion line 212: even after the PR is merged,
       the target dept may reject a directive via a human gate. True is
       the safe default — false would mean "auto-accept on Layer 1 read"
-      and should only be set with explicit Joris sign-off.
+      and should only be set with explicit {{OPERATOR}} sign-off.
   requested_by:
     type: string
     minLength: 1
@@ -77,7 +77,7 @@ properties:
     description: |
       Which layer of the target dept should consume this directive
       (almost always 1; non-1 values are reserved for hot-patch scenarios
-      with Joris sign-off).
+      with {{OPERATOR}} sign-off).
   expected_output:
     type: string
     minLength: 1

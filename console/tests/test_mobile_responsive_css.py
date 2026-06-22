@@ -3,8 +3,8 @@ test_mobile_responsive_css.py — QA-Spirit Blocker C.
 
 At 375 px the home page H1 cut mid-word, the topnav clipped, the
 collegue-row CTA truncated, and the role line had no ellipsis. The
-console must be triage-able from Joris's phone (Notion v5 line 1012:
-"Mobile-friendly — Joris valide ses gates depuis son téléphone").
+console must be triage-able from {{OPERATOR}}'s phone (Notion v5 line 1012:
+"Mobile-friendly — {{OPERATOR}} valide ses gates depuis son téléphone").
 
 This test pins down the CSS contract that fixes the symptoms:
   - a 720 px tablet breakpoint that wraps the topbar and stacks
@@ -86,7 +86,7 @@ def test_mobile_has_at_least_five_class_rules() -> None:
 
 def test_mobile_does_not_hide_operator_content() -> None:
     """`display: none` is forbidden inside mobile blocks — info must
-    restack, not disappear (Joris must see the same content as on desktop,
+    restack, not disappear ({{OPERATOR}} must see the same content as on desktop,
     just laid out vertically)."""
     css = _read_css()
     pat = re.compile(

@@ -120,14 +120,14 @@ def onboarding_view(slug: str, request: Request):
     # Right pane: artifacts + dept.yaml.draft preview.
     artifacts = github_reader.list_artifacts(slug)
     dept_yaml_raw = github_reader.load_dept_yaml_raw(slug)
-    # MANDATE.md verbatim — once Step 1 is validated, Joris can read the
+    # MANDATE.md verbatim — once Step 1 is validated, {{OPERATOR}} can read the
     # full mandate from this page (msg 3118).
     mandate_md = github_reader.load_mandate_md(slug)
 
     # Full mission list (id, layer, cadence, description, creates, ...)
-    # and per-subscribed-layer PROMPT.md — Joris reads these mid-éclosion
+    # and per-subscribed-layer PROMPT.md — {{OPERATOR}} reads these mid-éclosion
     # to validate the agent's recurring tasks + day-moment prompts.
-    # Joris flag 2026-05-24 msg 3137.
+    # {{OPERATOR}} flag 2026-05-24 msg 3137.
     missions_full = github_reader.list_missions_full(slug)
     dept_yaml = github_reader.load_dept_yaml(slug)
     layers: list[int] = []

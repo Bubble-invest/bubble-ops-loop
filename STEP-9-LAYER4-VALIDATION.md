@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-20
 **Operator:** Rick (R&D)
-**Phase status:** Phase A (RED) and Phase B (trigger drafted) complete; Phase C awaiting Joris-sent Telegram trigger or natural 22:00 UTC fire; Phase D (PROMPT.md audit) complete.
+**Phase status:** Phase A (RED) and Phase B (trigger drafted) complete; Phase C awaiting {{OPERATOR}}-sent Telegram trigger or natural 22:00 UTC fire; Phase D (PROMPT.md audit) complete.
 
 **Verdict:** **AWAITING-TRIGGER**
 
@@ -12,7 +12,7 @@
 
 - Test file created with **11 assertions** (10 hard + 1 optional/skip-tolerant) covering all 3 mandatory Notion v4 outputs PLUS the standard 4-file output schema for Layer 4 itself PLUS schema validation against `management-export.schema.yaml`.
 - **RED captured cleanly** (2026-05-20 ~21:50 UTC) — 10 fail, 1 skip (autonomy_readiness is optional). No Layer 4 outputs exist yet for `2026-05-20` on the fixture repo.
-- **Telegram trigger message drafted** below — Joris pastes verbatim to `@bubbleops_<slug>_bot`.
+- **Telegram trigger message drafted** below — {{OPERATOR}} pastes verbatim to `@bubbleops_<slug>_bot`.
 - **`layers/4/PROMPT.md` audit:** GREEN — the prompt is well-specified for all 3 outputs, the path-outside-`4/` quirk for `management-export.yaml` is called out explicitly, and the PURE-AUDITOR guard is reaffirmed. **Two small additions recommended for Step 11** (no blocker for Step 9 GREEN).
 
 ---
@@ -82,7 +82,7 @@ RED is real, not a tooling artifact.
 
 ---
 
-## Phase B — Manual trigger (Telegram message for Joris)
+## Phase B — Manual trigger (Telegram message for {{OPERATOR}})
 
 **Send to** `@bubbleops_<slug>_bot` (the fixture agent on Morty, NOT `@ContentbubbleClawbot` which is morty/Tony).
 
@@ -122,7 +122,7 @@ Report back via this chat when all 6 files are committed (or paste the gh api / 
 
 ## Phase C — Polling for GREEN
 
-Once Joris sends the message and the agent reports a commit (or once 22:00 UTC fires naturally), run:
+Once {{OPERATOR}} sends the message and the agent reports a commit (or once 22:00 UTC fires naturally), run:
 
 ```bash
 cd .
@@ -141,7 +141,7 @@ BUBBLE_OPS_LAYER4_DATE=2026-05-19 python3 -m pytest tests/round-trip/test_layer4
 
 - All 10 hard assertions pass + autonomy_readiness skip → **GREEN-NOW**, Step 9 done.
 - 1-2 fail with schema drift (e.g., missing `last_successful_layer` field) → **GREEN-PARTIAL**, file Step 11 patch.
-- All fail still → trigger didn't fire; re-prompt Joris or wait for 22:00 UTC cron.
+- All fail still → trigger didn't fire; re-prompt {{OPERATOR}} or wait for 22:00 UTC cron.
 - All present but schemas reject → **SCHEMA-DRIFT** (most likely outcome to watch), document and patch `layers/4/PROMPT.md` per Phase D below.
 
 ---
@@ -175,7 +175,7 @@ None of these block Step 9 GREEN — they harden the prompt for Step 11's robust
 - [x] Test file with >=6 assertions — **11 written**
 - [x] RED captured (test fails initially, no L4 outputs) — **10 fail, 1 skip**
 - [x] Telegram trigger message documented — **Phase B above**
-- [ ] After Joris triggers (or natural 22:00 fire), GREEN verified — **AWAITING**
+- [ ] After {{OPERATOR}} triggers (or natural 22:00 fire), GREEN verified — **AWAITING**
 - [x] Verdict: GREEN-NOW / AWAITING-TRIGGER / FAILED — **AWAITING-TRIGGER**
 - [x] Any layers/4/PROMPT.md gaps documented for Step 11 — **4 additions, Phase D above**
 

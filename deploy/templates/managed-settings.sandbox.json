@@ -52,7 +52,7 @@
         "api.stlouisfed.org",
         "api.coingecko.com"
       ],
-      "_doc": "allowedDomains: array-merge base. First 10 = common (anthropic/telegram/github/npm/notion/data.gouv). Remainder = finance/market-data for fund depts (Ben + future CGP-style) \u2014 Alpaca, Yahoo Finance (yfinance), Saxo OpenAPI+OAuth, Crypto.com (ccxt), Polymarket, FRED, CoinGecko. Added 2026-06-06 (Rick, Joris): fund layers ran degraded because broker/market-data egress was blocked by the sandbox proxy. allowManagedDomainsOnly:false so this is the effective egress allowlist inside the sandbox."
+      "_doc": "allowedDomains: array-merge base. First 10 = common (anthropic/telegram/github/npm/notion/data.gouv). Remainder = finance/market-data for fund depts (Ben + future CGP-style) \u2014 Alpaca, Yahoo Finance (yfinance), Saxo OpenAPI+OAuth, Crypto.com (ccxt), Polymarket, FRED, CoinGecko. Added 2026-06-06 (Rick, {{OPERATOR}}): fund layers ran degraded because broker/market-data egress was blocked by the sandbox proxy. allowManagedDomainsOnly:false so this is the effective egress allowlist inside the sandbox."
     }
   }
 }

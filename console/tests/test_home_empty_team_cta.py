@@ -3,7 +3,7 @@ test_home_empty_team_cta.py — when the team is empty, the L'équipe
 empty-state card must surface a "Hire a new colleague" CTA linking to
 /agents/new (the éclosion form).
 
-Joris flagged msg 3044 (2026-05-24) on a fresh home: "Ok so add a link
+{{OPERATOR}} flagged msg 3044 (2026-05-24) on a fresh home: "Ok so add a link
 in here to hire a new colleague (redirect to already existing)". The
 empty-state already said "Commence par accueillir ton premier collègue."
 but had no actionable link — the operator had to navigate to /agents
@@ -48,7 +48,7 @@ def test_empty_team_section_links_to_agents_new(monkeypatch, tmp_path):
     # AND the CTA link to /agents/new must be there (this is what's new).
     assert 'href="/agents/new"' in body, (
         "Empty-team empty-state must include a CTA link to /agents/new. "
-        "Joris msg 3044 — operator should not need to navigate to /agents "
+        "{{OPERATOR}} msg 3044 — operator should not need to navigate to /agents "
         "first to find the éclosion button."
     )
 

@@ -1,7 +1,7 @@
 """
 test_whiteboard_graphs.py — KPI time-series graphs on /dept/<slug>.
 
-Joris msg 1163 (2026-06-01): each dept page should show graphs of its
+{{OPERATOR}} msg 1163 (2026-06-01): each dept page should show graphs of its
 KPIs/metrics, populated by Layer 4 at each loop run. Layer 4 already writes
 outputs/<date>/4/{management-export,risk-kpis}.yaml every run, so the series
 is built by reading that history — no new write path.
@@ -123,7 +123,7 @@ def test_series_accepts_curated_block_nested_under_export(disk_root):
     declares its curated KPIs at `export.top_kpis`. The loader must look inside
     `export:` for the curated block, not only at the doc root — otherwise it
     silently falls back to flattening every risk-kpis leaf (the 12-chart clutter
-    Joris flagged 2026-06-19)."""
+    {{OPERATOR}} flagged 2026-06-19)."""
     tmp_path = disk_root
     repo = _build_repo(tmp_path)
     for day, nav in (("2026-05-30", 238_000), ("2026-05-31", 239_300)):

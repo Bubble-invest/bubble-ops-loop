@@ -9,7 +9,7 @@ department:
   level: ops
   status: live
   mandate: "Prospection, suivi prospects, preparation de messages et maintien CRM."
-  owner: joris
+  owner: operator
   forbidden:
     - envoyer un DM sans validation humaine en v1
     - referencer client nominativement sans accord ecrit

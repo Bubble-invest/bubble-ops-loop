@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# bubble-loop-now — trigger a dept's LIVE --channels loop from the box, as if Joris
-# sent "run your loop" on Telegram (Joris msg 4036, 2026-06-07).
+# bubble-loop-now — trigger a dept's LIVE --channels loop from the box, as if {{OPERATOR}}
+# sent "run your loop" on Telegram ({{OPERATOR}} msg 4036, 2026-06-07).
 #
 # How: the bubble-inject patch in the telegram channel plugin (server.ts) watches
 # <TELEGRAM_STATE_DIR>/inject and, on each appended line, fires the SAME
 # notifications/claude/channel event a real getUpdates message would — with meta
-# forged to Joris's chat_id. So writing here delivers a message INTO the running
+# forged to {{OPERATOR}}'s chat_id. So writing here delivers a message INTO the running
 # session (the upstream gap #24947/#27441/#53049 has no other path).
 #
 # Usage:
@@ -34,5 +34,5 @@ case "$MSG" in
 esac
 
 printf '%s\n' "$MSG" >> "$INJECT"
-echo "bubble-loop-now: injected to ${SLUG} as Joris: ${MSG}"
+echo "bubble-loop-now: injected to ${SLUG} as {{OPERATOR}}: ${MSG}"
 echo "  (verify it ran: tail /home/claude/agents/bubble-ops-${SLUG}/outputs/\$(date -u +%Y-%m-%d)/heartbeat.log)"

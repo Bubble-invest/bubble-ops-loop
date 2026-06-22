@@ -40,9 +40,9 @@ def test_pour_optional_absent_when_empty():
 
 
 def test_pour_present_when_given():
-    p = nl.build_logbook_payload("maya", "T", "b", pour=["joris", "jade"])
+    p = nl.build_logbook_payload("maya", "T", "b", pour=["operator", "operator2"])
     names = [x["name"] for x in p["properties"]["Pour"]["multi_select"]]
-    assert names == ["joris", "jade"]
+    assert names == ["operator", "operator2"]
 
 
 def test_default_date_is_today_utc():

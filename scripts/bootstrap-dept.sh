@@ -7,7 +7,7 @@
 # UX-1 dependency: skills/department-onboarding-guide/ (templates + skill_lib).
 #
 # Usage:
-#   ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+#   ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 #
 # Test-hook env vars (used by tests/onboarding-bootstrap/ ONLY):
 #   BUBBLE_BOOTSTRAP_CLONE_DIR  - override the default /tmp clone parent dir
@@ -57,7 +57,7 @@ vendor_canonical_dispatch_lib() {
   done
   echo "[bootstrap] vendored canonical dispatch_helpers.py (md5 $(md5sum "$canon_lib" | awk '{print $1}')) into $target/scripts/lib/" >&2
 
-  # Per-layer-fire notification stack (Joris msg 3898, 2026-06-06): every dept
+  # Per-layer-fire notification stack ({{OPERATOR}} msg 3898, 2026-06-06): every dept
   # MUST ping when a layer fires. Vendor notify.py + loop_notify.py + notion_logbook.py (libs) and
   # tools/notify_layer.py (the CLI wrapper CLAUDE.md STEP F calls). Best-effort.
   local nf
@@ -87,7 +87,7 @@ Synopsis:
 Arguments:
   --slug=<slug>            Kebab-case slug (e.g. miranda). Must match ^[a-z][a-z0-9-]+$.
   --display-name=<name>    Human-readable display name (e.g. Miranda).
-  --owner=<owner>          Slug of the human operator (e.g. joris).
+  --owner=<owner>          Slug of the human operator (e.g. operator).
   --level=ops|management   Department level (default: ops). Use 'management' for
                            aggregator depts like Tony. Required with --children.
   --children=<slugs>       Comma-separated child dept slugs (e.g. ben,maya,miranda,eliot).
@@ -108,10 +108,10 @@ Arguments:
   --help                   Show this message and exit.
 
 Example (ops leaf):
-  ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+  ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 
 Example (management dept):
-  ./bootstrap-dept.sh --slug=tony --display-name=Tony --owner=joris \
+  ./bootstrap-dept.sh --slug=tony --display-name=Tony --owner=operator \
     --level=management --children=ben,maya,miranda,eliot
 
 Test hooks (env vars):
@@ -513,7 +513,7 @@ git -C "$CLONE_DIR" commit \
 #
 # Why this dance: bare `git push` over HTTPS uses git's own credential
 # helper chain, NOT the GH_TOKEN env var that gh CLI consumes. When
-# bubble-ops-bot is the auth path (Joris's personal account can't
+# bubble-ops-bot is the auth path ({{OPERATOR}}'s personal account can't
 # createRepository via App token, but the org install can), GH_TOKEN holds
 # a `ghs_*` installation token. We have to write that token into the
 # remote URL explicitly so git can use it. Then we strip it after the

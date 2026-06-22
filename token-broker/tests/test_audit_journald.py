@@ -1,6 +1,6 @@
 """Audit journald output — opt-in journald emission for cross-service correlation.
 
-Per Joris's Q3 review feedback on Step 3b: when Layer 4 mandate-guardian needs
+Per {{OPERATOR}}'s Q3 review feedback on Step 3b: when Layer 4 mandate-guardian needs
 to correlate broker events with other systemd-managed services on Morty
 (claude-agent-morty, telegram-watchdog, etc.), file-only JSONL is insufficient.
 journald gives `journalctl -u bubble-token-broker` filtering + structured

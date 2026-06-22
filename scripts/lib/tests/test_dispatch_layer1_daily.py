@@ -1,6 +1,6 @@
 """Layer 1 fires at least once a day, or once the other layers complete a cycle.
 
-Joris flag 2026-06-01 (refined): "at least once per day, or whenever all other
+{{OPERATOR}} flag 2026-06-01 (refined): "at least once per day, or whenever all other
 layers have fired once."
 
 decide_dispatch C.0 fires L1 when EITHER:

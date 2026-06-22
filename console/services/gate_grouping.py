@@ -7,7 +7,7 @@ Shared between:
 
 Why a shared module: home.py originally owned the helper, but dept_detail
 was rendering one card per individual gate, which scaled badly (9 stale
-echo gates = 9 cards). Joris flagged the inconsistency on 2026-05-24
+echo gates = 9 cards). {{OPERATOR}} flagged the inconsistency on 2026-05-24
 ("one card per task, shouldn't they be grouped?"). Single source of truth
 keeps the grouping rules — and the operator's mental model — identical
 on both pages.

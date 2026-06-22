@@ -10,7 +10,7 @@ After bootstrap, a fresh Claude Code session for the new dept must:
   3. Run a SessionStart hook on first boot that calls
      `python3 -m skill_lib.auto_drive announce_current_step <STATE.yaml>`
      which writes the operator-facing prompt to .claude/queued-prompts/initial.md
-     so the agent surfaces it to Joris on Telegram on first turn.
+     so the agent surfaces it to {{OPERATOR}} on Telegram on first turn.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _load_settings(repo: Path) -> dict:
 
 def test_settings_binds_telegram_mcp_or_plugin(bootstrapped_repo: Path) -> None:
     """The generated settings.json must bind plugin:telegram so the agent
-    can read/reply to Joris on Telegram from the first turn.
+    can read/reply to {{OPERATOR}} on Telegram from the first turn.
 
     Notion v5 line 1030 mandates "bound dans .claude/settings.json mcpServers
     par dept" — we accept either `mcpServers.telegram` or
@@ -84,7 +84,7 @@ def test_settings_has_session_start_hook(bootstrapped_repo: Path) -> None:
 
     assert session_start, (
         "settings.json must have hooks.SessionStart so the agent surfaces "
-        "the first-step prompt to Joris on first boot."
+        "the first-step prompt to {{OPERATOR}} on first boot."
     )
 
     # Flatten the hook commands across all SessionStart entries.

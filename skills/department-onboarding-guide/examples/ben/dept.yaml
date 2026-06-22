@@ -8,7 +8,7 @@ department:
   level: ops
   status: live
   mandate: "Gerer le family office: decisions investissement, ordres, ledger, exceptions."
-  owner: joris
+  owner: operator
   forbidden:
     - executer un ordre sans gate humain en v1
     - liquider une position sans risk brief Layer 4 sign-off

@@ -153,7 +153,7 @@ if [[ "$DRY_RUN" = "1" ]]; then
   echo "# 4. Verify active (running)."
   echo "ssh ${REMOTE} 'sudo systemctl status ${UNIT_NAME} --no-pager | head -15'"
   echo ""
-  echo "# 5. After service is up, send /start to dept's Telegram bot to pair Joris' chat_id."
+  echo "# 5. After service is up, send /start to dept's Telegram bot to pair {{OPERATOR}}' chat_id."
   exit 0
 fi
 
@@ -176,7 +176,7 @@ ssh "${REMOTE}" "sudo mv /tmp/${UNIT_NAME} ${REMOTE_UNIT_PATH} && sudo chown roo
 if ssh "${REMOTE}" "sudo systemctl is-active ${UNIT_NAME}" | grep -q "^active$"; then
   echo "[deploy] SUCCESS: ${UNIT_NAME} is active (running)"
   echo ""
-  echo "Next step: send /start to the dept's Telegram bot from Joris's"
+  echo "Next step: send /start to the dept's Telegram bot from {{OPERATOR}}'s"
   echo "account so the per-dept access.json picks up the pairing."
   exit 0
 else

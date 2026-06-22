@@ -208,7 +208,7 @@ fi
 if [ "$STRUCT" = "blocked403" ]; then
   say "  GREEN structural push BLOCKED (read-only-token 403) — mission-lock intact under sandbox."
 elif [ "$STRUCT" = "LANDED" ]; then
-  say "  RED   structural push LANDED — MISSION-LOCK BREACHED. Escalate to Rick/Joris."
+  say "  RED   structural push LANDED — MISSION-LOCK BREACHED. Escalate to Rick/{{OPERATOR}}."
   fail=1
 else
   say "  RED   structural push outcome inconclusive (state: ${STRUCT:-unknown})."

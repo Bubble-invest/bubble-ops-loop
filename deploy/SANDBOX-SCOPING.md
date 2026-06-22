@@ -1,6 +1,6 @@
 # VPS Agent Sandbox — Scoping (2026-06-01)
 
-Layer B of the agent-hardening plan (Joris msg 3609/3611/3613). The OS-level
+Layer B of the agent-hardening plan ({{OPERATOR}} msg 3609/3611/3613). The OS-level
 sandbox is the only layer that stops a **prompt-injected raw subprocess**
 (`python -c "open('/etc/age/key.txt')"`) — which the Claude-Code-level deny
 rules (Layer A, already shipped) do NOT catch.
@@ -131,7 +131,7 @@ Per-dept `.claude/settings.json` adds only its repo path to `filesystem.allowWri
    (deny rules, sops-guard, git-guard, mission-lock) stay intact throughout —
    sandbox is purely additive.
 
-## Caveats to flag to Joris
+## Caveats to flag to {{OPERATOR}}
 
 - Shared-user: sandbox does NOT give agent-from-agent isolation (that's the
   per-user split that was dropped — see vps-claude-nopasswd-all). This is a

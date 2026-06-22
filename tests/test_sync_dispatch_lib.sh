@@ -132,7 +132,7 @@ else
   BOOT_CLONE_PARENT="$(mktemp -d /tmp/sync-boot.XXXXXX)"
   # --dry-run renders the skeleton into $BUBBLE_BOOTSTRAP_CLONE_DIR/bubble-ops-<slug>
   if BUBBLE_BOOTSTRAP_CLONE_DIR="$BOOT_CLONE_PARENT" \
-       "$BOOT" --slug=fixturedept --display-name="FixtureDept" --owner=joris --dry-run \
+       "$BOOT" --slug=fixturedept --display-name="FixtureDept" --owner=operator --dry-run \
        >"$FIX/boot.log" 2>&1; then
     VENDORED="$BOOT_CLONE_PARENT/bubble-ops-fixturedept/scripts/lib/dispatch_helpers.py"
     if [[ -f "$VENDORED" ]]; then

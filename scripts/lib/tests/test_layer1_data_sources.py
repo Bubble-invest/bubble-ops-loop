@@ -1,6 +1,6 @@
 """Tests for Layer 1's independent data-source primitives (framework copy).
 
-Joris flag 2026-06-01: "Export from dept shouldn't be your only data."
+{{OPERATOR}} flag 2026-06-01: "Export from dept shouldn't be your only data."
 Layer 1 (morning brief) must cross-check each child dept against signals the
 child does NOT author about itself, so a dead runtime shipping a stale "clean"
 export gets caught. The deterministic decision rule (classify_liveness) and its

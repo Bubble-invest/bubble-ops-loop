@@ -15,9 +15,9 @@
 </header>
 
 <div class="gate-card">
-  {# ─── "En révision" banner — shown when Joris asked for a redraft (modify) ──
+  {# ─── "En révision" banner — shown when {{OPERATOR}} asked for a redraft (modify) ──
      _revision_requested is set by list_pending_gates when a modify decision
-     file exists but the gate has not yet been resolved by the agent. Joris
+     file exists but the gate has not yet been resolved by the agent. {{OPERATOR}}
      sees it is awaiting a redraft; the decide form stays so he can decide again
      once the agent re-submits. #}
   {% if gate._revision_requested %}
@@ -35,7 +35,7 @@
   </div>
 
   {# ─── Autonomy trajectory — Notion v5 lines 920-924 ─────────────
-     3 lines mandated on every gate surface (Joris triage on phone):
+     3 lines mandated on every gate surface ({{OPERATOR}} triage on phone):
        1. Niveau actuel         → current_mode humanized
        2. Pourrait apprendre    → future_eligible_modes humanized
        3. Phase d'observation   → shadow autonomy placeholder
@@ -128,7 +128,7 @@
     {# ── Recipient + context (Maya's prospect DMs / posts) ──────────
        Maya's prospect_dm/followup gates carry who the message is for and
        the chosen angle; news_post gates carry why-it-matters + source.
-       Render these as labeled rows so Joris sees the context at a glance
+       Render these as labeled rows so {{OPERATOR}} sees the context at a glance
        before reading the draft. All optional / additive — Miranda's
        content gates simply don't set them and skip this cleanly. #}
     {% if gate.recipient or gate.recipient_role or gate.angle
@@ -252,7 +252,7 @@
   {# ─── Price-context chart (Ben's optional chart_path) ───────────
      Ben writes a 90-day rebased price-comparison PNG (ticker vs 2 peers)
      to outputs/<date>/charts/ and points the gate's `chart_path` at it.
-     We render it inline ABOVE the thesis so Joris sees the price context
+     We render it inline ABOVE the thesis so {{OPERATOR}} sees the price context
      while reviewing the trade approval, instead of hunting in Telegram.
      The PNG is served by the auth-gated, path-traversal-proof
      /gate/<slug>/chart route (NOT a raw file path). Graceful no-op:
@@ -340,7 +340,7 @@
   {# ─── Draft + angles (prospect_dm / warming_comment) ────────────
      Rendered prominently ONLY when the gate carries a draft AND it is not
      a content-kind gate (content gates render draft_body in their own block
-     above). Joris triages from his phone: he must read the message + see
+     above). {{OPERATOR}} triages from his phone: he must read the message + see
      the chosen angle + the alternatives, and know that typing a variant
      (e.g. V2) in the comment asks Maya to redraft (a fresh gate, no auto-send).
      Graceful: absent on echo-style gates with no draft_body. #}

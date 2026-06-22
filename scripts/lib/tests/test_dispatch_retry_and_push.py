@@ -2,7 +2,7 @@
 test_dispatch_retry_and_push.py — TDD for auto-retry mechanism + forced
 commit-and-push helpers.
 
-Joris msg 3134 (2026-05-24):
+{{OPERATOR}} msg 3134 (2026-05-24):
   > We need a mechanism for agent auto retry if he doesn't fetch the
   > correct input and outputs the correct expected format and data.
   >
@@ -141,7 +141,7 @@ def test_should_retry_respects_custom_cap():
 
 
 def test_max_retries_default_is_3():
-    """Joris msg 3134: cap at 3. Locked in the module-level constant
+    """{{OPERATOR}} msg 3134: cap at 3. Locked in the module-level constant
     so PROMPT.md can reference it."""
     assert dh.MAX_RETRIES_DEFAULT == 3
 

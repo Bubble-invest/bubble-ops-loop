@@ -47,7 +47,7 @@ github_access:
                               # (e.g. "watch SpaceX IPO") instead of editing its
                               # mission files. Mission files (layers/**, missions/**,
                               # dept.yaml, skills/**, ...) are structural -> agent
-                              # CANNOT push them (mission-file lock); only Joris/Jade
+                              # CANNOT push them (mission-file lock); only {{OPERATOR}}/{{OPERATOR_2}}
                               # via merged PR.
         - whiteboard.md       # L4 cockpit free-space board — rendered VERBATIM by the cockpit
                               # template (alongside whiteboard.yaml's kpis/notes keys). Ben's

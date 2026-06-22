@@ -28,7 +28,7 @@ The verifier looks at:
      clone is stale.
 
 To run:
-    cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+    cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
     pytest tests/round-trip/test_layer4_three_outputs.py -v --tb=short
 
 Override the date under test (default = today UTC) with:
@@ -164,7 +164,7 @@ def _load_schema() -> dict[str, Any]:
 @pytest.fixture(scope="module", autouse=True)
 def _refresh_local_clone() -> None:
     """Pull the local clone once per module so subsequent assertions
-    see fresh state if Joris triggered Layer 4 between test runs."""
+    see fresh state if {{OPERATOR}} triggered Layer 4 between test runs."""
     _try_git_pull(FIXTURE_ROOT)
 
 

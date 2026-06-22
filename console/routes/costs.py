@@ -1,4 +1,4 @@
-"""GET /costs — per-agent / per-job token & cost panel (Joris msg 3994/4003).
+"""GET /costs — per-agent / per-job token & cost panel ({{OPERATOR}} msg 3994/4003).
 
 Surfaces what each agent + each `claude -p` cron is spending (today + last 7d),
 with a per-model breakdown. Backed by services.cost_tracker, which scans the

@@ -27,7 +27,7 @@ Arguments:
   --step=<step>         One of: mandate | missions | layers | skills_tools |
                         gates_kpis | dry_run.
   --repo-dir=<path>     Local path to the dept repo (the git working tree).
-  --validated-by=<who>  Operator slug (default: $USER or "joris").
+  --validated-by=<who>  Operator slug (default: $USER or "operator").
   --help                Show this message.
 
 Exit codes:
@@ -45,7 +45,7 @@ USAGE
 SLUG=""
 STEP=""
 REPO_DIR=""
-VALIDATED_BY="${USER:-joris}"
+VALIDATED_BY="${USER:-operator}"
 
 for arg in "$@"; do
   case "$arg" in

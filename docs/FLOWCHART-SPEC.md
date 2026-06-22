@@ -10,12 +10,12 @@ explain it to others, and improve on it. The visual must also **surface backend
 bugs** (stale/missing layers, broken readers, wrong status) — and we fix those
 as they surface.
 
-## Wishlist (Joris, verbatim intent)
+## Wishlist ({{OPERATOR}}, verbatim intent)
 - [x] Single interactive flowchart (replaces the static hiérarchie / 4-moments / rails sections)
 - [x] Principal → Management (Tony) → Ops (Ben, Maya, CGP…), concierges beside, Mac-local tier
 - [x] Directive (down) / KPI (up) edges between Principal↔Tony↔depts
 - [x] Per-dept layer 1-2-3-4 status, red when stale
-- [ ] **Live pulse must be correct** — "boucle silencieuse 2h/3j" looked wrong to Joris; verify the heartbeat reading reflects reality, not a reader bug. Display must be live on each open.
+- [ ] **Live pulse must be correct** — "boucle silencieuse 2h/3j" looked wrong to {{OPERATOR}}; verify the heartbeat reading reflects reality, not a reader bug. Display must be live on each open.
 - [ ] **Tiered status** ok / warn / alert (not everything-red). never-run ≠ stale.
 - [ ] **Clickable edges** (Tony↔dept): clicking an arrow shows the relation — which file it writes, is it bidirectional, and **when it last happened** ("log visuel sur le flowchart").
 - [ ] **Clickable per-dept layer arrows** 1-2-3-4: click → see what's inside (the layer output), last run time; red if never/over-due.

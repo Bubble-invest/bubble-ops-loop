@@ -62,7 +62,7 @@ schemas-draft/
 ## Run the validator
 
 ```bash
-cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
+cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
 python3 tests/validate_all.py
 echo "exit=$?"   # 0 = green
 ```
@@ -82,10 +82,10 @@ Deps: `pip3 install jsonschema pyyaml --break-system-packages` (or use
    `tests/negative/<name>-*.yaml` with a comment naming the rule it
    breaks.
 
-## Joris-confirmed apply-and-flag decisions
+## {{OPERATOR}}-confirmed apply-and-flag decisions
 
 Three v3 design choices were taken with `apply, flag for
-post-validation` per the task spec. Joris should sanity-check these
+post-validation` per the task spec. {{OPERATOR}} should sanity-check these
 when reviewing Step 0:
 
 1. **`department:` wrapper as canonical root** + `hierarchy:` /

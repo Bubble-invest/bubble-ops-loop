@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dispatch_directives — deliver Joris-approved CEO directives to child depts.
+"""dispatch_directives — deliver {{OPERATOR}}-approved CEO directives to child depts.
 
 THE PROBLEM IT SOLVES
 ---------------------
@@ -14,7 +14,7 @@ THE FLOW (isolation-preserving — only THIS dispatcher crosses the boundary)
 ---------------------------------------------------------------------------
 1. Tony (in his OWN repo, which he can push) writes approved directives to
    `bubble-ops-tony/queues/management/outbound/directive-<id>.yaml`, each carrying
-   `target_dept` + `approved_by: joris` + `status: approved`.
+   `target_dept` + `approved_by: operator` + `status: approved`.
 2. This dispatcher (run by the layer-floor systemd tick as the `claude` user — the
    ONLY actor allowed to cross repos, exactly like loop-backup is the only thing
    that runs depts-not-itself) reads those, and for each `status: approved`:
@@ -25,8 +25,8 @@ THE FLOW (isolation-preserving — only THIS dispatcher crosses the boundary)
 
 HARD SAFETY RULES
 -----------------
-- APPROVAL GATE: a directive is dispatched ONLY if `approved_by == "joris"` AND
-  `status == "approved"`. Anything else is skipped (logged). Joris must approve
+- APPROVAL GATE: a directive is dispatched ONLY if `approved_by == "operator"` AND
+  `status == "approved"`. Anything else is skipped (logged). {{OPERATOR}} must approve
   before dispatch — there is no autonomous emission.
 - ISOLATION: the dispatcher only writes child `queues/management/**` (a
   non-structural, allow-listed runtime path). It never touches a child's mission
@@ -176,9 +176,9 @@ def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
         # ── APPROVAL GATE ──────────────────────────────────────────────
         if status == "dispatched":
             continue  # idempotent: already done
-        if approved_by != "joris" or status != "approved":
+        if approved_by != "operator" or status != "approved":
             _log(f"SKIP {draft.name}: gate not satisfied "
-                 f"(approved_by={approved_by!r} status={status!r}) — Joris must approve")
+                 f"(approved_by={approved_by!r} status={status!r}) — {{OPERATOR}} must approve")
             skipped += 1
             continue
         if not target or not isinstance(target, str):
@@ -212,7 +212,7 @@ def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
 
         ok, detail = _push_repo(
             child_repo, f"bubble-ops-{target}",
-            f"directive: deliver {did} from {manager} (Joris-approved)", dry_run,
+            f"directive: deliver {did} from {manager} ({{OPERATOR}}-approved)", dry_run,
         )
         if not ok:
             _log(f"FAIL deliver {did} -> {target}: {detail}")

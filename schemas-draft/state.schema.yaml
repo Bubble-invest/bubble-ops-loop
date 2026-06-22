@@ -47,7 +47,7 @@ properties:
   owner:
     type: string
     minLength: 1
-    description: Human owner of the dept (e.g. "joris").
+    description: Human owner of the dept (e.g. "operator").
   created_at:
     type: string
     format: date-time
@@ -133,10 +133,10 @@ properties:
       - local
     description: |
       Where this dept's bubble-ops-loop runtime runs (Hybrid local/VPS agent,
-      Joris 2026-06-11). Optional + additive — ABSENT means "vps" (back-compat:
+      {{OPERATOR}} 2026-06-11). Optional + additive — ABSENT means "vps" (back-compat:
       every existing dept runs on the VPS).
         vps    — runs headless on the tenant VPS via systemd (the default).
-        local  — runs on a local machine (e.g. Miranda on Jade's Mac, to use
+        local  — runs on a local machine (e.g. Miranda on {{OPERATOR_2}}'s Mac, to use
                  real Chrome tabs / local apps) via launchd/cron. Still a
                  first-class team member: its repo pushes to GitHub so the
                  cockpit reads its state/gates/heartbeat the same way; its /loop

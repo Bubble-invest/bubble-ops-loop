@@ -23,7 +23,7 @@
 #   secrets, sops, sudoers, or any guard. It ONLY installs deps + the profile.
 #
 # APPROVAL
-#   Approved by Joris (Telegram msg 3621, 2026-06-02): host-prep approved,
+#   Approved by {{OPERATOR}} (Telegram msg 3621, 2026-06-02): host-prep approved,
 #   fixture-first, quality over speed. Reference:
 #     projects/bubble-ops-loop/deploy/sandbox-tests/CONTEXT.md §4
 #     projects/bubble-ops-loop/deploy/SANDBOX-SCOPING.md (TL;DR remediation)
@@ -32,7 +32,7 @@
 #   - Idempotent: detects already-done state, skips, never errors on re-run.
 #   - Root-only: refuses unless EUID 0.
 #   - Verifies after every step; prints per-step PASS/FAIL + a final GREEN/RED.
-#   - WRITTEN by the host-prep-scoper subagent; EXECUTED by Rick + Joris by hand
+#   - WRITTEN by the host-prep-scoper subagent; EXECUTED by Rick + {{OPERATOR}} by hand
 #     after review. Do not auto-run.
 #
 # INVOKE
@@ -64,7 +64,7 @@ cat <<'BANNER'
 
 =============================================================================
  host-prep-sandbox.sh  —  install Claude Code sandbox dependencies
- Target: Ubuntu 24.04 (Hetzner). Approved by Joris (msg 3621, 2026-06-02).
+ Target: Ubuntu 24.04 (Hetzner). Approved by {{OPERATOR}} (msg 3621, 2026-06-02).
  Changes: apt(bubblewrap,socat) + npm(sandbox-runtime) + AppArmor bwrap profile.
 =============================================================================
 BANNER

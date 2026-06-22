@@ -370,7 +370,7 @@ def test_gate_card_renders_maya_news_post(client, fixture_repo):
         "risk_level": "low",
         "requires_human": True,
         "current_mode": "manual_required",
-        "account_used": "Joris",
+        "account_used": "Operator",
         "post_body": "Un agent IA qui code: une demo.\n\nCent agents: une usine.",
         "why_it_matters": "La bascule agent unique vers maillage est notre these.",
         "summary": "Relais news du jour : Factory 2.0.",

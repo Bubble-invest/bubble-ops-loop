@@ -1,6 +1,6 @@
 # INSTALL-ON-MORTY — bubble-git-guard operator runbook
 
-**Audience:** Joris (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
+**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
 **Pairs with:** `token-broker/deploy/INSTALL-ON-MORTY.md`.
 **Doctrine:** Notion v4 line 725 — "GitHub ne fournit pas un vrai path-scope au
 niveau token `contents:write`. Les paths autorisés sont donc appliqués par
@@ -38,7 +38,7 @@ From your laptop (Mac):
 ```bash
 # 1.1 Pack — EXCLUDE Mac AppleDouble + .DS_Store noise (QA-AUDIT-J2
 # Nice-to-have #1: rsync from Mac was leaking `._*` files into /opt/).
-cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
 tar --exclude='._*' --exclude='.DS_Store' \
     -czf /tmp/bubble-git-guard.tar.gz git-guard/
 

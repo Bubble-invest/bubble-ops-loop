@@ -4,7 +4,7 @@
 #
 # Inverse symétrique de backup-age-key.sh : lit le ciphertext local
 # projects/bubble-vps-data/disaster-recovery/age-key-morty.age, demande la
-# passphrase à Joris, et écrit le clair sur STDOUT.
+# passphrase à {{OPERATOR}}, et écrit le clair sur STDOUT.
 #
 # Invariants :
 #   - Le clair NE TOUCHE JAMAIS le disque local. Sortie sur stdout uniquement.
@@ -31,7 +31,7 @@ Usage : restore-age-key.sh [--input=<path>]
 
 Synopsis :
   Décrypte projects/bubble-vps-data/disaster-recovery/age-key-morty.age
-  avec la passphrase fournie par Joris et écrit le clair sur STDOUT.
+  avec la passphrase fournie par {{OPERATOR}} et écrit le clair sur STDOUT.
 
 Arguments :
   --input=<path>   Chemin du ciphertext. Défaut : le fichier canonique

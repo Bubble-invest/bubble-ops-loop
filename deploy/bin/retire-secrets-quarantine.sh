@@ -4,7 +4,7 @@
 # Deploy: /usr/local/bin/retire-secrets-quarantine.sh (root:root 0755)
 # Invoked by retire_dept.py (Side effect 5) via `sudo -n` on Morty.
 #
-# DOCTRINE (Joris 2026-06-05): a retired dept keeps its HISTORY (GitHub repo +
+# DOCTRINE ({{OPERATOR}} 2026-06-05): a retired dept keeps its HISTORY (GitHub repo +
 # transcripts) but loses live ACCESS. This:
 #   1. Locks the Telegram bot — access.json -> dmPolicy=denied, allowFrom=[].
 #      No one can DM the retired bot (immediate, code-level lockout).

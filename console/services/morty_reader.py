@@ -3,7 +3,7 @@ morty_reader.py — real per-dept activity for the Carnet de bord (/health).
 
 History: in UX-3 this was a thin stub that marked every (dept × layer) as
 never-run + stale, so the Carnet de bord showed no live activity at all
-(Joris msg 1180, 2026-06-01: "stale and not showing live real activity").
+({{OPERATOR}} msg 1180, 2026-06-01: "stale and not showing live real activity").
 The "real journalctl wiring lands in UX-5" plan assumed the console ran
 off-box and had to SSH into Morty. It no longer does — the console runs ON
 the box and already reads each dept repo from disk. So the live source is

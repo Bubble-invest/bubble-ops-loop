@@ -49,9 +49,9 @@ The helper itself needs NO per-dept customization — one binary serves all dept
 > `layers/**`, `skills/**`, `tools/**`, `.claude/settings.json`, etc. — are
 > **frozen spec**. You cannot Edit, Write, or `git add`/`commit` them yourself;
 > the mission-guard will deny it, and a direct push gets a read-only token (403).
-> This is by design: your mission changes only via a PR that Joris or Jade merges.
+> This is by design: your mission changes only via a PR that {{OPERATOR}} or {{OPERATOR_2}} merges.
 >
-> When you have a real, justified structural change (even one Joris approved in
+> When you have a real, justified structural change (even one {{OPERATOR}} approved in
 > chat), DO NOT try to self-edit. Open a settings PR with the root helper:
 >
 > ```bash

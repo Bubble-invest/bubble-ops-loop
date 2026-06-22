@@ -78,7 +78,7 @@ is an independent safety net AND a daily cadence guarantee.
   (`scripts/lib/loop_backup.py`): fresh (loop alive) → **skip** (no
   double-processing); stale > 90 min, or no heartbeat → run **ONE** forced
   Layer-N tick via `claude -p` in the dept's authed workspace, then stop. The
-  tick's work summary is relayed to Joris on Telegram.
+  tick's work summary is relayed to {{OPERATOR}} on Telegram.
 - A `flock` mutex guarantees a floor tick never overlaps a live tick.
 
 The floor SUPERSEDES the old twice-daily generic `loop-backup.timer` (which

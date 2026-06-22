@@ -1,7 +1,7 @@
 """
 test_concierge_projects.py — working projects on a concierge page.
 
-Joris msg 1193: show what the concierge is building, read from
+{{OPERATOR}} msg 1193: show what the concierge is building, read from
 <workspace>/workspace/projects/*/STATUS.md.
 """
 from __future__ import annotations

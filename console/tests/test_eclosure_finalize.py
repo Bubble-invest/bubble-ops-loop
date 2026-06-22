@@ -349,7 +349,7 @@ def test_launch_calls_finalize_after_bootstrap(monkeypatch):
         level="ops",
         children_list=[],
         display_name="Iota",
-        owner="joris",
+        owner="operator",
     )
 
     kinds = [c[0] for c in calls]

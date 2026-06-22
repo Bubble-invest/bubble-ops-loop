@@ -58,7 +58,7 @@ def _write_decision(repo: Path, gate_id: str, action: str = "approve",
             "action": action,
             "comment": comment,
             "decided_at": decided_at,
-            "decided_by": "joris",
+            "decided_by": "operator",
         }, sort_keys=False),
         encoding="utf-8",
     )
@@ -396,7 +396,7 @@ class TestUndoRoute:
             "requires_human": True,
             "current_mode": "manual_required",
             "resolved": True,
-            "decided_by": "joris",
+            "decided_by": "operator",
         }
         p = fixture_repo / "queues" / "gates" / "gate-resolved-1.yaml"
         p.write_text(yaml.safe_dump(resolved_gate_doc, sort_keys=False), encoding="utf-8")

@@ -56,7 +56,7 @@ def test_dispatcher_routes_to_correct_tester():
             "level": "ops",
             "status": "onboarding",
             "mandate": "Produire, planifier et auditer du contenu social pour Bubble.",
-            "owner": "joris",
+            "owner": "operator",
             "forbidden": ["publier sans validation"],
         },
     }
@@ -82,7 +82,7 @@ def _good_mandate_payload() -> dict:
             "level": "ops",
             "status": "onboarding",
             "mandate": "Produire, planifier et auditer du contenu social pour Bubble Invest.",
-            "owner": "joris",
+            "owner": "operator",
             "forbidden": [
                 "publier informations confidentielles",
                 "donner conseil financier",

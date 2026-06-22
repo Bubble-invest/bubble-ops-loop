@@ -2,7 +2,7 @@
 
 A dept declares its runtime host in onboarding/STATE.yaml (`host: vps|local`,
 absent → vps). The registry surfaces it as DeptSummary.host so the cockpit can
-treat a local dept (e.g. Miranda on Jade's Mac) host-aware (no VPS heartbeat
+treat a local dept (e.g. Miranda on {{OPERATOR_2}}'s Mac) host-aware (no VPS heartbeat
 expected) while still showing its gates/state from its repo.
 
 Note: each test builds its OWN isolated dept root and patches settings.disk_*
@@ -27,7 +27,7 @@ def _write_dept(root: Path, slug: str, *, host: str | None) -> None:
         "schema_version": 1,
         "slug": slug,
         "display_name": slug.capitalize(),
-        "owner": "jade",
+        "owner": "operator2",
         "created_at": "2026-06-11T20:00:00Z",
         "status": "Live",
         "validated_steps": ["mandate", "missions", "layers",

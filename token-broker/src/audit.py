@@ -23,7 +23,7 @@ Output channels (controlled by `journal` constructor arg):
   - True:            file AND journald (dual, for cross-service correlation)
   - "only":          journald only (ephemeral hosts, no persistent file)
 
-Per Joris's Step 3b Q3 review: opt-in flag, default file-only. Activated
+Per {{OPERATOR}}'s Step 3b Q3 review: opt-in flag, default file-only. Activated
 when Layer 4 mandate-guardian needs `journalctl SYSLOG_IDENTIFIER=bubble-token-broker`
 filtering across systemd services on Morty.
 """

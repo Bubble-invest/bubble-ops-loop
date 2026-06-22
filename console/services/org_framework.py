@@ -1,7 +1,7 @@
 """
 org_framework.py — the organisation framework data for the cockpit.
 
-Joris msg 1183 → 1188 (2026-06-01): a flowchart of how the org works
+{{OPERATOR}} msg 1183 → 1188 (2026-06-01): a flowchart of how the org works
 (concierges, departments, layers), shown INSIDE the Carnet de bord page (not
 a separate page). This service builds the data.
 
@@ -11,7 +11,7 @@ a separate page). This service builds the data.
                   drawn client-side by partials/_org_flow.html.
 
 Shape from the Notion "bubble-ops-loop — Architecture finale simplifiée" page:
-    Principal (Joris·Jade) → Management dept → Ops depts,  + Concierges beside.
+    Principal ({{OPERATOR}}·{{OPERATOR_2}}) → Management dept → Ops depts,  + Concierges beside.
 Every department runs the same 4-moment OODA day (the layers).
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ LAYERS = [
 # heartbeats via the SPEC-015 phone-home pattern, after which build_graph()
 # can fold real status in the same way it does for VPS depts.
 # NOTE (2026-06-21): Miranda was removed from this list. She is now a LIVE ops
-# department (`content`, host:local on Jade's Mac) registered via dept.yaml, so
+# department (`content`, host:local on {{OPERATOR_2}}'s Mac) registered via dept.yaml, so
 # she already renders as a real dept node with live telemetry. Keeping her here
 # too made her appear TWICE — once as a live dept, once as a ghost Mac-local
 # node. The Mac-local tier is now ONLY for agents with no dept registration at
@@ -167,7 +167,7 @@ def build_graph() -> Dict[str, Any]:
     # ── Principal ──────────────────────────────────────────────────────
     nodes.append({
         "id": "principal", "kind": "principal", "tier": 0,
-        "title": "Joris · Jade", "role": "Principal",
+        "title": "{{OPERATOR}} · {{OPERATOR_2}}", "role": "Principal",
         "note": "gates critiques · mandats · capital", "status": "ok",
     })
 
@@ -181,7 +181,7 @@ def build_graph() -> Dict[str, Any]:
             "title": d.display_name, "role": "Département management" if kind == "mgmt" else None,
             "slug": d.slug, "href": f"/dept/{d.slug}",
             # "vps" | "local" — hybrid Mac-local depts (e.g. Miranda/content on
-            # Jade's Mac) carry host:"local" so the frontend can badge them.
+            # {{OPERATOR_2}}'s Mac) carry host:"local" so the frontend can badge them.
             "host": getattr(d, "host", "vps"),
             "status": _dept_status(alive, age_sec, lrows),
             "pulse": {
@@ -374,7 +374,7 @@ def build_graph() -> Dict[str, Any]:
         "id": "rail:wiki", "kind": "rail", "rail_key": "wiki",
         "title": "Wiki-compile", "role": "Bretelle transversale",
         "note": "compile les sessions de TOUS les agents → vault partagé (quotidien)",
-        "scope": "cloud-wiki-compile.sh lit -home-claude-agents-* + Mac Joris/Jade → shared-wiki, push GitHub",
+        "scope": "cloud-wiki-compile.sh lit -home-claude-agents-* + Mac {{OPERATOR}}/{{OPERATOR_2}} → shared-wiki, push GitHub",
         **_rail_status("cloud-wiki-compile-compile.timer"),
     })
 

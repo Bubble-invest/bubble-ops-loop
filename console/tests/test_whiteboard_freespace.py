@@ -1,7 +1,7 @@
 """
 test_whiteboard_freespace.py — the free-space "Whiteboard" card.
 
-Joris msg 1174 (2026-06-01): the Tableau de bord section needs a real blank
+{{OPERATOR}} msg 1174 (2026-06-01): the Tableau de bord section needs a real blank
 canvas card the dept manager fills with anything (different per dept —
 e.g. Maya adds department-specific data). The framework must exist for
 every current + future dept as an empty free space; content comes from

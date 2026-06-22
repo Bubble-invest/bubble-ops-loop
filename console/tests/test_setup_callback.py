@@ -44,7 +44,7 @@ def test_post_returns_github_app_install_link(client, monkeypatch):
         data={
             "slug": "tony",
             "display_name": "Tony",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "fixture",
@@ -65,7 +65,7 @@ def test_post_state_token_is_random_per_request(client, monkeypatch):
     from console.services import eclosure_launcher
     monkeypatch.setattr(eclosure_launcher, "launch", lambda **kw: {"ok": True})
     base = {
-        "slug": "x", "display_name": "X", "owner": "joris",
+        "slug": "x", "display_name": "X", "owner": "operator",
         "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
         "level": "ops",
     }
@@ -129,7 +129,7 @@ def test_callback_consumes_state_and_kicks_off_launcher(client, mock_bootstrap, 
         data={
             "slug": "tonycb",
             "display_name": "Tony Callback",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "management",
             "children": "fixture",
@@ -169,7 +169,7 @@ def test_callback_one_shot_state_cannot_be_replayed(client, mock_bootstrap, monk
         data={
             "slug": "tonyreplay",
             "display_name": "Tony Replay",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
             "level": "ops",
         },

@@ -2,7 +2,7 @@
 humanize.py — translate technical enum slugs to operator French prose.
 
 Used by the home page to render grouped décision-cards in human voice,
-per Item E1 (Bureau-de-Cadre polish, Joris flag msg 2709).
+per Item E1 (Bureau-de-Cadre polish, {{OPERATOR}} flag msg 2709).
 
 Mapping is intentionally tight (no fuzzy guessing). Unknown kinds fall
 back to the snake_case → "snake case" stripped form (still pure prose,
@@ -93,7 +93,7 @@ def humanize_future_modes(modes: list[str] | None) -> str:
     existing PR-body convention reused across the console).
 
     A non-empty list → join the humanized mode sentences with " ou " so
-    Joris sees the full trajectory. We strip the trailing period from
+    {{OPERATOR}} sees the full trajectory. We strip the trailing period from
     each sentence to keep the joined string readable.
 
     Examples:
@@ -126,7 +126,7 @@ def shadow_autonomy_label(gate: dict | None) -> str:
     Gate-level shadow autonomy is NOT carried on the gate item in v3 — it
     is computed at the dept-level by Layer 4 under
     `management-export.autonomy_readiness.action_classes[*]`. For v1 of
-    this UX we render a static placeholder so Joris sees the 3rd line
+    this UX we render a static placeholder so {{OPERATOR}} sees the 3rd line
     Notion mandates (lines 920-924). Future work wires the real state.
 
     QA-Letter Finding A doctrine note (Notion v5 lines 421-436): the
@@ -143,7 +143,7 @@ def shadow_autonomy_label(gate: dict | None) -> str:
 # Sprint Maya-blocker Fix 2 (2026-05-21): humanize_substep
 #
 # Surface `STATE.yaml::step_progress.<step>.current_substep` in the operator-
-# facing onboarding view so Joris sees WHAT the agent is currently asking
+# facing onboarding view so {{OPERATOR}} sees WHAT the agent is currently asking
 # about, not just "Step 5 in progress". Bureau-de-Cadre French prose, no enum
 # slugs.
 #
@@ -256,7 +256,7 @@ def humanize_kind(kind: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cadence humanizer (Joris flag 2026-05-24 msg 3137)
+# Cadence humanizer ({{OPERATOR}} flag 2026-05-24 msg 3137)
 # ---------------------------------------------------------------------------
 
 # French day names (lowercase). Maps both English and French keys so
@@ -311,7 +311,7 @@ def humanize_cadence(mission: dict | None) -> str:
     active_hours). Returns a single-sentence-fragment suitable for the
     `.mission-cadence` line in the UI (no trailing period).
 
-    Examples (Joris flag 2026-05-24 msg 3137):
+    Examples ({{OPERATOR}} flag 2026-05-24 msg 3137):
         >>> humanize_cadence({"cadence": "daily", "time": "07:00"})
         'Tous les jours à 07h00'
         >>> humanize_cadence({"cadence": "weekly", "day": "friday",
@@ -343,7 +343,7 @@ def humanize_cadence(mission: dict | None) -> str:
 
     # daily — "Au plus tôt à partir de HHhMM, dès que son tour vient"
     #
-    # Joris flag msg 3142 (2026-05-24): the old phrasing "Tous les jours
+    # {{OPERATOR}} flag msg 3142 (2026-05-24): the old phrasing "Tous les jours
     # à 07h00" implied a guaranteed cron, which lies about the actual
     # dispatch model. /loop ticks every 20 min; Layer 1 fires only when
     # other layers are idle ≥1 round; THEN it materializes due missions

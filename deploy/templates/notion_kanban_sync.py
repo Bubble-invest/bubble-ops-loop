@@ -40,7 +40,7 @@ MAC_KANBAN_PATH = os.environ.get("BUBBLE_MAC_KANBAN_PATH", "{{MAC_KANBAN_PATH}}"
 STATE_DIR = "/home/claude/bubble-ops-loop/state"
 STATE_FILE = os.path.join(STATE_DIR, "notion_kanban_sync.json")
 
-# No task filtering — sync ALL tasks to Notion (Joris 2026-06-16: "don't filter
+# No task filtering — sync ALL tasks to Notion ({{OPERATOR}} 2026-06-16: "don't filter
 # out morty audit, it's important"). Kept as an explicit empty set so the
 # create-page path below stays unchanged.
 SKIP_NOTION_CREATE_TASKS = set()

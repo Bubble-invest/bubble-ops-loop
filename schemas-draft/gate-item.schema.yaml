@@ -3,7 +3,7 @@ $id: "https://bubble.invest/schemas/v3/gate-item.json"
 title: Gate Item v3
 description: |
   Shape of every YAML under queues/gates/ — a decision-card surfaced to
-  the human (Joris) via the console + Telegram. Source: Notion v3 §"Gates
+  the human ({{OPERATOR}}) via the console + Telegram. Source: Notion v3 §"Gates
   levables & missions récurrentes" + §"Contrats minimaux à standardiser
   - Gate item".
 

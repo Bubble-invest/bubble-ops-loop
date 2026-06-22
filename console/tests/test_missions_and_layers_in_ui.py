@@ -1,5 +1,5 @@
 """
-test_missions_and_layers_in_ui.py — Joris flag 2026-05-24 msg 3137.
+test_missions_and_layers_in_ui.py — {{OPERATOR}} flag 2026-05-24 msg 3137.
 
 > Please verify if the content of the layers and missions docs will be
 > correctly reflected in the front end and if not implement it, as well
@@ -128,7 +128,7 @@ def _make_maya_rich_repo(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug.title(),
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": status,
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"]
@@ -382,7 +382,7 @@ def test_onboarding_page_with_no_missions_does_not_crash(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": "Drafting", "validated_steps": ["mandate"],
             "last_updated_at": "2026-05-24T10:00:00Z", "commits": [],
         }, sort_keys=False),
@@ -435,7 +435,7 @@ def test_dept_detail_gracefully_handles_missing_layer_prompt(
 def test_dept_detail_renders_gate_policy_id_for_missions(
         client, fixture_root):
     """draft_batch + warming both carry gate_policy_id — should be visible
-    so Joris can audit which gate rules apply to which recurring task."""
+    so {{OPERATOR}} can audit which gate rules apply to which recurring task."""
     _make_maya_rich_repo(fixture_root, status="Live")
     r = client.get("/dept/maya-rich")
     body = r.text
@@ -478,7 +478,7 @@ def test_dept_detail_existing_mission_slug_rendering_still_works(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -498,7 +498,7 @@ def test_dept_detail_existing_mission_slug_rendering_still_works(
 # E. New honest cadence phrasing + layer-grouping (msg 3142, 2026-05-24)
 # ---------------------------------------------------------------------------
 #
-# Joris flagged: the UI shows missions as if they were guaranteed crons
+# {{OPERATOR}} flagged: the UI shows missions as if they were guaranteed crons
 # ("Tous les jours à 07h00") but the /loop dispatch model is "when L1's
 # turn comes AND time≥07:00 AND not yet fired today". The display must
 # reflect that.

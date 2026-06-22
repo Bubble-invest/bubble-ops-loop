@@ -63,7 +63,7 @@ def _workspace(name: str, agents_root: str) -> str:
 
 @dataclass
 class ProjectCard:
-    """One working project surfaced on a concierge's page (Joris msg 1193).
+    """One working project surfaced on a concierge's page ({{OPERATOR}} msg 1193).
 
     Read from <workspace>/workspace/projects/<slug>/STATUS.md — the same
     async status file the concierge keeps for the CEO."""

@@ -2,7 +2,7 @@
 test_safe_pull.py — safe_pull() must land MERGED upstream changes even when the
 local working tree is DIRTY, without losing the agent's work.
 
-Joris msg 3979 (2026-06-06): "build an auto redeploy" — Option A. The loop's
+{{OPERATOR}} msg 3979 (2026-06-06): "build an auto redeploy" — Option A. The loop's
 `git pull --quiet --rebase` failed on a dirty tree ("cannot pull with rebase")
 so merged structural PRs (CLAUDE.md, skills) never reached the box. safe_pull
 commits runtime → stashes leftovers → pulls → restores, so merge == live.

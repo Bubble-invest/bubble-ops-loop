@@ -65,7 +65,7 @@ def model_from_dept_yaml(dept_yaml: dict | None) -> str:
     stays high-quality. Cost is controlled NOT by downgrading the orchestrator
     but by having it DELEGATE bounded execution work to Sonnet SUBAGENTS (see
     `subagent_model` below). This reverses the earlier 2026-06-19 attempt that
-    ran cheap Sonnet orchestrators with Opus subagents — Joris decided the
+    ran cheap Sonnet orchestrators with Opus subagents — {{OPERATOR}} decided the
     opposite is right: smart orchestrator, cheap executors. The per-dept `model`
     field still lets a special dept override the Opus orchestrator pin if needed.
     """
@@ -146,7 +146,7 @@ def scaffold_isolation_surface(
         # task-orchestrator = per-task planning, mandate-guardian = guardrail
         # check) run Sonnet (`subagent_model`) for cost: the smart orchestrator
         # delegates the WELL-SCOPED execution work DOWN to cheap workers.
-        # Joris 2026-06-19 (REVISED, supersedes the earlier same-day inversion).
+        # {{OPERATOR}} 2026-06-19 (REVISED, supersedes the earlier same-day inversion).
         # opus / opus[1m] / sonnet are entitled; sonnet[1m] is NOT — never pin it.
         "subagent_model": subagent_model,
     }

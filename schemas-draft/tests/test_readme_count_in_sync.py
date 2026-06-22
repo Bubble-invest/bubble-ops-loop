@@ -13,7 +13,7 @@ This test makes the README authoritative by asserting:
 
 Run:
     python3 -m pytest \
-      /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft/tests/test_readme_count_in_sync.py \
+      /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft/tests/test_readme_count_in_sync.py \
       -v
 """
 from __future__ import annotations

@@ -76,7 +76,7 @@ NOTION_V4_SUBAGENT_CONTRACTS = {
         # robustness sweep (QA-AUDIT-J2 §3.4 DRIFT-3) tightened this to a
         # single value: `acceptEdits`.
         #
-        # Rationale (Joris-approved decision, 2026-05-20):
+        # Rationale ({{OPERATOR}}-approved decision, 2026-05-20):
         #   - The fixture has ZERO MCPs configured, so `ask` would never
         #     prompt for a NEW MCP — but `ask` would still block on tool
         #     uses Claude Code's permission system flags (Edit, Write,

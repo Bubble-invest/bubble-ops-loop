@@ -27,7 +27,7 @@ def _run_bootstrap_dry(scripts_dir: Path, tmp_clone_dir: Path, slug: str = "mira
             "bash", str(script),
             f"--slug={slug}",
             "--display-name=Miranda",
-            "--owner=joris",
+            "--owner=operator",
             "--dry-run",
         ],
         env=env, capture_output=True, text=True,

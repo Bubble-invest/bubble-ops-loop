@@ -158,7 +158,7 @@ def main() -> int:
     p.add_argument("--slug", required=True)
     p.add_argument("--step", required=True, choices=list(STEP_VALIDATORS.keys()))
     p.add_argument("--repo-dir", required=True)
-    p.add_argument("--validated-by", default="joris")
+    p.add_argument("--validated-by", default="operator")
     args = p.parse_args()
 
     repo_dir = Path(args.repo_dir).resolve()

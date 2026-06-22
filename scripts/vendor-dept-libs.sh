@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # vendor-dept-libs.sh — boot-time re-vendor of the canonical shared libs into a
-# dept tree, so they can NEVER drift stale (Joris msg 4025, 2026-06-07).
+# dept tree, so they can NEVER drift stale ({{OPERATOR}} msg 4025, 2026-06-07).
 #
 # WHY: dispatch_helpers.py / notify.py / loop_notify.py / notion_logbook.py +
 # tools/notify_layer.py are SHARED libs owned by the framework

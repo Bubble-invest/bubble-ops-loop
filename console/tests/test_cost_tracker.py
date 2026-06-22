@@ -1,5 +1,5 @@
 """
-test_cost_tracker.py — per-agent / per-job token & cost panel (Joris msg 3994/4003).
+test_cost_tracker.py — per-agent / per-job token & cost panel ({{OPERATOR}} msg 3994/4003).
 
 The cockpit must show what each agent + each `claude -p` cron spends (today/7d),
 priced from the token usage in the session JSONLs (works for both -p crons and

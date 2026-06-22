@@ -23,7 +23,7 @@ def concierge_detail(name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Unknown concierge: {name}")
     turns = concierge_reader.read_recent_session(name, n=30)
     # Working projects from <workspace>/workspace/projects/*/STATUS.md
-    # (Joris msg 1193 — show what the concierge is building).
+    # ({{OPERATOR}} msg 1193 — show what the concierge is building).
     projects = concierge_reader.list_projects(name)
     return request.app.state.templates.TemplateResponse(
         "concierge_detail.html",

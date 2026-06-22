@@ -3,7 +3,7 @@
 its own mission-definition files, at the moment of action (before the Edit/Write
 or git commit even runs).
 
-Governance fix 2026-06-01 (Joris msg 3597/3599). Pairs with the push-time
+Governance fix 2026-06-01 ({{OPERATOR}} msg 3597/3599). Pairs with the push-time
 credential-helper lock ([[mission-file-lock-gap]]). The lock alone only fires at
 `git push`, so an agent could still Edit + commit a mission file locally and
 falsely report "done" (Maya did exactly this with MANDATE.md). This hook closes
@@ -135,18 +135,18 @@ def _deny(reason: str) -> None:
 
 DENY_MSG = (
     "🔒 «{path}» est un fichier de MISSION (spec figée) — tu ne peux pas le "
-    "modifier toi-même. Ta mission ne change que via une pull request que Joris "
-    "ou Jade valident. Si c'est un sujet TEMPORAIRE, écris-le dans "
+    "modifier toi-même. Ta mission ne change que via une pull request que {{OPERATOR}} "
+    "ou {{OPERATOR_2}} valident. Si c'est un sujet TEMPORAIRE, écris-le dans "
     "WORKING_MEMORY.md. Si c'est un vrai changement de mission (même approuvé "
-    "par Joris en chat), NE l'applique PAS toi-même : propose-le en PR et "
-    "demande à Joris/Jade de la merger. Ne déclare jamais « c'est officiel » "
+    "par {{OPERATOR}} en chat), NE l'applique PAS toi-même : propose-le en PR et "
+    "demande à {{OPERATOR}}/{{OPERATOR_2}} de la merger. Ne déclare jamais « c'est officiel » "
     "tant que la PR n'est pas mergée."
 )
 DENY_COMMIT_ALL = (
     "🔒 `git commit -a/--all` peut committer un fichier de MISSION (spec figée). "
     "Stage explicitement seulement tes fichiers runtime (WORKING_MEMORY.md, "
     "outputs/, queues/, inbox/) avec `git add <chemin>` puis commit. Les "
-    "fichiers de mission ne changent que via une PR mergée par Joris/Jade."
+    "fichiers de mission ne changent que via une PR mergée par {{OPERATOR}}/{{OPERATOR_2}}."
 )
 
 

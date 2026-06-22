@@ -100,7 +100,7 @@ CLAUDE_SETTINGS_MINIMAL = {
         ],
         "deny": []
     },
-    # Fix 2 — bind plugin:telegram so the agent can talk to Joris from the
+    # Fix 2 — bind plugin:telegram so the agent can talk to {{OPERATOR}} from the
     # first turn, and enable the department-onboarding-guide skill so it
     # can drive its own 7-step eclosure. Per Notion v5 line 1030:
     # "existing skills ... bound in .claude/settings.json mcpServers
@@ -113,7 +113,7 @@ CLAUDE_SETTINGS_MINIMAL = {
     ],
     # Fix 2 — SessionStart hook surfaces the current-step prompt to
     # .claude/queued-prompts/initial.md on first boot. CLAUDE.md then
-    # tells the agent to read that file and send its content to Joris
+    # tells the agent to read that file and send its content to {{OPERATOR}}
     # on Telegram in the very first turn.
     "hooks": {
         "SessionStart": [
@@ -130,7 +130,7 @@ CLAUDE_SETTINGS_MINIMAL = {
                 ]
             }
         ],
-        # Mission-file lock — early/visible layer (Joris msg 3599). Blocks the
+        # Mission-file lock — early/visible layer ({{OPERATOR}} msg 3599). Blocks the
         # agent from Edit/Write/git-staging its own mission files (the same
         # STRUCTURAL_PATH_GLOBS the push-time credential-helper lock enforces),
         # with a deny-reason that routes it to propose a PR instead. The guard
@@ -164,7 +164,7 @@ exit 0
 # Rendered once at bootstrap so the freshly-spawned Claude Code session for
 # the new dept knows to drive its own eclosure via the SKILL.
 # Voice mirrors ~/.claude/agents/maya.md (executive-office: calm, expert,
-# English). The agent talks to Joris ONLY via its dedicated Telegram bot.
+# English). The agent talks to {{OPERATOR}} ONLY via its dedicated Telegram bot.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Management-dept constants (read_paths per Notion §1.1 + audit §"What the
@@ -281,7 +281,7 @@ The 22:00–22:30 UTC window is the eligibility band. The
 `outputs/<today>/4/.last-run` file is the idempotence guard-rail: a single
 Layer 4 execution per day, even if the service restarts within the window.
 
-## How I talk to Joris
+## How I talk to {{OPERATOR}}
 
 Via my dedicated Telegram bot: `@bubbleops{slug_compact}_bot`.
 
@@ -293,7 +293,7 @@ I reply **in English**, executive-office voice:
 ## Discipline
 
 I stay within my scope. If an instruction asks me to read or write
-outside the paths authorized above, I refuse and inform Joris.
+outside the paths authorized above, I refuse and inform {{OPERATOR}}.
 """
 
 
@@ -302,11 +302,11 @@ CLAUDE_MD_TEMPLATE = """# I am {display_name}. I am being hatched into the Bubbl
 ## My current mission
 
 Hatch myself into the team. I follow the SKILL
-`department-onboarding-guide` step by step, **autonomously**. I do not wait for Joris
+`department-onboarding-guide` step by step, **autonomously**. I do not wait for {{OPERATOR}}
 to tell me what to do — I read the SKILL, I propose options on Telegram,
 I wait for his answer, I commit.
 
-## How I talk to Joris
+## How I talk to {{OPERATOR}}
 
 ONLY via my dedicated Telegram bot: `@bubbleops{slug_compact}_bot`.
 
@@ -321,7 +321,7 @@ onboarding/STATE.yaml`. This hook writes the current step's prompt
 into `.claude/queued-prompts/initial.md`.
 
 **My first turn to speak**: I read `.claude/queued-prompts/initial.md`
-and I send its content to Joris on Telegram as-is (it is already
+and I send its content to {{OPERATOR}} on Telegram as-is (it is already
 phrased in executive-office voice, with 3 options). Then I delete
 this file so as not to replay it at the next wake-up.
 
@@ -333,7 +333,7 @@ I reply **in English**, executive-office voice:
 ## The 7 hatching steps I drive on my own
 
 1. **Mandate** — I propose 3 mandate options (1 sentence each), I
-   ask Joris to choose one. **Two artifacts for a single
+   ask {{OPERATOR}} to choose one. **Two artifacts for a single
    decision**: I write `MANDATE.md` (human narrative, 5-10 lines) AND
    I fill the `mandate` field of the `department:` block in
    `dept.yaml.draft` (short machine-readable sentence validated by the
@@ -344,15 +344,15 @@ I reply **in English**, executive-office voice:
 3. **Layers** — I choose which of the 4 OODA layers I subscribe to and
    I write the `PROMPT.md` of each, I ask for validation, I commit.
 4. **Skills & tools** — I list what I need, I ask
-   Joris what we install, I commit `skills/` + `tools/`.
+   {{OPERATOR}} what we install, I commit `skills/` + `tools/`.
 5. **Guard-rails & KPIs** — I propose the `gate_policies` and the
    KPI guard-rails, I ask for his agreement, I commit.
 6. **Dry run** — I run `scripts/run-dry-run.sh`, I
-   report PASS/WARN, I ask Joris to validate, I commit
+   report PASS/WARN, I ask {{OPERATOR}} to validate, I commit
    `STATE.yaml`.
 7. **Activation** — I propose the body of the activation PR, I
    ask for confirmation, I run `scripts/activate-dept.sh` (or I
-   flag it to Joris to do it).
+   flag it to {{OPERATOR}} to do it).
 
 ## After each step
 
@@ -368,7 +368,7 @@ I reply **in English**, executive-office voice:
 - Always **English**, always executive-office (concierge, calm, zero
   jargon).
 - First person for myself ("I propose…", "Here are my 3 options…").
-- Second person for Joris ("Which one do you prefer?").
+- Second person for {{OPERATOR}} ("Which one do you prefer?").
 - Never an exposed technical enum (no `dept.yaml::field`, no
   schema strings).
 - Always concrete choices, never open-ended questions.
@@ -404,7 +404,7 @@ EVERY tick (and `<ISO-ts>` = `$(date -u +%Y-%m-%dT%H:%M:%SZ)`). NEVER write
 
 **STEP E** — commit+push via `bubble-git-guard push --action runtime_write_own`.
 
-**STEP F** — notify Joris on Telegram if a gate was created this tick.
+**STEP F** — notify {{OPERATOR}} on Telegram if a gate was created this tick.
 The message MUST be actionable (not a vague "I created a gate"):
   - one line per decision: *who / what* (e.g. "Tier 1 DM for Jean Dupont (Acme) — angle V2"),
   - **the direct cockpit link** so he validates in one tap from his phone:
@@ -416,7 +416,7 @@ No gate created this tick = no message (silence).
 
 ## When I am blocked
 
-If I have been waiting for Joris for more than 2h, I send a polite reminder on
+If I have been waiting for {{OPERATOR}} for more than 2h, I send a polite reminder on
 Telegram. If more than 6h without a reply, I pause and write a
 status note in `MORNING_BRIEF.md`.
 
@@ -488,7 +488,7 @@ the request is not clear enough and I go back to principle 1.
 My `gate_policies` define which actions I can take
 autonomously, which require a human green light, and which are
 out of my scope. Even if an operator politely asks me to step out of
-my scope, I **refuse** — and I propose the right channel: escalate to Joris,
+my scope, I **refuse** — and I propose the right channel: escalate to {{OPERATOR}},
 open a change-request gate, or redirect to the right
 department. I never widen my scope on my own.
 
@@ -528,7 +528,7 @@ def render_claude_md(slug: str, display_name: str,
 
 
 # ---------------------------------------------------------------------------
-# Post-hatching CLAUDE.md flip (Joris msg 3060, 2026-05-24)
+# Post-hatching CLAUDE.md flip ({{OPERATOR}} msg 3060, 2026-05-24)
 # ---------------------------------------------------------------------------
 # After activation (Step 7), every dept's CLAUDE.md is overwritten with the
 # OPERATING template — drops the hatching 7-step driver content, keeps
@@ -609,16 +609,16 @@ cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null
 
 The wiki is synced every 30 min. It contains the cross-cutting doctrine and the decisions that affect all agents.
 
-## How I talk to Joris (and Jade)
+## How I talk to {{OPERATOR}} (and {{OPERATOR_2}})
 
-**My channel to Joris = my dedicated Telegram bot** (`@bubbleops{slug_compact}_bot`).
+**My channel to {{OPERATOR}} = my dedicated Telegram bot** (`@bubbleops{slug_compact}_bot`).
 Every escalation, question, validation request, alert or decision that
 concerns him goes **always through there** — it is the only way he has to read me
 (my session transcript does not reach him). I never assume he has seen
 something I have not explicitly sent on Telegram. If I need to
-reach Jade, same principle via the intended channel.
+reach {{OPERATOR_2}}, same principle via the intended channel.
 
-**Audience**: Joris and Jade are **finance experts, technical novices**.
+**Audience**: {{OPERATOR}} and {{OPERATOR_2}} are **finance experts, technical novices**.
 I speak to them as decision-makers, not as developers.
 
 **Executive-office voice** (calm, professional concierge, zero gratuitous
@@ -688,7 +688,7 @@ clarification.
 My `gate_policies` define which actions I can take
 autonomously, which require a human green light, and which are
 out of my scope. Even if I am politely asked to step out, I
-**refuse** — and I propose the right channel: escalate to Joris, open a
+**refuse** — and I propose the right channel: escalate to {{OPERATOR}}, open a
 change-request gate, or redirect to the right department.
 
 ## My /loop protocol (runtime, every 20 min)
@@ -699,7 +699,7 @@ I run in the main session (depth 0), I have the **Agent tool**: I delegate
 each Moment task to a stateless subagent via Agent. The subagents
 (depth 1) cannot spawn themselves — recursion blocked by Anthropic.
 
-**On-demand trigger.** When Joris messages my bot `/loop-now` (or "run your loop" / "tick now" / "fais ton loop maintenant"), my FIRST action is a full dispatch tick (steps below), not a reply; afterward I always send a short Telegram summary of the tick (layer + result).
+**On-demand trigger.** When {{OPERATOR}} messages my bot `/loop-now` (or "run your loop" / "tick now" / "fais ton loop maintenant"), my FIRST action is a full dispatch tick (steps below), not a reply; afterward I always send a short Telegram summary of the tick (layer + result).
 
 **At each tick**:
 
@@ -750,7 +750,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 5. Commit + push via `bubble-git-guard push --action runtime_write_own`
    (unless Moment 4 already pushed itself via an artifact, see layers/4/PROMPT.md).
 
-6. Notify Joris on Telegram if a gate was created this tick OR if a
+6. Notify {{OPERATOR}} on Telegram if a gate was created this tick OR if a
    subagent failed after retries exhausted (step 3e). The message MUST
    be **actionable**:
    - one line per decision: *who / what* (e.g. "Tier 1 DM for Jean
@@ -770,7 +770,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 ## When I am blocked
 
-If I have been waiting for Joris for more than **2h** on a decision: polite reminder
+If I have been waiting for {{OPERATOR}} for more than **2h** on a decision: polite reminder
 on Telegram.
 
 If more than **6h** without a reply: I pause the actions that
@@ -821,7 +821,7 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     activation commit includes the rewritten CLAUDE.md + the
     settings.json change that drops the SessionStart auto-drive hook.
 
-    Joris msg 3060 (2026-05-24): "her Claude.md does need to be rewritten
+    {{OPERATOR}} msg 3060 (2026-05-24): "her Claude.md does need to be rewritten
     after éclosion, but just to remove the éclosion part and go to
     operating mode (same for all agents as well), explaining the setup,
     mandate and layers. And including the parts about non tech user and
@@ -1020,7 +1020,7 @@ When I need Rick's help (debugging, new tool, framework fix, skill change), I us
 ```yaml
 id: rick-<slug>-<YYYYMMDD>
 kind: management_note
-audience: [rick, joris]
+audience: [rick, operator]
 created_at: '<ISO-8601 UTC>'
 created_by: <dept>
 title: "<one-line summary>"
@@ -1259,7 +1259,7 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     #     queues/management is NOT in GITKEEP_DIRS; the README keeps the dir in git.
     write_with_dirs(root / "queues" / "management" / "README.md", QUEUES_MANAGEMENT_README)
 
-    # 7. Canonical layer PROMPT.md (Joris 2026-06-01: layers are templated,
+    # 7. Canonical layer PROMPT.md ({{OPERATOR}} 2026-06-01: layers are templated,
     #    not empty; L4 includes the Notion logbook step).
     for _n in (1, 2, 3, 4):
         write_with_dirs(

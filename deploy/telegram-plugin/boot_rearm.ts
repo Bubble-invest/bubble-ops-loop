@@ -1,6 +1,6 @@
 // boot_rearm.ts — ops-loop /loop self-re-arm on poller startup.
 //
-// Problem (Joris 2026-06-01): a systemd restart of an ops-loop dept agent
+// Problem ({{OPERATOR}} 2026-06-01): a systemd restart of an ops-loop dept agent
 // does NOT re-arm its /loop. bubble-loop-reinit.sh tried to fix this by
 // having the bot send a Telegram message, but a bot's own outbound message
 // never returns as an inbound update (Telegram API), so the loop stays dead

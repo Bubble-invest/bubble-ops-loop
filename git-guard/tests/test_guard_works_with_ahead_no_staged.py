@@ -1,7 +1,7 @@
 """Regression: guard must not crash when invoked from a non-git directory
 or in the [ahead N, behind 0] no-staged-files state.
 
-Bug discovered 2026-05-20 when Joris's main agent tried to push a patched
+Bug discovered 2026-05-20 when {{OPERATOR}}'s main agent tried to push a patched
 CLAUDE.md via the guard from his home directory. The guard's
 `staged_paths_for_push()` calls `git diff --cached --name-only -z`; when
 git cannot find a repo (cwd is OUTSIDE any worktree, or `--git-dir` not

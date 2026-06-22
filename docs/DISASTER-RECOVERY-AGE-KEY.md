@@ -11,11 +11,11 @@
 
 ## 2. La parade
 
-On re-chiffre la clé age **symétriquement** avec une passphrase humaine (saisie par Joris), via `age --encrypt --passphrase`. Le ciphertext qui en résulte est un fichier ASCII-armored qu'on commit dans `projects/bubble-vps-data/disaster-recovery/age-key-morty.age`. Trois propriétés en sortent :
+On re-chiffre la clé age **symétriquement** avec une passphrase humaine (saisie par {{OPERATOR}}), via `age --encrypt --passphrase`. Le ciphertext qui en résulte est un fichier ASCII-armored qu'on commit dans `projects/bubble-vps-data/disaster-recovery/age-key-morty.age`. Trois propriétés en sortent :
 
 1. **Le clair ne touche jamais le disque** — il transite uniquement dans le pipe `ssh hetzner 'sudo cat /etc/age/key.txt' | age --encrypt --passphrase --armor`.
-2. **Le ciphertext est commit-safe** — sans la passphrase, c'est inexploitable. La passphrase est stockée en 1Password par Joris.
-3. **Le backup voyage avec le repo** — tous les clones de `bubble-vps-data` (Mac de Joris, Morty, GitHub privé) portent la copie. Plus de single point of failure.
+2. **Le ciphertext est commit-safe** — sans la passphrase, c'est inexploitable. La passphrase est stockée en 1Password par {{OPERATOR}}.
+3. **Le backup voyage avec le repo** — tous les clones de `bubble-vps-data` (Mac de {{OPERATOR}}, Morty, GitHub privé) portent la copie. Plus de single point of failure.
 
 ## 3. Faire le backup (étape unique, à refaire si la clé age change)
 
@@ -73,7 +73,7 @@ Si tu vois les variables d'environnement attendues, la chaîne SOPS est rétabli
 Le backup devient inutilisable. C'est le seul scénario où on ne peut pas récupérer.
 
 **Mitigations préventives** (à faire MAINTENANT, pas après l'incident) :
-- Stocker la passphrase en 1Password (compte Joris + compte Jade en partage).
+- Stocker la passphrase en 1Password (compte {{OPERATOR}} + compte {{OPERATOR_2}} en partage).
 - Imprimer la passphrase sur papier et la mettre dans le coffre.
 - Faire un drill de restauration tous les 3 mois (cf. `docs/DISASTER-RECOVERY.md` §5).
 
@@ -82,4 +82,4 @@ Le backup devient inutilisable. C'est le seul scénario où on ne peut pas récu
 - Si la clé age est rotée (`age-keygen -o /etc/age/key.txt` avec re-chiffrement de tous les secrets SOPS).
 - Tous les 6 mois en routine (drill de vérification).
 
-Le fichier `age-key-morty.age` doit alors être ré-écrit par `backup-age-key.sh` avec la même passphrase (ou une nouvelle, si Joris décide de la roter aussi — dans ce cas, mettre à jour 1Password).
+Le fichier `age-key-morty.age` doit alors être ré-écrit par `backup-age-key.sh` avec la même passphrase (ou une nouvelle, si {{OPERATOR}} décide de la roter aussi — dans ce cas, mettre à jour 1Password).

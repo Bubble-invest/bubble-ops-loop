@@ -1,6 +1,6 @@
 """Tests for build_dispatch_ctx — the queue-scanner that feeds decide_dispatch.
 
-Root-cause fix 2026-06-01 (Joris msg 3588): the /loop was calling
+Root-cause fix 2026-06-01 ({{OPERATOR}} msg 3588): the /loop was calling
 decide_dispatch with a placeholder ctx, so has_research_items / has_inbox_decisions
 were never set → L2/L3 never fired → work piled up. build_dispatch_ctx scans the
 repo's queues so the dispatch tree actually sees pending work.
@@ -59,7 +59,7 @@ def test_empty_queues_give_false_flags(tmp_path: Path):
     assert ctx["layer_4_last_run_today"] is None
     assert ctx["round_counter"] == {}
     # Empty queues AND L1 not yet run today -> the daily floor fires L1.
-    # (Canonical semantics, Joris 2026-06-01: L1 runs at least once per day even
+    # (Canonical semantics, {{OPERATOR}} 2026-06-01: L1 runs at least once per day even
     # with empty queues — there are always emails + the Notion logbook to review.)
     assert ctx["layer_1_last_run_today"] is None
     assert decide_dispatch(ctx) == "layer_1"
@@ -545,7 +545,7 @@ def test_materialize_respects_per_mission_last_run_today(tmp_path: Path):
 
 # ── Issue #176 — management note heartbeat coverage ──────────────────────────
 #
-# PROBLEM (2026-06-15, Joris catch): inbound management notes in
+# PROBLEM (2026-06-15, {{OPERATOR}} catch): inbound management notes in
 # queues/management/ are only read inside a real layer's STEP 0-ter.  A note
 # arriving during a heartbeat-only stretch sits unread until the next L1/L2/L3
 # natural fire — up to many hours on an overnight quiet stretch.

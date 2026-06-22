@@ -1,7 +1,7 @@
 """Tests for mission-file-guard.py PreToolUse hook.
 
 Feeds the exact PreToolUse stdin JSON and asserts the deny/allow decision.
-Governance fix 2026-06-01 (Joris msg 3597/3599).
+Governance fix 2026-06-01 ({{OPERATOR}} msg 3597/3599).
 
 Run: python3 -m pytest deploy/hooks/test_mission_file_guard.py -q
 """

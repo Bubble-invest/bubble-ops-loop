@@ -119,7 +119,7 @@ def test_codeowners_file_present() -> None:
     reason=(
         "Pushing to .github/workflows/ requires the `workflow` OAuth scope "
         "(PAT) or `workflows: write` GitHub App permission. As of "
-        "2026-05-20, neither Joris's PAT (scopes: gist, read:org, repo) "
+        "2026-05-20, neither {{OPERATOR}}'s PAT (scopes: gist, read:org, repo) "
         "nor the bubble-ops-bot App installation grants `workflows`. "
         "Remediation: (a) regenerate PAT with `workflow` scope and push "
         "the workflow file manually, OR (b) grant `workflows: write` to "

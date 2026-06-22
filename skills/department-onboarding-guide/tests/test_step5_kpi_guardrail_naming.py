@@ -37,7 +37,7 @@ def _seed_state(tmp_path: Path) -> Path:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T08:00:00Z",
         "status": "Drafting",
         "validated_steps": ["mandate", "missions", "layers", "skills_tools"],
@@ -55,7 +55,7 @@ def _seed_draft_with_one_skill_class(tmp_path: Path) -> Path:
         "department": {
             "slug": "miranda",
             "display_name": "Miranda",
-            "owner": "joris",
+            "owner": "operator",
             "mandate": "Produire, planifier et auditer du contenu social.",
             "outputs": "drafts de posts, calendrier",
             "forbidden": ["publier sans validation"],

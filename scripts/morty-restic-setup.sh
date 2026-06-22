@@ -5,7 +5,7 @@
 # Provisionne Restic sur Morty (one-shot, idempotent) :
 #   1. Installe `restic` via apt (idempotent — apt install no-op si déjà)
 #   2. Crée /var/backups/bubble-restic/ (700 root) et /var/cache/restic
-#   3. Demande la passphrase Restic à Joris (saisie cachée) et l'écrit
+#   3. Demande la passphrase Restic à {{OPERATOR}} (saisie cachée) et l'écrit
 #      dans /etc/bubble/restic-password (mode 400 root)
 #   4. `restic init` si le repo n'existe pas encore (sinon skip)
 #   5. Installe :
@@ -48,7 +48,7 @@ Arguments :
   --help            Affiche ce message.
 
 PHASE 1 = REPO LOCAL. Migration off-site (B2 ou Storage Box) à faire dès
-que Joris fournit les credentials. Cf. docs/BACKUP-STRATEGY.md.
+que {{OPERATOR}} fournit les credentials. Cf. docs/BACKUP-STRATEGY.md.
 USAGE
 }
 

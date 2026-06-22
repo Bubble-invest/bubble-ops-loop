@@ -21,7 +21,7 @@
 #   brief ("Notion v3 wins if there's any contradiction"), we omit
 #   loop_engine to keep the schema additionalProperties:false honest.
 #   The /loop cadence is owned by the systemd unit / autostart wrapper
-#   (MVP-ROADMAP §3 Step 7), not by dept.yaml. If Joris later wants the
+#   (MVP-ROADMAP §3 Step 7), not by dept.yaml. If {{OPERATOR}} later wants the
 #   cadence declarative in dept.yaml, extend the schema first, then
 #   uncomment a loop_engine block here.
 # =============================================================================

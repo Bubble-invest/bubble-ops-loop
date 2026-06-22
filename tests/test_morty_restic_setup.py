@@ -248,7 +248,7 @@ def test_strategy_doc_mentions_off_site_todo():
     # The strategy doc must flag the limitation: local-only target,
     # needs migration to off-site (B2 or Storage Box).
     assert "TODO" in body or "À FAIRE" in body or "off-site" in body.lower()
-    # Concrete provider names so Joris remembers the options.
+    # Concrete provider names so {{OPERATOR}} remembers the options.
     assert "B2" in body or "Backblaze" in body
     assert "Storage Box" in body or "Hetzner" in body
     # Retention policy documented.

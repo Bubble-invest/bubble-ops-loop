@@ -1,7 +1,7 @@
 """
 test_home_gate_grouping.py — Item E1 polish.
 
-Polish from the Bureau-de-Cadre smoke (Joris flag, msg 2709):
+Polish from the Bureau-de-Cadre smoke ({{OPERATOR}} flag, msg 2709):
 "Pourquoi elles sont pas ensemble dans « 2 research decisions »? C'est la
 même catégorie".
 
@@ -42,7 +42,7 @@ def _make_live_dept(root: Path, slug: str, display: str) -> Path:
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": display,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

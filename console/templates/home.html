@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Bonjour Joris — Cabinet d'éclosion{% endblock %}
+{% block title %}Bonjour {{OPERATOR}} — Cabinet d'éclosion{% endblock %}
 {% block content %}
 
 {# ─── Hero greeting ───────────────────────────────────────────── #}
 <section class="page-hero">
-  <h1 class="page-hero-title">Bonjour Joris. Voici où en est l'équipe aujourd'hui.</h1>
+  <h1 class="page-hero-title">Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.</h1>
   <p class="page-hero-lede">
     <span class="ochre-num">{{ total_gates }}</span>
     décision{{ '' if total_gates == 1 else 's' }} qu'on attend de toi ·
@@ -14,7 +14,7 @@
   </p>
 </section>
 
-{# ─── Filet de sécurité — roll-up (Joris msg 1171) ──────────────
+{# ─── Filet de sécurité — roll-up ({{OPERATOR}} msg 1171) ──────────────
    The loop-backup timer (08:00 + 14:00 Paris) catches any /loop that
    died. Shown only once it has fired at least once. #}
 {% if backup_rollup and backup_rollup.any_activity %}

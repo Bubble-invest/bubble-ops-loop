@@ -255,7 +255,7 @@
 
       </div>
       {% else %}
-      {# The actual draft Joris is approving — rendered inline so he can triage
+      {# The actual draft {{OPERATOR}} is approving — rendered inline so he can triage
          without opening each gate. Mirrors gate_card.html's draft block.
          Shown only for non-content gates (content gates render above). #}
       {% if gate.draft_body or gate.comment_body %}

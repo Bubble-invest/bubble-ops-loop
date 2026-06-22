@@ -84,7 +84,7 @@
   </p>
 
   {# Full MANDATE.md (collapsible) — present once step 1 is validated.
-     Joris reads this to audit the dept's full scope (msg 3118). #}
+     {{OPERATOR}} reads this to audit the dept's full scope (msg 3118). #}
   {% if mandate_md %}
     <details class="mandate-full" style="margin-top:18px;">
       <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.95em;">
@@ -163,7 +163,7 @@
 
 {# ─── B2. Ses moments de la journée (consolidated, msg 3142) ────
    Was previously TWO sections: B2 "Ses rendez-vous récurrents" and
-   B3 "Ses moments". Joris flagged msg 3142: every mission has a
+   B3 "Ses moments". {{OPERATOR}} flagged msg 3142: every mission has a
    `layer:` so this duplicated. Now ONE section: 4 Moment cards,
    each containing its missions inline + its PROMPT.md collapsible.
 #}
@@ -317,7 +317,7 @@
 
 {# ─── E. Comment lui parler (Phase G4) ──────────────────────────
    Replaces the legacy 'claude code' terminal CTA. The agent now lives
-   in its own session driven by SystemD on Morty; the only way for Joris
+   in its own session driven by SystemD on Morty; the only way for {{OPERATOR}}
    to reach her is through her dedicated Telegram bot. #}
 {% set bot_handle = "bubbleops" ~ (dept.slug | replace("-", "")) ~ "_bot" %}
 <section class="carnet-section" aria-labelledby="onboarding-parler-heading">

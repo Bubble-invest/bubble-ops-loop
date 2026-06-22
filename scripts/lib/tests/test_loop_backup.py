@@ -1,6 +1,6 @@
 """test_loop_backup.py — backup-execution decision logic.
 
-Context (Joris 2026-06-01): a per-dept BACKUP runner fires twice a day
+Context ({{OPERATOR}} 2026-06-01): a per-dept BACKUP runner fires twice a day
 (morning + afternoon). For each dept it must decide: is the persistent
 /loop alive (recent heartbeat) → SKIP, or dead/parked (stale heartbeat)
 → run ONE backup dispatch tick. This module is the pure decision; the
@@ -42,7 +42,7 @@ from scripts.lib.loop_backup import (
 
 
 HOUR = 3600
-STALE = 90 * 60  # 90 minutes, Joris-approved threshold
+STALE = 90 * 60  # 90 minutes, {{OPERATOR}}-approved threshold
 
 
 def test_fresh_heartbeat_skips():
@@ -104,7 +104,7 @@ def test_threshold_is_respected_per_call():
     assert backup_decision(hb, now, 60 * 60)["action"] == "skip"  # 60m thresh → fresh
 
 
-# ─── Event log (Joris msg 1171) ──────────────────────────────────────────
+# ─── Event log ({{OPERATOR}} msg 1171) ──────────────────────────────────────────
 #
 # Every fire appends one JSON line per dept so the cockpit can surface the
 # safety-net result in the front end. Reader/writer share this module.

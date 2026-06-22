@@ -26,7 +26,7 @@ def _write_state(path: Path, *, status: str = "Idea", validated: list = None) ->
         "schema_version": 1,
         "slug": "smoke",
         "display_name": "Smoke",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T00:00:00Z",
         "status": status,
         "validated_steps": validated or [],
@@ -63,7 +63,7 @@ def test_followup_prompt_returns_french_bureau_de_cadre_voice() -> None:
     prompt = get_followup_prompt("mandate", "2")
     # Must use tu/toi (French BdC voice), not "vous".
     assert "tu " in prompt.lower() or " tu" in prompt.lower(), \
-        f"followup must tutoyer Joris; got: {prompt}"
+        f"followup must tutoyer {{OPERATOR}}; got: {prompt}"
 
 
 def test_followup_prompt_falls_back_for_unknown_choice() -> None:
@@ -187,7 +187,7 @@ def test_state_schema_accepts_step_interactions(tmp_path: Path) -> None:
         "schema_version": 1,
         "slug": "smoke",
         "display_name": "Smoke",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T00:00:00Z",
         "status": "Configuring",
         "validated_steps": ["mandate"],
@@ -231,7 +231,7 @@ def test_state_schema_still_accepts_state_without_step_interactions() -> None:
         "schema_version": 1,
         "slug": "smoke",
         "display_name": "Smoke",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T00:00:00Z",
         "status": "Idea",
         "validated_steps": [],
@@ -256,7 +256,7 @@ def test_state_schema_rejects_unknown_action() -> None:
         "schema_version": 1,
         "slug": "smoke",
         "display_name": "Smoke",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T00:00:00Z",
         "status": "Idea",
         "validated_steps": [],

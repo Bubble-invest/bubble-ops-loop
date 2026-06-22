@@ -3,8 +3,8 @@
 # fresh from GitHub, so the disk-mode cockpit renders their latest gates / state /
 # heartbeat.
 #
-# Why (Hybrid local/VPS agent, Joris msg 4258, 2026-06-11): a dept may run its
-# /loop on its OWN machine (e.g. Miranda's bubble-ops-content on Jade's Mac —
+# Why (Hybrid local/VPS agent, {{OPERATOR}} msg 4258, 2026-06-11): a dept may run its
+# /loop on its OWN machine (e.g. Miranda's bubble-ops-content on {{OPERATOR_2}}'s Mac —
 # real Chrome/tools) by declaring `host: local` in onboarding/STATE.yaml. That
 # dept NEVER executes on the VPS (see loop-backup.sh host-skip), but the cockpit
 # is disk-mode and renders from disk — so the VPS keeps a READ-ONLY MIRROR of the

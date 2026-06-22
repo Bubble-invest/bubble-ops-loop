@@ -2,18 +2,18 @@
 test_mandate_visible_in_ui.py — MANDATE.md must be readable from the UI
 in BOTH lifecycle phases.
 
-Joris flag 2026-05-24 msg 3118:
+{{OPERATOR}} flag 2026-05-24 msg 3118:
   > I need to be able to read it in the UI at the current onboarding
   > phase, and in the operational phase after that when needed, as for
   > all agents.
 
 Phase 1 (onboarding, status != Live): the dept's MANDATE.md must be
-visible on `/agents/<slug>/onboarding`. Joris uses this page to read
+visible on `/agents/<slug>/onboarding`. {{OPERATOR}} uses this page to read
 what the agent has committed to during the éclosion.
 
 Phase 2 (operating, status == Live): MANDATE.md remains the canonical
-contract. It must be visible on `/dept/<slug>`. Joris reads it when
-auditing the agent's scope or when introducing the agent to Jade.
+contract. It must be visible on `/dept/<slug>`. {{OPERATOR}} reads it when
+auditing the agent's scope or when introducing the agent to {{OPERATOR_2}}.
 
 Test pattern: monkey-patch github_reader.load_mandate_md to return a
 sentinel, GET both pages, assert the sentinel content is present.
@@ -77,7 +77,7 @@ def test_onboarding_page_renders_mandate_section(client, monkeypatch):
     # The unique sentinel marker must appear somewhere in the rendered HTML
     assert "sentinel-marker-12345" in body, (
         "MANDATE.md body not rendered on the onboarding page. The whole "
-        "point is that Joris can read what the agent committed to."
+        "point is that {{OPERATOR}} can read what the agent committed to."
     )
 
 
@@ -93,7 +93,7 @@ def test_dept_detail_page_renders_mandate_section(client, monkeypatch):
     assert r.status_code == 200
     body = r.text
     assert "sentinel-marker-12345" in body, (
-        "MANDATE.md body not rendered on the operating dept page. Joris "
+        "MANDATE.md body not rendered on the operating dept page. {{OPERATOR}} "
         "must be able to read it any time, not just during éclosion."
     )
 

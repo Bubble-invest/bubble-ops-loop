@@ -2,7 +2,7 @@
 
 **Owner:** Rick (R&D). **Date:** 2026-06-02. **Status:** Wave 1, fixture-first.
 **Parent plan (READ IT FIRST):** `../SANDBOX-SCOPING.md`
-**Green light from Joris (msg 3621):** host-prep approved, fixture-first, quality over speed.
+**Green light from {{OPERATOR}} (msg 3621):** host-prep approved, fixture-first, quality over speed.
 
 This file is the single source of ground truth. Every fact below was verified live
 on the box by Rick on 2026-06-02 (tagged `[VERIFIED-LIVE]`). Do not assume anything
@@ -93,11 +93,11 @@ git push authenticates through a **`sudo` chain**:
   normal push succeeds AND a structural push still gets the read-only-token 403
   (mission-lock intact).
 
-## 4. Host-prep (Joris APPROVED — but run deliberately, with rollback) `[DOCS]`
+## 4. Host-prep ({{OPERATOR}} APPROVED — but run deliberately, with rollback) `[DOCS]`
 
 This is a host-level security-posture change (re-permits unprivileged userns for
 the `bwrap` binary only). The `host-prep-scoper` subagent writes an idempotent
-install script + a rollback script; it does **NOT execute them**. Rick + Joris
+install script + a rollback script; it does **NOT execute them**. Rick + {{OPERATOR}}
 run the install once, by hand, after review.
 
 ```bash
@@ -152,7 +152,7 @@ Do not copy the `//` style into the sandbox block.
   probing. Wave 1–2 stay entirely on the fixture + host-level checks. No live
   agent (tony/maya/cgp/claudette/morty) is touched until Wave 3, human-gated.
 - **Never edit `/etc/claude-code/managed-settings.json` from a subagent.** That's
-  human-gated (Rick/Joris) in Wave 3 only.
+  human-gated (Rick/{{OPERATOR}}) in Wave 3 only.
 
 ## 7. Official docs (authoritative — read before guessing)
 

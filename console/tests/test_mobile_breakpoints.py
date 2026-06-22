@@ -1,7 +1,7 @@
 """
 test_mobile_breakpoints.py — responsive HTML structure.
 
-Notion v5 line 1012: "Mobile-friendly (Joris valide ses gates depuis son
+Notion v5 line 1012: "Mobile-friendly ({{OPERATOR}} valide ses gates depuis son
 telephone)".
 
 The console uses Tailwind responsive classes: stacked on mobile (<768px,

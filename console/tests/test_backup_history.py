@@ -1,7 +1,7 @@
 """
 test_backup_history.py — surface the loop-backup safety net in the cockpit.
 
-Joris msg 1171 (2026-06-01): the twice-daily backup timer (loop-backup.sh)
+{{OPERATOR}} msg 1171 (2026-06-01): the twice-daily backup timer (loop-backup.sh)
 appends one event per dept per fire to a central JSONL. The dept page must
 show a "Filet de sécurité" block (latest verdict + recent checks) and the
 home page a one-line roll-up — the timer used to be journal-only, invisible

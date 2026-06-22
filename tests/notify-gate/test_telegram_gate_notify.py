@@ -179,7 +179,7 @@ def test_notify_gate_sends_telegram_with_required_fields(
 
 
 def test_notify_gate_includes_4_actions(gate_file, fake_token_env, mock_telegram_ok):
-    """Message must contain the 4 actions Joris can copy-paste back:
+    """Message must contain the 4 actions {{OPERATOR}} can copy-paste back:
     approve / reject / modify / defer."""
     repo_root, gate_path = gate_file
     rel = gate_path.relative_to(repo_root)
@@ -206,7 +206,7 @@ def test_notify_gate_includes_4_actions(gate_file, fake_token_env, mock_telegram
     assert "reject" in text_lower, "missing 'reject' action"
     assert "modify" in text_lower, "missing 'modify' action"
     assert "defer" in text_lower, "missing 'defer' action"
-    # The gate id should be quoted alongside each action so Joris can
+    # The gate id should be quoted alongside each action so {{OPERATOR}} can
     # copy-paste a single line back.
     assert text_lower.count("gate-notif-test-002") >= 1
 

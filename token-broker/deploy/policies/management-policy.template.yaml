@@ -68,7 +68,7 @@ github_access:
                               # THE place the agent records ad-hoc, time-bound items
                               # (e.g. "watch SpaceX IPO") instead of editing its
                               # mission files. Mission files are structural -> agent
-                              # CANNOT push them (mission-file lock); only Joris/Jade
+                              # CANNOT push them (mission-file lock); only {{OPERATOR}}/{{OPERATOR_2}}
                               # via merged PR.
         - whiteboard.md       # L4 cockpit free-space board — rendered VERBATIM by the cockpit
                               # template (alongside whiteboard.yaml's kpis/notes keys). Runtime

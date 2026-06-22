@@ -1,6 +1,6 @@
 # Positive example: management-export.yaml using the RELAXED shape (v3.1).
 #
-# Joris directive (Telegram msg 2676, 2026-05-20): "Ok pour la step 9 tu peux
+# {{OPERATOR}} directive (Telegram msg 2676, 2026-05-20): "Ok pour la step 9 tu peux
 # assouplir." → we accept two real-world patterns emitted by Layer 4 on
 # bubble-ops-fixture's first manual L4 run (2026-05-20):
 #

@@ -1,7 +1,7 @@
 """
 backup_history.py — surface the loop-backup safety net in the cockpit.
 
-Joris msg 1171 (2026-06-01): a backup scheduled task (loop-backup.timer,
+{{OPERATOR}} msg 1171 (2026-06-01): a backup scheduled task (loop-backup.timer,
 08:00 + 14:00 Europe/Paris) complements the persistent `/loop`s. For each
 dept it either SKIPS (the live loop is healthy — recent heartbeat) or runs
 ONE dispatch tick (the loop is dead/parked). Until now it logged only to the

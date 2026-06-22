@@ -3,7 +3,7 @@ Description=Fire ops-loop Layer 2 (Orient) floor daily at 12:00 Europe/Paris
 Documentation=https://github.com/Bubble-invest/bubble-ops-loop
 
 [Timer]
-# +2h backup offset (Joris msg 3911, 2026-06-06): the live /loop owns each
+# +2h backup offset ({{OPERATOR}} msg 3911, 2026-06-06): the live /loop owns each
 # layer at its min-time (L2); this safety-net cron fires 2h later to catch up
 # on a STALE loop without racing or replacing it.
 Unit=loop-layer@2.service

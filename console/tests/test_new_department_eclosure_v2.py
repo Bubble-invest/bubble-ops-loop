@@ -34,7 +34,7 @@ def test_post_without_telegram_token_returns_400(client, mock_bootstrap):
     """Submitting without a telegram token should be rejected."""
     r = client.post(
         "/agents/new",
-        data={"slug": "newdept", "display_name": "NewDept", "owner": "joris"},
+        data={"slug": "newdept", "display_name": "NewDept", "owner": "operator"},
     )
     assert r.status_code in (400, 422)
 
@@ -44,7 +44,7 @@ def test_post_with_garbage_telegram_token_returns_400(client, mock_bootstrap):
     r = client.post(
         "/agents/new",
         data={
-            "slug": "newdept", "display_name": "NewDept", "owner": "joris",
+            "slug": "newdept", "display_name": "NewDept", "owner": "operator",
             "telegram_bot_token": "not-a-valid-token",
         },
     )
@@ -71,7 +71,7 @@ def test_post_valid_stores_state_and_returns_install_link(client, monkeypatch):
         data={
             "slug": "newdept",
             "display_name": "NewDept",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
         },
     )
@@ -95,7 +95,7 @@ def test_post_result_contains_install_link_not_sse_stream(client, monkeypatch):
         data={
             "slug": "newdept",
             "display_name": "NewDept",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
         },
     )
@@ -122,7 +122,7 @@ def test_post_result_shows_github_app_fallback_when_install_fails(
         data={
             "slug": "newdept",
             "display_name": "NewDept",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
         },
     )

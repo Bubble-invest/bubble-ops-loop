@@ -17,7 +17,7 @@ ammonia — the maintained bleach successor). Allowed: structural + table +
 formatting tags, links, and images. Stripped: <script>, <style>, event handlers
 (onclick…), <iframe>/<object>, and any tag/attr not on the allowlist. This keeps
 the whiteboard "an artifact the agent fills with any data rep" WITHOUT giving an
-agent script execution in Joris's cockpit (Joris 2026-06-19: keep it secure →
+agent script execution in {{OPERATOR}}'s cockpit ({{OPERATOR}} 2026-06-19: keep it secure →
 markdown+sanitize, NOT sandboxed JS).
 
 Images are allowed so an agent can embed a chart it generated (e.g. the

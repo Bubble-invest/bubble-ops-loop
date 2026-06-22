@@ -1,7 +1,7 @@
 """
 test_carnet_framework.py — the org-framework flowchart on the Carnet de bord.
 
-Joris msg 1183 → 1188 (2026-06-01): a simple flowchart of how the org works
+{{OPERATOR}} msg 1183 → 1188 (2026-06-01): a simple flowchart of how the org works
 (concierges, departments, layers) — shown INSIDE the Carnet de bord (/health)
 page, not on a separate page.
 

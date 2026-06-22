@@ -69,7 +69,7 @@ def compose_final_telegram_message(display_name: str, reason: str) -> str:
     """The farewell message sent to the dept's Telegram chat.
 
     Tone: Bureau-de-Cadre — warm + dignified, not corporate, not robotic.
-    Joris validates this prose; tests assert key markers (Merci, retraite,
+    {{OPERATOR}} validates this prose; tests assert key markers (Merci, retraite,
     display name, FR-only).
 
     The `reason` parameter is recorded in STATE.yaml::retired_reason for

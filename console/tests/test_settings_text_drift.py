@@ -3,7 +3,7 @@ test_settings_text_drift.py — Bug A3.
 
 The /settings/<slug> page used to advertise "Knob editing arrives in UX-4"
 but UX-4 shipped as the dry-run mechanism, not the knob editor. Per UX-3
-design decision (Joris sign-off — "/settings read-only en v1, édition =
+design decision ({{OPERATOR}} sign-off — "/settings read-only en v1, édition =
 settings_pr branch, deferred"), knob editing is deferred indefinitely.
 
 The page must:

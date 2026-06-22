@@ -38,7 +38,7 @@ def _seed_state(tmp_path: Path) -> Path:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T08:00:00Z",
         "status": "Configuring",
         "validated_steps": [],
@@ -73,7 +73,7 @@ def _drive_mandate(tmp_path: Path) -> None:
     body = (
         "publier sans validation, nommer clients\n"
         "ops\n"
-        "joris"
+        "operator"
     )
     runner.on_answer(body)
     runner.on_answer("approuve")

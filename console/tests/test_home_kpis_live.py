@@ -36,7 +36,7 @@ def _make_live_dept(root: Path, slug: str, display: str, gates: int = 0) -> Path
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": display,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

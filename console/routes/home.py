@@ -79,7 +79,7 @@ def home(request: Request):
             "gate_groups": _group_gates_by_kind(gates),
         })
     total_gates = sum(c["gate_count"] for c in columns)
-    # Safety-net roll-up — last loop-backup fire across all depts (Joris msg
+    # Safety-net roll-up — last loop-backup fire across all depts ({{OPERATOR}} msg
     # 1171). One compact banner so the operator sees the net is live + acting.
     backup_rollup = backup_history.rollup()
     # Concierges (Morty, Claudette) — reactive assistants, not loop-depts;

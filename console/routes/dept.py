@@ -67,59 +67,59 @@ def dept_detail(slug: str, request: Request):
     # Back-compat: keep `missions` (slug list) for legacy templates / tests,
     # but enrich with full mission dicts (cadence, description, layer,
     # creates, gate_policy_id) so the UI can render the body of each
-    # mission. Joris flag 2026-05-24 msg 3137.
+    # mission. {{OPERATOR}} flag 2026-05-24 msg 3137.
     missions = github_reader.list_missions(slug)
     missions_full = github_reader.list_missions_full(slug)
     layers = []
     if isinstance(dept_yaml, dict):
         layers = dept_yaml.get("layers", {}).get("subscribed", []) or []
-    # MANDATE.md verbatim — Joris reads this in the operating phase to
-    # audit scope or onboard Jade (msg 3118).
+    # MANDATE.md verbatim — {{OPERATOR}} reads this in the operating phase to
+    # audit scope or onboard {{OPERATOR_2}} (msg 3118).
     mandate_md = github_reader.load_mandate_md(slug)
     # Per-layer PROMPT.md — populated only for layers that have a file
-    # on disk (graceful degradation when absent). Joris flag msg 3137.
+    # on disk (graceful degradation when absent). {{OPERATOR}} flag msg 3137.
     layer_prompts = {n: github_reader.load_layer_prompt_md(slug, n)
                      for n in layers}
     # Bucket missions by layer so the template can render ONE section
     # (Moments) with missions nested inside, rather than a duplicate
-    # "Rendez-vous récurrents" section (Joris msg 3142).
+    # "Rendez-vous récurrents" section ({{OPERATOR}} msg 3142).
     missions_by_layer = github_reader.group_missions_by_layer(missions_full)
     # Per-layer recent output (last-run timestamp + summary excerpt) for
-    # activity tracking in the moments kanban (Joris msg 1071, 2026-05-28).
+    # activity tracking in the moments kanban ({{OPERATOR}} msg 1071, 2026-05-28).
     layer_recent_outputs = {
         n: github_reader.load_recent_layer_output(slug, n)
         for n in layers
     }
-    # Per-dept whiteboard — agent-surfaced KPIs/metrics for Joris
-    # (Joris msg 1073, 2026-05-28).
+    # Per-dept whiteboard — agent-surfaced KPIs/metrics for {{OPERATOR}}
+    # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
     # Free-space whiteboard — a blank canvas card the dept manager fills with
     # any data representation it wants: tables, headings, rich text, embedded
     # chart images (whiteboard.md). Rendered as SANITIZED markdown→HTML so the
     # agent's markdown actually formats (Ben's allocation tables rendered as raw
-    # text before — Joris 2026-06-19) without allowing script injection.
+    # text before — {{OPERATOR}} 2026-06-19) without allowing script injection.
     # Original msg 1174, 2026-06-01.
     whiteboard_freeform = markdown_render.render_markdown_safe(
         github_reader.load_whiteboard_freeform(slug)
     )
     # KPI graphs — time series built from the dept's Layer-4 output history
-    # (one datapoint per loop run). Joris msg 1163, 2026-06-01.
+    # (one datapoint per loop run). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)
     # Loop-run history — one entry per active day, with clickable outputs.
-    # Joris msg 1168, 2026-06-01.
+    # {{OPERATOR}} msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
     # Decision timeline — all past and pending decisions surfaced in the
-    # loop-history section (Joris 2026-06-09).
+    # loop-history section ({{OPERATOR}} 2026-06-09).
     decision_events = loop_history.list_decision_events(slug)
     # Safety-net (loop-backup) events — the twice-daily backup timer's verdict
     # per fire: loop alive → skip, or loop dead/parked → one backup tick.
-    # Joris msg 1171, 2026-06-01.
+    # {{OPERATOR}} msg 1171, 2026-06-01.
     backup_events = backup_history.recent_backups(slug)
     latest_backup = backup_history.latest_backup(slug)
     # Compact firm-wide kanban snapshot — ONLY for the management dept (Tony).
     # The management cockpit should surface the cross-dept board (counts + the
     # few items needing attention); the full board lives at /kanban. Read-only.
-    # (Joris 2026-06-17.)
+    # ({{OPERATOR}} 2026-06-17.)
     kanban_summary = None
     is_management = (
         isinstance(dept_yaml, dict)
@@ -156,7 +156,7 @@ def dept_detail(slug: str, request: Request):
 
 @router.get("/dept/{slug}/output", response_class=HTMLResponse)
 def output_file(slug: str, f: str, request: Request):
-    """View a single loop-run output file in-browser (Joris msg 1168).
+    """View a single loop-run output file in-browser ({{OPERATOR}} msg 1168).
 
     `f` is a repo-relative path that must live under outputs/ — the reader
     refuses anything that escapes it.

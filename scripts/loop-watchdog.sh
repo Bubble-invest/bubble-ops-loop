@@ -16,7 +16,7 @@
 #     If a full day passes with no heartbeat, the daily backup cron will
 #     catch the missing outputs directory.
 #   - We do NOT touch ops-loop-fixture.service — alerting only, no
-#     auto-restart. Joris decides whether to intervene.
+#     auto-restart. {{OPERATOR}} decides whether to intervene.
 #   - We re-alert every 40 min while stale (idempotent: same message). This
 #     is intentional pressure to act, not annoyance: Telegram dedupes
 #     identical recent messages visually in the UI.
@@ -25,7 +25,7 @@ set -euo pipefail
 
 HEARTBEAT="/home/claude/agents/fixture/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
 STALE_THRESHOLD_SEC=$((40 * 60))  # 2× the 20-min /loop cadence
-CHAT_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"   # operator (Joris)
+CHAT_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"   # operator ({{OPERATOR}})
 
 if [ ! -f "$HEARTBEAT" ]; then
   # No heartbeat file yet today. Two cases:

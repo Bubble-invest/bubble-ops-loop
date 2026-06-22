@@ -57,7 +57,7 @@ do) unless `--activate` is passed. `launchctl load` happens **only** with
 how the test suites exercise the full render + decision paths with zero side
 effects.
 
-## Install (on the Mac, only after re-audit PASS + Joris go — see MIRANDA-BUILD-SPEC P4)
+## Install (on the Mac, only after re-audit PASS + {{OPERATOR}} go — see MIRANDA-BUILD-SPEC P4)
 
 ```sh
 # Dry render first (writes wrapper + plist, NO launchctl) — inspect them:

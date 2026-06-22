@@ -1,5 +1,5 @@
 # NEGATIVE CASE — must STILL be REJECTED by management-export.schema.yaml
-# even after the v3.1 relaxation (Joris msg 2676, 2026-05-20).
+# even after the v3.1 relaxation ({{OPERATOR}} msg 2676, 2026-05-20).
 #
 # This file exercises BOTH relaxed features (string needs_management_attention
 # + extra link keys) at once. They are valid in isolation, but the rogue

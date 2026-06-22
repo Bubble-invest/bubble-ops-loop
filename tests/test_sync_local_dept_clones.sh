@@ -3,7 +3,7 @@
 # test_sync_local_dept_clones.sh — TDD harness for scripts/sync-local-dept-clones.sh
 #
 # B3 (Hybrid local/VPS agent): the VPS keeps READ-ONLY clones of host:local
-# depts (e.g. Miranda's bubble-ops-content on Jade's Mac) fresh from GitHub so
+# depts (e.g. Miranda's bubble-ops-content on {{OPERATOR_2}}'s Mac) fresh from GitHub so
 # the disk-mode cockpit renders their latest gates/state/heartbeat. The dept
 # NEVER executes on the VPS — only its files are mirrored via `git pull --ff-only`.
 #

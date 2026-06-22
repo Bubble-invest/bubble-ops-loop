@@ -25,7 +25,7 @@
 # DOCTRINE — MAIN runner = KeepAlive (persistent session), the Mac twin of the
 # VPS systemd dept unit which runs interactive `claude --channels` (NOT
 # `claude -p`). The dept arms its OWN `/loop` cron inside the session for cadence
-# (boot-rearm), and its Telegram bot — its only channel to Jade/Joris — needs the
+# (boot-rearm), and its Telegram bot — its only channel to {{OPERATOR_2}}/{{OPERATOR}} — needs the
 # interactive `--channels` binary. launchd KeepAlive relaunches the wrapper on
 # crash; RunAtLoad starts it on login/wake. A loop tick missed while the Mac was
 # asleep is caught by decide_dispatch's morning-floor on the first tick after
@@ -114,13 +114,13 @@ _lll_xml_escape() {
 # Echo a generic MAIN-runner wrapper script to stdout. This is the Mac twin of
 # the VPS systemd ExecStart: a PERSISTENT interactive `claude --channels` session
 # (NOT a per-tick headless relaunch). It mirrors the proven production pattern on
-# Jade's Mac (com.claude.miranda + miranda-wrapper.sh, 2026-06-04): claude runs
+# {{OPERATOR_2}}'s Mac (com.claude.miranda + miranda-wrapper.sh, 2026-06-04): claude runs
 # INSIDE a tmux session so a human can `tmux attach -t ops-loop-<slug>` to watch
 # it live, and the wrapper blocks until the session ends so launchd KeepAlive
 # restarts it on crash.
 #
 # WHY interactive `--channels`, not `claude -p`/StartInterval:
-#   - the dept's Telegram bot (its ONLY channel to Jade/Joris — every gate card,
+#   - the dept's Telegram bot (its ONLY channel to {{OPERATOR_2}}/{{OPERATOR}} — every gate card,
 #     escalation, F-step summary) REQUIRES the interactive `--channels` binary;
 #   - `claude -p` headless loses hooks + the channel (VPS Ban #2);
 #   - the loop cadence comes from the dept arming its OWN `/loop` cron inside the

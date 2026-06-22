@@ -7,7 +7,7 @@ from scripts.lib.layer_templates import render_layer_prompt
 
 
 @pytest.mark.parametrize("n,moment", [
-    # Moment titles are English (executive-office voice, Joris's English-only preference).
+    # Moment titles are English (executive-office voice, {{OPERATOR}}'s English-only preference).
     (1, "morning"),
     (2, "research"),
     (3, "execution"),

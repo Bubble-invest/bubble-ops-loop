@@ -2,7 +2,7 @@
 # Mirrors the verbatim Notion v3 dump at /tmp/notion_final.txt lines 278-373
 # (the "Ce qui se définit à la création d'un département" + "Exemple Maya"
 # blocks). Hierarchy + optional_domain_ledger are siblings of `department:`
-# per Joris-confirmed canonical layout.
+# per {{OPERATOR}}-confirmed canonical layout.
 
 department:
   slug: maya

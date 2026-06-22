@@ -31,7 +31,7 @@ def _write_state(path: Path, **overrides) -> None:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-19T10:00:00Z",
         "status": "Ready to activate",
         "validated_steps": [

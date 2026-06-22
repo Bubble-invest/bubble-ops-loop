@@ -75,7 +75,7 @@ def list_departments() -> List[DeptSummary]:
         # ── Departments (bubble-ops-* prefix) ──
         if child.name.startswith("bubble-ops-"):
             slug = child.name[len("bubble-ops-"):]
-            # Decommissioned — not part of the active team (Joris 2026-06-09)
+            # Decommissioned — not part of the active team ({{OPERATOR}} 2026-06-09)
             if slug in ("cgp",):
                 continue
             state = read_state_for_repo(child)

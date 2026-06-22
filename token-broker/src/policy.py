@@ -32,8 +32,8 @@ import yaml
 #
 # These are the MISSION-DEFINITION files: an agent may NOT push them directly
 # (the box-side credential helper mints a read-only token when it detects any of
-# these in an un-pushed delta). They change only via a PR Joris/Jade merges.
-# Governance fix 2026-06-01 (Joris msg 3582) ADDED the top-level dept mission
+# these in an un-pushed delta). They change only via a PR {{OPERATOR}}/{{OPERATOR_2}} merges.
+# Governance fix 2026-06-01 ({{OPERATOR}} msg 3582) ADDED the top-level dept mission
 # entry-points (CLAUDE.md, MANDATE.md, skills_manifest.yaml, config.yaml,
 # gate_policy.yaml) — the original list missed them, which is exactly how Tony
 # was able to bake the transient "IPO Watch" topic into layers/1/PROMPT.md.
@@ -58,10 +58,10 @@ STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "templates/**",
     "missions/**",
     "assets/**",
-    "db/schema.sql",       # canonical DB schema — PR-only (Ben exception #7, 2026-06-06). db/fund.sqlite stays runtime-writable.          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated (Joris 2026-06-06)
+    "db/schema.sql",       # canonical DB schema — PR-only (Ben exception #7, 2026-06-06). db/fund.sqlite stays runtime-writable.          # dept doctrine/voice assets (e.g. Maya's maya-doctrine.md) — mission-like, PR-gated ({{OPERATOR}} 2026-06-06)
 )
 
-# FRAMEWORK-REPO-ONLY structural paths (governance fix 2026-06-09, Joris).
+# FRAMEWORK-REPO-ONLY structural paths (governance fix 2026-06-09, {{OPERATOR}}).
 #
 # These protect the FRAMEWORK's OWN SOURCE in the canonical repo (bubble-ops-loop):
 # the scaffolder, the loop/dispatch library, CI, and the token-broker/git-guard

@@ -3,7 +3,7 @@
 # backup-age-key.sh — Security/backup sprint, deliverable A.
 #
 # Re-encrypte /etc/age/key.txt depuis Morty avec une passphrase fournie
-# par Joris (mode symétrique age, séparé de la chaîne SOPS), puis écrit
+# par {{OPERATOR}} (mode symétrique age, séparé de la chaîne SOPS), puis écrit
 # le ciphertext dans bubble-vps-data/disaster-recovery/age-key-morty.age.
 #
 # Modèle de menace adressé :
@@ -11,12 +11,12 @@
 #   Morty meurt, tous les secrets SOPS de la stack (Bubble Invest)
 #   deviennent inrécupérables. On ne peut pas le copier en clair (cela
 #   ruinerait le modèle) ; on le re-chiffre symétriquement avec une
-#   passphrase humaine (que Joris stocke en 1Password), et on commit le
+#   passphrase humaine (que {{OPERATOR}} stocke en 1Password), et on commit le
 #   ciphertext dans le repo privé bubble-vps-data.
 #
 # Invariants :
 #   - Le clair NE TOUCHE JAMAIS le disque (pipe ssh|sudo cat | age).
-#   - Le script NE COMMIT PAS, NE PUSH PAS — Joris fait la revue + commit
+#   - Le script NE COMMIT PAS, NE PUSH PAS — {{OPERATOR}} fait la revue + commit
 #     manuel comme dernière étape.
 #   - Le script échoue fort si age est absent ou si la passphrase est vide.
 #
@@ -60,7 +60,7 @@ IMPORTANT :
   - Stocke-la dans 1Password sous le nom « age-key-morty backup passphrase ».
   - Sans cette passphrase, le backup devient inutilisable : on perd la
     capacité de restaurer la chaîne SOPS.
-  - Le script NE COMMIT PAS le fichier. Joris fait : `cd projects/bubble-vps-data
+  - Le script NE COMMIT PAS le fichier. {{OPERATOR}} fait : `cd projects/bubble-vps-data
     && git add disaster-recovery/age-key-morty.age && git commit`.
 
 Exemple :

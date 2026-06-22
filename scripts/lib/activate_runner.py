@@ -58,7 +58,7 @@ def _flip_claude_md_to_operating(repo_dir: Path, dept_doc: dict | None
     of truth. Also strip the éclosion-driver SessionStart hook from
     .claude/settings.json.
 
-    Joris msg 3060 (2026-05-24): "her Claude.md does need to be rewritten
+    {{OPERATOR}} msg 3060 (2026-05-24): "her Claude.md does need to be rewritten
     after éclosion, but just to remove the éclosion part and go to
     operating mode (same for all agents as well)."
 
@@ -285,7 +285,7 @@ def _full_activation_path(
             print(f"  - {r}", file=sys.stderr)
 
     # ---- Flip CLAUDE.md to operating mode + strip éclosion hook -----
-    # Joris msg 3060 (2026-05-24). Done BEFORE the commit below so the
+    # {{OPERATOR}} msg 3060 (2026-05-24). Done BEFORE the commit below so the
     # rewrite ships in the activation commit, not as drift.
     _flip_claude_md_to_operating(repo_dir, dept_doc)
 

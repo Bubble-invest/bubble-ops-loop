@@ -17,7 +17,7 @@ artifacts and primitives the agent relies on:
     priority order — the agent's prompt describes the same tree in prose,
     so this helper is the executable contract.
 
-Joris msg 3129 (2026-05-24): "Layer 1 = morning / data refresh subagent
+{{OPERATOR}} msg 3129 (2026-05-24): "Layer 1 = morning / data refresh subagent
 whose job is to materialize recurring_missions[] from dept.yaml into
 actionable queue items based on each mission's cadence field. Layer 1
 fires when all 3 other layers have completed 1 (or configurable) round."
@@ -177,7 +177,7 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     the dispatcher cannot know the dept slug here, we take the conservative
     approach: ANY `*.yaml` in `queues/management/` that is NOT a dotfile and is
     NOT written by the dept itself (i.e. not a Rick-request escalation from the
-    dept — those have `audience: [rick, joris]` and are outbound) counts as a
+    dept — those have `audience: [rick, operator]` and are outbound) counts as a
     potential inbound note.
 
     Practical heuristic (matches the deployed PROMPT.md STEP 0-ter wording):
@@ -356,7 +356,7 @@ def layer_1_gate_satisfied(today_dir: Path, *, fire_after_rounds: int = 1) -> bo
     since the start of the UTC day.
 
     This is the "all 3 other layers have completed 1 (or configurable)
-    round" gate from Joris msg 3129. It prevents Layer 1 from over-flooding
+    round" gate from {{OPERATOR}} msg 3129. It prevents Layer 1 from over-flooding
     downstream queues.
     """
     counts = read_round_counter(today_dir)
@@ -667,7 +667,7 @@ def materialize_due_missions_for_tick(
 # Deterministic dispatch decision (locks down the prompt's tree)
 # ---------------------------------------------------------------------------
 
-# Per-layer MINIMUM fire time (Europe/Paris local), Joris msg 3904 (2026-06-06):
+# Per-layer MINIMUM fire time (Europe/Paris local), {{OPERATOR}} msg 3904 (2026-06-06):
 # each layer becomes eligible "from this time onwards until end of day" — a
 # minimum, NOT a window. A layer may fire again later the same day if there is
 # work. Compared against Paris-local time so it tracks the loop-layer*.timer
@@ -821,7 +821,7 @@ def build_dispatch_ctx(
     """Build the ctx dict that `decide_dispatch` consumes, by SCANNING the
     repo's queues + today's runtime markers.
 
-    THIS is the piece that was missing (2026-06-01, Joris msg 3588):
+    THIS is the piece that was missing (2026-06-01, {{OPERATOR}} msg 3588):
     `decide_dispatch` is a pure decision function — without a builder, the /loop
     was calling it with a placeholder, so has_research_items/has_inbox_decisions
     were never set and the tree fell through to "heartbeat" forever — L2/L3
@@ -944,7 +944,7 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     last to fire, so a tick with research / decisions / an L4 window does
     that work first and the morning brief slots into a quiet tick.
 
-    Joris flag 2026-06-01 (refined): Layer 1 fires "at least once per day, or
+    {{OPERATOR}} flag 2026-06-01 (refined): Layer 1 fires "at least once per day, or
     whenever all other layers have fired once". So C.0 fires when EITHER:
       (a) L1 has not run today  → the daily floor (independent of dept exports:
           there are always emails + the Notion logbook to review), OR
@@ -973,7 +973,7 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     l3_fired = _layer_fired_today(ctx, 3)
     l4_fired = _layer_fired_today(ctx, 4)
 
-    # MODEL (Joris msg 3904, 2026-06-06): each layer has a MINIMUM fire time
+    # MODEL ({{OPERATOR}} msg 3904, 2026-06-06): each layer has a MINIMUM fire time
     # (Paris-local), not a window — eligible from then to end of day, and may
     # re-fire later if there is work. Two layers carry a prerequisite gate ON
     # TOP of the time check:
@@ -1039,9 +1039,9 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     return "heartbeat"
 
 
-# ─── Independent dept liveness signal (Joris flag 2026-06-01) ───────────────
+# ─── Independent dept liveness signal ({{OPERATOR}} flag 2026-06-01) ───────────────
 #
-# Joris flag 2026-06-01: "Export from dept shouldn't be your only data."
+# {{OPERATOR}} flag 2026-06-01: "Export from dept shouldn't be your only data."
 # A child's management-export is self-reported — a dept whose runtime died
 # could still ship a stale "clean" export. Layer 1 needs a signal that does
 # NOT depend on what the child writes about itself. We cross-check two
@@ -1162,9 +1162,9 @@ def dept_liveness(
     }
 
 
-# ─── Auto-retry mechanism + force commit/push (Joris msg 3134) ──────────────
+# ─── Auto-retry mechanism + force commit/push ({{OPERATOR}} msg 3134) ──────────────
 #
-# Joris flag 2026-05-24: "We need a mechanism for agent auto retry if he
+# {{OPERATOR}} flag 2026-05-24: "We need a mechanism for agent auto retry if he
 # doesn't fetch the correct input and outputs the correct expected format
 # and data. Also a forced git commit and push all at each risk manager
 # mission step."
@@ -1363,7 +1363,7 @@ def force_commit_and_push(
 ) -> tuple[bool, "str | None"]:
     """Stage everything, commit, and push the dept's OWN repo.
 
-    Called by Layer 4 after EACH artifact write per Joris msg 3134 — the
+    Called by Layer 4 after EACH artifact write per {{OPERATOR}} msg 3134 — the
     risk manager's outputs are source-of-truth for what happened today;
     we don't let them sit 20 minutes waiting for the next /loop's STEP E.
 
@@ -1431,7 +1431,7 @@ def force_commit_and_push(
         print(f"[DRY_RUN] would push dept={slug!r} repo={repo_name!r} from {repo_dir}")
         return True, None
 
-    # 2. Stage RUNTIME paths only — never structural files (Joris 2026-06-06).
+    # 2. Stage RUNTIME paths only — never structural files ({{OPERATOR}} 2026-06-06).
     # `git add -A` used to sweep structural files (CLAUDE.md, doctrine,
     # assets/**, db/schema.sql...) into the runtime commit; the guard then minted
     # a read-only token and the WHOLE push 403'd, so the dept's commits piled up
@@ -1553,7 +1553,7 @@ def force_commit_and_push(
 
 
 
-# ─── safe_pull: dirty-tree-proof in-loop sync (Joris msg 3979, 2026-06-06) ──
+# ─── safe_pull: dirty-tree-proof in-loop sync ({{OPERATOR}} msg 3979, 2026-06-06) ──
 #
 # WHY: the loop's tick step 1 was `git pull --quiet --rebase || echo
 # 'pull-failed-continuing'`. On a dirty working tree git refuses
@@ -1562,7 +1562,7 @@ def force_commit_and_push(
 # merged) NEVER land on the box. That's the auto-redeploy gap: merge != live.
 # Reproduced on tony/ben/maya 2026-06-06 (28/6/2 dirty files).
 #
-# Option A (Joris's pick): make the pull RELIABLE without ever losing work.
+# Option A ({{OPERATOR}}'s pick): make the pull RELIABLE without ever losing work.
 #   1. Land legit RUNTIME changes via force_commit_and_push (outputs/queues/
 #      inbox/WORKING_MEMORY... — runtime-only, structural is skipped there).
 #   2. Stash whatever remains (leftover structural edits the agent shouldn't
@@ -1692,7 +1692,7 @@ def safe_pull(
 
     return True, "; ".join(notes)
 
-# ─── Gate-card YAML validation (Joris msg 3919, 2026-06-06) ─────────────────
+# ─── Gate-card YAML validation ({{OPERATOR}} msg 3919, 2026-06-06) ─────────────────
 #
 # Agents hand-author rich gate cards under queues/gates/*.yaml (comments,
 # multi-line scalars, expressive fields). A recurring footgun: an unquoted

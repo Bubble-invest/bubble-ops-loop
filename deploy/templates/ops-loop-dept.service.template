@@ -83,7 +83,7 @@ Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
 # Claude via the same MCP channel notification a real inbound message uses
 # (boot_rearm.ts -> bootRearmNotification). That turn makes the agent re-run
 # session-start + re-register its /loop after ANY restart -- without depending on
-# a bot->Joris Telegram message (which never returns as an inbound update; that
+# a bot->{{OPERATOR}} Telegram message (which never returns as an inbound update; that
 # was the bug bubble-loop-reinit.sh could not fix). Fires ONLY when
 # OPS_LOOP_BOOT_REARM=1 (interactive Mac/Telegram sessions must never auto-fire).
 # Requires the plugin to be patched on the box: scripts/install-boot-rearm.sh.
@@ -144,12 +144,12 @@ ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
 
 # Re-vendor the canonical shared libs (dispatch_helpers/notify*/notion_logbook +
 # tools/notify_layer) from the framework at EVERY start, so they can never drift
-# stale via a checkout/reset/reclone (Joris 2026-06-07: safe_pull + min-time model
+# stale via a checkout/reset/reclone ({{OPERATOR}} 2026-06-07: safe_pull + min-time model
 # silently reverted fleet-wide because vendored on-disk, not committed). Fail-open.
 ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG}
 
 # Re-apply the bubble-inject patch to the telegram plugin (delivers a message into
-# this live session as if from Joris) — self-heals after a plugin update. Fail-open.
+# this live session as if from {{OPERATOR}}) — self-heals after a plugin update. Fail-open.
 ExecStartPre=+/usr/local/bin/apply-inject-patch.sh
 
 EnvironmentFile=-${ENV_FILE}

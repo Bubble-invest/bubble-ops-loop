@@ -3,7 +3,7 @@ test_cancel_eclosion.py — Sprint Lifecycle Deliverable A.
 
 Tests for the `cancel-eclosion` capability — used to abandon a department
 that NEVER reached `Live`. Use case: testing eclosure repeatedly during
-development, or Joris changes his mind mid-eclosure.
+development, or {{OPERATOR}} changes his mind mid-eclosure.
 
 Flow (per the deliverable spec):
   1. Pre-flight: verify dept exists, status != "Live"
@@ -47,7 +47,7 @@ def _make_dept_repo(tmp_path: Path, slug: str, status: str,
         "schema_version": 1,
         "slug": slug,
         "display_name": display_name,
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T10:00:00Z",
         "status": status,
         "validated_steps": [],

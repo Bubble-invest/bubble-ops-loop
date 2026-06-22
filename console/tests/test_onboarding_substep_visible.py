@@ -5,7 +5,7 @@ Pins the console's reflection of `STATE.yaml::step_progress.<step>.current_subst
 in the operator-facing onboarding view (Notion v5 lines 894-924 for Step 5,
 762-781 for the 3-pane layout).
 
-Before this fix: if Joris opened /agents/<slug>/onboarding while Maya was
+Before this fix: if {{OPERATOR}} opened /agents/<slug>/onboarding while Maya was
 mid-Step-5 asking about kpi naming, he saw a generic "Step 5 — Les
 décisions qu'elle pourra prendre · en cours" with no indication of the
 sub-phase. The sub-phase IS persisted in STATE.yaml — the template just

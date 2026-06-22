@@ -15,7 +15,7 @@ CLI entry points (invoked from SessionStart hook + cron):
     python3 -m skill_lib.auto_drive announce_current_step <state_path>
 
 The eclosing agent reads its SKILL on first boot, calls get_current_step()
-to know what to do, calls get_step_prompt() to know what to ask Joris on
+to know what to do, calls get_step_prompt() to know what to ask {{OPERATOR}} on
 Telegram, waits for his answer, writes the artifact, then calls
 record_step_completion() to advance.
 
@@ -67,7 +67,7 @@ STATUSES_IN_ORDER: List[str] = [
 # Per-step prompts. Each must:
 #  - be French Bureau-de-Cadre voice (calm, concrete);
 #  - propose 3 concrete options (1., 2., 3.);
-#  - end with a direct question to Joris.
+#  - end with a direct question to {{OPERATOR}}.
 _STEP_PROMPTS: dict[str, str] = {
     "mandate": (
         "**Étape 1 — Mon mandat.**\n\n"

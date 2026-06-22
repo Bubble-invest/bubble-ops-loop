@@ -21,7 +21,7 @@ If you are the freshly spawned Claude Code session for a new
    ```
    The wiki is git-synced every 30 min and contains cross-team doctrine,
    architecture decisions, and changes that affect all agents.
-1. **You drive the 7 steps yourself.** You do NOT wait for Joris to
+1. **You drive the 7 steps yourself.** You do NOT wait for {{OPERATOR}} to
    tell you to start — you bootstrap immediately on first boot.
 2. **At each step**, you (the eclosing agent) MUST:
    - call `skill_lib.auto_drive.get_current_step(state_path)` to know
@@ -29,7 +29,7 @@ If you are the freshly spawned Claude Code session for a new
    - call `skill_lib.auto_drive.get_step_prompt(step)` to get the
      French Bureau-de-Cadre prompt to send on Telegram (3 concrete
      options + a direct question);
-   - send that prompt to Joris on your dedicated Telegram bot
+   - send that prompt to {{OPERATOR}} on your dedicated Telegram bot
      (`@bubbleops<slug>_bot`);
    - wait for his answer;
    - write the artifact for the step (using the templates in
@@ -37,13 +37,13 @@ If you are the freshly spawned Claude Code session for a new
    - run `git add . && git commit -m "<step>: <summary>" && git push`;
    - call `skill_lib.auto_drive.record_step_completion(state_path,
      step, artifact_paths=[...])` to update `STATE.yaml`;
-   - send a 1-line confirmation message to Joris on Telegram
+   - send a 1-line confirmation message to {{OPERATOR}} on Telegram
      (« ✓ Étape N validée — <name> »);
    - move to step N+1 immediately.
 3. **You never expose technical slugs** (no `dept.yaml::field` paths,
-   no schema enum strings) in messages to Joris.
-4. **You always tutoie Joris and refer to yourself in 1st person.**
-5. **If you are blocked > 2h** waiting for Joris, send a polite
+   no schema enum strings) in messages to {{OPERATOR}}.
+4. **You always tutoie {{OPERATOR}} and refer to yourself in 1st person.**
+5. **If you are blocked > 2h** waiting for {{OPERATOR}}, send a polite
    reminder. If > 6h, pause and write a status note to
    `MORNING_BRIEF.md`.
 
@@ -59,21 +59,21 @@ Every step MUST expose the same 3 operator actions:
 This is the audit-trail spine — without it, every dept invents its own
 protocol and the audit log becomes inconsistent.
 
-After turn 1 (the agent's 3-option prompt) and once Joris has picked an
+After turn 1 (the agent's 3-option prompt) and once {{OPERATOR}} has picked an
 option, the agent calls:
 
   - `skill_lib.auto_drive.get_followup_prompt(step, operator_choice)`
     to get the 2nd-turn FR Bureau-de-Cadre prompt that surfaces the
     triplet to the operator.
 
-When Joris replies, the agent classifies his answer into one of the 3
+When {{OPERATOR}} replies, the agent classifies his answer into one of the 3
 actions and calls the matching recorder:
 
-  - `record_approval(state_path, step)` — Joris said "ok / approuve /
+  - `record_approval(state_path, step)` — {{OPERATOR}} said "ok / approuve /
     go".
-  - `record_edit_request(state_path, step, operator_text)` — Joris
+  - `record_edit_request(state_path, step, operator_text)` — {{OPERATOR}}
     pasted his own rewritten version. Persist `operator_text` verbatim.
-  - `record_refine_request(state_path, step, reason)` — Joris asked
+  - `record_refine_request(state_path, step, reason)` — {{OPERATOR}} asked
     for another iteration. Persist the short `reason` ("trop long",
     "manque les forbidden", etc.).
 
@@ -162,7 +162,7 @@ For each step the section below states:
 
 Agent asks operator:
 - role of the dept (one sentence)
-- owner (default: joris)
+- owner (default: operator)
 - forbidden list (3-5 hard "must never" items)
 - expected outputs
 - success criteria
@@ -174,7 +174,7 @@ Context dict shape (Step 1):
   "display_name": "Miranda",
   "level": "ops",   # ops | management | principal
   "mandate_text": "Produire, planifier et auditer du contenu social pour Bubble.",
-  "owner": "joris",
+  "owner": "operator",
   "forbidden": ["publier informations confidentielles", "donner conseil financier"],
 }
 ```
@@ -195,14 +195,14 @@ the template into `WORKING_MEMORY.md` and commit it.
 This pairs with the **mission-file lock** (governance fix 2026-06-01): the dept's
 mission-definition files are STRUCTURAL and the agent **cannot push them** — the
 box-side git credential helper mints a read-only token whenever a push touches
-any structural path, so the only way to change a mission is a PR Joris/Jade
+any structural path, so the only way to change a mission is a PR {{OPERATOR}}/{{OPERATOR_2}}
 merges. Structural paths are defined ONCE in `token-broker/src/policy.py::STRUCTURAL_PATH_GLOBS`
 (the single source of truth, shared by every dept, so a new dept inherits the list
 automatically). As of 2026-06-06 it is: `CLAUDE.md, MANDATE.md, dept.yaml,
 skills_manifest.yaml, config.yaml, gate_policy.yaml, db/schema.sql, layers/**,
 missions/**, skills/**, tools/**, subagents/**, policies/**, templates/**, assets/**,
 .claude/**`. To change one of these a dept opens a PR via `propose-settings-pr` (it
-branches off origin/main, commits ONLY the structural file, opens a GitHub PR Joris/Jade
+branches off origin/main, commits ONLY the structural file, opens a GitHub PR {{OPERATOR}}/{{OPERATOR_2}}
 merge). `WORKING_MEMORY.md`, `whiteboard.yaml`, `db/fund.sqlite`, and `outputs/** queues/**
 inbox/**` are deliberately NOT structural (writable runtime/working state). If you ever
 add a path here, update it in policy.py only, not in per-dept copies, so it can't drift.
@@ -215,14 +215,14 @@ this standard block (translate to the dept's working language):
 ## Mémoire de travail vs mission (NE JAMAIS confondre)
 
 Ma **mission est fixe** : `CLAUDE.md`, `MANDATE.md`, `dept.yaml`, `layers/**`,
-`missions/**`, `skills/**`, ... Je **ne peux pas** les modifier — seul Joris ou
-Jade le peut, via une pull request qu'ils valident. Si on me demande d'ajouter
+`missions/**`, `skills/**`, ... Je **ne peux pas** les modifier — seul {{OPERATOR}} ou
+{{OPERATOR_2}} le peut, via une pull request qu'ils valident. Si on me demande d'ajouter
 un sujet temporaire (ex. « surveille l'IPO SpaceX ces prochaines semaines »),
 je l'écris dans **`WORKING_MEMORY.md`** (mon seul espace inscriptible pour les
 sujets transitoires), JAMAIS dans un fichier de mission. Mes prompts de layer
 lisent `WORKING_MEMORY.md` au début de chaque run et intègrent ses sujets actifs.
 Si un sujet devient durable au point de mériter d'entrer dans ma mission, je le
-signale à Joris/Jade pour qu'ILS le promeuvent — je ne touche jamais la mission
+signale à {{OPERATOR}}/{{OPERATOR_2}} pour qu'ILS le promeuvent — je ne touche jamais la mission
 moi-même.
 ```
 
@@ -517,7 +517,7 @@ a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) s
   for N∈{1,4} (immediate), and accumulate `layer_fires={"2":n,"3":n}` for L2/L3;
 - at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
 Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
-`config.yaml` yet, the helpers default to Joris's chat_id. (tony/cgp still need a config.yaml.)
+`config.yaml` yet, the helpers default to {{OPERATOR}}'s chat_id. (tony/cgp still need a config.yaml.)
 #### Check F.2 — Gate-card YAML must be VALID (write-time validation)
 
 Layers hand-author gate cards under `queues/gates/*.yaml`. A single unquoted

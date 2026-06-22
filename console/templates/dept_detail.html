@@ -57,7 +57,7 @@
 
 {# ─── Son mandat ────────────────────────────────────────────────
    One-line mandate shown plainly first (human-readable), then the
-   full MANDATE.md as a collapsible for audit (Joris msg 1071). #}
+   full MANDATE.md as a collapsible for audit ({{OPERATOR}} msg 1071). #}
 <section class="cabinet-section" aria-labelledby="dept-mandate-heading">
   <h2 id="dept-mandate-heading" class="section-heading">
     <span class="section-heading-number">0.</span>
@@ -81,11 +81,11 @@
 </section>
 
 {# ─── Tableau de bord (whiteboard) ───────────────────────────────
-   KPIs first — Joris msg 1167 (2026-06-01) reordered the page so health
+   KPIs first — {{OPERATOR}} msg 1167 (2026-06-01) reordered the page so health
    leads, then decisions awaiting him, then the 4 moments. Two halves:
      • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
      • graphs — KPI time-series built from Layer-4 output history
-       (whiteboard_graphs, Joris msg 1163, 2026-06-01). #}
+       (whiteboard_graphs, {{OPERATOR}} msg 1163, 2026-06-01). #}
 <section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
   <h2 id="dept-whiteboard-heading" class="section-heading">
     <span class="section-heading-number">1.</span>
@@ -134,7 +134,7 @@
     <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
   {% endif %}
 
-  {# ─── Whiteboard — espace libre (Joris msg 1174) ─────────────────
+  {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
      A real blank canvas the dept manager fills with anything. Content
      comes from <repo>/whiteboard.md, rendered verbatim. Always present
      (the framework), empty until the agent writes to it. #}
@@ -159,7 +159,7 @@
 
 {# ─── Kanban (firm-wide snapshot — management dept only) ──────────────
    Compact cross-dept board: per-column counts + the items needing
-   attention. Full board at /kanban. Read-only. (Joris 2026-06-17.) #}
+   attention. Full board at /kanban. Read-only. ({{OPERATOR}} 2026-06-17.) #}
 {% if kanban_summary %}
 <section class="cabinet-section" aria-labelledby="dept-kanban-heading">
   <div style="display:flex; justify-content:space-between; align-items:baseline;">
@@ -215,7 +215,7 @@
     {# Mirror the home page: group gates of the same kind into one card.
        Single-gate kinds keep the existing one-card-per-gate behaviour but
        use the same shape so the visual rhythm is consistent.
-       Joris msg 3030 (2026-05-24): "shouldn't they be grouped?" #}
+       {{OPERATOR}} msg 3030 (2026-05-24): "shouldn't they be grouped?" #}
     <div class="decisions-grid">
       {% for grp in gate_groups %}
         {% if grp.count >= 2 %}
@@ -261,7 +261,7 @@
 
 
 {# Session en direct — live view of this dept's agent. Moved BELOW decisions per
-   Joris 2026-06-16: actionable decisions deserve top placement. #}
+   {{OPERATOR}} 2026-06-16: actionable decisions deserve top placement. #}
 <details style="margin-bottom:32px;" id="dept-session-details">
   <summary style="cursor:pointer; font-size:15px; font-weight:600; padding:4px 0; color:var(--ink);">
     <span style="display:inline-flex; align-items:center; gap:6px;">
@@ -291,7 +291,7 @@
 <style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
 {# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
    Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
-   mission cards) + "Ses 4 moments" (4 layer cards). Joris flagged
+   mission cards) + "Ses 4 moments" (4 layer cards). {{OPERATOR}} flagged
    msg 3142: every mission already has a `layer:` so this duplicates.
    Now ONE section: 4 Moment cards, each containing its missions
    inline + its PROMPT.md collapsible.
@@ -395,8 +395,8 @@
 
 {# ─── Historique des boucles + décisions ──────────────────────────
    Compact by default: recent 7 days expanded, older collapsed.
-   Decision timeline surfaces Joris's approvals/rejections per day.
-   Joris msg 1168 (2026-06-01) + compact redesign 2026-06-09. #}
+   Decision timeline surfaces {{OPERATOR}}'s approvals/rejections per day.
+   {{OPERATOR}} msg 1168 (2026-06-01) + compact redesign 2026-06-09. #}
 <section class="cabinet-section" aria-labelledby="dept-history-heading">
   <h2 id="dept-history-heading" class="section-heading">
     <span class="section-heading-number">4.</span>
@@ -532,7 +532,7 @@
 </p>
 
 {# ─── Mettre à la retraite ────────────────────────────────────────
-   Sprint Lifecycle (UI gap fixed 2026-05-24, Joris msg 3030): backend
+   Sprint Lifecycle (UI gap fixed 2026-05-24, {{OPERATOR}} msg 3030): backend
    route POST /agents/<slug>/retire existed but no UI element triggered
    it — operators had to use curl. CTA only shown for Live depts;
    éclore depts use cancel-eclosion (different workflow), anciens are

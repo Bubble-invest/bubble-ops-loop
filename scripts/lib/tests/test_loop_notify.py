@@ -74,8 +74,8 @@ class _CapturingOpener:
 
 CONFIG = {
     "accounts": {
-        "Joris": {"telegram_chat_id": "111222333", "email": "joris@example.com"},
-        "Jade": {"telegram_chat_id": "999888777", "email": "jade@example.com"},
+        "Operator": {"telegram_chat_id": "111222333", "email": "operator@example.com"},
+        "Operator2": {"telegram_chat_id": "999888777", "email": "operator2@example.com"},
     },
     "dept_label": "maya",
 }
@@ -151,7 +151,7 @@ def test_layer_fired_missing_token_is_clear_nonfatal(tmp_path, monkeypatch):
 def test_layer_fired_multi_account_fans_out(tmp_path, token_env):
     opener = _CapturingOpener()
     loop_notify.notify_layer_fired(
-        "maya", 1, None, config=CONFIG, account=["Joris", "Jade"], opener=opener
+        "maya", 1, None, config=CONFIG, account=["Operator", "Operator2"], opener=opener
     )
     chat_ids = {c["body"]["chat_id"] for c in opener.calls}
     assert chat_ids == {"111222333", "999888777"}
@@ -241,7 +241,7 @@ def test_email_degrades_no_creds_telegram_still_sent(monkeypatch):
     receipts = notify.deliver(
         payload,
         [notify.CHANNEL_EMAIL, notify.CHANNEL_TELEGRAM_ALERT],
-        account_used="Joris",
+        account_used="Operator",
         config=CONFIG,
         _backends={notify.CHANNEL_TELEGRAM_ALERT: tg_backend},
     )
@@ -294,11 +294,11 @@ def test_dept_agnostic_no_maya_hardcoded_in_alert():
     assert "Maya" not in captured["subject"]
 
 
-# ─── cockpit link in layer-fired pings (Joris msg 3985, 2026-06-06) ──────────
+# ─── cockpit link in layer-fired pings ({{OPERATOR}} msg 3985, 2026-06-06) ──────────
 
 
 def test_layer_fired_includes_cockpit_link(tmp_path, token_env):
-    """Every layer-fired ping must carry the dept cockpit link so Joris can
+    """Every layer-fired ping must carry the dept cockpit link so {{OPERATOR}} can
     open the work directly from Telegram."""
     summary = tmp_path / "summary.md"
     summary.write_text("# L4 risk brief done\n")
@@ -330,7 +330,7 @@ def test_cockpit_base_url_env_override(tmp_path, token_env, monkeypatch):
         importlib.reload(loop_notify)
 
 
-# ─── test prefix + artifact gate (Joris msg 4022, 2026-06-07) ────────────────
+# ─── test prefix + artifact gate ({{OPERATOR}} msg 4022, 2026-06-07) ────────────────
 
 
 def test_layer_fired_test_flag_prefixes_marker(tmp_path, token_env):

@@ -272,13 +272,13 @@ def _render_prompt_md(
     outputs_lines = "\n".join(f"- `{o}`" for o in desc["outputs"])
     # Layer 4 also refreshes the root-level whiteboard.yaml so the cockpit's
     # "Tableau de bord" cards stay current (graphs read the dated history;
-    # the cards read this snapshot). Joris msg 1163, 2026-06-01.
+    # the cards read this snapshot). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_block = (
         f"## Tableau de bord (whiteboard.yaml)\n\n"
         f"Après avoir calculé `risk-kpis.yaml`, **rafraîchis** le fichier "
         f"`whiteboard.yaml` à la racine du dépôt — c'est l'instantané que "
         f"le cockpit affiche en cartes. Reprends les KPIs que tu juges les "
-        f"plus parlants pour Joris :\n\n"
+        f"plus parlants pour {{OPERATOR}} :\n\n"
         f"```yaml\n"
         f"title: \"<titre court>\"\n"
         f"updated_at: \"<ISO 8601 UTC du run>\"\n"

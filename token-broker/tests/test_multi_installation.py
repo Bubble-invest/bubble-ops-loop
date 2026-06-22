@@ -1,6 +1,6 @@
 """Multi-installation per broker process — Q2 refactor.
 
-Per Joris's Step 3b Q2 review: when N depts run on Morty (Tony, Maya, Ben,
+Per {{OPERATOR}}'s Step 3b Q2 review: when N depts run on Morty (Tony, Maya, Ben,
 Miranda, Eliot...), one broker process should be able to mint tokens for
 multiple GitHub App installations without re-instantiation. The previous
 design locked installation_id in __init__, which forced N broker processes.

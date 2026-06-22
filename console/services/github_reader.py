@@ -56,9 +56,9 @@ def load_dept_yaml_raw(slug: str) -> Optional[str]:
 
 def load_mandate_md(slug: str) -> Optional[str]:
     """Return the verbatim text of <repo>/MANDATE.md for a dept, or None
-    if missing. Joris reads this in the UI (both onboarding + operating
+    if missing. {{OPERATOR}} reads this in the UI (both onboarding + operating
     phases) — it's the canonical contract for the dept's scope.
-    Joris flag 2026-05-24 msg 3118.
+    {{OPERATOR}} flag 2026-05-24 msg 3118.
     """
     root = repo_path(slug)
     if root is None:
@@ -77,7 +77,7 @@ def load_whiteboard_freeform(slug: str) -> Optional[str]:
     """Return the verbatim text of <repo>/whiteboard.md — the dept manager's
     free-space whiteboard, or None if missing/empty.
 
-    Joris msg 1174 (2026-06-01): the Tableau de bord needs a real blank
+    {{OPERATOR}} msg 1174 (2026-06-01): the Tableau de bord needs a real blank
     canvas card the dept manager can fill with anything (different per dept,
     populated by the agent — e.g. Maya adds department-specific data). This
     is intentionally unstructured: whatever the agent writes is rendered
@@ -99,7 +99,7 @@ def load_whiteboard_freeform(slug: str) -> Optional[str]:
 
 def load_layer_prompt_md(slug: str, layer_num: int) -> Optional[str]:
     """Return the verbatim text of <repo>/layers/<N>/PROMPT.md, or None
-    if missing. Joris flag 2026-05-24 msg 3137 — the UI must surface
+    if missing. {{OPERATOR}} flag 2026-05-24 msg 3137 — the UI must surface
     each subscribed layer's prompt so he can audit what the agent does
     at each moment of the day.
 
@@ -147,10 +147,10 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
         return []
     # Pre-compute the set of gate ids that already have a decision recorded in
     # inbox/decisions/.  The approval path (write_gate_decision) writes the
-    # decision file there immediately when Joris clicks Approve/Reject in the
+    # decision file there immediately when {{OPERATOR}} clicks Approve/Reject in the
     # cockpit — BEFORE the dept's agent loop processes and resolves the gate
     # (which is when resolved:true would normally appear in the gate YAML).
-    # Without this check there is a window — between Joris approving and the
+    # Without this check there is a window — between {{OPERATOR}} approving and the
     # dept agent draining the inbox — where the gate still appears as pending
     # in "Décisions qu'on attend de toi".  Skipping it as soon as its decision
     # file exists closes that window immediately.
@@ -159,7 +159,7 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     # write_gate_decision).  For host=local depts the decision is committed to
     # GitHub, not to the cockpit's local disk, so the inbox/ directory here may
     # not yet reflect it — but host=local gates are a separate case (Miranda on
-    # Jade's Mac).  The live bug is Maya = vps, so the disk check fixes the
+    # {{OPERATOR_2}}'s Mac).  The live bug is Maya = vps, so the disk check fixes the
     # reported issue.  A future improvement could call the GitHub API for
     # host=local depts, but we keep the scope narrow here.
     decisions_dir = root / "inbox" / "decisions"
@@ -186,7 +186,7 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                 # `approved_by`, which nothing ever sets), so the old single-field
                 # check was dead: a decided-but-not-yet-archived gate kept showing
                 # in the dept UI as a still-open choice. Honour all the fields the
-                # resolution actually writes. (Joris 2026-06-19: approved trades
+                # resolution actually writes. ({{OPERATOR}} 2026-06-19: approved trades
                 # still appeared as pending in each agent's cockpit dept page.)
                 if doc.get("approved_by") or doc.get("resolved") or doc.get("decided_by"):
                     continue
@@ -202,7 +202,7 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                 if gate_id in decided_map:
                     ddoc = decided_map[gate_id]
                     if ddoc.get("action") == "modify":
-                        # modify is NOT terminal: keep the gate visible so Joris
+                        # modify is NOT terminal: keep the gate visible so {{OPERATOR}}
                         # can re-review after the agent redrafts it. Flag it so
                         # the UI can show the "En révision" banner.
                         doc["_revision_requested"] = True
@@ -218,7 +218,7 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
         except yaml.YAMLError as e:
             # A malformed gate card used to vanish here (silent `continue`) — that
             # is exactly how a TLT trade gate disappeared from the UI on
-            # 2026-06-06 (unquoted colon in `instrument:`), so Joris never saw it
+            # 2026-06-06 (unquoted colon in `instrument:`), so {{OPERATOR}} never saw it
             # to approve it. Surface it as an error card instead of swallowing it.
             out.append(_malformed_gate_card(slug, p, str(e).splitlines()[0]))
     return out
@@ -684,7 +684,7 @@ def list_missions_full(slug: str) -> List[Dict[str, Any]]:
     `missions/<id>.yaml` (same precedent as list_missions(): inline wins
     on id collision). Sorted by id.
 
-    Joris flag 2026-05-24 msg 3137: the UI must surface ALL mission
+    {{OPERATOR}} flag 2026-05-24 msg 3137: the UI must surface ALL mission
     fields verbatim, not just the slug. list_missions() (kept for
     back-compat) returns the abbreviated {id, source} dicts; this
     helper returns the full body so the templates can render cadence /
@@ -767,7 +767,7 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
 
     Hybrid local/VPS agent (2026-06-12): a dept declares its host in STATE.yaml.
       - host=vps (default): the dept repo is on the cockpit's disk → write to disk.
-      - host=local (e.g. Miranda on Jade's Mac): the repo is NOT on the cockpit's
+      - host=local (e.g. Miranda on {{OPERATOR_2}}'s Mac): the repo is NOT on the cockpit's
         disk — it lives on the Mac + GitHub. We commit the decision to the dept's
         GitHub repo via `gh api` so the Mac loop pulls it on its next safe_pull.
     """
@@ -1088,7 +1088,7 @@ def load_whiteboard(slug: str) -> Optional[Dict[str, Any]]:
     """Return parsed whiteboard.yaml for a dept, or None if missing.
 
     The whiteboard is a per-dept configurable file where the agent surfaces
-    KPIs and a free-text commentary for Joris. Expected schema:
+    KPIs and a free-text commentary for {{OPERATOR}}. Expected schema:
 
         title: str
         updated_at: str (ISO datetime)
@@ -1240,7 +1240,7 @@ def group_missions_by_layer(
     Used by the dept_detail + onboarding pages to render the 4 "Moments
     de la journée" with each Moment's missions nested inside, rather
     than as a separate "Rendez-vous récurrents" section that duplicates
-    the same content (Joris msg 3142, 2026-05-24).
+    the same content ({{OPERATOR}} msg 3142, 2026-05-24).
 
     Missions without a `layer` field default to layer 1 (the materializer
     layer — by convention, recurring missions live on L1 unless

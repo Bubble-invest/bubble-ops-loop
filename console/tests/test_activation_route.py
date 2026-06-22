@@ -72,7 +72,7 @@ def _make_ready_dept(fixture_root: Path, slug: str = "ready") -> Path:
         yaml.safe_dump({
             "schema_version": 1, "slug": slug,
             "display_name": slug.capitalize(),
-            "owner": "joris", "created_at": "2026-05-19T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-19T10:00:00Z",
             "status": "Ready to activate",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

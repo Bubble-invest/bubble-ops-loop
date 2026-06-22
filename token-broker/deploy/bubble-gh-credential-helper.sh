@@ -8,12 +8,12 @@
 # Git calls this with "get" on the stdin protocol; we echo back username + password.
 #
 # ===================================================================
-# MISSION-FILE LOCK (governance fix 2026-06-01, Joris msg 3582):
+# MISSION-FILE LOCK (governance fix 2026-06-01, {{OPERATOR}} msg 3582):
 #   Agents must NOT be able to push to their own mission-definition files
 #   (dept.yaml, layers/**, missions/**, skills/**, tools/**, subagents/**,
 #   policies/**, templates/**, .claude/agents/**, .claude/settings.json,
 #   .claude/CLAUDE.md — the STRUCTURAL_PATH_GLOBS in the broker policy).
-#   Those may only change via a PR a human (Joris/Jade) merges.
+#   Those may only change via a PR a human ({{OPERATOR}}/{{OPERATOR_2}}) merges.
 #
 #   THIS helper is the SOLE source of GitHub tokens on the box and runs as
 #   ROOT (via sudo NOPASSWD) with cwd = the repo being pushed. So it is the

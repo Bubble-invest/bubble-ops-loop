@@ -2,7 +2,7 @@
 test_loop_dispatch_layer1.py — TDD tests for STEP C.0 (Layer 1 cadence-
 materialization rule).
 
-Context (Joris msg 3129, 2026-05-24):
+Context ({{OPERATOR}} msg 3129, 2026-05-24):
   Layer 1 is currently absent from STEP C of CLAUDE_MD_OPERATING_TEMPLATE.
   The dispatch tree only handles:
     C.1 — Layer 4 in 22:00–22:30 UTC window
@@ -567,7 +567,7 @@ def test_layer_1_fires_when_all_other_layers_idle_and_rounds_satisfied():
 
 def test_layer_1_daily_floor_fires_when_not_run_today():
     """Canonical daily floor: L1 has NOT run today → fires even with empty
-    queues and zero rounds (Joris 2026-06-01: at least once per day)."""
+    queues and zero rounds ({{OPERATOR}} 2026-06-01: at least once per day)."""
     now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
     ctx = _ctx(now, l1_last_run=None, rounds={})
     assert dispatch_helpers.decide_dispatch(ctx) == "layer_1"
@@ -605,7 +605,7 @@ def test_layer_1_does_not_fire_in_l4_window():
 
 def test_layer_1_does_not_fire_when_rounds_not_satisfied():
     """Once L1 has run today (daily floor satisfied), it won't re-fire until the
-    other layers complete a fresh cycle — the gate Joris described. Here L1 ran
+    other layers complete a fresh cycle — the gate {{OPERATOR}} described. Here L1 ran
     today and no other layer advanced → heartbeat (NOT another layer_1)."""
     now = datetime(2026, 5, 24, 6, 0, tzinfo=timezone.utc)
     ctx = _ctx(now, has_research=False, has_decisions=False,
@@ -715,7 +715,7 @@ def test_daily_risk_audit_still_in_default_ops_yaml():
     """The Layer-4 daily_risk_audit mission (GAP-10 fix) must still be
     injected by scaffold even after we add the L1 mechanism."""
     rendered = scaffold.render_dept_yaml_draft(
-        slug="maya", display_name="Maya", owner="joris", level="ops"
+        slug="maya", display_name="Maya", owner="operator", level="ops"
     )
     import yaml as _yaml
     doc = _yaml.safe_load(rendered)

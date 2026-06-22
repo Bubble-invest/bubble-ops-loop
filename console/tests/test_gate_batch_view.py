@@ -1,6 +1,6 @@
 """test_gate_batch_view.py — batch list view of all pending gates of one kind.
 
-Context — Joris (2026-06-01): triaging 35 prospect_dm gates one-by-one was
+Context — {{OPERATOR}} (2026-06-01): triaging 35 prospect_dm gates one-by-one was
 broken in two ways:
   1. After deciding a gate, the single-card page only offered "← retour",
      no way to advance to the next → operator stranded on gate #1.
@@ -38,7 +38,7 @@ def _build_app_with_gates(tmp_path: Path, monkeypatch, gates: list[dict]) -> Tes
     (dept / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture",
-            "display_name": "Fixture", "owner": "joris",
+            "display_name": "Fixture", "owner": "operator",
             "created_at": "2026-05-15T10:00:00Z", "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -70,7 +70,7 @@ def _gate(n: int, kind: str = "prospect_dm") -> dict:
         "id": f"{kind}-person-{n:03d}",
         "kind": kind,
         "slug": f"person-{n:03d}",
-        "account_used": "Joris",
+        "account_used": "Operator",
         "chosen_variant": "V2",
         "chosen_angle": f"Angle pour la personne {n}.",
         "chosen_reason": "Raison du choix.",

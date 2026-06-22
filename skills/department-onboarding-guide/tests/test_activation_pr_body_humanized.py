@@ -1,6 +1,6 @@
 """Activation PR body must be humanized + French (Bureau de Cadre).
 
-Joris directive (msg 2702 + 2708, 2026-05-21): the activation preview that
+{{OPERATOR}} directive (msg 2702 + 2708, 2026-05-21): the activation preview that
 operators see is "Cérémonie d'arrivée de [Nom]", but the PR body markdown
 inside it stayed in English with technical headings ("## Mandate", "## Recurring
 missions", "## Layer outputs", "## Gate policy summary", "## Dry-run result",
@@ -16,7 +16,7 @@ concierge briefing the team, not like a DevOps changelog.
 References:
 - Notion v5 lines 977-995 (activation PR body spec — the heading names are
   illustrative, the vocabulary is ours to shape)
-- /Users/joris/claude-workspaces/Maya_Sales/webapp/templates/base.html for tone
+- /Users/{{OPERATOR_USER}}/claude-workspaces/Maya_Sales/webapp/templates/base.html for tone
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def tony_state():
         "schema_version": 1,
         "slug": "tony",
         "display_name": "Tony",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-18T08:00:00Z",
         "status": "Ready to activate",
         "validated_steps": [

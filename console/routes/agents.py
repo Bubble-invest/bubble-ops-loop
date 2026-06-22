@@ -199,7 +199,7 @@ def new_dept_submit(
     # Wave-3 Step 0b refactor (2026-05-23 evening) — DEFER bootstrap to the
     # GitHub App "Setup URL" callback flow. Reasoning: the broker's PAT
     # cannot CREATE new repos under vdk888 (fine-grained scope), but the
-    # bubble-ops-bot GitHub App has `Administration: write` since Joris
+    # bubble-ops-bot GitHub App has `Administration: write` since {{OPERATOR}}
     # configured it. So we let the operator drive the App authorization
     # via the standard GitHub redirect dance:
     #
@@ -307,7 +307,7 @@ def setup_callback(
                 level=params.get("level", "ops"),
                 children_list=params.get("children_list", []),
                 display_name=params.get("display_name", slug),
-                owner=params.get("owner", "joris"),
+                owner=params.get("owner", "operator"),
                 on_progress=q.put,
             )
         except Exception as exc:  # noqa: BLE001

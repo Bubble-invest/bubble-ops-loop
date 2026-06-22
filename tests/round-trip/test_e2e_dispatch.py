@@ -53,7 +53,7 @@ import yaml
 
 REPO = "vdk888/bubble-ops-fixture"
 
-# The seed item Joris pushed at 18:35 UTC (see commit 5265aba). The loop
+# The seed item {{OPERATOR}} pushed at 18:35 UTC (see commit 5265aba). The loop
 # consumed it at the 18:41 tick (commit 1a31ab7).
 SEED_ITEM_ID = "research-roundtrip-test-001"
 SEED_DATE = "2026-05-20"  # UTC date when the item was processed

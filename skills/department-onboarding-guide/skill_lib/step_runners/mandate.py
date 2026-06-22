@@ -127,8 +127,8 @@ PROMPT_SUBSTEP_B = (
     "(liste, séparateurs `,`)\n"
     "2. **niveau** — `ops` (département feuille : Ben/Maya/Miranda/Eliot), "
     "`management` (agrégateur : Tony), ou `principal` (racine : "
-    "Joris/Jade) ?\n"
-    "3. **owner** — je confirme que c'est bien `joris` qui m'arbitre, "
+    "{{OPERATOR}}/{{OPERATOR_2}}) ?\n"
+    "3. **owner** — je confirme que c'est bien `operator` qui m'arbitre, "
     "ou tu donnes un autre slug ?\n\n"
     "Note : la narration longue (ce que je dois produire, critères de "
     "réussite) vit dans `MANDATE.md`, pas dans `dept.yaml` — qui ne "
@@ -137,7 +137,7 @@ PROMPT_SUBSTEP_B = (
     "```\n"
     "publier sans validation, nommer clients, conseil financier\n"
     "ops\n"
-    "joris\n"
+    "operator\n"
     "```"
 )
 
@@ -564,7 +564,7 @@ class MandateRunner(StepRunner):
         slug = dept.get("slug", "?")
         display = dept.get("display_name", slug.capitalize() if slug != "?" else "?")
         sentence = dept.get("mandate", "")
-        owner = dept.get("owner", "joris")
+        owner = dept.get("owner", "operator")
         level = dept.get("level", "ops")
         forbidden = dept.get("forbidden") or []
         forb_lines = "\n".join(f"- {x}" for x in forbidden) if forbidden else "_(rien d'interdit déclaré)_"

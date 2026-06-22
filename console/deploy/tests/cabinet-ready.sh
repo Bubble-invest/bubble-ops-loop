@@ -271,7 +271,7 @@ test_T16() {
     assert_skip "iPhone smoke" "--skip-iphone"
     return
   fi
-  assert_skip "iPhone smoke" "manuel par Joris quand il a un moment"
+  assert_skip "iPhone smoke" "manuel par {{OPERATOR}} quand il a un moment"
 }
 
 # T17 — /srv/bubble-ops/repos/ exists, owned claude:claude 0750, has bubble-ops-fixture/

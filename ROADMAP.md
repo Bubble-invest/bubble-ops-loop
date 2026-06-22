@@ -1,9 +1,9 @@
 # `bubble-ops-loop` — Strategic Roadmap
 
-**Owner:** Joris Dupraz-Canard (founder) + Tony (CEO agent)
+**Owner:** {{OPERATOR}} (founder) + Tony (CEO agent)
 **Builder:** Rick (R&D, Lab)
 **Repo target:** `git@github.com:Bubble-invest/bubble-ops-loop.git` (TBD)
-**Status:** Draft v1 — pending Joris green-light (open questions §5)
+**Status:** Draft v1 — pending {{OPERATOR}} green-light (open questions §5)
 **Created:** 2026-05-20
 **Target ship date:** 2026-06-10 (3 weeks) — Maya operational on framework end-of-week-2
 
@@ -183,9 +183,9 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 
 | Trigger | Mechanism | UX |
 |---|---|---|
-| Layer-2 emits a decision | `queues/gates/<id>.yaml` written; commit triggers GitHub webhook → console refresh; Telegram ping via existing `telegram-reporter` skill | Joris sees gate card in `/`; clicks approve/reject/modify; console writes `inbox/decisions/<id>.yaml` + commits |
-| Layer-3 fails mid-execution | writes `queues/gates/exec-<id>.yaml` with `kind: exec_retry`; same flow | Joris decides retry / abort / hand-off to persistent user agent |
-| Layer-4 flags mandate breach | writes `outputs/<date>/4/alert.md` + Telegram urgent | Joris reviews; can override or accept |
+| Layer-2 emits a decision | `queues/gates/<id>.yaml` written; commit triggers GitHub webhook → console refresh; Telegram ping via existing `telegram-reporter` skill | {{OPERATOR}} sees gate card in `/`; clicks approve/reject/modify; console writes `inbox/decisions/<id>.yaml` + commits |
+| Layer-3 fails mid-execution | writes `queues/gates/exec-<id>.yaml` with `kind: exec_retry`; same flow | {{OPERATOR}} decides retry / abort / hand-off to persistent user agent |
+| Layer-4 flags mandate breach | writes `outputs/<date>/4/alert.md` + Telegram urgent | {{OPERATOR}} reviews; can override or accept |
 | Modify decision | console writes amended `inbox/decisions/<id>.yaml`; Layer 3 re-reads on next loop tick | one round-trip; if still wrong, escalates to persistent user agent (out of scope v1) |
 
 ### 2.7 Migration paths
@@ -263,7 +263,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
   - Parity report comparing shadow output vs legacy cron output
 - **Acceptance:**
   - 3 consecutive days where shadow Layer-2 generates Tier-1 drafts within ±2 of legacy
-  - At least 1 gate decision approved by Joris via console → consumed correctly by Layer 3 (still shadow)
+  - At least 1 gate decision approved by {{OPERATOR}} via console → consumed correctly by Layer 3 (still shadow)
   - Maya's wiki page reflects the migration; STATUS.md updated
 - **Effort:** 5 days
 - **Dependencies:** Phases 0–2
@@ -279,13 +279,13 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
   - Maya legacy crons disabled (kept on disk, paused via `systemctl disable`, easy revert for 30 days)
   - Telegram notifications wired for every gate via existing `telegram-reporter` skill
 - **Acceptance:**
-  - Joris approves 3+ gates per day on Maya from console for 3 consecutive days
+  - {{OPERATOR}} approves 3+ gates per day on Maya from console for 3 consecutive days
   - Tony shadow Layer 4 catches a real cross-dept issue
-  - Ben shadow Layer 2 produces a research brief that Joris judges "would have shipped"
+  - Ben shadow Layer 2 produces a research brief that {{OPERATOR}} judges "would have shipped"
   - Console health page shows all-green for 48 h
 - **Effort:** 5 days (parallel: Rick on console, Tony+Ben in parallel by reusing Maya template)
 - **Dependencies:** Phase 3
-- **Risks:** ⚠️ Console scope creep — *Mitigation:* hard cap at 5 pages above; defer audit timeline + per-task views to v2. ⚠️ Ben's `allow_live=True` order placement is high-blast-radius — *Mitigation:* Ben Layer-3 stays in shadow for v1; live execution behind explicit Joris-on-CLI OOB email auth (use existing `auth` skill flow). ⚠️ Telegram gate spam — *Mitigation:* digest mode (one message per dept per hour) + `react` for low-stakes.
+- **Risks:** ⚠️ Console scope creep — *Mitigation:* hard cap at 5 pages above; defer audit timeline + per-task views to v2. ⚠️ Ben's `allow_live=True` order placement is high-blast-radius — *Mitigation:* Ben Layer-3 stays in shadow for v1; live execution behind explicit {{OPERATOR}}-on-CLI OOB email auth (use existing `auth` skill flow). ⚠️ Telegram gate spam — *Mitigation:* digest mode (one message per dept per hour) + `react` for low-stakes.
 
 ### Phase 5 — Polish, retire legacy, document, opt-in for Miranda/Eliot (Days 20–22)
 
@@ -301,7 +301,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 - **Acceptance:**
   - A new agent (or Rick acting fresh) can bootstrap a 6th dept in <30 min following ONBOARDING.md
   - 7 consecutive days of all-green console with no manual intervention
-  - Joris signs off "this is leaner than what we had"
+  - {{OPERATOR}} signs off "this is leaner than what we had"
 - **Effort:** 3 days
 - **Dependencies:** Phase 4
 - **Risks:** ⚠️ Docs drift immediately — *Mitigation:* docs include "last verified" frontmatter; weekly wiki-compile cron picks up changes.
@@ -329,7 +329,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 | Cloud Routine quota / cost surprise | Low | Med | 4 routines × ~10 dept-runs/day = ~40 runs/day; well within reasonable cost. Monitor via Anthropic console |
 | Subagent perm-scoping not as isolated as docs claim | Med | High | Phase-0 fixture proves isolation BEFORE binding any real secret. Hard gate. |
 | Filesystem-as-bus race conditions (two layers writing same path) | Med | Med | Layer writes are per-`<date>/<layer>/` sharded; only one writer per path. Use `flock` on shared dirs like `queues/` |
-| Telegram gate spam → Joris ignores | High | High | Phase-4 digest mode + severity tiers; only HIGH-blast-radius pings immediately |
+| Telegram gate spam → {{OPERATOR}} ignores | High | High | Phase-4 digest mode + severity tiers; only HIGH-blast-radius pings immediately |
 | Maya migration drift breaks live prospection | Med | High | 3-day shadow + parity report + 14-day parallel run = 17 days of safety net before retire |
 | Ben live trading from new framework misfires | Low | Critical | Ben Layer-3 stays shadow in v1; live execution requires OOB email auth per order |
 | Scope creep: "let's also build X" | High | Med | Non-goals §6 is the canonical list; deviations need written exception |
@@ -343,14 +343,14 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 1. **[Phase 0, BLOCKING]** Repo name: `bubble-ops-loop` confirmed? Or `bubble-loop`, `bubble-ops-fabric`?
 2. **[Phase 0, BLOCKING]** GitHub org: stay on `Bubble-invest` or move to `bubble-invest` org now to avoid rename later?
 3. **[Phase 1]** Cloud Routines cost ceiling: what's the monthly Anthropic-bill budget for routines so Rick can size cadences? *Default if no answer:* assume 4 routines × 10 depts × daily layer-1/layer-4 + half-hourly layer-2/3 = budget-friendly.
-4. **[Phase 1]** Cloud Routines: register under Joris's personal Anthropic account or a Bubble Invest team account? Affects which token to use in `gh secret set`.
+4. **[Phase 1]** Cloud Routines: register under {{OPERATOR}}'s personal Anthropic account or a Bubble Invest team account? Affects which token to use in `gh secret set`.
 5. **[Phase 2]** /loop cadence default: 20 min reasonable starting point for layer-2/3, or do specific depts need faster (Ben in trading hours)? *Default:* 20 min, per-dept override via `dept.yaml`.
 6. **[Phase 2]** Single VPS (Morty) for v1 or sharded already? *Default:* single Morty, plan shard once we hit 5+ depts.
 7. **[Phase 3, BLOCKING]** Maya migration strategy: shadow + parity (proposed) or hard cutover after 1 day? *Default:* shadow, lower risk.
 8. **[Phase 3]** Existing Maya skills (`maya-warming-batch`, `maya-draft-batch`, etc.) — re-package as Layer-2 subagent calls, or invoke as-is via `Skill` tool? *Default:* invoke as-is in v1, refactor in v2.
 9. **[Phase 4, BLOCKING]** Ben live execution: gate via OOB email auth per order, or batch-approve via console? *Default:* OOB per order for v1 (safer); batch later.
 10. **[Phase 4]** Tony's cadence: daily layer-1 like ops depts, or weekly? *Default:* daily layer-1 (lightweight CEO_INBOX sweep), weekly layer-4.
-11. **[Phase 4]** Console auth: bearer token only, or also SSO via Joris's Gmail OAuth? *Default:* bearer + Tailscale-only port for v1.
+11. **[Phase 4]** Console auth: bearer token only, or also SSO via {{OPERATOR}}'s Gmail OAuth? *Default:* bearer + Tailscale-only port for v1.
 12. **[Phase 5]** Miranda + Eliot opt-in trigger: time-based (week 4) or capability-based (after 3 weeks zero-incident on Maya/Ben)? *Default:* capability-based.
 13. **[Phase 5]** Legacy crons: archive in-place under `_archive_<date>/` or delete entirely after 14-day parallel? *Default:* archive, never delete in v1.
 14. **[Cross-phase]** Saxo/Bourso auth on VPS — block Phase 4 Ben? Or can Ben Layer-3 stay shadow until Saxo OAuth refresh is live? *Default:* Ben stays shadow until Saxo OAuth verified on Morty.
@@ -368,11 +368,11 @@ We are **NOT** doing the following in v1. Anything below requires written except
 4. **No real-time orchestrator daemon.** /loop is the engine; routines are the safety net. No always-on supervisor process beyond systemd.
 5. **No multi-VPS sharding in v1.** Single Morty box. Re-evaluate at 5+ depts.
 6. **No web UI for editing prompts.** Prompts edited via `git` + PR. Console only edits `dept.yaml` knobs.
-7. **No auto-merge of Layer-4 improvements into Layer-1 next-day prompts.** Improvements are queued; Joris/Tony approve via gate before next-day cycle picks them up.
+7. **No auto-merge of Layer-4 improvements into Layer-1 next-day prompts.** Improvements are queued; {{OPERATOR}}/Tony approve via gate before next-day cycle picks them up.
 8. **No live trading from Ben Layer-3 until Saxo OAuth + OOB email auth proven on Morty.** Ben Layer-3 starts shadow.
 9. **No Miranda or Eliot in v1.** They opt in Phase 5 only.
 10. **No persistent user agent (the "modification retry handoff" mentioned in Layer 3 spec).** v1 sends modifications back to Layer 2 next loop tick; persistent agent is v2.
-11. **No multi-tenant frontend.** Console serves Joris's single org; per-client multi-tenancy is a future product (lives in `bubble-vps-platform`, not here).
+11. **No multi-tenant frontend.** Console serves {{OPERATOR}}'s single org; per-client multi-tenancy is a future product (lives in `bubble-vps-platform`, not here).
 12. **No SDK / public API.** Internal only. Versioning is "main branch + tags as needed".
 13. **No replacement of `bubble-vps-platform`.** This builds **on top** of it; vps-platform stays the canonical infra layer.
 
@@ -411,12 +411,12 @@ After commit 10: open PR for Phase-1 routines (Cloud Routine registration is by-
 
 | Asset | Path | Use |
 |---|---|---|
-| VPS infra (pyinfra modules, systemd, SOPS, Tailscale) | `/Users/joris/claude-workspaces/Rick_RnD/projects/bubble-vps-platform/` | Phase 2 builds on this; new task module `ops_loop/` added |
-| `auth` skill (OOB email + SOPS secret setting) | `/Users/joris/.claude/skills/auth/SKILL.md` | Phase 4 Ben live execution + per-dept secret rotation |
-| Ben dashboard pattern | `/Users/joris/claude-workspaces/Ben_Fund/dashboard/` | Phase 4 console reuses kanban + HTMX patterns |
-| Maya webapp pattern | `/Users/joris/claude-workspaces/Maya_Sales/webapp/` | Phase 4 console gate-card UX |
+| VPS infra (pyinfra modules, systemd, SOPS, Tailscale) | `/Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-vps-platform/` | Phase 2 builds on this; new task module `ops_loop/` added |
+| `auth` skill (OOB email + SOPS secret setting) | `/Users/{{OPERATOR_USER}}/.claude/skills/auth/SKILL.md` | Phase 4 Ben live execution + per-dept secret rotation |
+| Ben dashboard pattern | `/Users/{{OPERATOR_USER}}/claude-workspaces/Ben_Fund/dashboard/` | Phase 4 console reuses kanban + HTMX patterns |
+| Maya webapp pattern | `/Users/{{OPERATOR_USER}}/claude-workspaces/Maya_Sales/webapp/` | Phase 4 console gate-card UX |
 | Shared wiki (github-first) | `git@github.com:Bubble-invest/bubble-shared-wiki.git` | each dept repo symlinks; nightly wiki-compile already works |
-| Heartbeats infra | `/Users/joris/claude-workspaces/Rick_RnD/monitoring/heartbeats.jsonl` | Cloud Routines emit heartbeats here |
+| Heartbeats infra | `/Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/monitoring/heartbeats.jsonl` | Cloud Routines emit heartbeats here |
 | Notion logbook (reader skill) | `~/.claude/skills/notion-reader/SKILL.md` | Maya/Ben Layer-1 data sources |
 | Subagent isolation spec | https://code.claude.com/docs/en/sub-agents | canonical reference; verify in Phase 0 fixture |
 | Scheduled tasks MCP | `mcp__scheduled-tasks__*` tools | Phase 1 routine registration |
@@ -432,13 +432,13 @@ The project is **done** when ALL of:
 - [ ] 3 depts (Maya, Tony, Ben) live on the framework, console all-green for 7 days
 - [ ] Adding dept #4 takes <30 min following `docs/ONBOARDING.md`
 - [ ] Legacy Maya crons archived (not running)
-- [ ] Joris approves the statement "this is leaner than what we had before"
+- [ ] {{OPERATOR}} approves the statement "this is leaner than what we had before"
 - [ ] Zero broker incidents (Ben Layer-3 may still be shadow — that's fine for v1)
-- [ ] All 4 layers' gate-decision UX tested end-to-end by Joris from his phone (console mobile-friendly)
+- [ ] All 4 layers' gate-decision UX tested end-to-end by {{OPERATOR}} from his phone (console mobile-friendly)
 - [ ] `bubble-ops-loop` + `bubble-vps-platform` documented as a coherent stack in shared wiki
 
 If any criterion slips: write an exception in this ROADMAP.md, push to main, ping Tony.
 
 ---
 
-*Strategic planning by Rick (R&D). Architecture co-designed with Joris over 9 iterations on Telegram, 2026-05-20. Next review: end of Phase 2 (Day 9), or any blocking open question above.*
+*Strategic planning by Rick (R&D). Architecture co-designed with {{OPERATOR}} over 9 iterations on Telegram, 2026-05-20. Next review: end of Phase 2 (Day 9), or any blocking open question above.*

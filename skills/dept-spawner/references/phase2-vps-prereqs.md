@@ -26,7 +26,7 @@ Use `bubble-set-secret` / the `auth` skill — never put raw secret values in ch
 ## 2d. Channel directory (needs the bot token from 2c)
 `/home/claude/.claude/channels/telegram-<slug>/`:
 - `.env` (`TELEGRAM_BOT_TOKEN=<token>`, mode 600)
-- `access.json` (`allowFrom`: operator `{{OPERATOR_CHAT_ID}}`, `{{JADE_CHAT_ID}}`)
+- `access.json` (`allowFrom`: operator `{{OPERATOR_CHAT_ID}}`, `{{OPERATOR_2_CHAT_ID}}`)
 - `approved/` and `inbox/` dirs
 *Prevents:* the bot never receiving messages.
 

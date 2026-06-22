@@ -1,7 +1,7 @@
 """
 test_list_pending_gates_decision_filter.py
 
-Issue #201: a gate card Joris has already approved/refused must immediately
+Issue #201: a gate card {{OPERATOR}} has already approved/refused must immediately
 leave the "Décisions qu'on attend de toi" list — even before the dept's agent
 processes the decision.
 
@@ -65,7 +65,7 @@ def _write_decision(repo: Path, gate_id: str) -> Path:
         yaml.safe_dump({
             "gate_id": gate_id,
             "decision": "approve",
-            "decided_by": "joris",
+            "decided_by": "operator",
         }, sort_keys=False),
         encoding="utf-8",
     )
@@ -95,7 +95,7 @@ def test_gate_without_decision_file_is_returned(tmp_path, monkeypatch):
 
 def test_gate_with_decision_file_is_excluded(tmp_path, monkeypatch):
     """A gate whose id has a matching inbox/decisions/<id>.yaml must be
-    excluded from list_pending_gates — Joris already acted, so it must
+    excluded from list_pending_gates — {{OPERATOR}} already acted, so it must
     disappear from 'Décisions qu'on attend de toi' immediately, before the
     dept agent processes the inbox."""
     from console.services import github_reader
@@ -164,7 +164,7 @@ def test_gate_already_resolved_in_yaml_still_excluded(tmp_path, monkeypatch):
             "id": gate_id,
             "kind": "trade_order",
             "resolved": True,
-            "decided_by": "joris",
+            "decided_by": "operator",
             "current_mode": "manual_required",
         }, sort_keys=False),
         encoding="utf-8",
@@ -193,7 +193,7 @@ def test_gate_id_differs_from_filename_is_excluded_when_decision_matches_id(
 
     Before the fix list_pending_gates checked p.stem ('gate-filename') against
     the decision file name ('gate-logical-id') — they never matched, so the gate
-    kept reappearing even after Joris approved it.  After the fix it checks
+    kept reappearing even after {{OPERATOR}} approved it.  After the fix it checks
     doc.get('id') and the gate is correctly excluded.
     """
     from console.services import github_reader

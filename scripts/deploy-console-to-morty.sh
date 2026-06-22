@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy-console-to-morty.sh — git-pull console deploy (post-migration).
 #
-# Migration 2026-05-31 (Joris msg 3443/3445): bubble-ops-loop is now its
+# Migration 2026-05-31 ({{OPERATOR}} msg 3443/3445): bubble-ops-loop is now its
 # OWN GitHub repo (Bubble-invest/bubble-ops-loop). The VPS
 # /home/claude/bubble-ops-loop is a git CLONE tracking origin/main. There
 # is NO local copy on anyone's Mac anymore.
@@ -20,24 +20,24 @@
 #   scripts/deploy-console-to-morty.sh --dry-run    # show what would pull, no restart
 #
 # Requires:
-#   - SSH alias to the box (default: joris-cx33), OR run on the box
+#   - SSH alias to the box (default: $BUBBLE_VPS_HOST, else "morty"), OR run on the box
 #   - sudo NOPASSWD for `systemctl restart bubble-ops-console` on the box
 #   - the box's git credential helper can read the private repo (GitHub App)
 
 set -euo pipefail
 
-SSH_HOST="${SSH_HOST:-joris-cx33}"
+SSH_HOST="${SSH_HOST:-${BUBBLE_VPS_HOST:-morty}}"
 SERVICE="${SERVICE:-bubble-ops-console}"
 BRANCH="${BRANCH:-main}"
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
 
 # Detect "on the box" so we use local commands instead of self-SSH (which
-# fails on hosts without their own known-hosts entry). Joris flagged
+# fails on hosts without their own known-hosts entry). {{OPERATOR}} flagged
 # 2026-05-25 (msg 3165): Morty must be able to redeploy itself.
 HOSTNAME_DETECTED="$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo unknown)"
 ON_MORTY=0
-if [[ "$HOSTNAME_DETECTED" == "joris-cx33" ]] || [[ "$HOSTNAME_DETECTED" == "morty" ]] || \
+if [[ "$HOSTNAME_DETECTED" == "${BUBBLE_VPS_HOST:-morty}" ]] || [[ "$HOSTNAME_DETECTED" == "morty" ]] || \
    [[ -d /home/claude && "$(uname -s 2>/dev/null)" == "Linux" && -f /etc/systemd/system/${SERVICE}.service ]]; then
   ON_MORTY=1
   echo "[deploy-console] Running ON the box (hostname=$HOSTNAME_DETECTED) — local commands, no SSH."

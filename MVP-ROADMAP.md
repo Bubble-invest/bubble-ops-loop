@@ -1,7 +1,7 @@
 # `bubble-ops-loop` — MVP-ROADMAP v2 (Notion-aligned, fixture round-trip on Morty)
 
-**Owner:** Rick (R&D) • **Co-builder:** Joris (founder) • **Target:** Morty (joris-cx33)
-**Source of truth:** Notion page `bubble-ops-loop — Architecture finale simplifiée` (id `366cfc52-0644-81dc-a58a-e2a41e79e11a`, last edited **2026-05-20T14:01 UTC** by Joris). Dump at `/tmp/notion_final.txt` (464 lines).
+**Owner:** Rick (R&D) • **Co-builder:** {{OPERATOR}} (founder) • **Target:** Morty ({{VPS_HOST}})
+**Source of truth:** Notion page `bubble-ops-loop — Architecture finale simplifiée` (id `366cfc52-0644-81dc-a58a-e2a41e79e11a`, last edited **2026-05-20T14:01 UTC** by {{OPERATOR}}). Dump at `/tmp/notion_final.txt` (464 lines).
 **Scope:** Smallest possible slice that compiles end-to-end with **full Notion v2 contracts** (not a stripped-down precursor). One fixture dept, one repo, one tmux+systemd unit, one `/loop`.
 **Budget:** ≤5 working days (target: 3).
 **Predecessor:** `MVP-ROADMAP.bak-v1-incomplete-20260520.md` — keep its valid steps, fix its 6 misses.
@@ -61,7 +61,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
    git pull│ (every tick)                       git push│ (every mutation)
           ▼                                              │
 ┌─────────────────────────────────────────────────────────┴───────────────┐
-│ MORTY VPS (joris-cx33, Hetzner CX33)                                    │
+│ MORTY VPS ({{VPS_HOST}}, Hetzner CX33)                                    │
 │  systemd: ops-loop-fixture.service (Restart=always, copies morty unit)  │
 │   └─ /usr/bin/script -qfc 'loop-autostart.sh' /dev/null   (pty wrap)    │
 │       └─ tmux new-session -A -s ops-loop-fixture                        │
@@ -82,7 +82,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
                 outputs/<date>/management-export.yaml  (compact, hierarchy-consumable)
                                   │
                                   ▼ Telegram (gate creation only)
-                          Joris's phone — approve/reject
+                          {{OPERATOR}}'s phone — approve/reject
 ```
 
 ---
@@ -250,7 +250,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 
 - **What:** In `layers/2/PROMPT.md`, after "create gate", add: "run `/skill telegram-reporter` with the gate path + summary."
 - **Why:** acceptance criterion #6.
-- **Acceptance:** Joris's phone pings when Step 8's round-trip creates a gate.
+- **Acceptance:** {{OPERATOR}}'s phone pings when Step 8's round-trip creates a gate.
 - **Effort:** 45 min • **Blocked by:** Step 9.
 
 ### Step 11 — Robustness sweep + non-negotiables observability check (2 h)  *(expanded vs v1)*
@@ -440,7 +440,7 @@ outputs_schema:
 
 1. **Continuous run:** 24 h `systemctl status ops-loop-fixture` always active; `journalctl -u ops-loop-fixture --since "24h ago" | grep -iE 'error|fail|crash' | wc -l` < 5.
 2. **Steady-state cadence:** ≥60 `git push` commits over 24 h (~72 ticks × ≥1 commit/tick). Fewer → loop stalling.
-3. **Gate UX:** Joris approves 3 gates from phone via Telegram or by committing `inbox/decisions/<id>.yaml` from a phone-friendly path. Each consumed in ≤2 ticks.
+3. **Gate UX:** {{OPERATOR}} approves 3 gates from phone via Telegram or by committing `inbox/decisions/<id>.yaml` from a phone-friendly path. Each consumed in ≤2 ticks.
 4. **Cost:** total Anthropic tokens ≤ $5 over the 24 h. >$5 → demote to Haiku/Sonnet via subagent frontmatter.
 5. **Memory:** `ps aux | grep claude` stays bounded over 24 h.
 6. **No regression:** `claude-agent-morty.service` still active; telegram-rnd channel still responsive.

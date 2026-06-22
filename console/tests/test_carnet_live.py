@@ -1,7 +1,7 @@
 """
 test_carnet_live.py — the Carnet de bord (/health) reads REAL loop activity.
 
-Joris msg 1180 (2026-06-01): the page was stale — morty_reader was a stub
+{{OPERATOR}} msg 1180 (2026-06-01): the page was stale — morty_reader was a stub
 that marked every (dept × layer) as never-run. It now reads the real
 on-disk loop traces (per-layer .last-run + heartbeat) live, since the
 console runs on the box.

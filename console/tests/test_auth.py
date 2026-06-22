@@ -2,7 +2,7 @@
 test_auth.py — bearer-token auth middleware.
 
 Notion v5 line 1011: "Auth: bearer token + port Tailscale-only".
-Joris is the sole operator; one CONSOLE_BEARER_TOKEN env var.
+{{OPERATOR}} is the sole operator; one CONSOLE_BEARER_TOKEN env var.
 """
 
 

@@ -1,15 +1,15 @@
 # =====================================================================
 # console-policy.template.yaml — token-broker actor policy for the
-# BUBBLE-OPS-CONSOLE (Joris's human-in-the-loop UI; can act on ANY dept).
+# BUBBLE-OPS-CONSOLE ({{OPERATOR}}'s human-in-the-loop UI; can act on ANY dept).
 # =====================================================================
 # Source-of-truth: Notion v4 §"Console" (lines 679-694).
 #
-# The console is Joris's web UI. It writes:
+# The console is {{OPERATOR}}'s web UI. It writes:
 #   - gate approve/reject/modify decisions  → inbox/decisions/**
 #   - new gates raised manually from chat   → queues/gates/**
 #
 # in ANY bubble-ops-* repo. It also has the unique privilege of opening
-# settings_pr against any dept (used when Joris promotes a dept's
+# settings_pr against any dept (used when {{OPERATOR}} promotes a dept's
 # autonomy mode, swaps a skill, etc.).
 #
 # Action class coverage:
@@ -45,7 +45,7 @@ github_access:
   write:
     - repo: "bubble-ops-*"     # wildcard repo match (broker uses fnmatch)
       allowed_paths:
-        - inbox/decisions/**   # Joris approves/rejects/modifies gates here
+        - inbox/decisions/**   # {{OPERATOR}} approves/rejects/modifies gates here
         - queues/gates/**      # console can raise a gate manually too
       mode: direct_runtime_commit
 

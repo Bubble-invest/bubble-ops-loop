@@ -4,7 +4,7 @@ title: Management Export v3
 description: |
   Compact daily summary written by every dept at
   outputs/<YYYY-MM-DD>/management-export.yaml. Consumed by Tony's Layer 1
-  (and, for principal, Joris/Jade via the console). MUST forbid additional
+  (and, for principal, {{OPERATOR}}/{{OPERATOR_2}} via the console). MUST forbid additional
   properties so depts cannot smuggle raw artifacts, secrets, or ad-hoc
   fields past the management boundary. Source: Notion §"Management
   exports" (lines 172-194).
@@ -14,7 +14,7 @@ description: |
   raising a gate_policy out of manual_required (Notion §"Shadow autonomy"
   + Layer 4 mission line 467).
 
-  v3.1 change (Joris msg 2676, 2026-05-20, post Step-9 manual L4 run):
+  v3.1 change ({{OPERATOR}} msg 2676, 2026-05-20, post Step-9 manual L4 run):
   TWO RELAXATIONS based on the shape Layer 4 naturally produced on the
   bubble-ops-fixture's first manual run:
     (a) `needs_management_attention[]` items accept EITHER an object

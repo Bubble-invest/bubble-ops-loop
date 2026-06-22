@@ -893,7 +893,7 @@ code, .code {
 .carnet-bord-table .trace-recent { color: var(--sage); }
 .carnet-bord-table .trace-quiet { color: var(--body-muted); }
 .carnet-bord-table .trace-vide { color: var(--ochre-deep); font-style: italic; }
-/* Dept-level loop pulse — the live heartbeat (Joris msg 1180). */
+/* Dept-level loop pulse — the live heartbeat ({{OPERATOR}} msg 1180). */
 .loop-pulse {
   display: inline-flex;
   align-items: center;
@@ -941,7 +941,7 @@ code, .code {
 }
 /* Radio/checkbox inputs must NOT inherit the 100%-width text-input style —
    it pushed the radio dot to the full row and made the label text wrap
-   mid-word below it (Joris msg 3046, 2026-05-24, "Son rôle dans l'équipe"). */
+   mid-word below it ({{OPERATOR}} msg 3046, 2026-05-24, "Son rôle dans l'équipe"). */
 .cabinet-field input[type="radio"],
 .cabinet-field input[type="checkbox"] {
   width: auto;
@@ -1156,18 +1156,18 @@ code, .code {
 
 /* ─── Responsive ─────────────────────────────────────────────── */
 /* Mobile-first triage — Notion v5 line 1012:
-   "Mobile-friendly — Joris valide ses gates depuis son téléphone".
+   "Mobile-friendly — {{OPERATOR}} valide ses gates depuis son téléphone".
    QA-Spirit Blocker C (2026-05-21) found:
      - H1 cut mid-word at 375px
      - top-nav clipped "Carnet de bord"
      - collègue-row CTA truncated
      - 4-up grids didn't collapse on phone
-   Contract: RESTACK, never hide. Joris must see the same info as on
+   Contract: RESTACK, never hide. {{OPERATOR}} must see the same info as on
    desktop, just laid out vertically. No `display: none` allowed in any
    mobile block (enforced by test_mobile_responsive_css.py). */
 
 /* Hero title — fluid sizing + word-break so long French phrases
-   ("Bonjour Joris. Voici où en est l'équipe aujourd'hui.") can wrap
+   ("Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.") can wrap
    instead of being clipped at narrow widths. The clamp() declaration
    here OVERRIDES the desktop clamp(32px,4vw,44px) at every viewport;
    the dektop rule above gives a stronger lower bound at large widths,
@@ -1364,7 +1364,7 @@ code, .code {
   .kpi-chart-svg { width: 100%; }
 }
 
-/* ─── Mission cards (Joris flag msg 3137) ────────────────────────
+/* ─── Mission cards ({{OPERATOR}} flag msg 3137) ────────────────────────
    Used by /dept/<slug> + /agents/<slug>/onboarding to render each
    recurring mission's cadence + description + layer + creates
    + gate_policy_id. Compact grid so the page stays scannable in
@@ -1474,7 +1474,7 @@ code, .code {
 .pill-mute { background: var(--paper-soft); color: var(--body-muted); }
 
 /* ─── Dept detail — mandate one-liner ───────────────────────── */
-/* Shown plainly before the collapsible MANDATE.md so Joris sees
+/* Shown plainly before the collapsible MANDATE.md so {{OPERATOR}} sees
    a human-readable summary without having to expand anything. */
 .dept-mandate-brief {
   font-size: 17px;
@@ -1485,7 +1485,7 @@ code, .code {
 }
 
 /* ─── Moments kanban — recent output badge ───────────────────── */
-/* Activity indicators in moment cards (Joris msg 1071). */
+/* Activity indicators in moment cards ({{OPERATOR}} msg 1071). */
 .moment--active {
   border-color: var(--ochre-soft);
 }
@@ -1511,8 +1511,8 @@ code, .code {
 }
 
 /* ─── Whiteboard (tableau de bord) ──────────────────────────── */
-/* Per-dept section where the agent surfaces KPIs for Joris
-   (Joris msg 1073, 2026-05-28). */
+/* Per-dept section where the agent surfaces KPIs for {{OPERATOR}}
+   ({{OPERATOR}} msg 1073, 2026-05-28). */
 .whiteboard-updated {
   font-size: 13px;
   color: var(--body-muted);
@@ -1542,7 +1542,7 @@ code, .code {
   max-width: 760px;
 }
 
-/* ─── Whiteboard — espace libre (Joris msg 1174) ───────────────── */
+/* ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ───────────────── */
 /* A blank canvas card the dept manager fills with anything. */
 .whiteboard-free {
   margin-top: 28px;
@@ -1638,7 +1638,7 @@ code, .code {
 }
 
 /* ─── Whiteboard graphs (KPI time-series, fed by Layer 4) ───────── */
-/* One inline-SVG line chart per KPI. Joris msg 1163, 2026-06-01. */
+/* One inline-SVG line chart per KPI. {{OPERATOR}} msg 1163, 2026-06-01. */
 .whiteboard-graphs-heading {
   font-family: var(--font-display);
   font-size: 19px;
@@ -1723,7 +1723,7 @@ code, .code {
   margin: 6px 0 2px;
 }
 
-/* ─── Loop-run history + output viewer (Joris msg 1168) ─────────── */
+/* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
 
 /* ─── Loop-run day card ─────────────────────────────────────────────── */
@@ -2006,7 +2006,7 @@ code, .code {
 }
 .decision-event-link:hover { transform: translateX(3px); color: var(--ochre-deep); }
 
-/* ─── Filet de sécurité / loop-backup (Joris msg 1171) ──────────── */
+/* ─── Filet de sécurité / loop-backup ({{OPERATOR}} msg 1171) ──────────── */
 .backup-net {
   border: 1px solid var(--line-soft);
   border-left: 3px solid var(--sage-soft);
@@ -2143,7 +2143,7 @@ code, .code {
   max-width: 100%;
 }
 
-/* ─── Le cadre — org framework flowchart (Joris msg 1183) ───────── */
+/* ─── Le cadre — org framework flowchart ({{OPERATOR}} msg 1183) ───────── */
 .fw-chart {
   display: flex;
   flex-direction: column;
@@ -2432,7 +2432,7 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .fw-rf-sub { font-size: 10.5px; color: var(--body-muted); }
 
 /* "Mac local" badge on a dept that runs on a Mac (host:"local", e.g. Miranda
-   /content on Jade's Mac) — distinguishes hybrid local depts from VPS ones. */
+   /content on {{OPERATOR_2}}'s Mac) — distinguishes hybrid local depts from VPS ones. */
 .fw-rf-hostbadge {
   display: inline-block;
   margin-top: 3px;

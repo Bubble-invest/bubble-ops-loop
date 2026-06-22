@@ -1,6 +1,6 @@
 # INSTALL-ON-MORTY — bubble-token-broker operator runbook
 
-**Audience:** Joris (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
+**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
 **Status:** v1 = oneshot CLI. No daemon. Each `git push` workflow invokes the
 CLI, consumes the token, the process exits, and the token is gone.
 

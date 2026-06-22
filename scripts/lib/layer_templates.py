@@ -1,7 +1,7 @@
 """layer_templates.py — canonical PROMPT.md templates for the 4 loop layers.
 
 Every ops-loop dept runs the same 4-moment day, so the scaffold ships a
-canonical PROMPT.md per layer instead of empty dirs (Joris 2026-06-01):
+canonical PROMPT.md per layer instead of empty dirs ({{OPERATOR}} 2026-06-01):
 
   L1 — The morning   : data update (pull state, prepare the day, surface a
                         short worklist)
@@ -70,7 +70,7 @@ Tony (management) issues instructions through `queues/management/`. Notes arrive
 
 1. List ALL `queues/management/*.yaml`. Keep the inbound ones addressed to you: \
    an inbound note is one whose `audience` includes `{slug}` OR whose `created_by`/`from` \
-   is a manager (`tony`, `joris`, `jade`) — i.e. NOT authored by you. \
+   is a manager (`tony`, `operator`, `operator2`) — i.e. NOT authored by you. \
    EXCLUDE your own outbound escalations (files you wrote, e.g. `rick-*.yaml`).
    For each inbound note NOT already in `queues/management/.consumed.json` \
    (tracked by `directive_id` or `id` field):
@@ -79,7 +79,7 @@ Tony (management) issues instructions through `queues/management/`. Notes arrive
    - **Act on it within your mandate this cycle** — fold the instruction into your \
      work. A directive is an order from management, not a suggestion; honour it unless \
      it conflicts with a hard guardrail (if so, do NOT act — log it and raise a \
-     `strategic_question` card for Joris).
+     `strategic_question` card for {{OPERATOR}}).
    - Log outcome: append `{{"ts": ..., "directive_id": ..., "action": "applied|deferred|conflict", "note": ...}}` \
      to `logs.jsonl` and add the id to `.consumed.json`.
 2. If no unconsumed inbound notes: continue silently.
@@ -105,14 +105,14 @@ Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.li
 
 Produce `outputs/<today>/1/morning_briefing.md` (clean markdown, readable in \
 30 sec, executive-office voice): what moved, the day's priorities, and at \
-most **one** strategic question for Joris/Jade if there is a real one. \
+most **one** strategic question for {{OPERATOR}}/{{OPERATOR_2}} if there is a real one. \
 Materialize the worklist items in `queues/research/` so that L2 processes \
 them. Also write `outputs/<today>/1/summary.md` (3-5 lines).
 
 ## Voice + audience
 
 `morning_briefing.md` / `summary.md`: English, executive-office voice, \
-readable by Joris/Jade in the cockpit (`/dept/{slug}`). No bare jargon.
+readable by {{OPERATOR}}/{{OPERATOR_2}} in the cockpit (`/dept/{slug}`). No bare jargon.
 """
 
 
@@ -160,7 +160,7 @@ _L3 = """# Moment 3 — The execution (Layer 3 — action)
 ## Why you were called
 
 The main session saw **one** validated decision in `inbox/decisions/` (STEP C.3 of the \
-/loop) — a gate approved by Joris/Jade, ready to execute. You execute \
+/loop) — a gate approved by {{OPERATOR}}/{{OPERATOR_2}}, ready to execute. You execute \
 **one** decision then you die.
 
 ## Mandatory pre-flight (STEP 0bis — guard-rails)
@@ -187,7 +187,7 @@ Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.li
 After successful execution: move the item to `inbox/decisions/.processed/` \
 (so a future tick does not re-process it) and log in `logs.jsonl`. In case \
 of failure after retries: leave the item + add `<id>.error` with the reason, \
-the main session escalates to Joris.
+the main session escalates to {{OPERATOR}}.
 
 ## Voice + audience
 
@@ -218,7 +218,7 @@ the day. No parallelism: you do the whole debrief in one run.
 Produce the canonical review artifacts (force-commit-push after each one):
 
 1. `outputs/<today>/4/risk-brief.md` — the day's narrative brief: volumes, \
-incidents, points awaiting Joris, tomorrow's actions. {l4_brief}
+incidents, points awaiting {{OPERATOR}}, tomorrow's actions. {l4_brief}
 2. `outputs/<today>/4/management-export.yaml` — export for Tony (format \
 `schemas-draft/management-export.schema.yaml`).
 {l4_extra}
@@ -234,7 +234,7 @@ day, not a dry status). Two hats:
   actually did. Compose a `Summary` (short title, catchy but true) \
   and a `Content` (5-12 lines, past tense, factual, executive-office voice).
 - **Observer** (judgment): if something in the day deserves \
-  Joris/Jade's attention tomorrow, say it in the content. Silent on \
+  {{OPERATOR}}/{{OPERATOR_2}}'s attention tomorrow, say it in the content. Silent on \
   routine days, signal-bearing when there is something real. No placeholder \
   KPI, no keyword regex — it's your judgment (Bubble \
   principle: the intelligence is in the agent).
@@ -245,7 +245,7 @@ Write via the shared lib (the slug `{slug}` goes in the Agent column):
 LOGBOOK_AGENT_ID={slug} NOTION_API_KEY="$NOTION_API_KEY" \\
   python3 ../../scripts/lib/notion_logbook.py write \\
     --title "<your Summary>" --body "<your Content>" \\
-    --tags {slug} --for joris,jade --date <today>
+    --tags {slug} --for operator,operator2 --date <today>
 ```
 
 If `NOTION_API_KEY` is not in the env, the lib skips cleanly (no \
@@ -256,7 +256,7 @@ crash) — log `logbook: skipped (no key)` and continue. One entry per day.
 ## Voice + audience
 
 `risk-brief.md` + the logbook entry: English, executive-office voice, readable \
-by Joris/Jade. The logbook is public within the team (shared notebook).
+by {{OPERATOR}}/{{OPERATOR_2}}. The logbook is public within the team (shared notebook).
 """
 
 

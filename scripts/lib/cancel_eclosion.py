@@ -8,7 +8,7 @@ Used to abandon a department that NEVER reached `Live`. Distinct from
 Use cases:
   - During development, the operator tries an eclosure multiple times
     before the agent feels right.
-  - Joris changes his mind mid-eclosure about the concept.
+  - {{OPERATOR}} changes his mind mid-eclosure about the concept.
 
 Side effects (mocked in tests; real in production):
   1. SSH to Morty: `systemctl disable --now ops-loop-<slug>.service` +

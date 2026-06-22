@@ -1,7 +1,7 @@
 # Backup Strategy — Morty (Bubble Invest VPS)
 
 **Statut :** phase 1 opérationnelle depuis le sprint sécurité 2026-05-21.
-**Audience :** Joris (opérateur) et tout dept-manager qui aurait besoin de comprendre ce qui est sauvegardé et comment restaurer.
+**Audience :** {{OPERATOR}} (opérateur) et tout dept-manager qui aurait besoin de comprendre ce qui est sauvegardé et comment restaurer.
 
 ---
 
@@ -54,7 +54,7 @@ Soit ~5 semaines de rétention rolling.
 
 **Limite critique de la phase 1 :** le repo est sur le même disque que Morty. Si Morty meurt (disque, hack, oups `rm -rf`), le backup meurt avec lui. C'est **mieux que rien** (recovery point-in-time + déduplication + chiffrement client-side + protection contre les corruptions partielles), mais ce n'est PAS du vrai backup off-site.
 
-Migration prévue dès que Joris fournit les credentials :
+Migration prévue dès que {{OPERATOR}} fournit les credentials :
 
 | Cible | Coût | Setup | Pour qui |
 |---|---|---|---|
@@ -134,7 +134,7 @@ Cf. `docs/DISASTER-RECOVERY.md` pour le playbook chronologique (provisionner nou
 
 ## 6. Drill recommandé
 
-**Tous les 3 mois** : Joris fait un test de restauration depuis le repo Restic vers `/tmp/drill-<date>`, vérifie que les fichiers sont bien là, puis supprime `/tmp/drill-<date>`. Sans drill, on découvre que le backup est cassé le jour où on en a besoin — c'est la pire forme de Schrödinger.
+**Tous les 3 mois** : {{OPERATOR}} fait un test de restauration depuis le repo Restic vers `/tmp/drill-<date>`, vérifie que les fichiers sont bien là, puis supprime `/tmp/drill-<date>`. Sans drill, on découvre que le backup est cassé le jour où on en a besoin — c'est la pire forme de Schrödinger.
 
 ## 7. Coût opérationnel (phase 1)
 

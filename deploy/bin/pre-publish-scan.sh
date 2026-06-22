@@ -6,7 +6,7 @@
 # operator PII, internal infra identifiers, internal DB IDs, secret-map docs,
 # and raw secret-prefix patterns — in BOTH the working tree AND git history
 # (a value scrubbed from HEAD but left in history is still public to a cloner).
-# Joris (2026-06-22): "make the security scan systematic at each step."
+# {{OPERATOR}} (2026-06-22): "make the security scan systematic at each step."
 #
 # This is a GATE, not a fixer. Exit 0 = clean. Exit 2 = findings (block publish).
 #

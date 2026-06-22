@@ -11,7 +11,7 @@
 #
 # Usage:
 #   ./migrate-dept.sh --source=~/claude-workspaces/Maya_Sales \
-#                      --slug=maya --display-name=Maya --owner=joris
+#                      --slug=maya --display-name=Maya --owner=operator
 #
 # Test-hook env vars (same as bootstrap-dept.sh):
 #   BUBBLE_BOOTSTRAP_CLONE_DIR — override the default /tmp clone parent dir
@@ -34,7 +34,7 @@ Arguments:
                           config.yaml; CLAUDE.md optional but strongly recommended.
   --slug=<slug>           Kebab-case dept slug.
   --display-name=<name>   Display name (e.g. Maya).
-  --owner=<owner>         Owner slug (e.g. joris).
+  --owner=<owner>         Owner slug (e.g. operator).
   --help                  Show this message.
 
 Test hooks (env vars):

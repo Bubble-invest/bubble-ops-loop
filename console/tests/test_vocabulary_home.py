@@ -10,8 +10,8 @@ overview, in serif Cormorant + ochre accents.
 """
 
 
-def test_home_greets_joris_by_name(client):
-    """The greeting opens with 'Bonjour Joris.'"""
+def test_home_greets_operator_by_name(client):
+    """The greeting opens with 'Bonjour {{OPERATOR}}.'"""
     r = client.get("/")
     assert r.status_code == 200
     assert "Bonjour" in r.text, "home must open with 'Bonjour ...'"
@@ -37,7 +37,7 @@ def test_home_uses_collegue_vocabulary(client):
 def test_home_drops_kanban_label_from_visible_copy(client):
     """No 'Cross-dept board' jargon label in *visible* copy.
 
-    NOTE (2026-06-21, Joris): the word "kanban" IS now allowed as visible copy —
+    NOTE (2026-06-21, {{OPERATOR}}): the word "kanban" IS now allowed as visible copy —
     it's the deliberate label of the /kanban nav link (card #222). We keep
     guarding against the older "Cross-dept board" jargon only.
     """

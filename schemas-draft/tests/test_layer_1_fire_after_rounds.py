@@ -2,7 +2,7 @@
 test_layer_1_fire_after_rounds.py — schema test for the optional
 `layer_1.fire_after_rounds` top-level field on dept.yaml.
 
-Context (Joris msg 3129, 2026-05-24): STEP C.0 (Layer-1 dispatch) has an
+Context ({{OPERATOR}} msg 3129, 2026-05-24): STEP C.0 (Layer-1 dispatch) has an
 idle gate threshold N, configurable per dept. We add a new optional
 top-level `layer_1:` block whose only field today is `fire_after_rounds:
 <int>` (default 1).
@@ -63,7 +63,7 @@ def baseline_ops_dept() -> dict:
     """Render a fresh ops dept.yaml.draft (already schema-valid) as
     baseline. Tests mutate copies of this."""
     rendered = scaffold.render_dept_yaml_draft(
-        slug="maya", display_name="Maya", owner="joris", level="ops"
+        slug="maya", display_name="Maya", owner="operator", level="ops"
     )
     return yaml.safe_load(rendered)
 
@@ -99,7 +99,7 @@ def test_dept_yaml_with_layer_1_fire_after_rounds_int_validates(dept_schema, bas
 
 
 def test_dept_yaml_with_layer_1_fire_after_rounds_3_validates(dept_schema, baseline_ops_dept):
-    """Joris-configurable threshold — N=3 is a perfectly valid choice."""
+    """{{OPERATOR}}-configurable threshold — N=3 is a perfectly valid choice."""
     instance = copy.deepcopy(baseline_ops_dept)
     instance["layer_1"] = {"fire_after_rounds": 3}
     errors = sorted(Draft7Validator(dept_schema).iter_errors(instance),

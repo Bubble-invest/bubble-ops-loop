@@ -10,7 +10,7 @@ LOG_DIR="${LOG_DIR:-/var/log/bubble-security}"
 DATE_STAMP=$(date -u +"%Y-%m-%d")
 TS_HUMAN=$(date -u +"%Y-%m-%d %H:%M UTC")
 LOG_FILE="${LOG_DIR}/secrets-tmp-sweep-${DATE_STAMP}.log"
-JORIS_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"
+OPERATOR_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"
 SCAN_DIRS=("${SCAN_DIRS:-/tmp /var/tmp /home/claude}")
 
 log() { printf "%s %s\n" "$(date -u +'%H:%M:%S')" "$*" >> "$LOG_FILE"; }
@@ -60,7 +60,7 @@ TOKEN=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "${ENV_FILE}" 2>/dev/nu
 if [[ -n "$TOKEN" ]]; then
   curl -s --max-time 15 \
     "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${JORIS_TG_USER_ID}" \
+    --data-urlencode "chat_id=${OPERATOR_TG_USER_ID}" \
     --data-urlencode "text=${MSG}" >/dev/null 2>&1 \
     && log "Telegram alert sent" || log "WARN: telegram send failed"
 else

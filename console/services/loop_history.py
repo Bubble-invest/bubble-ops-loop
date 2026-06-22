@@ -1,7 +1,7 @@
 """
 loop_history.py — enumerate a dept's loop-run history + safely read outputs.
 
-Joris msg 1168 (2026-06-01): the dept page should show the history of loop
+{{OPERATOR}} msg 1168 (2026-06-01): the dept page should show the history of loop
 runs, with each output file clickable to read in-browser — even when a run
 produced nothing.
 

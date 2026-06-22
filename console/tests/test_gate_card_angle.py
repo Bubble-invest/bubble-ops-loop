@@ -1,10 +1,10 @@
 """test_gate_card_angle.py — draft + angle alternatives rendered on the gate card.
 
-Context — Joris msg 3434/3436/3441 (2026-05-31): Maya's draft_batch now
+Context — {{OPERATOR}} msg 3434/3436/3441 (2026-05-31): Maya's draft_batch now
 emits prospect_dm/warming_comment gates enriched with the actual draft
 (`draft_body`), the chosen angle (`chosen_variant`/`chosen_angle`), and
 the alternative angles (`alternatives`). The gate card must render these
-PROMINENTLY (not only in the raw-yaml expander) so Joris can triage from
+PROMINENTLY (not only in the raw-yaml expander) so {{OPERATOR}} can triage from
 his phone:
 
   - read the actual message he's approving
@@ -43,7 +43,7 @@ def _build_app_with_gate(tmp_path: Path, monkeypatch, gate: dict):
     (dept / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture",
-            "display_name": "Fixture", "owner": "joris",
+            "display_name": "Fixture", "owner": "operator",
             "created_at": "2026-05-15T10:00:00Z", "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -73,7 +73,7 @@ _ANGLE_GATE = {
     "id": "prospect_dm-jean-dupont-20260601",
     "kind": "prospect_dm",
     "slug": "jean-dupont",
-    "account_used": "Joris",
+    "account_used": "Operator",
     "chosen_variant": "V2",
     "chosen_angle": "Angle expertise de gérant à gérant.",
     "chosen_reason": "Profil gérant senior — le peer-to-peer résonne.",
@@ -121,7 +121,7 @@ def test_alternatives_are_rendered(tmp_path, monkeypatch):
 
 
 def test_alternatives_hint_mentions_comment(tmp_path, monkeypatch):
-    """The card must tell Joris HOW to pick an alternative (type the variant
+    """The card must tell {{OPERATOR}} HOW to pick an alternative (type the variant
     in the comment box)."""
     c = _build_app_with_gate(tmp_path, monkeypatch, _ANGLE_GATE)
     body = _prominent_html(c.get("/gate/fixture/prospect_dm-jean-dupont-20260601").text).lower()

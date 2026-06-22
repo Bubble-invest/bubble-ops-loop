@@ -6,7 +6,7 @@ layer-fire pings themselves ride the **Telegram** transport (the plan keeps
 the layer pings Telegram-only even though the underlying notify module is the
 full email+Telegram thing).
 
-Verbosity (Joris decision, see LOOP-FIX-BUILD.md / plan WS3):
+Verbosity ({{OPERATOR}} decision, see LOOP-FIX-BUILD.md / plan WS3):
   - **L1 & L4 notify IMMEDIATELY** — one line each, the moment the layer fires
     (in /loop STEP 3c, after ``validate_layer_output`` returns ok, before the
     STEP 5 commit). Call ``notify_layer_fired(dept, layer, summary_path)``.
@@ -63,13 +63,13 @@ except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts
 
 # The default account the loop pings on a layer fire. Dept configs map this
 # account name → a telegram_chat_id under config['accounts']. Overridable per
-# call so couple-mode depts (e.g. Maya → Joris+Jade) can fan out.
-DEFAULT_ACCOUNT = "Joris"
+# call so couple-mode depts (e.g. Maya → both operators) can fan out.
+DEFAULT_ACCOUNT = os.environ.get("BUBBLE_OPERATOR_NAME", "Operator")
 
 LAYER_FIRE_GLYPH = "🔁"
 
 # Cockpit (console) base URL — every layer-fired ping carries the dept's cockpit
-# link so Joris can open the work directly from Telegram (Joris msg 3985,
+# link so {{OPERATOR}} can open the work directly from Telegram ({{OPERATOR}} msg 3985,
 # 2026-06-06). Env-overridable for non-prod/test. Console is Tailscale-only.
 COCKPIT_BASE_URL = os.environ.get(
     "BUBBLE_COCKPIT_BASE_URL",
@@ -145,7 +145,7 @@ def notify_layer_fired(
         layer: layer number (int or str, e.g. 1 / "1" / 4).
         summary_path: path to the layer's summary.md (first line → ping tail).
         config: full dept config dict (provides accounts → telegram_chat_id).
-        account: account name(s) to ping (default "Joris"); str or list.
+        account: account name(s) to ping (default "{{OPERATOR}}"); str or list.
         opener: injectable urllib-like callable for tests; None → live urllib.
 
     Returns:

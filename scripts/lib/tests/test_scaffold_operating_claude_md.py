@@ -2,7 +2,7 @@
 test_scaffold_operating_claude_md.py — TDD tests for the post-éclosion
 CLAUDE.md flip.
 
-Joris flag 2026-05-24 msg 3060:
+{{OPERATOR}} flag 2026-05-24 msg 3060:
   > The current operational manual for local maya will be in her mandate,
   > that's the whole point. Still, her Claude.md does need to be rewritten
   > after éclosion, but just to remove the éclosion part and go to
@@ -174,7 +174,7 @@ def test_operating_references_mandate_md_not_repeats_it():
 
 
 def test_operating_has_voice_rules_for_non_tech_user():
-    """Joris asked specifically for 'parts about non tech user and how to
+    """{{OPERATOR}} asked specifically for 'parts about non tech user and how to
     behave regarding doc, etc'. The operating CLAUDE.md must contain
     voice/audience rules."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
@@ -189,14 +189,14 @@ def test_operating_has_voice_rules_for_non_tech_user():
     )
 
 
-def test_operating_states_telegram_is_the_channel_to_joris():
-    """Joris msg 3594: every dept's CLAUDE.md must clearly state that its
-    channel to Joris IS its Telegram bot (escalations/questions/decisions go
+def test_operating_states_telegram_is_the_channel_to_operator():
+    """{{OPERATOR}} msg 3594: every dept's CLAUDE.md must clearly state that its
+    channel to {{OPERATOR}} IS its Telegram bot (escalations/questions/decisions go
     there; the session transcript does not reach him). Pins the directive so it
     can't silently regress + so future depts inherit it."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops(slug="maya"))
     low = out.lower()
-    assert "channel to joris" in low, "missing the explicit 'my channel to Joris' directive"
+    assert "channel to {operator}" in low, "missing the explicit 'my channel to {OPERATOR}' directive"
     assert "@bubbleopsmaya_bot" in out, "the channel directive must name the dept's Telegram bot"
     # must convey 'always via Telegram' + 'transcript doesn't reach him'
     assert "always through there" in low
@@ -312,9 +312,9 @@ def test_operating_for_ops_does_not_mention_children_section():
 
 
 # ---------------------------------------------------------------------------
-# F. Simplified /loop prose (Joris msg 3160, 2026-05-25)
+# F. Simplified /loop prose ({{OPERATOR}} msg 3160, 2026-05-25)
 # ---------------------------------------------------------------------------
-# Joris wants the /loop section to be short + declarative. Main session
+# {{OPERATOR}} wants the /loop section to be short + declarative. Main session
 # reads it, scans the 4 layer queues, and delegates to per-layer PROMPT.md
 # via the Agent tool. The detailed dispatch logic moved into
 # dispatch_helpers.decide_dispatch() — the prose just tells the agent to
@@ -332,10 +332,10 @@ def test_operating_loop_section_is_concise():
     loop_block = m.group(0)
     n_lines = loop_block.count("\n")
     assert n_lines < 78, (
-        f"/loop block is {n_lines} lines — Joris asked for concise + "
+        f"/loop block is {n_lines} lines — {{OPERATOR}} asked for concise + "
         "declarative (msg 3160) AND for main to verify subagent outputs "
         "(msg 3164). The verify protocol legitimately adds ~25 lines, plus "
-        "the on-demand /loop-now trigger doctrine (2026-06-05, Joris) adds 2. "
+        "the on-demand /loop-now trigger doctrine (2026-06-05, {{OPERATOR}}) adds 2. "
         "Threshold 78 = 71-line STEP A-F baseline + verify + trigger + small "
         "headroom. If you exceed this, push more logic into "
         "dispatch_helpers.py and leave the prose declarative."
@@ -363,7 +363,7 @@ def test_operating_loop_section_mentions_layer_prompt_md():
 
 
 def test_operating_loop_section_mentions_main_is_orchestrator():
-    """Per Joris msg 3157+3160: main session is the orchestrator, layers
+    """Per {{OPERATOR}} msg 3157+3160: main session is the orchestrator, layers
     are stateless workers spawned per tick. The prose must make this
     explicit so the agent knows it CAN spawn subagents."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
@@ -377,7 +377,7 @@ def test_operating_loop_section_mentions_main_is_orchestrator():
 # ---------------------------------------------------------------------------
 # G. Main-session verification of subagent outputs (msg 3164, 2026-05-25)
 # ---------------------------------------------------------------------------
-# Joris: "the main loop should also verify the output from the layer
+# {{OPERATOR}}: "the main loop should also verify the output from the layer
 # subagents, check if all ok after retries on error, verify output etc,
 # and then move on. Can't hurt to make main session aware of what
 # employees do."
@@ -436,7 +436,7 @@ def test_operating_loop_main_logs_subagent_summary():
 
 def test_operating_includes_on_demand_loop_trigger():
     """The operating /loop protocol must teach the dept to run a full dispatch
-    tick when Joris sends an on-demand trigger (/loop-now or a natural-language
+    tick when {{OPERATOR}} sends an on-demand trigger (/loop-now or a natural-language
     equivalent), and to always summarise the tick afterward. The trigger works
     via the supported Telegram→MCP-channel→turn path (the only one that reaches
     a live --channels session — see the wiki wall map)."""

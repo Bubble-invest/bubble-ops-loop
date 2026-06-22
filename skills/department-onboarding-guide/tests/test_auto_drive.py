@@ -20,7 +20,7 @@ def _write_state(path: Path, *, status: str, validated: list) -> Path:
         "schema_version": 1,
         "slug": "smoke",
         "display_name": "Smoke",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T00:00:00Z",
         "status": status,
         "validated_steps": validated,
@@ -73,7 +73,7 @@ def test_get_step_prompt_mandate_has_3_options() -> None:
     from skill_lib.auto_drive import get_step_prompt
     msg = get_step_prompt("mandate")
     assert isinstance(msg, str) and len(msg) > 50
-    # Must be French Bureau-de-Cadre voice (asks Joris a concrete choice).
+    # Must be French Bureau-de-Cadre voice (asks {{OPERATOR}} a concrete choice).
     low = msg.lower()
     assert "mandat" in low or "mandate" in low
     # 3 options structure (numbered list or A/B/C).

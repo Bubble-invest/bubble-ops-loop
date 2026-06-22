@@ -26,7 +26,7 @@ LOG_DIR="${LOG_DIR:-/var/log/bubble-security}"
 DATE_STAMP=$(date -u +"%Y-%m-%d")
 TS_HUMAN=$(date -u +"%Y-%m-%d %H:%M UTC")
 LOG_FILE="${LOG_DIR}/transcript-leak-scan-${DATE_STAMP}.log"
-JORIS_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"
+OPERATOR_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"
 # How far back to look (seconds). 86400 = 24h. Add a 5-min buffer for timer jitter.
 # Can be overridden: LOOKBACK_SECS=99999 for test (catch all files regardless of mtime)
 LOOKBACK_SECS="${LOOKBACK_SECS:-87300}"
@@ -161,11 +161,11 @@ Action: rotate exposed credentials immediately."
     if [[ -n "${TOKEN:-}" ]]; then
         curl -s --max-time 15 \
             "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${JORIS_TG_USER_ID}" \
+            --data-urlencode "chat_id=${OPERATOR_TG_USER_ID}" \
             --data-urlencode "text=${ALERT_MSG}" \
             > /dev/null 2>&1
         unset TOKEN
-        log "Telegram alert sent to chat_id=${JORIS_TG_USER_ID}"
+        log "Telegram alert sent to chat_id=${OPERATOR_TG_USER_ID}"
     else
         unset TOKEN
         log "WARN: no TELEGRAM_BOT_TOKEN in ${ENV_FILE} — Telegram alert NOT sent"

@@ -9,7 +9,7 @@
 #      and LOG IT LOUDLY on startup ("DRY_RUN resolved to <0|1> from <var>").
 #
 #   B. Notify-on-fire — when a backup tick ACTUALLY RUNS for a dept (stale /
-#      missing heartbeat), the script pings Joris ONCE on Telegram; on a fresh
+#      missing heartbeat), the script pings {{OPERATOR}} ONCE on Telegram; on a fresh
 #      (healthy) loop it must NOT ping. Telegram send + claude tick are stubbed.
 #
 #   C. DRY_RUN behavioral proof — with a STALE dept and bare DRY_RUN=1 the
@@ -701,7 +701,7 @@ else
     bad "J3 floor wrote a truthful line for a FRESH dept; heartbeat=$(cat "$HB_JFRESH" 2>/dev/null)"
 fi
 unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J
-# K. Auto-restart dead DEPARTMENTS (Rick 2026-06-19, Joris-approved). Fires
+# K. Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved). Fires
 #    ONLY when the backup tick FAILED to revive the dept (exit != 0). Scope:
 #      • departments (tony/ben/maya/accountant) restart;
 #      • concierges (morty/claudette) are NEVER restarted (safety guard);

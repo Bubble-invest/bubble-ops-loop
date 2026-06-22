@@ -1,7 +1,7 @@
 """
 test_loop_history.py — loop-run history section + output viewer.
 
-Joris msg 1168 (2026-06-01): the dept page shows the history of loop runs
+{{OPERATOR}} msg 1168 (2026-06-01): the dept page shows the history of loop runs
 with clickable outputs, even for empty runs.
 """
 from __future__ import annotations

@@ -342,7 +342,7 @@ Justification: ${JUST_TRIM}
 
 Proposed via propose-settings-pr (WS5). Structural paths:
 $(printf '  - %s\n' "${REL_PATHS[@]}")
-A human (Joris/Jade) merges this PR; the mission-guard never fired."
+A human ({{OPERATOR}}/{{OPERATOR_2}}) merges this PR; the mission-guard never fired."
 # PATHSPEC-LIMITED commit: only the named structural paths land in this commit,
 # regardless of what else is in the index (a settings PR must contain ONLY the
 # proposed structural change — the WS5 smoke caught the blanket-commit bug).
@@ -364,7 +364,7 @@ GUARD_ARGS=(
 )
 
 PR_TITLE="settings(${SLUG}): ${TOPIC_SLUG}"
-PR_BODY="$(printf 'Automated settings PR opened via propose-settings-pr (WS5).\n\nDept: %s\nBranch: %s\nStructural paths:\n%s\n\n## Justification\n%s\n\nA human (Joris/Jade) must merge. The in-session mission-guard never fired — the structural write+commit happened inside the root-owned helper.\n' \
+PR_BODY="$(printf 'Automated settings PR opened via propose-settings-pr (WS5).\n\nDept: %s\nBranch: %s\nStructural paths:\n%s\n\n## Justification\n%s\n\nA human ({{OPERATOR}}/{{OPERATOR_2}}) must merge. The in-session mission-guard never fired — the structural write+commit happened inside the root-owned helper.\n' \
   "$SLUG" "$BRANCH" "$(printf '  - %s\n' "${REL_PATHS[@]}")" "$JUST_TRIM")"
 
 GH_ARGS=(

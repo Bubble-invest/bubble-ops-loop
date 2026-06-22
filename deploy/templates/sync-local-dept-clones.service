@@ -3,7 +3,7 @@
 # Triggered by sync-local-dept-clones.timer (every ~15 min).
 #
 # Keeps the VPS's READ-ONLY clones of host:local depts (e.g. Miranda's
-# bubble-ops-content, whose /loop runs on Jade's Mac) fresh from GitHub via
+# bubble-ops-content, whose /loop runs on {{OPERATOR_2}}'s Mac) fresh from GitHub via
 # `git pull --ff-only`, so the disk-mode cockpit renders their latest gates /
 # state / heartbeat. The dept NEVER executes on the VPS — this is a pure mirror:
 # no commit, no push, no loop. See scripts/sync-local-dept-clones.sh.

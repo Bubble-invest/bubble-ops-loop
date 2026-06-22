@@ -46,7 +46,7 @@ Services permitted to call sops without --output (stdout-redirect pattern):
 - ops-loop-fixture.service (uses shell > redirect for PEM file)
 
 ## Server Access
-- Production: ssh hetzner (joris-cx33, Hetzner CX33)
+- Production: ssh hetzner ({{VPS_HOST}}, Hetzner CX33)
 - Services: bubble-ops-console.service, claude-agent-morty.service, ops-loop-fixture.service
 
 ## False Positives (Don't Re-flag)

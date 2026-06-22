@@ -12,7 +12,7 @@ description: |
     2) `recurring_missions:` replaces ad-hoc per-dept crons
     3) `gate_policies:` declares the 5-mode autonomy doctrine
   hierarchy + optional_domain_ledger remain siblings of `department:` at
-  root (Joris-confirmed canonical layout — flag for post-validation).
+  root ({{OPERATOR}}-confirmed canonical layout — flag for post-validation).
 type: object
 required:
   - department
@@ -51,7 +51,7 @@ properties:
         enum: [ops, management, principal]
         description: |
           ops = leaf dept (Ben, Maya, Miranda, Eliot). management = aggregator
-          (Tony). principal = root (Joris/Jade — gates critiques uniquement).
+          (Tony). principal = root ({{OPERATOR}}/{{OPERATOR_2}} — gates critiques uniquement).
           Mirrors hierarchy.level; the two MUST agree (cross-check is a Step-1
           fixture-load runtime check, not a JSON-schema constraint).
       status:
@@ -105,7 +105,7 @@ properties:
         minLength: 1
         description: |
           Slug / name of the human owner of this dept (Notion v5 line 820).
-          Optional; falls back to "joris" by convention if absent.
+          Optional; falls back to "operator" by convention if absent.
       forbidden:
         type: array
         items: { type: string, minLength: 1 }
@@ -442,7 +442,7 @@ properties:
 
   # --------------------------------------------------------------------------
   # layer_1 — optional per-dept knob for STEP C.0 (Layer-1 dispatch).
-  # Added 2026-05-24 per Joris msg 3129: Layer 1 fires only when all other
+  # Added 2026-05-24 per {{OPERATOR}} msg 3129: Layer 1 fires only when all other
   # layers are idle AND each has completed ≥ N rounds since L1's last fire.
   # N is configurable per dept here; defaults to 1 when the block is absent.
   # The block itself is OPTIONAL — pre-existing dept.yaml files continue to
@@ -461,7 +461,7 @@ properties:
           fires only when each of L2/L3/L4 has completed ≥ this many rounds
           since L1's last fire. Lower = more frequent L1 wake-ups (risk of
           flooding queues). Higher = sparser data-refresh (risk of stale
-          context). Default 1 — matches Joris's "1 or configurable"
+          context). Default 1 — matches {{OPERATOR}}'s "1 or configurable"
           phrasing. Consumed by scripts/lib/dispatch_helpers.py::
           layer_1_gate_satisfied.
 

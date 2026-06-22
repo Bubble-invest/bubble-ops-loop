@@ -2,7 +2,7 @@
 test_home_excludes_anciens.py — home (/) must not list retired/cancelled
 depts as active or surface their pending gates as outstanding decisions.
 
-Regression: 2026-05-24 (Joris msg 3041) — after retiring fixture, the home
+Regression: 2026-05-24 ({{OPERATOR}} msg 3041) — after retiring fixture, the home
 page still showed:
   - "9 décisions qu'on attend de toi" (fixture's 9 stale gates)
   - "1 collègue en éclosion" + Fixture rendered under "L'équipe" with
@@ -41,7 +41,7 @@ def _make_dept(root: Path, slug: str, display: str, status: str,
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": display,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": status,
             "validated_steps": ["mandate", "missions", "layers"],
             "last_updated_at": "2026-05-19T10:00:00Z",

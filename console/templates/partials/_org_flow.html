@@ -113,12 +113,12 @@
     var opsHalf = Math.max(1, roles.ops.length) / 2 * COL_W;
 
     // Concierges: cross-cutting band BETWEEN the Principal and Management
-    // (below Joris/Jade, above Tony) — centered, side by side. They reach
+    // (below {{OPERATOR}}/{{OPERATOR_2}}, above Tony) — centered, side by side. They reach
     // every dept (inbound edges) but clearly sit under the Principal.
     centerRow(roles.concierge, CONCIERGE_Y);
 
     // Mac-local agents (Rick, Tony-local, Miranda) sit NEXT TO the Principal
-    // (Joris/Jade) — they're "our" local machines, not a bottom row. Place
+    // ({{OPERATOR}}/{{OPERATOR_2}}) — they're "our" local machines, not a bottom row. Place
     // them as a compact stack to the RIGHT of the Principal, at its height.
     var localX = COL_W * 1.4;  // just right of the centered Principal card
     roles.local.forEach(function (n, i) {
@@ -203,7 +203,7 @@
     parts.push(
       '<span class="fw-rf-name"><span class="fw-rf-dot fw-rf-dot--' +
       n.status + '" aria-hidden="true"></span>' + (n.title || "") + "</span>");
-    // A dept that runs on a Mac (host:"local", e.g. Miranda/content on Jade's
+    // A dept that runs on a Mac (host:"local", e.g. Miranda/content on {{OPERATOR_2}}'s
     // Mac) gets a small "Mac local" badge so the hybrid topology is visible
     // without giving it a separate ghost node in the Mac-local tier.
     if ((n.kind === "ops" || n.kind === "mgmt") && n.host === "local") {

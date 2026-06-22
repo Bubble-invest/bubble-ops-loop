@@ -28,7 +28,7 @@
                  │ HTTPS (git, gh api) + Webhook (future v2)
                  ▼
    ┌───────────────────────────────────────────────────────────────────────────┐
-   │   MORTY VPS  (Hetzner CX33, joris-cx33, Ubuntu 24.04, systemd 255)        │
+   │   MORTY VPS  (Hetzner CX33, {{VPS_HOST}}, Ubuntu 24.04, systemd 255)        │
    │                                                                           │
    │   /etc/systemd/system/                                                    │
    │     claude-agent-morty.service          (the bubble-internal agent)       │
@@ -51,7 +51,7 @@
                  │ Tailscale mesh (BUBBLE_MORTY_HOST=claude@morty.tailnet)
                  ▼
    ┌──────────────────────────────────┬──────────────────────────────────────┐
-   │  JORIS'S MAC                     │   JORIS'S PHONE                       │
+   │  {{OPERATOR}}'S MAC                     │   {{OPERATOR}}'S PHONE                       │
    │  bubble-ops-console              │   Telegram bots                       │
    │   (FastAPI + HTMX, single binary)│     @bubtiktikbot   (fixture)         │
    │   8 routes (home/dept/gate/      │     @ContentbubbleClawbot (morty)     │
@@ -77,7 +77,7 @@
 | Dept repo content (`outputs/`, `queues/`, `inbox/`) | Public Morty disk + private GitHub repo | claude:claude on Morty | Crosses internet (HTTPS git push) | git-guard fail-closed on path violation |
 | Structural files (`dept.yaml`, `layers/`, `.claude/agents/`, `skills/`, `tools/`) | Same | claude:claude on Morty | Same; **PR-only via `settings_pr` action class** | guard rejects direct push |
 | Audit JSONL (`/var/log/bubble-*/audit.jsonl`) | Morty disk, append-only | root + claude read | Never | metadata-only; secret-leak guards |
-| Console authentication | Tailscale-fronted port + bearer token | Joris's Mac on Tailscale mesh only | Never (Tailscale-only) | 401 on missing/wrong bearer |
+| Console authentication | Tailscale-fronted port + bearer token | {{OPERATOR}}'s Mac on Tailscale mesh only | Never (Tailscale-only) | 401 on missing/wrong bearer |
 
 The **fail-open** vs **fail-closed** split is deliberate: anything touching authorization or git writes is fail-closed (broker, guard, schema validation). Anything touching observability (Telegram pings, heartbeats) is fail-open so a Telegram outage doesn't wedge the loop.
 
@@ -190,7 +190,7 @@ The 12-step build produced 11 empirically-documented failure modes worth knowing
 | 9 | **journald flag plumbed but never activated on Morty** (STEP-11 Fix 1) | `journalctl SYSLOG_IDENTIFIER=bubble-token-broker` returns "No entries" despite 100+ mints | systemd unit needs `Environment=BUBBLE_BROKER_JOURNAL=on`; broker wrapper forwards `--journal "$BUBBLE_BROKER_JOURNAL"` |
 | 10 | **AppleDouble files (`._*`)** leaked from Mac `rsync` (QA-FIXES-COMPLEMENT) | `find /opt/bubble-token-broker -name '._*'` returned 22 entries owned by uid 501 | rsync `--exclude='._*'`; cleanup in INSTALL-ON-MORTY.md |
 | 11 | **Branch protection paywalled on private repos** (QA-FIXES-COMPLEMENT Fix A) | `gh api .../branches/main/protection` returns HTTP 403 with "Upgrade to GitHub Pro" | Pivoted to `.github/CODEOWNERS` + path-policy GitHub Actions workflow; CODEOWNERS is the live defense |
-| 12 | **Heartbeat fires once in 11 minutes** (QA-AUDIT-J2 finding) | `monitoring/heartbeats.jsonl` shows isolated entries, no `*/20` cadence | `ops-loop-watchdog.timer` (40-min threshold) Telegrams Joris when stale; Mac scheduled-tasks registry needs explicit cron entry |
+| 12 | **Heartbeat fires once in 11 minutes** (QA-AUDIT-J2 finding) | `monitoring/heartbeats.jsonl` shows isolated entries, no `*/20` cadence | `ops-loop-watchdog.timer` (40-min threshold) Telegrams {{OPERATOR}} when stale; Mac scheduled-tasks registry needs explicit cron entry |
 
 ---
 
@@ -251,7 +251,7 @@ Console is FastAPI; routes live in `console/routes/`. Currently 8 route files pr
 | Git guard | `git-guard/src/` (guard.py, policy_loader.py, staging.py, audit.py, cli.py) | Path-policy enforcement at `git push` | 73 tests, ~90% coverage |
 | Onboarding skill | `skills/department-onboarding-guide/` (SKILL.md + skill_lib/ + templates/) | 7-step eclosure state machine + dry-run simulator | 38 tests |
 | Bootstrap scripts | `scripts/` (bootstrap-dept.sh + validate-step.sh + activate-dept.sh + deploy-to-morty.sh + run-dry-run.sh + lib/) | The CLI entry points an operator types | 27 tests (UX-2) + 9 tests (UX-5) + activation tests |
-| Console | `console/` (FastAPI + HTMX, main.py + 8 routes + 12 templates) | The single-binary front-end on Joris's Mac | 21 tests |
+| Console | `console/` (FastAPI + HTMX, main.py + 8 routes + 12 templates) | The single-binary front-end on {{OPERATOR}}'s Mac | 21 tests |
 | Systemd unit template | `deploy/templates/ops-loop-dept.service.template` | Rendered per dept by deploy-to-morty.sh | tested via test_deploy_to_morty.py |
 | Watchdog | `scripts/loop-watchdog.sh` + `scripts/ops-loop-watchdog.{service,timer}` | 40-min cadence health check → Telegram on stale | live on Morty |
 | Round-trip E2E | `tests/round-trip/test_e2e_dispatch.py` + `test_layer4_three_outputs.py` | Against live GitHub fixture | 6 + 11 = 17 assertions |

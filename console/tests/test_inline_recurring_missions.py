@@ -49,7 +49,7 @@ def _make_dept_with_inline_missions(fixture_root: Path,
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -120,7 +120,7 @@ def test_list_missions_merges_inline_and_file_missions(app, fixture_root):
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

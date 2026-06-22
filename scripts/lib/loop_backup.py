@@ -1,6 +1,6 @@
 """loop_backup.py — backup-execution decision for ops-loop depts.
 
-A per-dept BACKUP runner fires twice a day (Joris 2026-06-01). For each
+A per-dept BACKUP runner fires twice a day ({{OPERATOR}} 2026-06-01). For each
 dept it decides whether the persistent /loop is alive (recent heartbeat →
 skip) or dead/parked (stale heartbeat → run ONE backup dispatch tick).
 
@@ -8,7 +8,7 @@ This module is the PURE decision + a small heartbeat-locator helper. The
 bash wrapper (loop-backup.sh) does the side effects: flock mutex, the
 `claude -p` one-tick run, and Telegram notify.
 
-It also owns the EVENT LOG (Joris msg 1171, 2026-06-01): every fire appends
+It also owns the EVENT LOG ({{OPERATOR}} msg 1171, 2026-06-01): every fire appends
 one JSON line per dept to a central jsonl so the cockpit can surface the
 safety-net result in the front end (was journal-only, invisible to the UI).
 Writer lives here; the console reads it back via the same `read_events`.

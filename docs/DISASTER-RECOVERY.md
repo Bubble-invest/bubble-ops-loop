@@ -11,7 +11,7 @@
 - `scripts/morty-security-audit.sh` — audit de posture (deliverable D)
 
 **Avant tout :** respire. Si Morty est mort mais que :
-- Tu as encore accès au Mac de Joris ou de Jade
+- Tu as encore accès au Mac de {{OPERATOR}} ou de {{OPERATOR_2}}
 - Tu as encore accès au repo `bubble-vps-data` (privé, GitHub)
 - Tu te souviens des passphrases (1Password)
 
@@ -23,14 +23,14 @@
 
 ### Étape 1 — Provisionner un nouveau VPS Hetzner CX33
 
-Cette étape est **MANUELLE**. Rick ne peut pas l'automatiser sans `HCLOUD_TOKEN` (Joris doit fournir le token API Hetzner, pas encore configuré au moment de ce sprint).
+Cette étape est **MANUELLE**. Rick ne peut pas l'automatiser sans `HCLOUD_TOKEN` ({{OPERATOR}} doit fournir le token API Hetzner, pas encore configuré au moment de ce sprint).
 
 Va sur le dashboard Hetzner (https://console.hetzner.cloud/), section Cloud, et crée :
 - **Type d'instance :** CX33 (ARM64, 8 GB RAM, 80 GB SSD) — c'est l'identique de l'ancien Morty.
 - **OS :** Ubuntu 24.04 LTS.
 - **Région :** Nuremberg ou Falkenstein (latence Europe).
 - **Nom :** `morty` (réutilise le même nom — l'alias SSH `hetzner` dans `~/.ssh/config` pointera dessus).
-- **Clé SSH :** ajoute ta clé publique (`~/.ssh/id_ed25519.pub` de Joris ou de Jade).
+- **Clé SSH :** ajoute ta clé publique (`~/.ssh/id_ed25519.pub` de {{OPERATOR}} ou de {{OPERATOR_2}}).
 - **Réseau :** firewall par défaut suffit pour démarrer.
 
 Note l'IP publique du nouveau Morty (ex: `1.2.3.4`).
@@ -103,7 +103,7 @@ done
 
 ### Étape 6 — Restaurer la mémoire agent depuis Restic (si disponible)
 
-**Phase 1 :** le repo Restic était local sur l'ancien Morty → il est **mort avec lui**. Tu n'as donc rien à restaurer ici, sauf si Joris a déjà migré vers off-site (B2 ou Storage Box).
+**Phase 1 :** le repo Restic était local sur l'ancien Morty → il est **mort avec lui**. Tu n'as donc rien à restaurer ici, sauf si {{OPERATOR}} a déjà migré vers off-site (B2 ou Storage Box).
 
 **Phase 2 (off-site activée) :** restaure `/home/claude/.claude/agent-memory/` + `/home/claude/.claude/projects/` depuis le repo Restic distant.
 
@@ -171,7 +171,7 @@ Cf. `docs/DISASTER-RECOVERY-AGE-KEY.md` pour le détail du flux.
 - Pas de mémoire agent, pas de transcripts
 
 **Mitigation préventive (à faire MAINTENANT, pas après l'incident) :**
-- Stocker la passphrase Restic dans 1Password sous `Morty restic password`, partagée entre Joris et Jade.
+- Stocker la passphrase Restic dans 1Password sous `Morty restic password`, partagée entre {{OPERATOR}} et {{OPERATOR_2}}.
 - Imprimer la passphrase sur papier et la déposer dans le coffre physique.
 - Idem pour la passphrase du backup age-key (`age-key-morty backup passphrase`).
 
@@ -191,7 +191,7 @@ ssh hetzner 'sudo RESTIC_REPOSITORY=/var/backups/bubble-restic \
 
 Scénario extrême : ton compte GitHub a été compromis ou supprimé, et tu n'as plus accès à `bubble-vps-data`, `bubble-ops-platform`, ni aux repos `bubble-ops-<slug>`.
 
-**Ce qu'on a encore en local sur les machines de Joris et Jade :**
+**Ce qu'on a encore en local sur les machines de {{OPERATOR}} et {{OPERATOR_2}} :**
 - Tous les clones locaux dans `~/claude-workspaces/Rick_RnD/projects/` — chaque clone contient le repo complet (objects, refs, branches), pas juste le working tree.
 - Le backup age-key chiffré (`bubble-vps-data/disaster-recovery/age-key-morty.age`) — il est sur ton disque local, pas seulement sur GitHub.
 - Les fichiers SOPS chiffrés (idem — clonés en local).

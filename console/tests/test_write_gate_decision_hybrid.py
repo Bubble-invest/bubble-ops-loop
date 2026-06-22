@@ -5,7 +5,7 @@ decision where the dept's loop reads it (inbox/decisions/<id>.yaml):
 
   - host=vps (default): the dept's repo is on the cockpit's disk → write to disk
     (existing behaviour, unchanged).
-  - host=local (e.g. Miranda on Jade's Mac): the dept's repo is NOT on the
+  - host=local (e.g. Miranda on {{OPERATOR_2}}'s Mac): the dept's repo is NOT on the
     cockpit's disk — it lives on the Mac + GitHub. The cockpit must commit the
     decision to the dept's GitHub repo via `gh api`, so the Mac loop pulls it.
 
