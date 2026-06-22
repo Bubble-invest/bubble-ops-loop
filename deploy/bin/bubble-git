@@ -1,0 +1,67 @@
+#!/bin/bash
+# bubble-git — git wrapper that mints an App install token via the
+# credential helper and injects it into the http.extraheader for the
+# duration of the command. Works for push/pull/fetch/clone uniformly.
+#
+# Usage: same as git — `bubble-git push origin main`, `bubble-git clone <url>`,
+# `bubble-git pull`, etc. Inside a repo, infers the remote URL from
+# `git config --get remote.origin.url` to pick the right install.
+#
+# Why over plain git: git's credential.helper protocol only kicks in on
+# 401-retry; private repos return "not found" on the first request
+# before auth. extraheader pre-auths so the first request succeeds.
+#
+# CONFIG (env):
+#   BUBBLE_GH_ORG             org-account owner   (default: Bubble-invest)
+#   BUBBLE_GH_PERSONAL_OWNER  personal-account owner for the operator's own
+#                             repos (default: empty — org-only mode). Set this to
+#                             the GitHub username/owner whose install also covers
+#                             the operator's personal repos, if any.
+
+set -e
+
+ORG="${BUBBLE_GH_ORG:-Bubble-invest}"
+PERSONAL="${BUBBLE_GH_PERSONAL_OWNER:-}"
+
+# Determine the path hint. Priority:
+#   1. If a URL arg is present (clone/fetch with URL), use it
+#   2. Else read remote.origin.url from cwd
+#   3. Else default to the personal owner (if set) else the org
+DEFAULT_HINT="${PERSONAL:+$PERSONAL/x}"; DEFAULT_HINT="${DEFAULT_HINT:-$ORG/x}"
+PATH_HINT="$DEFAULT_HINT"
+for arg in "$@"; do
+  case "$arg" in
+    *"$ORG"/*) PATH_HINT="$ORG/x"; break ;;
+  esac
+  if [ -n "$PERSONAL" ]; then
+    case "$arg" in
+      *"$PERSONAL"/*) PATH_HINT="$PERSONAL/x"; break ;;
+    esac
+  fi
+done
+# Fallback: read remote.origin.url
+if [[ "$PATH_HINT" == "$DEFAULT_HINT" ]]; then
+  REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || true)
+  case "$REMOTE_URL" in
+    *"$ORG"/*) PATH_HINT="$ORG/x" ;;
+  esac
+  if [ -n "$PERSONAL" ]; then
+    case "$REMOTE_URL" in
+      *"$PERSONAL"/*) PATH_HINT="$PERSONAL/x" ;;
+    esac
+  fi
+fi
+
+# Mint token
+TOKEN_LINE=$(printf "protocol=https\nhost=github.com\npath=%s\n" "$PATH_HINT" | \
+  sudo -n /usr/local/bin/bubble-gh-credential-helper.sh get | grep '^password=')
+TOKEN="${TOKEN_LINE#password=}"
+
+if [[ -z "$TOKEN" || "$TOKEN" != ghs_* ]]; then
+  echo "bubble-git: failed to mint App install token (path hint: $PATH_HINT)" >&2
+  exit 2
+fi
+
+# Run git with extraheader pre-auth. -c is per-invocation, doesn't persist.
+BASIC=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+exec /usr/bin/git -c "http.https://github.com/.extraheader=AUTHORIZATION: Basic $BASIC" "$@"
