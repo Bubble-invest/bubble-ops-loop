@@ -87,6 +87,18 @@ PATTERNS=(
 # BUBBLE_PII_ALLOW = pipe-separated literal strings to ignore.
 PII_ALLOW="${BUBBLE_PII_ALLOW:-}"
 
+# Per-repo allowlist: a `.pre-publish-allow` file in the scanned repo lists
+# regex patterns (one per line; `#` comments + blanks ignored) whose matching
+# scan lines are EXEMPT — for documented false positives (synthetic test
+# fixtures, git SHAs that look like UUIDs, documented box paths). Each entry
+# SHOULD carry a `# why:` comment so an exemption is auditable, not a blanket
+# mute. A real leak must never be allowlisted — review additions like code.
+ALLOW_FILE=".pre-publish-allow"
+ALLOW_PAT=""
+if [ -f "$ALLOW_FILE" ]; then
+  ALLOW_PAT=$(grep -vE '^\s*(#|$)' "$ALLOW_FILE" 2>/dev/null | paste -sd'|' -)
+fi
+
 note "═══ pre-publish-scan: $(basename "$(pwd)") ═══"
 note "scope: working tree${SCAN_HISTORY:+ + full git history}"
 note ""
@@ -101,9 +113,11 @@ scan_text() {  # $1 = source label (tree|history) ; reads from stdin a grep -rn-
   done
 }
 
-# Build an allowlist grep filter (drop lines containing an allowlisted literal,
-# e.g. a synthetic fixture email) BEFORE redaction.
-_allow_filter() { if [ -n "$PII_ALLOW" ]; then grep -vE "$PII_ALLOW"; else cat; fi; }
+# Build an allowlist grep filter (drop lines matching an allowlisted literal or
+# a `.pre-publish-allow` regex) BEFORE redaction. Combines BUBBLE_PII_ALLOW +
+# the per-repo allowlist file.
+_COMBINED_ALLOW=$(printf '%s\n%s' "$PII_ALLOW" "$ALLOW_PAT" | grep -vE '^\s*$' | paste -sd'|' -)
+_allow_filter() { if [ -n "$_COMBINED_ALLOW" ]; then grep -vE "$_COMBINED_ALLOW"; else cat; fi; }
 
 # ── Working-tree scan ───────────────────────────────────────────────────────
 for p in "${PATTERNS[@]}"; do
