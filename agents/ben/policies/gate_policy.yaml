@@ -1,0 +1,52 @@
+# Gate policy — example dept.
+#
+# The control plane for execution. Kill switches + per-policy authorization modes.
+# The agent's L3 executor reads this BEFORE any broker call; a tripped kill switch
+# or a manual_required mode without an approved decision aborts execution.
+#
+# EXAMPLE numbers — tune the guardrails to your own mandate (§4 limits).
+
+autonomy_phase: 1
+
+kill_switches:
+  global: .EXECUTION_PAUSE                  # touch this file to halt ALL execution
+  per_broker:
+    broker_a: .BROKER_PAUSE_A
+    broker_b: .BROKER_PAUSE_B
+
+policies:
+  trade_proposal:
+    current_mode: manual_required
+    eligible_future_modes:
+    - manual_unless_policy_passed
+    - auto_if_policy_passed
+    - auto_with_veto_window
+    authorization_band: Every trade gates through the principal (MANDATE §6).
+      Fenced while secrets absent or mandate unsigned.
+    kpi_guardrail_set: example_fund_v1
+    kpi_guardrails: &id001
+      max_drawdown_itd_floor_pct: -15
+      current_drawdown_escalate_pct: -10
+      sharpe_itd_min: 0.0
+      excess_return_itd_min_pct: -5.0
+      max_orders_per_day: 5
+      degradation_window_days: 14
+  high_risk_trade:
+    current_mode: manual_required
+    eligible_future_modes:
+    - manual_unless_policy_passed
+    - auto_with_veto_window
+    authorization_band: New sleeve, volatile crypto, or illiquid name. Reinforced
+      validation; rarely eligible for auto. Always the principal.
+    kpi_guardrail_set: example_fund_v1
+    kpi_guardrails: *id001
+  critical_risk_action:
+    current_mode: manual_required
+    eligible_future_modes:
+    - auto_if_policy_passed
+    - auto_with_veto_window
+    authorization_band: Emergency de-risk / stop-loss (e.g. §4 max-drawdown
+      auto-proposal to raise cash). May become pre-authorized by principal
+      signature for speed.
+    kpi_guardrail_set: example_fund_v1
+    kpi_guardrails: *id001

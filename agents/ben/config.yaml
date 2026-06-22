@@ -1,0 +1,27 @@
+# Ben (example dept) runtime config.
+#
+# Minimal surface needed by the framework notifier: the `accounts` block maps an
+# account name -> a messaging chat_id (+ email). Credentials (the bot token, SMTP
+# creds) come from the runtime env (a SOPS-decrypted env file), NEVER from this
+# file and NEVER committed.
+#
+# EXAMPLE values below — replace the chat IDs / emails with your own. The
+# placeholders are intentionally non-real so this file ships clean.
+
+# Notification routing per event. layer_fired = per-mission "work done" ping.
+notifications:
+  layer_fired:
+    channels: ["messaging-alert"]
+  _alert_default:
+    channels: ["messaging-alert", "email"]
+
+# Recipient mapping. Notifications route to the principal (Ben is an agent, not a
+# human). Fill these in with your own chat_id / email; leave them blank to disable
+# a channel.
+accounts:
+  principal:
+    email: "you@example.com"
+    chat_id: ""               # <- your messaging chat_id here
+  _system:
+    email: "you@example.com"
+    chat_id: ""

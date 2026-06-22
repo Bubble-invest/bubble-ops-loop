@@ -1,0 +1,9 @@
+# Pre-publish leak-scan allowlist for the Ben example agent.
+# Each entry is an extended-regex; matching scan lines are EXEMPT. Real leaks
+# must NEVER be allowlisted — review additions like code.
+
+# why: RFC-2606 reserved example domain. The config.yaml email field ships with
+# "you@example.com" as an obvious, non-real placeholder for the operator to
+# replace. example.com / example.org / example.net can never resolve to a real
+# inbox, so this is a documented false positive, not operator PII.
+[a-z]+@example\.(com|org|net)
