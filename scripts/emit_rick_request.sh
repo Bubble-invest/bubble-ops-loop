@@ -144,7 +144,7 @@ if [ -x "$EMIT_KANBAN" ]; then
 
   # Use the Mac Tailscale IP as KANBAN_HOST (Morty→Mac dashboard tunnel)
   if [ "$(hostname)" = "morty" ] || hostname | grep -q "hetzner"; then
-    export KANBAN_HOST="${KANBAN_HOST:-100.75.151.47:3847}"
+    export KANBAN_HOST="${KANBAN_HOST:-127.0.0.1:3847}"
   fi
 
   if "$EMIT_KANBAN" \

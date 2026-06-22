@@ -73,7 +73,7 @@ LAYER_FIRE_GLYPH = "🔁"
 # 2026-06-06). Env-overridable for non-prod/test. Console is Tailscale-only.
 COCKPIT_BASE_URL = os.environ.get(
     "BUBBLE_COCKPIT_BASE_URL",
-    "https://joris-cx33.tail408dcc.ts.net:8443",
+    f"https://{os.environ.get('BUBBLE_VPS_HOST', 'localhost')}:8443",
 ).rstrip("/")
 
 

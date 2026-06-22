@@ -408,7 +408,7 @@ EVERY tick (and `<ISO-ts>` = `$(date -u +%Y-%m-%dT%H:%M:%SZ)`). NEVER write
 The message MUST be actionable (not a vague "I created a gate"):
   - one line per decision: *who / what* (e.g. "Tier 1 DM for Jean Dupont (Acme) — angle V2"),
   - **the direct cockpit link** so he validates in one tap from his phone:
-    `https://joris-cx33.tail408dcc.ts.net:8443/dept/{slug}`
+    `https://{vps_host}:8443/dept/{slug}`
     (or the link to the precise gate: `…/gate/{slug}/<gate_id>`).
   - if several gates the same tick: a single grouped message (N decisions + the link),
     not one message per gate.
@@ -523,6 +523,7 @@ def render_claude_md(slug: str, display_name: str,
         slug=slug,
         slug_compact=slug_compact,
         display_name=display_name,
+        vps_host=os.environ.get("BUBBLE_VPS_HOST", "{{VPS_HOST}}"),
     )
 
 
@@ -755,7 +756,7 @@ each Moment task to a stateless subagent via Agent. The subagents
    - one line per decision: *who / what* (e.g. "Tier 1 DM for Jean
      Dupont (Acme) — angle V2"),
    - **the direct cockpit link** to validate in one tap from the
-     phone: `https://joris-cx33.tail408dcc.ts.net:8443/dept/{slug}`
+     phone: `https://{vps_host}:8443/dept/{slug}`
      (or the link to the precise gate `…/gate/{slug}/<gate_id>`),
    - several gates the same tick → ONE single grouped message (N decisions
      + the link), not one message per gate.
@@ -853,6 +854,7 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
         mandate=mandate,
         layers_section=layers_section,
         children_section=children_section,
+        vps_host=os.environ.get("BUBBLE_VPS_HOST", "{{VPS_HOST}}"),
     )
 
 

@@ -3,6 +3,8 @@ GET /dept/<slug>/management-view — CEO aggregation view (management depts only
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
@@ -20,7 +22,7 @@ router = APIRouter()
 
 # Firm-wide kanban lives on the Mac dashboard; the management dept page shows a
 # compact snapshot of it. urllib (no `requests` dep — same as the /kanban route).
-_DASHBOARD = "http://100.75.151.47:3847"
+_DASHBOARD = os.environ.get("BUBBLE_DASHBOARD_URL", f"http://{os.environ.get('BUBBLE_VPS_IP', 'localhost')}:3847")
 _KANBAN_COL_LABELS = {
     "needs_attention": "À traiter",
     "investigating": "En cours",

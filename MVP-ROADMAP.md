@@ -382,7 +382,7 @@ mandate: |
 
 owner:
   github: Bubble-invest
-  telegram_user_id: "6532205130"
+  telegram_user_id: "{{OPERATOR_CHAT_ID}}"
 
 # Notion §"Hiérarchie & visibilité cross-dept" — present from day 1 even for a leaf ops dept
 hierarchy:

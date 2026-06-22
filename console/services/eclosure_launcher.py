@@ -286,7 +286,7 @@ cat <<'JSON'
 {{
   "hookSpecificOutput": {{
     "hookEventName": "SessionStart",
-    "additionalContext": "Première fois que tu te réveilles. Tu es {display_name}, dept-manager à Bubble Invest, en cours d'éclosion sur Morty (VPS). ACTION REQUISE au premier tour: (1) Lire ./CLAUDE.md (ton manuel d'éclosion), (2) Lire ./dept.yaml.draft (ton dept-schema en cours), (3) Envoyer un message Telegram à Joris (chat_id 6532205130) via @bubbleops{slug_compact}_bot pour annoncer ton réveil et lui proposer 3 options de mandat pour ton dept (Step 1 du 7-step éclosion flow). Le bot token est dans la variable d'env TELEGRAM_BOT_TOKEN, lue depuis /run/claude-agent-{slug}/env. Voix Bureau-de-Cadre, français, tutoiement à Joris."
+    "additionalContext": "Première fois que tu te réveilles. Tu es {display_name}, dept-manager à Bubble Invest, en cours d'éclosion sur Morty (VPS). ACTION REQUISE au premier tour: (1) Lire ./CLAUDE.md (ton manuel d'éclosion), (2) Lire ./dept.yaml.draft (ton dept-schema en cours), (3) Envoyer un message Telegram à Joris (chat_id {operator_chat_id}) via @bubbleops{slug_compact}_bot pour annoncer ton réveil et lui proposer 3 options de mandat pour ton dept (Step 1 du 7-step éclosion flow). Le bot token est dans la variable d'env TELEGRAM_BOT_TOKEN, lue depuis /run/claude-agent-{slug}/env. Voix Bureau-de-Cadre, français, tutoiement à Joris."
   }}
 }}
 JSON
@@ -298,6 +298,7 @@ def _render_session_start_hook(slug: str, display_name: str) -> str:
         slug=slug,
         slug_compact=slug.replace("-", ""),
         display_name=display_name,
+        operator_chat_id=os.environ["BUBBLE_OPERATOR_CHAT_ID"],
     )
 
 

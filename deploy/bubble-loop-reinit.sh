@@ -73,8 +73,8 @@ set -u
 BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 # Operator chat_id: prefer env var JORIS_TG_USER_ID (set in per-dept SOPS env),
 # fall back to NOTIFY_GATE_CHAT_ID (set in some dept envs), fall back to the
-# stable hardcoded value (same as notify-gate/notify.py DEFAULT_CHAT_ID).
-CHAT_ID="${JORIS_TG_USER_ID:-${NOTIFY_GATE_CHAT_ID:-6532205130}}"
+# operator chat_id injected at deploy (BUBBLE_OPERATOR_CHAT_ID, from SOPS).
+CHAT_ID="${JORIS_TG_USER_ID:-${NOTIFY_GATE_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}}}"
 
 if [[ -z "${BOT_TOKEN}" ]]; then
     echo "[bubble-loop-reinit] WARNING: TELEGRAM_BOT_TOKEN not in ${ENV_FILE} — skipping reinit" >&2

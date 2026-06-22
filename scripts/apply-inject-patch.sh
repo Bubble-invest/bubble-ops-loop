@@ -43,7 +43,7 @@ try {
     (process.env.TELEGRAM_STATE_DIR ? `${process.env.TELEGRAM_STATE_DIR}/inject` : '')
   if (injectFile) {
     const fs = await import('node:fs')
-    const injectAs = process.env.BUBBLE_INJECT_AS || '6532205130'
+    const injectAs = process.env.BUBBLE_INJECT_AS || process.env.BUBBLE_OPERATOR_CHAT_ID || ''
     try { fs.closeSync(fs.openSync(injectFile, 'a')) } catch {}
     const drain = () => {
       let raw = ''
