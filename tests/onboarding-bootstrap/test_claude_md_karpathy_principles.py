@@ -98,7 +98,7 @@ def test_claude_md_contains_principle_5_reste_dans_ton_perimetre():
             "périmètre" in body.lower() or "scope" in body.lower()), (
         "Principle 5 must reference gate_policies / scope as the boundary"
     )
-    assert ("escalad" in body.lower() or "joris" in body.lower() or
+    assert ("escalad" in body.lower() or "operator" in body.lower() or
             "redirige" in body.lower()), (
         "Principle 5 must mention escalating / redirecting out-of-scope requests"
     )

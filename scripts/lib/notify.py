@@ -1130,9 +1130,9 @@ def resolve_recipients(
     ``config['accounts']['_system']`` for unknown accounts.
 
     Args:
-        account_used: a single account name (str — "{{OPERATOR}}" | "{{OPERATOR_2}}" |
+        account_used: a single account name (str — "Operator" | "Operator2" |
             "_system" | unknown → fall back to "_system") OR a list of
-            account names (e.g. ``["{{OPERATOR}}", "{{OPERATOR_2}}"]``) to address all of
+            account names (e.g. ``["Operator", "Operator2"]``) to address all of
             them in the same notification. When multiple accounts are
             supplied, their recipients are de-duplicated (preserving order)
             and joined with ``", "`` per channel — SMTP natively accepts
@@ -1231,7 +1231,7 @@ def _get_backend(channel: str, config: dict) -> NotificationBackend:
 def deliver(
     payload: NotificationPayload,
     channels: list[str],
-    account_used="{{OPERATOR}}",
+    account_used="Operator",
     config: Optional[dict] = None,
     *,
     _backends: Optional[dict[str, NotificationBackend]] = None,
@@ -1247,8 +1247,8 @@ def deliver(
         payload: the notification payload.
         channels: list of channel names (subset of ``SUPPORTED_CHANNELS``).
             Empty list → returns ``[]``.
-        account_used: single account name (str, default "{{OPERATOR}}") OR a list
-            of account names (e.g. ``["{{OPERATOR}}", "{{OPERATOR_2}}"]``) to address all
+        account_used: single account name (str, default "Operator") OR a list
+            of account names (e.g. ``["Operator", "Operator2"]``) to address all
             of them in the same notification (single email with multi-To:,
             Telegram fan-out). Unknown values fall back to "_system".
         config: full config dict. If None, an empty dict is used (will
@@ -1293,7 +1293,7 @@ def deliver(
 def notify_cron_completion(
     cron_name: str,
     payload: NotificationPayload,
-    account_used="{{OPERATOR}}",
+    account_used="Operator",
     config: Optional[dict] = None,
     **kwargs,
 ) -> list[DeliveryReceipt]:
@@ -1308,9 +1308,9 @@ def notify_cron_completion(
     Args:
         cron_name: e.g. "morning_sync", "draft_batch", "discovery_feed_scan".
         payload: the notification payload (subject + markdown body).
-        account_used: single account name (str, default "{{OPERATOR}}" — e.g.
-            "{{OPERATOR}}" | "{{OPERATOR_2}}" | "_system") OR a list of account names
-            (e.g. ``["{{OPERATOR}}", "{{OPERATOR_2}}"]``) to address all of them in the
+        account_used: single account name (str, default "Operator" — e.g.
+            "Operator" | "Operator2" | "_system") OR a list of account names
+            (e.g. ``["Operator", "Operator2"]``) to address all of them in the
             same notification.
         config: full config dict.
         **kwargs: forwarded to ``deliver`` (e.g. ``_backends``,

@@ -42,7 +42,7 @@ def fake_maya_source(tmp_path: Path) -> Path:
             backend: notion
             notion:
               pool_database_id: "593366d4-e2ed-48de-af51-224582500c05"
-            account_used_default: "{{OPERATOR}}"
+            account_used_default: "Operator"
             quotas:
               daily_drafts: 5
             """),
@@ -71,7 +71,7 @@ def fake_maya_source(tmp_path: Path) -> Path:
 def run_migrate(tmp_clone_dir: Path):
     """Callable: run migrate-dept.sh with the given source + slug."""
     def _run(source: Path, slug: str, display_name: str = "Maya",
-             owner: str = "joris", expect_fail: bool = False, extra_args=None):
+             owner: str = "operator", expect_fail: bool = False, extra_args=None):
         env = os.environ.copy()
         env["BUBBLE_BOOTSTRAP_CLONE_DIR"] = str(tmp_clone_dir)
         args = [

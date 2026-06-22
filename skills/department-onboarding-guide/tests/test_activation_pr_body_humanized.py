@@ -16,7 +16,7 @@ concierge briefing the team, not like a DevOps changelog.
 References:
 - Notion v5 lines 977-995 (activation PR body spec — the heading names are
   illustrative, the vocabulary is ours to shape)
-- /Users/joris/claude-workspaces/Maya_Sales/webapp/templates/base.html for tone
+- /Users/{{OPERATOR_USER}}/claude-workspaces/Maya_Sales/webapp/templates/base.html for tone
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def tony_state():
         "schema_version": 1,
         "slug": "tony",
         "display_name": "Tony",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-18T08:00:00Z",
         "status": "Ready to activate",
         "validated_steps": [

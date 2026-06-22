@@ -162,7 +162,7 @@ For each step the section below states:
 
 Agent asks operator:
 - role of the dept (one sentence)
-- owner (default: joris)
+- owner (default: operator)
 - forbidden list (3-5 hard "must never" items)
 - expected outputs
 - success criteria
@@ -174,7 +174,7 @@ Context dict shape (Step 1):
   "display_name": "Miranda",
   "level": "ops",   # ops | management | principal
   "mandate_text": "Produire, planifier et auditer du contenu social pour Bubble.",
-  "owner": "joris",
+  "owner": "operator",
   "forbidden": ["publier informations confidentielles", "donner conseil financier"],
 }
 ```

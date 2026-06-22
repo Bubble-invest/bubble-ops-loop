@@ -43,7 +43,7 @@ def _build_app_with_gate(tmp_path: Path, monkeypatch, gate: dict):
     (dept / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture",
-            "display_name": "Fixture", "owner": "joris",
+            "display_name": "Fixture", "owner": "operator",
             "created_at": "2026-05-15T10:00:00Z", "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -73,7 +73,7 @@ _ANGLE_GATE = {
     "id": "prospect_dm-jean-dupont-20260601",
     "kind": "prospect_dm",
     "slug": "jean-dupont",
-    "account_used": "{{OPERATOR}}",
+    "account_used": "Operator",
     "chosen_variant": "V2",
     "chosen_angle": "Angle expertise de gérant à gérant.",
     "chosen_reason": "Profil gérant senior — le peer-to-peer résonne.",

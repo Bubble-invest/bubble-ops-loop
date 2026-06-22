@@ -70,7 +70,7 @@ def temp_dept_repo(tmp_path: Path) -> Path:
             "schema_version": 1,
             "slug": slug,
             "display_name": "Miranda",
-            "owner": "joris",
+            "owner": "operator",
             "created_at": "2026-05-19T10:00:00Z",
             "status": "Drafting",
             "validated_steps": ["mandate", "missions", "layers"],
@@ -157,7 +157,7 @@ def fixture_root(tmp_path: Path) -> Path:
     (live / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture", "display_name": "Fixture",
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -188,7 +188,7 @@ def fixture_root(tmp_path: Path) -> Path:
     (miranda / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "miranda", "display_name": "Miranda",
-            "owner": "joris", "created_at": "2026-05-19T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-19T10:00:00Z",
             "status": "Drafting",
             "validated_steps": ["mandate", "missions", "layers"],
             "last_updated_at": "2026-05-20T10:00:00Z",

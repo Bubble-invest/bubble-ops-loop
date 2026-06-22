@@ -208,7 +208,7 @@ def run_bootstrap(mock_gh_bin: dict, tmp_clone_dir: Path) -> callable:
     target overridden. Returns the CompletedProcess.
     """
 
-    def _run(slug: str, display_name: str, owner: str = "joris",
+    def _run(slug: str, display_name: str, owner: str = "operator",
              extra_env: dict | None = None, expect_fail: bool = False):
         env = os.environ.copy()
         env["PATH"] = f"{mock_gh_bin['bin_dir']}:{env['PATH']}"
@@ -246,12 +246,12 @@ def sample_state_yaml() -> dict:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-20T19:30:00Z",
         "status": "Configuring",
         "validated_steps": ["mandate"],
         "last_updated_at": "2026-05-20T19:35:00Z",
-        "last_validated_by": "joris",
+        "last_validated_by": "operator",
         "commits": [
             {
                 "step": "mandate",
@@ -265,5 +265,5 @@ def sample_state_yaml() -> dict:
 @pytest.fixture
 def bootstrapped_repo(run_bootstrap, tmp_clone_dir: Path):
     """Run bootstrap once, return the path to the local clone."""
-    run_bootstrap(slug="smoke-test", display_name="SmokeTest", owner="joris")
+    run_bootstrap(slug="smoke-test", display_name="SmokeTest", owner="operator")
     return tmp_clone_dir / "bubble-ops-smoke-test"

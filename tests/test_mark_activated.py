@@ -27,7 +27,7 @@ from lib import state_yaml  # noqa: E402
 
 def _seed(path: Path) -> None:
     state_yaml.init_state(
-        path=path, slug="miranda", display_name="Miranda", owner="joris",
+        path=path, slug="miranda", display_name="Miranda", owner="operator",
         created_at="2026-05-19T10:00:00Z",
     )
     # Pretend all 6 steps are validated.
@@ -118,5 +118,5 @@ def test_mark_activated_round_trip_preserves_other_fields(tmp_path):
     # Pre-existing fields intact.
     assert doc["slug"] == "miranda"
     assert doc["display_name"] == "Miranda"
-    assert doc["owner"] == "joris"
+    assert doc["owner"] == "operator"
     assert doc["schema_version"] == 1

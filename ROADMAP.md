@@ -1,6 +1,6 @@
 # `bubble-ops-loop` — Strategic Roadmap
 
-**Owner:** {{OPERATOR}} {{OPERATOR}} (founder) + Tony (CEO agent)
+**Owner:** {{OPERATOR}} (founder) + Tony (CEO agent)
 **Builder:** Rick (R&D, Lab)
 **Repo target:** `git@github.com:Bubble-invest/bubble-ops-loop.git` (TBD)
 **Status:** Draft v1 — pending {{OPERATOR}} green-light (open questions §5)
@@ -411,12 +411,12 @@ After commit 10: open PR for Phase-1 routines (Cloud Routine registration is by-
 
 | Asset | Path | Use |
 |---|---|---|
-| VPS infra (pyinfra modules, systemd, SOPS, Tailscale) | `/Users/joris/claude-workspaces/Rick_RnD/projects/bubble-vps-platform/` | Phase 2 builds on this; new task module `ops_loop/` added |
-| `auth` skill (OOB email + SOPS secret setting) | `/Users/joris/.claude/skills/auth/SKILL.md` | Phase 4 Ben live execution + per-dept secret rotation |
-| Ben dashboard pattern | `/Users/joris/claude-workspaces/Ben_Fund/dashboard/` | Phase 4 console reuses kanban + HTMX patterns |
-| Maya webapp pattern | `/Users/joris/claude-workspaces/Maya_Sales/webapp/` | Phase 4 console gate-card UX |
+| VPS infra (pyinfra modules, systemd, SOPS, Tailscale) | `/Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-vps-platform/` | Phase 2 builds on this; new task module `ops_loop/` added |
+| `auth` skill (OOB email + SOPS secret setting) | `/Users/{{OPERATOR_USER}}/.claude/skills/auth/SKILL.md` | Phase 4 Ben live execution + per-dept secret rotation |
+| Ben dashboard pattern | `/Users/{{OPERATOR_USER}}/claude-workspaces/Ben_Fund/dashboard/` | Phase 4 console reuses kanban + HTMX patterns |
+| Maya webapp pattern | `/Users/{{OPERATOR_USER}}/claude-workspaces/Maya_Sales/webapp/` | Phase 4 console gate-card UX |
 | Shared wiki (github-first) | `git@github.com:Bubble-invest/bubble-shared-wiki.git` | each dept repo symlinks; nightly wiki-compile already works |
-| Heartbeats infra | `/Users/joris/claude-workspaces/Rick_RnD/monitoring/heartbeats.jsonl` | Cloud Routines emit heartbeats here |
+| Heartbeats infra | `/Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/monitoring/heartbeats.jsonl` | Cloud Routines emit heartbeats here |
 | Notion logbook (reader skill) | `~/.claude/skills/notion-reader/SKILL.md` | Maya/Ben Layer-1 data sources |
 | Subagent isolation spec | https://code.claude.com/docs/en/sub-agents | canonical reference; verify in Phase 0 fixture |
 | Scheduled tasks MCP | `mcp__scheduled-tasks__*` tools | Phase 1 routine registration |

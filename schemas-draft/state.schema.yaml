@@ -47,7 +47,7 @@ properties:
   owner:
     type: string
     minLength: 1
-    description: Human owner of the dept (e.g. "joris").
+    description: Human owner of the dept (e.g. "operator").
   created_at:
     type: string
     format: date-time

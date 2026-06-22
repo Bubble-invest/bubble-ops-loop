@@ -41,7 +41,7 @@ def _make_dept(root: Path, slug: str, display: str, status: str,
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": display,
-            "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
             "status": status,
             "validated_steps": ["mandate", "missions", "layers"],
             "last_updated_at": "2026-05-19T10:00:00Z",

@@ -105,7 +105,7 @@ properties:
         minLength: 1
         description: |
           Slug / name of the human owner of this dept (Notion v5 line 820).
-          Optional; falls back to "joris" by convention if absent.
+          Optional; falls back to "operator" by convention if absent.
       forbidden:
         type: array
         items: { type: string, minLength: 1 }

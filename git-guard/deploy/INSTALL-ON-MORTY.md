@@ -38,7 +38,7 @@ From your laptop (Mac):
 ```bash
 # 1.1 Pack — EXCLUDE Mac AppleDouble + .DS_Store noise (QA-AUDIT-J2
 # Nice-to-have #1: rsync from Mac was leaking `._*` files into /opt/).
-cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
 tar --exclude='._*' --exclude='.DS_Store' \
     -czf /tmp/bubble-git-guard.tar.gz git-guard/
 

@@ -6,9 +6,7 @@ the full Notion-v4-aligned skeleton per MVP-ROADMAP v2 §5 + the per-file conten
 rules from Step 5's brief.
 
 Run:
-    python3 -m pytest \
-      /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/tests/test_skeleton_completeness.py \
-      -v
+    python3 -m pytest tests/test_skeleton_completeness.py -v
 
 Conventions:
 - All paths absolute.
@@ -33,9 +31,8 @@ import yaml
 # ----------------------------------------------------------------------------
 
 FIXTURE_REPO = Path("/tmp/bubble-ops-fixture")
-SCHEMAS_DRAFT = Path(
-    "/Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft"
-)
+# schemas-draft/ lives at the repo root (this file is at <repo>/tests/).
+SCHEMAS_DRAFT = Path(__file__).resolve().parents[1] / "schemas-draft"
 DEPT_YAML_CANONICAL = SCHEMAS_DRAFT / "examples" / "dept-ops-leaf-fixture.yaml"
 DEPT_SCHEMA = SCHEMAS_DRAFT / "dept.schema.yaml"
 

@@ -35,7 +35,7 @@ def _seed_state(tmp_path: Path) -> Path:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T08:00:00Z",
         "status": "Ready to activate",
         "validated_steps": [
@@ -59,7 +59,7 @@ def _seed_draft(tmp_path: Path) -> Path:
             "display_name": "Miranda",
             "level": "ops",
             "mandate": "Produire, planifier et auditer du contenu social.",
-            "owner": "joris",
+            "owner": "operator",
             "status": "onboarding",
         },
         "layers": {"subscribed": [1, 2, 3, 4]},

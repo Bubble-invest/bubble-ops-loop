@@ -66,7 +66,7 @@ For each item in `queues/research/`:
    `TELEGRAM_BOT_TOKEN` (fallback) from env, formats a Markdown message
    with gate id / kind / risk / GitHub blob URL / the 4 actions
    (`approve|reject|modify|defer`), and POSTs to @bubtiktikbot →
-   chat {{OPERATOR_CHAT_ID}} ({{OPERATOR}}). The token is never logged. On Telegram
+   chat {{OPERATOR_CHAT_ID}} (operator). The token is never logged. On Telegram
    failure the tool exits non-zero but does NOT abort the tick — the
    gate is already on GitHub, the kanban is the source of truth, the
    notification is a courtesy.

@@ -43,7 +43,7 @@ try {
     (process.env.TELEGRAM_STATE_DIR ? `${process.env.TELEGRAM_STATE_DIR}/inject` : '')
   if (injectFile) {
     const fs = await import('node:fs')
-    const injectAs = process.env.BUBBLE_INJECT_AS || '{{OPERATOR_CHAT_ID}}'
+    const injectAs = process.env.BUBBLE_INJECT_AS || process.env.BUBBLE_OPERATOR_CHAT_ID || ''
     try { fs.closeSync(fs.openSync(injectFile, 'a')) } catch {}
     const drain = () => {
       let raw = ''
@@ -56,7 +56,7 @@ try {
         process.stderr.write(`telegram inject: delivering as ${injectAs}: ${text.slice(0, 80)}\n`)
         mcp.notification({
           method: 'notifications/claude/channel',
-          params: { content: text, meta: { chat_id: injectAs, user: 'joris', user_id: injectAs, ts: new Date().toISOString(), source: 'bubble-inject' } },
+          params: { content: text, meta: { chat_id: injectAs, user: 'operator', user_id: injectAs, ts: new Date().toISOString(), source: 'bubble-inject' } },
         }).catch((err: unknown) => { process.stderr.write(`telegram inject: delivery failed: ${String(err)}\n`) })
       }
     }

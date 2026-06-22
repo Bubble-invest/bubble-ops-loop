@@ -51,7 +51,7 @@
                  │ Tailscale mesh (BUBBLE_MORTY_HOST=claude@morty.tailnet)
                  ▼
    ┌──────────────────────────────────┬──────────────────────────────────────┐
-   │  JORIS'S MAC                     │   JORIS'S PHONE                       │
+   │  {{OPERATOR}}'S MAC                     │   {{OPERATOR}}'S PHONE                       │
    │  bubble-ops-console              │   Telegram bots                       │
    │   (FastAPI + HTMX, single binary)│     @bubtiktikbot   (fixture)         │
    │   8 routes (home/dept/gate/      │     @ContentbubbleClawbot (morty)     │

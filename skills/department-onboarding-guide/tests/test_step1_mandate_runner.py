@@ -43,7 +43,7 @@ def _seed_state(tmp_path: Path) -> Path:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-21T08:00:00Z",
         "status": "Configuring",
         "validated_steps": [],
@@ -76,7 +76,7 @@ def _walk_substep_b(runner: MandateRunner) -> None:
     body = (
         "publier sans validation, nommer clients\n"
         "ops\n"
-        "joris"
+        "operator"
     )
     runner.on_answer(body)
     runner.on_answer("approuve")
@@ -173,7 +173,7 @@ def test_substep_b_parses_3_line_answer_into_dept_yaml(tmp_path):
     body = (
         "publier sans validation, nommer clients, conseil financier\n"
         "ops\n"
-        "joris"
+        "operator"
     )
     action = runner.on_answer(body)
     assert action == Action.CONTINUE  # parsed, awaiting approve
@@ -190,7 +190,7 @@ def test_substep_b_parses_3_line_answer_into_dept_yaml(tmp_path):
     assert "publier sans validation" in dept["forbidden"]
     assert "conseil financier" in dept["forbidden"]
     assert dept["level"] == "ops"
-    assert dept["owner"] == "joris"
+    assert dept["owner"] == "operator"
     # Legacy fields must NOT appear (schema rejects them).
     assert "outputs" not in dept
     assert "success_criteria" not in dept

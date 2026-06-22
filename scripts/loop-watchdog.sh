@@ -25,7 +25,7 @@ set -euo pipefail
 
 HEARTBEAT="/home/claude/agents/fixture/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
 STALE_THRESHOLD_SEC=$((40 * 60))  # 2× the 20-min /loop cadence
-CHAT_ID="{{OPERATOR_CHAT_ID}}"              # {{OPERATOR}}
+CHAT_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"   # operator ({{OPERATOR}})
 
 if [ ! -f "$HEARTBEAT" ]; then
   # No heartbeat file yet today. Two cases:

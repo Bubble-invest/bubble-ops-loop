@@ -26,7 +26,7 @@ Use `bubble-set-secret` / the `auth` skill — never put raw secret values in ch
 ## 2d. Channel directory (needs the bot token from 2c)
 `/home/claude/.claude/channels/telegram-<slug>/`:
 - `.env` (`TELEGRAM_BOT_TOKEN=<token>`, mode 600)
-- `access.json` (`allowFrom`: {{OPERATOR}} {{OPERATOR_CHAT_ID}}, {{OPERATOR_2}} {{OPERATOR_2_CHAT_ID}})
+- `access.json` (`allowFrom`: operator `{{OPERATOR_CHAT_ID}}`, `{{OPERATOR_2_CHAT_ID}}`)
 - `approved/` and `inbox/` dirs
 *Prevents:* the bot never receiving messages.
 
@@ -48,7 +48,7 @@ Then: `systemctl daemon-reload && systemctl enable --now telegram-watchdog-<slug
 
 ## 2g. Systemd unit install
 ```bash
-./scripts/deploy-to-morty.sh --slug=<slug> --remote=root@
+./scripts/deploy-to-morty.sh --slug=<slug> --remote=root@{{VPS_HOST}}
 ```
 Renders `deploy/templates/ops-loop-dept.service.template` (model pin, boot-rearm env, script(1)
 pty) → `/etc/systemd/system/ops-loop-<slug>.service`, plus the App-id drop-in

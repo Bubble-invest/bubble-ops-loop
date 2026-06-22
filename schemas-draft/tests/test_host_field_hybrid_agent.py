@@ -43,7 +43,7 @@ def _base_state() -> dict:
         "schema_version": 1,
         "slug": "content",
         "display_name": "Miranda",
-        "owner": "jade",
+        "owner": "operator2",
         "created_at": "2026-06-11T20:00:00Z",
         "status": "Idea",
         "validated_steps": [],

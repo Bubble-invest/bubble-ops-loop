@@ -141,7 +141,7 @@ The 7 statuses are `Idea → Configuring → Drafting → Needs validation → D
 
 **Operator entry points:**
 ```
-$ ./scripts/bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+$ ./scripts/bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 $ ./scripts/validate-step.sh --slug=miranda --step=mandate --repo-dir=/tmp/bubble-ops-miranda
 $ ./scripts/run-dry-run.sh --dept-root=/tmp/bubble-ops-miranda --seed=42
 $ ./scripts/activate-dept.sh --slug=miranda --dry-run     # preview the PR body
@@ -197,7 +197,7 @@ The 6-non-negotiables observable test (`tests/non_negotiables_observable.py`) is
 **Runbook snippet — verify schemas + the fixture's dept.yaml round-trip**
 
 ```
-$ cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
+$ cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
 $ python3 tests/validate_all.py
 Loaded 7 schemas from .../schemas-draft:
   - dept.schema.yaml

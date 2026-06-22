@@ -81,7 +81,7 @@ lost — and does it matter?"* If yes to both → emit a card.
 - **priority** — `urgent` (today/now), `high` (this week), `normal` (backlog). Don't inflate;
   urgent-everything trains people to ignore it.
 - **owner** — who should act: your own dept slug, another dept, `rnd` (Rick/R&D for
-  infra/tooling), or `joris`/`jade` (principals). Omit only if genuinely unassigned.
+  infra/tooling), or `operator`/`operator2` (principals). Omit only if genuinely unassigned.
 - **actions** — the buttons the triager gets: e.g. `accept,reject,escalate` or
   `investigate,defer`. Match the type.
 - **diagram_mermaid** — when a visual decision aid helps, write a Mermaid diagram (≤3000

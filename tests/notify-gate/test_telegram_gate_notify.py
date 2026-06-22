@@ -25,7 +25,7 @@ Contract under test:
 
   Side effects:
     - POST https://api.telegram.org/bot<TOKEN>/sendMessage
-    - JSON payload: { chat_id: "{{OPERATOR_CHAT_ID}}", text: <msg>, parse_mode: "Markdown",
+    - JSON payload: { chat_id: <operator chat id>, text: <msg>, parse_mode: "Markdown",
                       disable_web_page_preview: false }
     - stdout: JSON {notification_sent: bool, message_id?: int, error?: str}
     - stderr: human-readable log line (token REDACTED)
@@ -34,7 +34,7 @@ Contract under test:
     FIXTURE_TELEGRAM_BOT_TOKEN (preferred per Step 10 brief)
        fallback: TELEGRAM_BOT_TOKEN (what's actually deployed in
        /run/claude-agent-fixture/env today)
-    NOTIFY_GATE_CHAT_ID (default: "{{OPERATOR_CHAT_ID}}" = {{OPERATOR}})
+    NOTIFY_GATE_CHAT_ID (default: BUBBLE_OPERATOR_CHAT_ID = operator)
 """
 import json
 import os
@@ -106,7 +106,7 @@ def mock_telegram_ok():
     with patch.object(notify, "_post_to_telegram") as mock_post:
         mock_post.return_value = (
             True,
-            {"ok": True, "result": {"message_id": 42, "chat": {"id": {{OPERATOR_CHAT_ID}}}}},
+            {"ok": True, "result": {"message_id": 42, "chat": {"id": 1234567890}}},
             None,
         )
         yield mock_post

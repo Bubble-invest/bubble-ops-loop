@@ -93,7 +93,7 @@ def _make_tony_dept(root: Path, children: list[str]) -> None:
                 "schema_version": 1,
                 "slug": "tony-test",
                 "display_name": "Tony Test",
-                "owner": "joris",
+                "owner": "operator",
                 "created_at": "2026-05-20T10:00:00Z",
                 "status": "Live",
                 "validated_steps": [
@@ -152,7 +152,7 @@ def _make_mini_ben(root: Path) -> None:
         yaml.safe_dump(
             {
                 "schema_version": 1, "slug": "mini-ben", "display_name": "Mini Ben",
-                "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+                "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
                 "status": "Live",
                 "validated_steps": ["mandate", "missions", "layers", "skills_tools", "gates_kpis", "dry_run"],
                 "last_updated_at": "2026-05-19T10:00:00Z", "commits": [],
@@ -238,7 +238,7 @@ def _make_mini_maya_no_layer4(root: Path) -> None:
         yaml.safe_dump(
             {
                 "schema_version": 1, "slug": "mini-maya", "display_name": "Mini Maya",
-                "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+                "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
                 "status": "Live",
                 "validated_steps": ["mandate", "missions", "layers", "skills_tools", "gates_kpis", "dry_run"],
                 "last_updated_at": "2026-05-19T10:00:00Z", "commits": [],
@@ -393,7 +393,7 @@ class TestLoadManagementExports:
             yaml.safe_dump(
                 {
                     "schema_version": 1, "slug": "no-export-child", "display_name": "NoExport",
-                    "owner": "joris", "created_at": "2026-05-15T10:00:00Z",
+                    "owner": "operator", "created_at": "2026-05-15T10:00:00Z",
                     "status": "Live",
                     "validated_steps": ["mandate", "missions", "layers", "skills_tools", "gates_kpis", "dry_run"],
                     "last_updated_at": "2026-05-15T10:00:00Z", "commits": [],

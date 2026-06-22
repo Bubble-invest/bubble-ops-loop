@@ -14,7 +14,7 @@ who wrote what. Schema (verified 2026-06-01):
 
 Usage (from a dept's Layer 4):
     LOGBOOK_AGENT_ID=maya python3 notion_logbook.py write \\
-        --title "..." --body "..." [--tags a,b] [--for joris,jade]
+        --title "..." --body "..." [--tags a,b] [--for operator,operator2]
 
 Env:
   NOTION_API_KEY    — required to actually POST.

@@ -189,14 +189,14 @@ def test_operating_has_voice_rules_for_non_tech_user():
     )
 
 
-def test_operating_states_telegram_is_the_channel_to_joris():
+def test_operating_states_telegram_is_the_channel_to_operator():
     """{{OPERATOR}} msg 3594: every dept's CLAUDE.md must clearly state that its
     channel to {{OPERATOR}} IS its Telegram bot (escalations/questions/decisions go
     there; the session transcript does not reach him). Pins the directive so it
     can't silently regress + so future depts inherit it."""
     out = scaffold.render_claude_md_operating(_make_dept_yaml_ops(slug="maya"))
     low = out.lower()
-    assert "channel to joris" in low, "missing the explicit 'my channel to {{OPERATOR}}' directive"
+    assert "channel to {operator}" in low, "missing the explicit 'my channel to {OPERATOR}' directive"
     assert "@bubbleopsmaya_bot" in out, "the channel directive must name the dept's Telegram bot"
     # must convey 'always via Telegram' + 'transcript doesn't reach him'
     assert "always through there" in low

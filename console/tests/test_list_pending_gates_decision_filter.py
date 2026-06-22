@@ -65,7 +65,7 @@ def _write_decision(repo: Path, gate_id: str) -> Path:
         yaml.safe_dump({
             "gate_id": gate_id,
             "decision": "approve",
-            "decided_by": "joris",
+            "decided_by": "operator",
         }, sort_keys=False),
         encoding="utf-8",
     )
@@ -164,7 +164,7 @@ def test_gate_already_resolved_in_yaml_still_excluded(tmp_path, monkeypatch):
             "id": gate_id,
             "kind": "trade_order",
             "resolved": True,
-            "decided_by": "joris",
+            "decided_by": "operator",
             "current_mode": "manual_required",
         }, sort_keys=False),
         encoding="utf-8",

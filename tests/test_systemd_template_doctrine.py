@@ -29,7 +29,7 @@ This test asserts the template's doctrine comment block:
 
 Run:
     python3 -m pytest \
-      /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/tests/test_systemd_template_doctrine.py \
+      /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/tests/test_systemd_template_doctrine.py \
       -v
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(
-    "/Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop"
+    "/Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop"
 )
 TEMPLATE = REPO_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
 

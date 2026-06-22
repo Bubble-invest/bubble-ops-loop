@@ -7,7 +7,7 @@
 # UX-1 dependency: skills/department-onboarding-guide/ (templates + skill_lib).
 #
 # Usage:
-#   ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+#   ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 #
 # Test-hook env vars (used by tests/onboarding-bootstrap/ ONLY):
 #   BUBBLE_BOOTSTRAP_CLONE_DIR  - override the default /tmp clone parent dir
@@ -87,7 +87,7 @@ Synopsis:
 Arguments:
   --slug=<slug>            Kebab-case slug (e.g. miranda). Must match ^[a-z][a-z0-9-]+$.
   --display-name=<name>    Human-readable display name (e.g. Miranda).
-  --owner=<owner>          Slug of the human operator (e.g. joris).
+  --owner=<owner>          Slug of the human operator (e.g. operator).
   --level=ops|management   Department level (default: ops). Use 'management' for
                            aggregator depts like Tony. Required with --children.
   --children=<slugs>       Comma-separated child dept slugs (e.g. ben,maya,miranda,eliot).
@@ -108,10 +108,10 @@ Arguments:
   --help                   Show this message and exit.
 
 Example (ops leaf):
-  ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=joris
+  ./bootstrap-dept.sh --slug=miranda --display-name="Miranda" --owner=operator
 
 Example (management dept):
-  ./bootstrap-dept.sh --slug=tony --display-name=Tony --owner=joris \
+  ./bootstrap-dept.sh --slug=tony --display-name=Tony --owner=operator \
     --level=management --children=ben,maya,miranda,eliot
 
 Test hooks (env vars):

@@ -63,8 +63,8 @@ except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts
 
 # The default account the loop pings on a layer fire. Dept configs map this
 # account name → a telegram_chat_id under config['accounts']. Overridable per
-# call so couple-mode depts (e.g. Maya → {{OPERATOR}}+{{OPERATOR_2}}) can fan out.
-DEFAULT_ACCOUNT = "{{OPERATOR}}"
+# call so couple-mode depts (e.g. Maya → both operators) can fan out.
+DEFAULT_ACCOUNT = os.environ.get("BUBBLE_OPERATOR_NAME", "Operator")
 
 LAYER_FIRE_GLYPH = "🔁"
 
@@ -73,7 +73,7 @@ LAYER_FIRE_GLYPH = "🔁"
 # 2026-06-06). Env-overridable for non-prod/test. Console is Tailscale-only.
 COCKPIT_BASE_URL = os.environ.get(
     "BUBBLE_COCKPIT_BASE_URL",
-    "https://:8443",
+    f"https://{os.environ.get('BUBBLE_VPS_HOST', 'localhost')}:8443",
 ).rstrip("/")
 
 

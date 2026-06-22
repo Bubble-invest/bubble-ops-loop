@@ -6,7 +6,7 @@ Visual planning board with three grouping views:
   - by_department (grouped by dept:<x> label → card.owner)
 
 Data source change (2026-06-20, issue #164):
-  Previously fetched http://{{INTERNAL_IP}}:3847/api/inbox (Mac dashboard).
+  Previously fetched http://{{VPS_IP}}:3847/api/inbox (Mac dashboard).
   Now fetches open GitHub Issues from Bubble-invest/bubble-ops-board via `gh`.
   Token is minted at runtime via bubble-board-token.sh (no interactive gh auth
   needed on the VPS, where gh is not interactively authed as claude).

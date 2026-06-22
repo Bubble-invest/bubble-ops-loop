@@ -307,7 +307,7 @@ def setup_callback(
                 level=params.get("level", "ops"),
                 children_list=params.get("children_list", []),
                 display_name=params.get("display_name", slug),
-                owner=params.get("owner", "joris"),
+                owner=params.get("owner", "operator"),
                 on_progress=q.put,
             )
         except Exception as exc:  # noqa: BLE001

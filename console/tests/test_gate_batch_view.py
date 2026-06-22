@@ -38,7 +38,7 @@ def _build_app_with_gates(tmp_path: Path, monkeypatch, gates: list[dict]) -> Tes
     (dept / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": "fixture",
-            "display_name": "Fixture", "owner": "joris",
+            "display_name": "Fixture", "owner": "operator",
             "created_at": "2026-05-15T10:00:00Z", "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],
@@ -70,7 +70,7 @@ def _gate(n: int, kind: str = "prospect_dm") -> dict:
         "id": f"{kind}-person-{n:03d}",
         "kind": kind,
         "slug": f"person-{n:03d}",
-        "account_used": "{{OPERATOR}}",
+        "account_used": "Operator",
         "chosen_variant": "V2",
         "chosen_angle": f"Angle pour la personne {n}.",
         "chosen_reason": "Raison du choix.",

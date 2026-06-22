@@ -16,7 +16,7 @@
 set -uo pipefail
 
 HOST="hetzner"
-TLS_HOST=""
+TLS_HOST="${BUBBLE_VPS_HOST:?set BUBBLE_VPS_HOST}"
 PASS=0; FAIL=0; SKIP=0
 RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; BLUE=$'\e[34m'; RESET=$'\e[0m'
 

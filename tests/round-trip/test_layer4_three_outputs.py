@@ -28,7 +28,7 @@ The verifier looks at:
      clone is stale.
 
 To run:
-    cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
+    cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
     pytest tests/round-trip/test_layer4_three_outputs.py -v --tb=short
 
 Override the date under test (default = today UTC) with:

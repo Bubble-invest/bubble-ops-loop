@@ -48,7 +48,7 @@ def _base_state() -> dict:
         "schema_version": 1,
         "slug": "miranda",
         "display_name": "Miranda",
-        "owner": "joris",
+        "owner": "operator",
         "created_at": "2026-05-20T19:30:00Z",
         "status": "Drafting",
         "validated_steps": ["mandate"],

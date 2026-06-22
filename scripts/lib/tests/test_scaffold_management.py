@@ -71,7 +71,7 @@ def _scaffold_management(tmp_path: Path) -> Path:
         root=root,
         slug="tony",
         display_name="Tony",
-        owner="joris",
+        owner="operator",
         level="management",
         children=MANAGEMENT_CHILDREN,
     )
@@ -86,7 +86,7 @@ def _scaffold_ops(tmp_path: Path) -> Path:
         root=root,
         slug="smoke",
         display_name="Smoke",
-        owner="joris",
+        owner="operator",
         level="ops",
         children=[],
     )
@@ -249,7 +249,7 @@ def test_scaffold_rejects_children_without_management(tmp_path: Path):
             root=root,
             slug="bad",
             display_name="Bad",
-            owner="joris",
+            owner="operator",
             level="ops",          # NOT management
             children=["ben", "maya"],  # but children provided
         )
@@ -265,7 +265,7 @@ def test_scaffold_rejects_management_without_children(tmp_path: Path):
             root=root,
             slug="empty-mgmt",
             display_name="EmptyMgmt",
-            owner="joris",
+            owner="operator",
             level="management",
             children=[],
         )
@@ -298,7 +298,7 @@ def test_bootstrap_dept_sh_passes_level_and_children_through(tmp_path: Path):
             "bash", str(script),
             "--slug=tony",
             "--display-name=Tony",
-            "--owner=joris",
+            "--owner=operator",
             "--level=management",
             "--children=ben,maya,miranda,eliot",
             "--dry-run",
@@ -384,7 +384,7 @@ esac
             "bash", str(script),
             "--slug=tony-empty",
             "--display-name=Tony Empty",
-            "--owner=joris",
+            "--owner=operator",
             "--level=management",
             "--children=fixture",
             "--accept-existing-empty-repo",
@@ -437,7 +437,7 @@ esac
             "bash", str(script),
             "--slug=tony-nonempty",
             "--display-name=Tony NonEmpty",
-            "--owner=joris",
+            "--owner=operator",
             "--accept-existing-empty-repo",
         ],
         env=env,
@@ -484,7 +484,7 @@ def test_bootstrap_dept_sh_dry_run_is_idempotent(tmp_path: Path):
         "bash", str(script),
         "--slug=tony-idempotency",
         "--display-name=Tony Idempotency",
-        "--owner=joris",
+        "--owner=operator",
         "--level=management",
         "--children=fixture",
         "--dry-run",
@@ -569,7 +569,7 @@ def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
     # Try the dry-run twice. The second run should fail with the safety
     # message because the target dir is non-tmp + env var is unset.
     args = ["bash", str(patched_script),
-            "--slug=canary", "--display-name=Canary", "--owner=joris", "--dry-run"]
+            "--slug=canary", "--display-name=Canary", "--owner=operator", "--dry-run"]
     res2 = subprocess.run(args, env=env, capture_output=True, text=True)
 
     assert res2.returncode != 0, (

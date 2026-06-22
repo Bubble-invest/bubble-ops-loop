@@ -9,7 +9,7 @@ def test_refuses_when_repo_already_exists(run_bootstrap, mock_gh_bin) -> None:
     res = run_bootstrap(
         slug="smoke-test",
         display_name="SmokeTest",
-        owner="joris",
+        owner="operator",
         extra_env={"FAKE_GH_REPO_EXISTS": "1"},
         expect_fail=True,
     )

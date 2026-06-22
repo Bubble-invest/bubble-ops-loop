@@ -302,7 +302,7 @@ PYEOF
 # TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
 # envfile (which carries it) before invoking this. Never fatal: a notify failure
 # must not abort the safety net (mirrors emit_event's posture).
-BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-{{OPERATOR_CHAT_ID}}}"
+BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}}"
 
 notify_backup_fired() {
     local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}"
@@ -700,7 +700,7 @@ fi
 # the target children's queues/management/ inboxes. This is the ONLY actor that
 # crosses repo boundaries (the manager is isolated to its own repo). Pure
 # mechanical relay (NOT claude -p — template Ban #2). Gated: only directives with
-# approved_by=joris AND status=approved ship. Idempotent + never-fatal so it is
+# approved_by=operator AND status=approved ship. Idempotent + never-fatal so it is
 # safe on every layer-floor moment. Disable with BUBBLE_DISPATCH_DIRECTIVES=0.
 if [[ "${BUBBLE_DISPATCH_DIRECTIVES:-1}" == "1" ]]; then
     _dispatcher="$(dirname "${BASH_SOURCE[0]}")/dispatch_directives.py"

@@ -12,7 +12,7 @@ import yaml
 
 
 def _run_validate(scripts_dir: Path, slug: str, step: str, repo_dir: Path,
-                  validated_by: str = "joris", expect_fail: bool = False) -> subprocess.CompletedProcess:
+                  validated_by: str = "operator", expect_fail: bool = False) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     res = subprocess.run(
         [

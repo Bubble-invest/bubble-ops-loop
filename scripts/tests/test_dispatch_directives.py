@@ -52,7 +52,7 @@ def world(tmp_path, monkeypatch):
 def _drop(tony, did, **fields):
     p = tony / dd._OUTBOUND_REL / f"directive-{did}.yaml"
     base = {"directive_id": did, "target_dept": "maya",
-            "approved_by": "joris", "status": "approved",
+            "approved_by": "operator", "status": "approved",
             "body": "Prioritise the Charlie-Finance segment this week."}
     base.update(fields)
     p.write_text(yaml.safe_dump(base))
@@ -77,7 +77,7 @@ def test_approved_directive_is_delivered(world):
 
 def test_unapproved_is_NOT_delivered(world):
     root, tony, maya, pushes = world
-    _drop(tony, "d2", approved_by="tony")          # not joris
+    _drop(tony, "d2", approved_by="tony")          # not operator
     _drop(tony, "d3", status="draft")              # not approved
     rc = dd.dispatch(root, "tony", dry_run=False)
     assert rc == 0

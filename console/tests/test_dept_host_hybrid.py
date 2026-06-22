@@ -27,7 +27,7 @@ def _write_dept(root: Path, slug: str, *, host: str | None) -> None:
         "schema_version": 1,
         "slug": slug,
         "display_name": slug.capitalize(),
-        "owner": "jade",
+        "owner": "operator2",
         "created_at": "2026-06-11T20:00:00Z",
         "status": "Live",
         "validated_steps": ["mandate", "missions", "layers",

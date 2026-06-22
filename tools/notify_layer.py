@@ -2,7 +2,7 @@
 """notify_layer.py — fire the per-layer "work done" Telegram ping.
 
 Thin CLI around scripts/lib/loop_notify.py so CLAUDE.md STEP F stays simple.
-Reads TELEGRAM_BOT_TOKEN from env, chat_id from config.yaml (accounts.{{OPERATOR}}).
+Reads TELEGRAM_BOT_TOKEN from env, chat_id from config.yaml (accounts.Operator).
 Never crashes the loop: a missing token/chat_id prints a warning + exits 0.
 
 Usage:

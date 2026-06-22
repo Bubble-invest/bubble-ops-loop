@@ -128,7 +128,7 @@ def _make_maya_rich_repo(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug.title(),
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": status,
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"]
@@ -382,7 +382,7 @@ def test_onboarding_page_with_no_missions_does_not_crash(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": "Drafting", "validated_steps": ["mandate"],
             "last_updated_at": "2026-05-24T10:00:00Z", "commits": [],
         }, sort_keys=False),
@@ -478,7 +478,7 @@ def test_dept_detail_existing_mission_slug_rendering_still_works(
     (repo / "onboarding" / "STATE.yaml").write_text(
         yaml.safe_dump({
             "schema_version": 1, "slug": slug, "display_name": slug,
-            "owner": "joris", "created_at": "2026-05-22T10:00:00Z",
+            "owner": "operator", "created_at": "2026-05-22T10:00:00Z",
             "status": "Live",
             "validated_steps": ["mandate", "missions", "layers",
                                 "skills_tools", "gates_kpis", "dry_run"],

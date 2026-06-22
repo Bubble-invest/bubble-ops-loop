@@ -715,7 +715,7 @@ def test_daily_risk_audit_still_in_default_ops_yaml():
     """The Layer-4 daily_risk_audit mission (GAP-10 fix) must still be
     injected by scaffold even after we add the L1 mechanism."""
     rendered = scaffold.render_dept_yaml_draft(
-        slug="maya", display_name="Maya", owner="joris", level="ops"
+        slug="maya", display_name="Maya", owner="operator", level="ops"
     )
     import yaml as _yaml
     doc = _yaml.safe_load(rendered)

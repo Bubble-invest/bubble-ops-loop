@@ -74,8 +74,8 @@ class _CapturingOpener:
 
 CONFIG = {
     "accounts": {
-        "{{OPERATOR}}": {"telegram_chat_id": "111222333", "email": "joris@example.com"},
-        "{{OPERATOR_2}}": {"telegram_chat_id": "999888777", "email": "jade@example.com"},
+        "Operator": {"telegram_chat_id": "111222333", "email": "operator@example.com"},
+        "Operator2": {"telegram_chat_id": "999888777", "email": "operator2@example.com"},
     },
     "dept_label": "maya",
 }
@@ -151,7 +151,7 @@ def test_layer_fired_missing_token_is_clear_nonfatal(tmp_path, monkeypatch):
 def test_layer_fired_multi_account_fans_out(tmp_path, token_env):
     opener = _CapturingOpener()
     loop_notify.notify_layer_fired(
-        "maya", 1, None, config=CONFIG, account=["{{OPERATOR}}", "{{OPERATOR_2}}"], opener=opener
+        "maya", 1, None, config=CONFIG, account=["Operator", "Operator2"], opener=opener
     )
     chat_ids = {c["body"]["chat_id"] for c in opener.calls}
     assert chat_ids == {"111222333", "999888777"}
@@ -241,7 +241,7 @@ def test_email_degrades_no_creds_telegram_still_sent(monkeypatch):
     receipts = notify.deliver(
         payload,
         [notify.CHANNEL_EMAIL, notify.CHANNEL_TELEGRAM_ALERT],
-        account_used="{{OPERATOR}}",
+        account_used="Operator",
         config=CONFIG,
         _backends={notify.CHANNEL_TELEGRAM_ALERT: tg_backend},
     )

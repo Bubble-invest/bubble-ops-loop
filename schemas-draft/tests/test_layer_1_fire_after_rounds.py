@@ -63,7 +63,7 @@ def baseline_ops_dept() -> dict:
     """Render a fresh ops dept.yaml.draft (already schema-valid) as
     baseline. Tests mutate copies of this."""
     rendered = scaffold.render_dept_yaml_draft(
-        slug="maya", display_name="Maya", owner="joris", level="ops"
+        slug="maya", display_name="Maya", owner="operator", level="ops"
     )
     return yaml.safe_load(rendered)
 

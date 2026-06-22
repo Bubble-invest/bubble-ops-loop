@@ -26,7 +26,7 @@
 #   bash scripts/morty-security-audit.sh | bubble-tg-send --chat=<id>
 #
 # Pour piper vers mail :
-#   bash scripts/morty-security-audit.sh | mail -s "Morty audit $(date +%F)" joris@...
+#   bash scripts/morty-security-audit.sh | mail -s "Morty audit $(date +%F)" {{OPERATOR_EMAIL}}
 # =============================================================================
 set -euo pipefail
 

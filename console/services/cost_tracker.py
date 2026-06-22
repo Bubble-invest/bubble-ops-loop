@@ -5,7 +5,7 @@ Ported from the local Tailscale dashboard's `token_usage.py` (Tony_CEO/workspace
 org-dashboard/lib), adapted for the VPS:
   - VPS agent session dirs live under ~/.claude/projects/-home-claude-agents-<...>
   - the wiki-compile + loop-backup floor cron run as `claude -p` under -home-claude
-  - Mac caches (_mac-joris, _mac-jade) are rsync'd in (Rick + local Tony live on the Mac)
+  - Mac caches (_mac-{{OPERATOR_USER}}, _mac-{{OPERATOR_2_USER}}) are rsync'd in (Rick + local Tony live on the Mac)
 
 It reads token `usage` straight from each assistant message in the session JSONLs —
 that data is present in BOTH `claude -p` cron sessions AND interactive (--channels)
@@ -83,13 +83,13 @@ def _cost_of(model_usage: dict, pricing: dict) -> float:
 # VPS-live agents live in -home-claude-agents-bubble-ops-<slug> (or
 # -home-claude-agents-<name> for concierges). The -home-claude dir holds the
 # `claude -p` cron sessions (wiki-compile, loop-backup floor) — attributed by
-# job below. Mac caches (_mac-joris/_mac-jade) hold Rick + local-Tony.
+# job below. Mac caches (_mac-{{OPERATOR_USER}}/_mac-{{OPERATOR_2_USER}}) hold Rick + local-Tony.
 def classify(dir_name: str) -> Optional[str]:
     """Map a project-dir name (top-level, OR a Mac-cache 'cache/workspace' pair
     joined by '/') → a friendly agent/job label. VPS-live agents live in
     -home-claude-agents-bubble-ops-<slug>. The -home-claude dir holds the
-    `claude -p` cron sessions. Mac caches are NESTED: _mac-joris/<workspace> and
-    _mac-jade/<workspace> — Rick + local Tony + Miranda ({{OPERATOR}} Mac), Miranda
+    `claude -p` cron sessions. Mac caches are NESTED: _mac-{{OPERATOR_USER}}/<workspace> and
+    _mac-{{OPERATOR_2_USER}}/<workspace> — Rick + local Tony + Miranda ({{OPERATOR}} Mac), Miranda
     ({{OPERATOR_2}} Mac). We attribute Mac sessions by workspace, suffixed by whose Mac."""
     d = dir_name
     if d.startswith("-home-claude-agents-bubble-ops-"):
@@ -101,9 +101,12 @@ def classify(dir_name: str) -> Optional[str]:
         return rest
     if d == "-home-claude":
         return "_p_crons"  # split into jobs by cron-marker in parse
-    # Mac caches (nested): "_mac-joris/<workspace-dir>" or "_mac-jade/<workspace-dir>"
+    # Mac caches (nested): "_mac-<operator>/<workspace-dir>" — one cache dir per
+    # operator Mac. The operator label is derived from the dir suffix so no
+    # operator name is hardcoded here.
     if d.startswith("_mac-"):
-        whose = "joris" if d.startswith("_mac-joris") else "jade"
+        prefix = d.split("/", 1)[0]          # e.g. "_mac-<operator>"
+        whose = prefix[len("_mac-"):] or "operator"
         # the workspace part after the cache prefix + '/'
         ws = d.split("/", 1)[1] if "/" in d else ""
         # friendly name from the workspace dir tail (…-workspaces-Rick-RnD → rick)
@@ -235,7 +238,7 @@ def build_report(refresh: bool = False) -> dict:
                 "note": "no projects dir"}
 
     # Build (label, jsonl-files) work units. Flat dirs map directly; the nested
-    # Mac caches (_mac-joris/<ws>, _mac-jade/<ws>) are descended one level.
+    # Mac caches (_mac-{{OPERATOR_USER}}/<ws>, _mac-{{OPERATOR_2_USER}}/<ws>) are descended one level.
     work = []  # list of (label0, file_iterable)
     for proj in PROJECTS_DIR.iterdir():
         if not proj.is_dir():

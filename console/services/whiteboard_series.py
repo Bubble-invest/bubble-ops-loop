@@ -113,7 +113,7 @@ def _humanize_key(key: str) -> str:
         "directives_emitted_today": "Directives émises / jour",
         "directives.emitted_today": "Directives émises / jour",
         "escalations_open": "Escalades ouvertes",
-        "escalations.to_joris_open": "Escalades ouvertes",
+        "escalations.to_operator_open": "Escalades ouvertes",
         "open_gates": "Gates ouvertes",
         "open_exceptions": "Exceptions ouvertes",
         "gates.open_total": "Gates ouvertes (total)",

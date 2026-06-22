@@ -10,7 +10,7 @@ overview, in serif Cormorant + ochre accents.
 """
 
 
-def test_home_greets_joris_by_name(client):
+def test_home_greets_operator_by_name(client):
     """The greeting opens with 'Bonjour {{OPERATOR}}.'"""
     r = client.get("/")
     assert r.status_code == 200

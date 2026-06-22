@@ -70,7 +70,7 @@ Tony (management) issues instructions through `queues/management/`. Notes arrive
 
 1. List ALL `queues/management/*.yaml`. Keep the inbound ones addressed to you: \
    an inbound note is one whose `audience` includes `{slug}` OR whose `created_by`/`from` \
-   is a manager (`tony`, `joris`, `jade`) — i.e. NOT authored by you. \
+   is a manager (`tony`, `operator`, `operator2`) — i.e. NOT authored by you. \
    EXCLUDE your own outbound escalations (files you wrote, e.g. `rick-*.yaml`).
    For each inbound note NOT already in `queues/management/.consumed.json` \
    (tracked by `directive_id` or `id` field):
@@ -245,7 +245,7 @@ Write via the shared lib (the slug `{slug}` goes in the Agent column):
 LOGBOOK_AGENT_ID={slug} NOTION_API_KEY="$NOTION_API_KEY" \\
   python3 ../../scripts/lib/notion_logbook.py write \\
     --title "<your Summary>" --body "<your Content>" \\
-    --tags {slug} --for joris,jade --date <today>
+    --tags {slug} --for operator,operator2 --date <today>
 ```
 
 If `NOTION_API_KEY` is not in the env, the lib skips cleanly (no \

@@ -6,7 +6,7 @@ Script: `scripts/bootstrap-dept.sh`
 BUBBLE_GITHUB_OWNER=Bubble-invest ./scripts/bootstrap-dept.sh \
   --slug=accountant \
   --display-name="Geraldine" \
-  --owner=joris \
+  --owner=operator \
   --level=ops \
   [--accept-existing-empty-repo]   # if the human pre-created the org repo via the UI
 ```

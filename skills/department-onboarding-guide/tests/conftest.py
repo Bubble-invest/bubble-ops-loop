@@ -47,7 +47,7 @@ def stub_agent_context():
                 "display_name": "Miranda",
                 "level": "ops",
                 "mandate_text": "Produire, planifier et auditer du contenu social pour Bubble Invest.",
-                "owner": "joris",
+                "owner": "operator",
                 "forbidden": [
                     "publier informations confidentielles",
                     "donner conseil financier personnalise",

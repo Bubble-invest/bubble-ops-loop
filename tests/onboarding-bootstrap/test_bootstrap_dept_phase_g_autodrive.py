@@ -109,7 +109,7 @@ def test_bootstrap_emits_botfather_instruction(bootstrapped_repo: Path, run_boot
     # The bootstrapped_repo fixture has already run once; we just inspect
     # the stdout of a separate invocation.
     # Simpler: run bootstrap with a different slug & inspect stdout.
-    res = run_bootstrap(slug="bottest", display_name="BotTest", owner="joris")
+    res = run_bootstrap(slug="bottest", display_name="BotTest", owner="operator")
     combined = res.stdout + res.stderr
     assert "botfather" in combined.lower() or "@bubbleops" in combined.lower(), \
         f"bootstrap stdout must mention BotFather or @bubbleops bot creation; got:\n{combined}"
@@ -130,7 +130,7 @@ def test_bootstrap_supports_dry_run_mode(scripts_dir: Path, tmp_clone_dir: Path)
             "bash", str(script),
             "--slug=drysmoke",
             "--display-name=DrySmoke",
-            "--owner=joris",
+            "--owner=operator",
             "--dry-run",
         ],
         env=env, capture_output=True, text=True,

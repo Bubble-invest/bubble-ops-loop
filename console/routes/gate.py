@@ -158,7 +158,7 @@ def gate_decide(
         "action": action,
         "comment": comment or "",
         "decided_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "decided_by": "joris",  # single-operator console
+        "decided_by": "operator",  # single-operator console
     }
     out_path = github_reader.write_gate_decision(slug, gate_id, decision)
     return request.app.state.templates.TemplateResponse(

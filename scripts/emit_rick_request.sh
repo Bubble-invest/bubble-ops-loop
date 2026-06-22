@@ -119,7 +119,7 @@ done
 cat > "$YAML_PATH" <<YAML_EOF
 id: rick-${SLUG}-${TODAY}
 kind: management_note
-audience: [rick, joris]
+audience: [rick, operator]
 created_at: '${TIMESTAMP}'
 created_by: ${DEPT}
 title: "${TITLE}"
@@ -144,7 +144,7 @@ if [ -x "$EMIT_KANBAN" ]; then
 
   # Use the Mac Tailscale IP as KANBAN_HOST (Morty→Mac dashboard tunnel)
   if [ "$(hostname)" = "morty" ] || hostname | grep -q "hetzner"; then
-    export KANBAN_HOST="${KANBAN_HOST:-{{INTERNAL_IP}}:3847}"
+    export KANBAN_HOST="${KANBAN_HOST:-127.0.0.1:3847}"
   fi
 
   if "$EMIT_KANBAN" \

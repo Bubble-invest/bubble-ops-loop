@@ -20,7 +20,7 @@ def test_record_step_appends_to_validated_steps(tmp_path: Path, sample_state_yam
         step="missions",
         commit_sha="def5678",
         validated_at="2026-05-20T20:00:00Z",
-        validated_by="joris",
+        validated_by="operator",
     )
     doc = yaml.safe_load(p.read_text(encoding="utf-8"))
     assert "missions" in doc["validated_steps"]
@@ -40,7 +40,7 @@ def test_record_step_advances_status(tmp_path: Path, sample_state_yaml: dict) ->
         step="missions",
         commit_sha="def5678",
         validated_at="2026-05-20T20:00:00Z",
-        validated_by="joris",
+        validated_by="operator",
     )
     doc = yaml.safe_load(p.read_text(encoding="utf-8"))
     assert doc["status"] == "Drafting", \
@@ -56,7 +56,7 @@ def test_record_step_is_idempotent(tmp_path: Path, sample_state_yaml: dict) -> N
         step="mandate",
         commit_sha="abc1234",
         validated_at="2026-05-20T19:33:00Z",
-        validated_by="joris",
+        validated_by="operator",
     )
     doc = yaml.safe_load(p.read_text(encoding="utf-8"))
     # mandate should appear exactly once.
@@ -69,7 +69,7 @@ def test_init_state_creates_valid_file(tmp_path: Path, schemas_dir: Path) -> Non
 
     p = tmp_path / "STATE.yaml"
     state_yaml.init_state(
-        path=p, slug="alpha", display_name="Alpha", owner="joris",
+        path=p, slug="alpha", display_name="Alpha", owner="operator",
         created_at="2026-05-20T19:00:00Z",
     )
     doc = yaml.safe_load(p.read_text(encoding="utf-8"))

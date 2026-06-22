@@ -28,14 +28,14 @@ from datetime import datetime, timezone
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
-NOTION_DB_ID = "0c3c7178-83c3-445d-8161-7771c25ea8c7"
+NOTION_DB_ID = os.environ.get("NOTION_KANBAN_DB_ID", "{{NOTION_DB_ID}}")
 NOTION_KEY_PATH = "/home/claude/.config/notion/api_key"
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
-MAC_SSH_TARGET = "joris@{{INTERNAL_IP}}"
+MAC_SSH_TARGET = os.environ.get("BUBBLE_MAC_SSH_TARGET", "{{OPERATOR_SSH_TARGET}}")
 MAC_SSH_KEY = "/root/.ssh/id_ed25519_morty"
-MAC_KANBAN_PATH = "/Users/joris/claude-workspaces/Rick_RnD/monitoring/kanban_state.json"
+MAC_KANBAN_PATH = os.environ.get("BUBBLE_MAC_KANBAN_PATH", "{{MAC_KANBAN_PATH}}")
 
 STATE_DIR = "/home/claude/bubble-ops-loop/state"
 STATE_FILE = os.path.join(STATE_DIR, "notion_kanban_sync.json")

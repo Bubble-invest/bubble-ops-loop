@@ -86,7 +86,7 @@ def management_dept_yaml_draft(tmp_path):
         root=root,
         slug="tony",
         display_name="Tony",
-        owner="joris",
+        owner="operator",
         level="management",
         children=MANAGEMENT_CHILDREN,
     )

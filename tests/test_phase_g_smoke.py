@@ -47,7 +47,7 @@ def smoke_dept(tmp_path: Path) -> Path:
             "bash", str(script),
             f"--slug={SMOKE_SLUG}",
             f"--display-name={SMOKE_DISPLAY}",
-            "--owner=joris",
+            "--owner=operator",
             "--dry-run",
         ],
         env=env, capture_output=True, text=True,

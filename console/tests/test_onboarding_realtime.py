@@ -108,14 +108,14 @@ def test_heartbeat_fragment_includes_latest_commit_message(
                    cwd=str(miranda), check=True)
     subprocess.run(["git", "add", "-A"], cwd=str(miranda), check=True)
     subprocess.run(
-        ["git", "commit", "-q", "-m", "mandate: validated by joris"],
+        ["git", "commit", "-q", "-m", "mandate: validated by operator"],
         cwd=str(miranda), check=True,
     )
     r = client.get("/agents/miranda/onboarding/heartbeat-fragment")
     assert r.status_code == 200
     body = r.text
     assert _is_html_fragment(body)
-    assert "mandate: validated by joris" in body, \
+    assert "mandate: validated by operator" in body, \
         "heartbeat fragment must include the latest commit message"
     # Must include some relative-time wording
     assert "signe de vie" in body.lower() or "il y a" in body.lower() or \

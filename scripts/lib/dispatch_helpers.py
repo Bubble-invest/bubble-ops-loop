@@ -177,7 +177,7 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     the dispatcher cannot know the dept slug here, we take the conservative
     approach: ANY `*.yaml` in `queues/management/` that is NOT a dotfile and is
     NOT written by the dept itself (i.e. not a Rick-request escalation from the
-    dept — those have `audience: [rick, joris]` and are outbound) counts as a
+    dept — those have `audience: [rick, operator]` and are outbound) counts as a
     potential inbound note.
 
     Practical heuristic (matches the deployed PROMPT.md STEP 0-ter wording):

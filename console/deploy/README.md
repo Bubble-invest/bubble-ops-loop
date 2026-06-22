@@ -7,7 +7,7 @@ Single-binary FastAPI app. Notion v5 lines 1006-1020.
 ```bash
 cd ~/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
 export CONSOLE_BEARER_TOKEN="$(openssl rand -hex 24)"          # generate once
-export READ_FROM_DISK="/Users/joris/bubble-ops-depts"          # parent dir of bubble-ops-* clones
+export READ_FROM_DISK="/Users/{{OPERATOR_USER}}/bubble-ops-depts"          # parent dir of bubble-ops-* clones
 python3 -m uvicorn console.main:app --host 127.0.0.1 --port 8642
 ```
 

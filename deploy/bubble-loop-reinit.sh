@@ -32,7 +32,7 @@
 #      per-dept tmpfs env written by ExecStartPre SOPS decrypt). The env
 #      file is chown'd claude:claude — this script runs as root (ExecStartPost
 #      with '+' prefix) so it can read it.
-#   2. Reads the operator's Telegram chat_id from JORIS_TG_USER_ID in the
+#   2. Reads the operator's Telegram chat_id from OPERATOR_TG_USER_ID (legacy JORIS_TG_USER_ID) in the
 #      same env file.
 #   3. Curls Telegram sendMessage to deliver a message to the dept's own bot
 #      session. The arriving message triggers a turn, which causes the agent
@@ -62,7 +62,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 0
 fi
 
-# Source env file to get TELEGRAM_BOT_TOKEN and JORIS_TG_USER_ID.
+# Source env file to get TELEGRAM_BOT_TOKEN and OPERATOR_TG_USER_ID (legacy JORIS_TG_USER_ID).
 # Using 'set -a' ensures all sourced vars are exported (not needed here
 # but prevents silent misread if the env file uses no-export form).
 set +u  # sourcing may reference unset vars in comments
@@ -71,10 +71,11 @@ source "${ENV_FILE}"
 set -u
 
 BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-# Operator chat_id: prefer env var JORIS_TG_USER_ID (set in per-dept SOPS env),
-# fall back to NOTIFY_GATE_CHAT_ID (set in some dept envs), fall back to the
-# stable hardcoded value (same as notify-gate/notify.py DEFAULT_CHAT_ID).
-CHAT_ID="${JORIS_TG_USER_ID:-${NOTIFY_GATE_CHAT_ID:-{{OPERATOR_CHAT_ID}}}}"
+# Operator chat_id: prefer env var OPERATOR_TG_USER_ID (set in per-dept SOPS env;
+# legacy JORIS_TG_USER_ID still honoured for back-compat), fall back to
+# NOTIFY_GATE_CHAT_ID (set in some dept envs), fall back to the operator chat_id
+# injected at deploy (BUBBLE_OPERATOR_CHAT_ID, from SOPS).
+CHAT_ID="${OPERATOR_TG_USER_ID:-${JORIS_TG_USER_ID:-${NOTIFY_GATE_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}}}}"
 
 if [[ -z "${BOT_TOKEN}" ]]; then
     echo "[bubble-loop-reinit] WARNING: TELEGRAM_BOT_TOKEN not in ${ENV_FILE} — skipping reinit" >&2

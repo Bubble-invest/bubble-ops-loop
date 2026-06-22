@@ -36,7 +36,7 @@ def test_post_new_department_returns_github_install_link(client, monkeypatch):
         data={
             "slug": "newdept",
             "display_name": "NewDept",
-            "owner": "joris",
+            "owner": "operator",
             "telegram_bot_token": "12345678:AAGreatExampleTokenAaaaaaaaaaaaaaaa",
         },
     )

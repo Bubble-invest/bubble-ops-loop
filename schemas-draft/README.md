@@ -62,7 +62,7 @@ schemas-draft/
 ## Run the validator
 
 ```bash
-cd /Users/joris/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
+cd /Users/{{OPERATOR_USER}}/claude-workspaces/Rick_RnD/projects/bubble-ops-loop/schemas-draft
 python3 tests/validate_all.py
 echo "exit=$?"   # 0 = green
 ```
