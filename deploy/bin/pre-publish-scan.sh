@@ -51,6 +51,9 @@ note(){ [ "$JSON" -eq 0 ] && echo "$*"; }
 OP_IDS="${BUBBLE_OPERATOR_IDS:-}"
 if [ -n "$OP_IDS" ]; then OP_ID_PAT="$OP_IDS"
 else OP_ID_PAT="(chat_id|CHAT_ID|user_id|USER_ID|telegram[_-]?id)[\"'= :]+[0-9]{9,11}"; fi
+OP_NAMES="${BUBBLE_OPERATOR_NAMES:-}"   # personal + machine names, pipe-separated (e.g. "Joris|Jade|joris-cx33")
+# NOTE: agent/persona names (Ben/Maya/Tony/Miranda/Morty/Claudette) are the PRODUCT
+# identity, NOT leaks — never add them here.
 OP_USERS="${BUBBLE_OPERATOR_USERS:-}"
 if [ -n "$OP_USERS" ]; then OP_USER_PAT="$OP_USERS"
 else OP_USER_PAT="/Users/[a-z]+/(claude-workspaces|Documents)|/home/claude/agents/|[a-z]+@[a-z0-9-]+\\.ts\\.net"; fi
@@ -59,6 +62,7 @@ PATTERNS=(
   "internal-tailscale-fqdn|CRITICAL|[a-z0-9-]+\\.tail[0-9a-f]+\\.ts\\.net"  # private tailnet hostnames
   "internal-tailscale-ip|CRITICAL|100\\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\\.[0-9]{1,3}\\.[0-9]{1,3}"  # CGNAT 100.64/10 range
   "operator-username-path|HIGH|${OP_USER_PAT}"                    # personal paths/users (needles via env)
+  "operator-name|HIGH|${OP_NAMES:-__NONE_MATCH_SENTINEL_XYZ__}"   # personal + machine names (ONLY when BUBBLE_OPERATOR_NAMES set)
   "notion-id|HIGH|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}"  # notion DB/page UUIDs
   "secret-prefix|CRITICAL|sk-ant-[a-z0-9]|ghp_[A-Za-z0-9]|ghs_[A-Za-z0-9]|xox[baprs]-|AKIA[0-9A-Z]|-----BEGIN [A-Z]+ PRIVATE KEY|age1[a-z0-9]{20}"
   "secrets-map-doc|HIGH|inventory-[0-9]{4}-[0-9]{2}-[0-9]{2}|secrets-port/|agent-repos-audit"  # docs that map where secrets live
