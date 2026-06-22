@@ -1,0 +1,56 @@
+#!/bin/bash
+# bubble-gh — wrapper that mints a GitHub App installation token via
+# the credential helper, sets GH_TOKEN, then exec's gh CLI.
+#
+# Usage: same as gh — `bubble-gh repo view ...`, `bubble-gh pr create ...`,
+# `bubble-gh api ...`, `bubble-gh repo clone ...`
+#
+# Why: git's credential.helper protocol only invokes our helper on
+# 401-retry, which means private repos return "not found" on the
+# first request. gh CLI uses GH_TOKEN env at the start of every API
+# call so no negotiation issue. (Infra note option B: use the GitHub CLI.)
+#
+# Token TTL is 9 min (helper's JWT exp). One token per gh invocation
+# = safe lifecycle, no on-disk persistence.
+#
+# CONFIG (env):
+#   BUBBLE_GH_ORG             org-account owner   (default: Bubble-invest)
+#   BUBBLE_GH_PERSONAL_OWNER  personal-account owner for the operator's own
+#                             repos (default: empty — org-only mode). Set this to
+#                             the GitHub username/owner whose install also covers
+#                             the operator's personal repos, if any.
+
+set -e
+
+ORG="${BUBBLE_GH_ORG:-Bubble-invest}"
+PERSONAL="${BUBBLE_GH_PERSONAL_OWNER:-}"
+
+# Infer install target from arguments. Looks for ANY token containing
+# "<org>/" or "<personal>/" anywhere (handles `repo view owner/name`,
+# `--repo=owner/name`, api paths like `repos/<org>/...`, etc.)
+# Default — personal owner if configured (covers the operator's own repos),
+# else the org.
+PATH_HINT="${PERSONAL:+$PERSONAL/x}"; PATH_HINT="${PATH_HINT:-$ORG/x}"
+for arg in "$@"; do
+  case "$arg" in
+    *"$ORG"/*) PATH_HINT="$ORG/x"; break ;;
+  esac
+  if [ -n "$PERSONAL" ]; then
+    case "$arg" in
+      *"$PERSONAL"/*) PATH_HINT="$PERSONAL/x"; break ;;
+    esac
+  fi
+done
+
+# Mint a token by piping the right path hint into the credential helper
+TOKEN_LINE=$(printf "protocol=https\nhost=github.com\npath=%s\n" "$PATH_HINT" | \
+  sudo -n /usr/local/bin/bubble-gh-credential-helper.sh get | grep '^password=')
+TOKEN="${TOKEN_LINE#password=}"
+
+if [[ -z "$TOKEN" || "$TOKEN" != ghs_* ]]; then
+  echo "bubble-gh: failed to mint App install token (path hint: $PATH_HINT)" >&2
+  exit 2
+fi
+
+# Exec gh with token in env. Subprocess inherits — token never written to disk.
+GH_TOKEN="$TOKEN" exec /usr/bin/gh "$@"

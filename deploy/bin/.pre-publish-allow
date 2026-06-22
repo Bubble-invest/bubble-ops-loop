@@ -1,0 +1,9 @@
+# .pre-publish-allow — documented FALSE POSITIVES exempt from pre-publish-scan,
+# scoped to deploy/bin (the scanner reads this file from the scanned dir's cwd).
+# Each entry MUST carry a `# why:` — exemptions are auditable, not blanket mutes.
+# A genuine leak must NEVER be added here. Review additions like code.
+
+# why: the standard agent dir path is part of the framework box layout (the
+#      on-box scripts reference /home/claude/agents/<agent>/...), not operator
+#      PII. The path scheme is public by design — mirrors the root allow file.
+/home/claude/agents/
