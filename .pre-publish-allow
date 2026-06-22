@@ -1,0 +1,32 @@
+# .pre-publish-allow — documented FALSE POSITIVES exempt from pre-publish-scan.
+# Each entry MUST carry a `# why:` — exemptions are auditable, not blanket mutes.
+# A genuine leak must NEVER be added here. Review additions like code.
+
+# why: documented box layout in docs/INSTALL/tests — the standard agent dir path,
+#      not operator PII (the path scheme is part of the framework, public by design).
+/home/claude/agents/
+
+# why: token-broker / git-guard tests use SYNTHETIC ghs_ fixtures and are
+#      explicitly tested to NOT leak real tokens (test_audit_never_contains_token).
+ghs_FAKE
+ghs_TEST
+ghs_[A-Za-z0-9]{6,}.*# *(synthetic|fake|fixture|test)
+
+# why: git commit SHAs / content hashes match the 32-hex / UUID notion-id pattern
+#      but are not Notion IDs. Exempt 40-hex git SHAs specifically.
+\b[0-9a-f]{40}\b
+
+# why: age1… are PUBLIC keys (recipients), safe to ship — not secrets.
+age1[a-z0-9]
+
+# why: systemd template unit names (loop-layer@N.service) match the email regex's
+#      "@" but are not emails.
+@[0-9N]?\.service|loop-layer@
+# why: git SSH/HTTPS URLs (git@github.com, TOKEN@github.com) are not personal emails.
+git@github\.com|@github\.com
+# why: synthetic test-fixture emails / hosts (example.com, x.com, y.com, .example, .tailnet, fixture.service).
+@(x|y)\.com|@example\.com|\.example\b|\.tailnet\b|@fixture\.|noreply@
+# why: message-ref/date tokens (e.g. "msg 2702/2026-05-21") match the FR-phone/SIRET digit shapes.
+msg [0-9]{3,4}/20[0-9]{2}-[0-9]{2}-[0-9]{2}
+# why: synthetic ghs_FAKE… token fixtures embedded mid-string (digits trip phone/siret regex).
+ghs_FAKE
