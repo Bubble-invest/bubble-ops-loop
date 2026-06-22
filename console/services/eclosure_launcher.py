@@ -298,7 +298,7 @@ def _render_session_start_hook(slug: str, display_name: str) -> str:
         slug=slug,
         slug_compact=slug.replace("-", ""),
         display_name=display_name,
-        operator_chat_id=os.environ["BUBBLE_OPERATOR_CHAT_ID"],
+        operator_chat_id=os.environ.get("BUBBLE_OPERATOR_CHAT_ID", "{{OPERATOR_CHAT_ID}}"),
     )
 
 
