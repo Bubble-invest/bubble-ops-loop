@@ -33,6 +33,13 @@ Exit 0 = CLEAN (safe to publish). Exit 2 = findings (BLOCK publish).
 - raw secret prefixes (sk-ant, ghp_/ghs_, AKIA, BEGIN PRIVATE KEY, age1…)
 - secret-MAP docs (any doc that enumerates where secrets live)
 
+**PII controls (client/personal data)** — structured PII a public repo must never carry,
+reusing Bubble Shield's recognizers: emails, IBAN, ISIN, SIRET/SIREN, FR numéro de sécu,
+FR phone, credit-card numbers. Allowlist synthetic fixtures via `BUBBLE_PII_ALLOW` (pipe-
+separated literals). NOTE: names & postal addresses are the hard low-recall part — grep can't
+catch them reliably; for a hard pre-publish name/address check, run the repo's text through
+**bubble-shield** (the NER PII anonymizer) as a complementary gate.
+
 Values are NEVER printed — findings show file:line + class + «match redacted».
 
 ## After findings

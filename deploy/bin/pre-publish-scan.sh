@@ -62,7 +62,26 @@ PATTERNS=(
   "notion-id|HIGH|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}"  # notion DB/page UUIDs
   "secret-prefix|CRITICAL|sk-ant-[a-z0-9]|ghp_[A-Za-z0-9]|ghs_[A-Za-z0-9]|xox[baprs]-|AKIA[0-9A-Z]|-----BEGIN [A-Z]+ PRIVATE KEY|age1[a-z0-9]{20}"
   "secrets-map-doc|HIGH|inventory-[0-9]{4}-[0-9]{2}-[0-9]{2}|secrets-port/|agent-repos-audit"  # docs that map where secrets live
+
+  # ── PII controls (client/personal data) ─────────────────────────────────
+  # Structured PII a public repo must never carry. Regexes reused from Bubble
+  # Shield's battle-tested recognizers (bubble_shield/recognizers.py). Names &
+  # postal addresses are the hard, low-recall part — a grep gate can't catch
+  # them reliably; that's what Bubble Shield's NER is for. For a hard pre-publish
+  # name check, run the repo's text through bubble-shield (see PII NOTE below).
+  "pii-email|HIGH|[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}"        # email addresses
+  "pii-iban|HIGH|\\b[A-Z]{2}[0-9]{2}(?:[ ]?[A-Z0-9]{2,4}){2,8}\\b"           # IBAN
+  "pii-isin|HIGH|\\b[A-Z]{2}[A-Z0-9]{9}[0-9]\\b"                              # ISIN (security identifier)
+  "pii-siret-siren|HIGH|\\b[0-9]{3}[ ]?[0-9]{3}[ ]?[0-9]{3}([ ]?[0-9]{5})?\\b"  # FR SIRET/SIREN
+  "pii-fr-ssn|CRITICAL|\\b[12][ ]?[0-9]{2}[ ]?[0-9]{2}[ ]?[0-9]{2}[ ]?[0-9]{3}[ ]?[0-9]{3}([ ]?[0-9]{2})?\\b"  # FR numéro de sécu
+  "pii-fr-phone|HIGH|(?:(?:\\+33|0033)[ .\\-]?[1-9]|0[1-9])(?:[ .\\-]?[0-9]{2}){4}\\b"  # FR phone
+  "pii-credit-card|CRITICAL|\\b(?:[0-9]{4}[ \\-]?){3}[0-9]{4}\\b"             # 16-digit card-like
 )
+
+# Allow callers to point at a known-PII allowlist (e.g. a fixture email that is
+# intentionally synthetic) so true synthetic test data doesn't block a publish.
+# BUBBLE_PII_ALLOW = pipe-separated literal strings to ignore.
+PII_ALLOW="${BUBBLE_PII_ALLOW:-}"
 
 note "═══ pre-publish-scan: $(basename "$(pwd)") ═══"
 note "scope: working tree${SCAN_HISTORY:+ + full git history}"
@@ -78,6 +97,10 @@ scan_text() {  # $1 = source label (tree|history) ; reads from stdin a grep -rn-
   done
 }
 
+# Build an allowlist grep filter (drop lines containing an allowlisted literal,
+# e.g. a synthetic fixture email) BEFORE redaction.
+_allow_filter() { if [ -n "$PII_ALLOW" ]; then grep -vE "$PII_ALLOW"; else cat; fi; }
+
 # ── Working-tree scan ───────────────────────────────────────────────────────
 for p in "${PATTERNS[@]}"; do
   IFS='|' read -r label sev regex <<< "$p"
@@ -85,6 +108,7 @@ for p in "${PATTERNS[@]}"; do
   hits=$(grep -rnIE "$regex" . \
         --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv --exclude-dir='.venv*' \
         --exclude='*.lock' --exclude='package-lock.json' --exclude='pre-publish-scan.sh' 2>/dev/null \
+        | _allow_filter \
         | sed -E 's/(:[0-9]+:).*/\1 «match redacted»/' | sort -u | head -50)
   if [ -n "$hits" ]; then
     note "▶ $label ($sev):"
