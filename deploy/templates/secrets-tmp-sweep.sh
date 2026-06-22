@@ -10,7 +10,7 @@ LOG_DIR="${LOG_DIR:-/var/log/bubble-security}"
 DATE_STAMP=$(date -u +"%Y-%m-%d")
 TS_HUMAN=$(date -u +"%Y-%m-%d %H:%M UTC")
 LOG_FILE="${LOG_DIR}/secrets-tmp-sweep-${DATE_STAMP}.log"
-OPERATOR_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}"
+OPERATOR_TG_USER_ID="${BUBBLE_OPERATOR_CHAT_ID:-}"
 SCAN_DIRS=("${SCAN_DIRS:-/tmp /var/tmp /home/claude}")
 
 log() { printf "%s %s\n" "$(date -u +'%H:%M:%S')" "$*" >> "$LOG_FILE"; }

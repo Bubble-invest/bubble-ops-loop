@@ -302,7 +302,7 @@ PYEOF
 # TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
 # envfile (which carries it) before invoking this. Never fatal: a notify failure
 # must not abort the safety net (mirrors emit_event's posture).
-BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:?set BUBBLE_OPERATOR_CHAT_ID}}"
+BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-}}"
 
 notify_backup_fired() {
     local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}"
