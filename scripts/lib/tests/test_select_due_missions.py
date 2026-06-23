@@ -852,3 +852,74 @@ def test_fire_spin_guard_wrong_layered_path_does_not_exclude(tmp_path: Path):
         "a marker at the WRONG layered path outputs/<today>/<N>/missions/<id>/ "
         "must NOT gate dispatch — only the no-<N> path is read (FIX 1 / FIX 2)"
     )
+
+
+# ── Anti-fire-spin for a REAL L4 creates:[] mission (layer cap, not per-mission) ──
+#
+# The fire-spin tests above label the mission market_wrapup but declare layer=1, so
+# they exercise the L1-3 per-mission-marker path. L4 is protected DIFFERENTLY: the
+# once-per-day layer cap `not l4_fired` in decide_dispatch's C.1 branch. L4 missions
+# are NOT materialized (materialize_due_missions_for_tick only handles layers 1-3),
+# so a creates:[] L4 mission never gets a per-mission marker — its protection is the
+# layer cap alone. Once the L4 subagent stamps the L4 LAYER marker
+# (outputs/<today>/4/.last-run) as its first action, the L4 phase becomes ineligible
+# (decide_dispatch returns "heartbeat"), so select_due_missions returns [] — no
+# fire-spin. This test makes that layer-cap reliance contractual.
+
+def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
+    """FULL-PIPELINE anti-fire-spin for a REAL L4 creates:[] mission.
+
+    L4's protection is the once-per-day LAYER cap (`not l4_fired` in
+    decide_dispatch C.1), NOT the per-mission marker — unlike L1-3, which rely on
+    the per-mission marker because they have no daily layer cap. (L4 missions are
+    never materialized, so they get no per-mission marker.)
+
+    tick 1: L4 mission selected (L1/L2/L3 fired, time >= 19:00 Paris, L4 not run).
+    L4 subagent stamps outputs/<today>/4/.last-run (the LAYER marker).
+    tick 2: L4 phase ineligible (l4_fired) → due == [] (no fire-spin).
+    """
+    repo = _mk_repo(tmp_path)
+    # A REAL L4 report-mission: creates:[] and layer=4.
+    m = _mk_daily("market_wrapup", layer=4, time="19:00",
+                  output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [m])
+
+    today = AFTER_L4.strftime("%Y-%m-%d")
+    # L4 prerequisites: L1, L2, L3 LAYER markers stamped today.
+    for n in (1, 2, 3):
+        write_last_run(repo / "outputs" / today / str(n), AFTER_L4)
+
+    l4_layer_marker = repo / "outputs" / today / "4" / ".last-run"
+    assert not l4_layer_marker.exists(), "precondition: L4 layer not yet fired"
+
+    # ── TICK 1 ── (19:30 Paris) — L4 eligible, mission must be selected.
+    ctx1 = _full_ctx(repo, AFTER_L4)
+    assert decide_dispatch(ctx1) == "layer_4", (
+        "TICK 1: L1/L2/L3 fired + time>=19:00 + L4 not run → phase must be layer_4"
+    )
+    due1 = select_due_missions(ctx1, [m])
+    assert "market_wrapup" in [x["id"] for x in due1], (
+        "TICK 1: the due L4 creates:[] mission MUST be selected for dispatch"
+    )
+    # L4 missions are NOT materialized, so no per-mission marker is created.
+    per_mission_marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
+    assert not per_mission_marker.exists(), (
+        "L4 missions are not materialized → no per-mission marker; L4's protection "
+        "is the layer cap, not the per-mission marker"
+    )
+
+    # The L4 subagent stamps the LAYER marker as its FIRST action.
+    write_last_run(repo / "outputs" / today / "4", AFTER_L4)
+
+    # ── TICK 2 ── (20:30 Paris, same day) — L4 phase ineligible (l4_fired).
+    LATER_L4 = datetime(2026, 6, 23, 18, 30, tzinfo=timezone.utc)  # 20:30 Paris
+    ctx2 = _full_ctx(repo, LATER_L4)
+    assert decide_dispatch(ctx2) == "heartbeat", (
+        "TICK 2: L4 already fired today → C.1 layer cap makes L4 ineligible → heartbeat"
+    )
+    due2 = select_due_missions(ctx2, [m])
+    assert due2 == [], (
+        "TICK 2 FIRE-SPIN GUARD (L4 layer cap): once outputs/<today>/4/.last-run "
+        "exists, the L4 phase is ineligible → select_due_missions returns EXACTLY [] "
+        "— the once-per-day layer cap prevents L4 fire-spin"
+    )
