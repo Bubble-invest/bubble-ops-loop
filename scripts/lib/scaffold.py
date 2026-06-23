@@ -746,15 +746,18 @@ each Moment task to a stateless subagent via Agent. The subagents
      the specific context (queue item / time window / due mission).
    - **Parallel fan-out**: spawn one Agent per mission in the same tick (Anthropic
      supports it). Multiple missions on the same phase run concurrently.
-   - The subagent writes its outputs in `outputs/<today>/<N>/missions/<id>/`, first
-     action = `.last-run`, last = `round_counter.json[<N>] += 1`.
+   - WORK OUTPUTS go under the layer dir `outputs/<today>/<N>/` (with `<N>`); LAST
+     action is `round_counter.json[<N>] += 1`. The per-mission idempotence MARKER is a
+     DIFFERENT path WITHOUT `<N>`: as its FIRST action the subagent stamps
+     `outputs/<today>/missions/<id>/.last-run` (this is what `select_due_missions`
+     reads to skip an already-run mission — a layered `<N>/missions/<id>` path is never
+     found → re-selected every tick = fire-spin).
 
    **After each subagent returns** (I am responsible for verifying
    its work — an employee does not validate their own output):
 
-   a. **Read `outputs/<today>/<N>/summary.md`** — a few-line summary
-      of what the subagent says it did. It gives me the context for what
-      follows (and I surface it in the heartbeat or on Telegram if relevant).
+   a. **Read `outputs/<today>/<N>/summary.md`** — the subagent's few-line summary;
+      it gives me context for what follows (surfaced in the heartbeat/Telegram if relevant).
 
    b. **Call `validate_layer_output(N, outputs/<today>/<N>/, expected_artifacts)`**
       where `expected_artifacts` is defined by `layers/<N>/PROMPT.md`. Returns
@@ -762,16 +765,14 @@ each Moment task to a stateless subagent via Agent. The subagents
 
    c. **If `ok == True`**: note in the heartbeat (`subagent N OK`), move to step 4.
 
-   d. **If `ok == False`**: I re-launch the subagent (re-spawn via Agent tool)
-      with an incremented `retry_count` + the detail of the `missing/malformed` in
-      the task description. The helper `should_retry(retry_count, max=3)` tells me
-      whether I am entitled to another attempt.
+   d. **If `ok == False`**: re-spawn the subagent via Agent tool with an incremented
+      `retry_count` + the `missing/malformed` detail. `should_retry(retry_count, max=3)`
+      gates another attempt.
 
-   e. **If retries exhausted** (`should_retry == False`): immediate escalation
-      via Telegram (`MAX_RETRIES_DEFAULT == 3`). The tick continues anyway
-      (no /loop blocking) but the incident is logged in
-      `outputs/<today>/<N>/summary.md` with the prefix `[ERROR retry-exhausted]` and
-      `outputs/<today>/heartbeat.log` gets a `subagent N FAILED` line.
+   e. **If retries exhausted** (`should_retry == False`, `MAX_RETRIES_DEFAULT == 3`):
+      escalate on Telegram; the tick continues (no blocking), logging `[ERROR
+      retry-exhausted]` in `outputs/<today>/<N>/summary.md` + a `subagent N FAILED`
+      line in `outputs/<today>/heartbeat.log`.
 
 4. If the decision = `heartbeat`: `<ISO-ts> tick idle <queues-summary>` >>
    `outputs/<today>/heartbeat.log`.

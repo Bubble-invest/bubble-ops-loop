@@ -227,15 +227,20 @@ def test_daily_already_fired_today_excluded(tmp_path: Path):
     m = _mk_daily("morning_sync", layer=1, time="07:00")
     _write_dept_yaml(repo, [m])
 
-    # Stamp per-mission .last-run to simulate the mission already ran today.
-    _stamp_mission_lastrun(repo, "morning_sync", MORNING)
+    # Stamp per-mission .last-run at a PRIOR tick today (07:30 Paris = 05:30 UTC),
+    # earlier than the current tick (MORNING = 08:00 Paris). A marker from a prior
+    # tick today means the mission already ran → must be excluded. (A marker equal
+    # to now_utc would be the materializer's same-tick stamp and is treated as
+    # "not yet dispatched this tick" — see _mission_last_fired.)
+    prior_tick = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)  # 07:30 Paris
+    _stamp_mission_lastrun(repo, "morning_sync", prior_tick)
     today_dir = str(repo / "outputs" / MORNING.strftime("%Y-%m-%d"))
 
     ctx = _bare_ctx(MORNING, today_dir=today_dir)
     due = select_due_missions(ctx, [m])
     assert len(due) == 0, (
-        "mission with today's per-mission .last-run must NOT be re-selected "
-        "(daily already-fired-today gate)"
+        "mission with a prior-tick per-mission .last-run today must NOT be "
+        "re-selected (daily already-fired-today gate)"
     )
 
 
@@ -725,4 +730,125 @@ def test_l1_cycle_gate_fires_after_full_cycle(tmp_path: Path):
     assert len(due) == 1, (
         "select_due_missions must return L1 missions when the cycle gate fires "
         "— the cycle re-fire must include all missions on L1"
+    )
+
+
+# ── Anti-fire-spin: creates:[] report-mission, full pipeline (#261 / #235-#237) ──
+#
+# THE DEPLOY BLOCKER the reviewer caught: a `creates: []` report-mission (e.g.
+# ben's market_wrapup) never produces queue-item descriptors, so before FIX 2 it
+# never entered the materializer's create-loop → its per-mission .last-run was
+# never stamped → _mission_last_fired returned None forever → select_due_missions
+# re-selected it on EVERY tick = fire-spin (the #235/#237 class we must NOT
+# reintroduce).
+#
+# FIX 2 stamps the per-mission marker for EVERY due layer-1..3 mission (regardless
+# of creates[]) at the top of build_dispatch_ctx. FIX in _mission_last_fired makes
+# a same-tick marker (== now_utc) NOT veto this-tick selection, so:
+#   tick 1 → mission SELECTED (and marker stamped this tick)
+#   tick 2 → mission EXCLUDED (marker now < now_utc → is_mission_due vetoes)
+# These tests use the FULL pipeline (build_dispatch_ctx, not a bare ctx) so they
+# exercise the materializer's stamping behaviour, making the guard contractual.
+
+def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
+    """FULL-PIPELINE fire-spin guard for a creates:[] report-mission.
+
+    tick 1: mission selected, marker stamped by materializer.
+    tick 2 (later same day): mission EXCLUDED (must NOT re-select = no fire-spin).
+    """
+    repo = _mk_repo(tmp_path)
+    # A pure report-writer mission: is_mission_due() True but creates:[].
+    m = _mk_daily("market_wrapup", layer=1, time="07:00",
+                  output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [m])
+
+    today = MORNING.strftime("%Y-%m-%d")
+    marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
+    assert not marker.exists(), "precondition: no per-mission marker before tick 1"
+
+    # ── TICK 1 ── (08:00 Paris) — mission is due, must be selected.
+    ctx1 = _full_ctx(repo, MORNING)
+    due1 = select_due_missions(ctx1, [m])
+    ids1 = [x["id"] for x in due1]
+    assert "market_wrapup" in ids1, (
+        "TICK 1: a due creates:[] report-mission MUST be selected for dispatch"
+    )
+
+    # FIX 2: the materializer stamped the per-mission marker (no <N> path) this tick.
+    assert marker.exists(), (
+        "FIX 2: materializer must stamp outputs/<today>/missions/<id>/.last-run "
+        "even for a creates:[] mission, so it cannot fire-spin"
+    )
+
+    # ── TICK 2 ── (09:00 Paris, same day) — must NOT be re-selected.
+    LATER = datetime(2026, 6, 23, 7, 0, tzinfo=timezone.utc)  # 09:00 Paris
+    ctx2 = _full_ctx(repo, LATER)
+    due2 = select_due_missions(ctx2, [m])
+    ids2 = [x["id"] for x in due2]
+    assert "market_wrapup" not in ids2, (
+        "TICK 2 FIRE-SPIN GUARD: the mission must be GONE — re-selecting it every "
+        "tick is the #235/#237-class fire-spin we must not reintroduce"
+    )
+    assert due2 == [], (
+        "TICK 2: select_due_missions must return EXACTLY [] (mission excluded, "
+        "no other mission to run)"
+    )
+
+
+def test_fire_spin_guard_prior_tick_marker_excludes(tmp_path: Path):
+    """Once the per-mission marker at the correct no-<N> path exists from a PRIOR
+    tick, the mission is excluded — proving the marker path is the one
+    _mission_last_fired actually reads.
+
+    This is the explicit "correct path" assertion: we write the marker by hand at
+    outputs/<today>/missions/<id>/.last-run (NO layer <N>) at an EARLIER time, and
+    confirm select_due_missions excludes the mission.
+    """
+    repo = _mk_repo(tmp_path)
+    m = _mk_daily("market_wrapup", layer=1, time="07:00",
+                  output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [m])
+
+    today = MORNING.strftime("%Y-%m-%d")
+    # Marker at the CORRECT no-<N> path, stamped at a PRIOR tick (07:30 Paris).
+    prior = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)  # 07:30 Paris
+    correct_path = repo / "outputs" / today / "missions" / "market_wrapup"
+    write_last_run(correct_path, prior)
+
+    ctx = _full_ctx(repo, MORNING)  # 08:00 Paris, after the prior stamp
+    due = select_due_missions(ctx, [m])
+    assert "market_wrapup" not in [x["id"] for x in due], (
+        "a per-mission marker at outputs/<today>/missions/<id>/.last-run from a "
+        "prior tick must exclude the mission (no-<N> path is the one read)"
+    )
+
+
+def test_fire_spin_guard_wrong_layered_path_does_not_exclude(tmp_path: Path):
+    """A marker at the WRONG layered path (outputs/<today>/<N>/missions/<id>/) must
+    NOT be read by _mission_last_fired — proving the no-<N> path is load-bearing.
+
+    This is the negative control for the path mismatch FIX 1 fixed in the scaffold
+    prose: if a subagent stamped the layered path, the mission would still be
+    selected (fire-spin). We assert select_due_missions ignores the layered marker.
+    Note: build_dispatch_ctx's own materializer will ALSO stamp the correct no-<N>
+    path this tick, but a same-tick marker does not veto this-tick selection, so
+    the mission is still selected on this first tick — exactly what we want to
+    show: only the no-<N> path (from a PRIOR tick) gates dispatch.
+    """
+    repo = _mk_repo(tmp_path)
+    m = _mk_daily("market_wrapup", layer=1, time="07:00",
+                  output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [m])
+
+    today = MORNING.strftime("%Y-%m-%d")
+    # WRONG layered path, stamped at a prior tick — must be IGNORED.
+    prior = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)
+    wrong_path = repo / "outputs" / today / "1" / "missions" / "market_wrapup"
+    write_last_run(wrong_path, prior)
+
+    ctx = _full_ctx(repo, MORNING)
+    due = select_due_missions(ctx, [m])
+    assert "market_wrapup" in [x["id"] for x in due], (
+        "a marker at the WRONG layered path outputs/<today>/<N>/missions/<id>/ "
+        "must NOT gate dispatch — only the no-<N> path is read (FIX 1 / FIX 2)"
     )

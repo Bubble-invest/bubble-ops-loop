@@ -597,6 +597,27 @@ def materialize_due_missions_for_tick(
             if last:
                 last_fired_per_mission[mid] = last
 
+    # Anti-fire-spin (issue #261 / #235-#237 class): stamp the per-mission
+    # .last-run for EVERY due layer-1..3 mission, BEFORE the creates[]
+    # materialization loop below. A "pure report" mission (creates: [], e.g.
+    # ben's market_wrapup) is is_mission_due()=True but yields NO queue-item
+    # descriptors, so it never enters the `for item in due` loop and its marker
+    # would never be stamped → _mission_last_fired() returns None forever →
+    # select_due_missions re-selects it on EVERY tick (fire-spin). Stamping here
+    # closes the leak at the source, independent of whether the dept's subagent
+    # remembers to stamp it. Idempotent: the loop below re-stamps with the same
+    # now_utc value, which is a no-op overwrite. Only missions already fired
+    # today (in last_fired_per_mission, same Paris day) are skipped via
+    # is_mission_due returning False.
+    for m in missions:
+        if int(m.get("layer", 0)) not in (1, 2, 3):
+            continue  # L4 missions fire via C.1, not the materializer
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
+            write_last_run(today_dir / "missions" / mid, when=now_utc)
+
     due = materialize_due_missions(
         missions, now=now_utc, last_fired_per_mission=last_fired_per_mission
     )
@@ -1141,40 +1162,56 @@ def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
 
 
 def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
-    """Return the per-mission .last-run timestamp, or None if absent.
+    """Return the per-mission .last-run timestamp, or None if absent or stamped
+    THIS tick.
 
     Per-mission marker path: outputs/<today>/missions/<id>/.last-run
 
     This is written either by:
-      a) materialize_due_missions_for_tick — when the mission creates queue items,
-         so the materializer marks it "queued today" (prevents re-queuing next tick).
-      b) The mission's own subagent — after it completes its work, it stamps this
-         path to record that the dispatch ran (prevents re-dispatch next tick).
+      a) materialize_due_missions_for_tick — runs at the TOP of build_dispatch_ctx
+         and stamps the marker at the CURRENT tick's now_utc for every due
+         layer-1..3 mission (anti-fire-spin, issue #261). Because this runs in the
+         SAME tick as the dispatch decision, the marker it writes equals
+         ctx['now_utc'].
+      b) The mission's own subagent — on a LATER tick, after it completes, stamps
+         this path so the next tick's select_due_missions skips it.
+
+    Critical "this-tick" exclusion (fixes the tick-1-vs-tick-2 ambiguity):
+    a marker whose timestamp == ctx['now_utc'] was written by the materializer
+    THIS tick — the dispatch has NOT happened yet, so we return None so the
+    mission IS still selected this tick. A marker from a PRIOR tick (< now_utc)
+    means the mission already ran today → return it so is_mission_due() vetoes
+    a re-dispatch. Without this distinction the materializer's own same-tick
+    stamp would exclude the mission on the very tick it became due (it would
+    never run at all).
 
     Deliberately does NOT fall back to the layer-level marker. The layer marker
     tracks whether a LAYER ran; the per-mission marker tracks whether THIS MISSION
-    ran. A mission with no per-mission marker → `last_fired=None` → `is_mission_due`
+    ran. A mission with no per-mission marker → last_fired=None → is_mission_due
     evaluates purely on cadence (time/day) without a "fired today" veto.
-
-    This is the correct behaviour for the dispatch decision: a mission that has
-    never had its subagent dispatched today (no marker set by case b above) is
-    always considered a candidate for this tick, subject only to its cadence.
-    Missions that materialise queue items (case a) are stamped by the
-    materialiser and will not re-queue — but they may still need a separate
-    subagent dispatch for report-writing or non-queue work; that distinction is
-    left to the per-mission PROMPT.md.
     """
     today_dir_str = ctx.get("today_dir")
     if not today_dir_str:
         # No today_dir in ctx → treat as never fired (mission is due).
         return None
 
-    today_dir = Path(today_dir_str)
     mid = mission.get("id", "")
     if not mid:
         return None
 
-    return read_last_run(today_dir / "missions" / mid)
+    marker = read_last_run(Path(today_dir_str) / "missions" / mid)
+    if marker is None:
+        return None
+
+    # A marker stamped THIS tick (by the materializer at ctx['now_utc']) does not
+    # mean the dispatch already ran — it means the mission became due this tick.
+    # Treat it as "not yet fired" so select_due_missions still returns it now;
+    # next tick the marker will be < now_utc and correctly veto a re-dispatch.
+    now_utc = ctx.get("now_utc")
+    if now_utc is not None and marker == now_utc:
+        return None
+
+    return marker
 
 
 def select_due_missions(
