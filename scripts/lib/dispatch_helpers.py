@@ -597,6 +597,27 @@ def materialize_due_missions_for_tick(
             if last:
                 last_fired_per_mission[mid] = last
 
+    # Anti-fire-spin (issue #261 / #235-#237 class): stamp the per-mission
+    # .last-run for EVERY due layer-1..3 mission, BEFORE the creates[]
+    # materialization loop below. A "pure report" mission (creates: [], e.g.
+    # ben's market_wrapup) is is_mission_due()=True but yields NO queue-item
+    # descriptors, so it never enters the `for item in due` loop and its marker
+    # would never be stamped → _mission_last_fired() returns None forever →
+    # select_due_missions re-selects it on EVERY tick (fire-spin). Stamping here
+    # closes the leak at the source, independent of whether the dept's subagent
+    # remembers to stamp it. Idempotent: the loop below re-stamps with the same
+    # now_utc value, which is a no-op overwrite. Only missions already fired
+    # today (in last_fired_per_mission, same Paris day) are skipped via
+    # is_mission_due returning False.
+    for m in missions:
+        if int(m.get("layer", 0)) not in (1, 2, 3):
+            continue  # L4 missions fire via C.1, not the materializer
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
+            write_last_run(today_dir / "missions" / mid, when=now_utc)
+
     due = materialize_due_missions(
         missions, now=now_utc, last_fired_per_mission=last_fired_per_mission
     )
@@ -1037,6 +1058,258 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
 
     # C.4 — heartbeat (nothing eligible this tick).
     return "heartbeat"
+
+
+# ---------------------------------------------------------------------------
+# Mission-centric dispatch (issue #261, 2026-06-23)
+# ---------------------------------------------------------------------------
+#
+# BACKGROUND: decide_dispatch() returns ONE phase string ("layer_1" … "layer_4").
+# The runtime was then loading ONE monolithic layers/<N>/PROMPT.md and spawning
+# ONE subagent — so only the PRIMARY mission per phase ever ran. Secondary
+# missions declared in dept.yaml::recurring_missions[] were ORPHANED: ben's
+# `market_wrapup`, content's `newsletter_redaction`, etc. never fired.
+#
+# FIX: select_due_missions(ctx, missions) enumerates ALL due missions on the
+# highest-priority eligible phase, respecting every existing gate (time floors,
+# queue non-emptiness for consumers, L4 prerequisites, L1 cycle gate). The
+# runtime spawns ONE subagent per returned mission via resolve_mission_prompt().
+#
+# BACK-COMPAT: decide_dispatch() is UNCHANGED. Existing callers + all tests
+# pass without modification. select_due_missions is purely ADDITIVE.
+
+_LAYER_PRIORITY = [4, 3, 2, 1]   # highest to lowest (mirrors decide_dispatch)
+
+
+def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
+    """Return True if the given layer's time gate AND prerequisites are met.
+
+    Mirrors the exact conditions decide_dispatch uses per branch, so the two
+    functions always agree on which layer is eligible. Only the PRIMARY
+    mission per phase was ever checked before; we now expose this as a
+    reusable predicate.
+    """
+    now_paris_t = _to_paris(ctx["now_utc"]).time()
+    has_research = bool(ctx.get("has_research_items", False))
+    has_decisions = bool(ctx.get("has_inbox_decisions", False))
+    l1_fired = _layer_fired_today(ctx, 1)
+    l2_fired = _layer_fired_today(ctx, 2)
+    l3_fired = _layer_fired_today(ctx, 3)
+    l4_fired = _layer_fired_today(ctx, 4)
+
+    if layer == 4:
+        return (
+            _time_reached(now_paris_t, 4)
+            and l1_fired
+            and (l2_fired or not has_research)
+            and (l3_fired or not has_decisions)
+            and not l4_fired
+        )
+    if layer == 3:
+        return _time_reached(now_paris_t, 1) and has_decisions
+    if layer == 2:
+        return _time_reached(now_paris_t, 2) and has_research
+    if layer == 1:
+        if not _time_reached(now_paris_t, 1):
+            return False
+        # C.mgmt: unconsumed management notes (always eligible when floor reached)
+        if bool(ctx.get("has_unconsumed_mgmt_notes", False)):
+            return True
+        # C.0a: daily floor
+        if not _layer_fired_today(ctx, 1):
+            return True
+        # C.0b: cycle gate
+        counts = ctx.get("round_counter") or {}
+        baseline = ctx.get("layer_1_baseline_counter") or {}
+        fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
+        return all(
+            int(counts.get(str(lyr), 0)) - int(baseline.get(str(lyr), 0))
+            >= fire_after_rounds
+            for lyr in (2, 3, 4)
+        )
+    return False
+
+
+def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
+    """Return True if the mission's input queue condition is satisfied.
+
+    Producer missions (those that WRITE TO a queue without reading FROM one —
+    no `input_queue` key) are always considered ready; they generate new work
+    regardless of queue state.
+
+    Consumer missions declare an `input_queue` key. They are only eligible when
+    that queue is non-empty (with the same kind-aware quarantine used by
+    build_dispatch_ctx so orphan kinds don't pin the dispatcher).
+
+    `ctx` must have been built by build_dispatch_ctx (so `now_utc` and
+    `today_dir` are present), or at minimum must carry `_repo_dir` if the
+    caller injects it. When no `_repo_dir` is available we fail-open (return
+    True) so a misconfigured ctx never silently starves a mission.
+    """
+    input_queue = mission.get("input_queue")
+    if not input_queue:
+        # Producer mission — no input-queue gate.
+        return True
+
+    repo_dir = ctx.get("_repo_dir")
+    if not repo_dir:
+        # No repo_dir injected → fail-open (never starve).
+        return True
+
+    queue_path = Path(repo_dir) / input_queue
+    drainable = _drainable_kinds_for_queue(Path(repo_dir), input_queue) or None
+    return _queue_has_items(queue_path, drainable_kinds=drainable)
+
+
+def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
+    """Return the per-mission .last-run timestamp, or None if absent or stamped
+    THIS tick.
+
+    Per-mission marker path: outputs/<today>/missions/<id>/.last-run
+
+    This is written either by:
+      a) materialize_due_missions_for_tick — runs at the TOP of build_dispatch_ctx
+         and stamps the marker at the CURRENT tick's now_utc for every due
+         layer-1..3 mission (anti-fire-spin, issue #261). Because this runs in the
+         SAME tick as the dispatch decision, the marker it writes equals
+         ctx['now_utc'].
+      b) The mission's own subagent — on a LATER tick, after it completes, stamps
+         this path so the next tick's select_due_missions skips it.
+
+    Critical "this-tick" exclusion (fixes the tick-1-vs-tick-2 ambiguity):
+    a marker whose timestamp == ctx['now_utc'] was written by the materializer
+    THIS tick — the dispatch has NOT happened yet, so we return None so the
+    mission IS still selected this tick. A marker from a PRIOR tick (< now_utc)
+    means the mission already ran today → return it so is_mission_due() vetoes
+    a re-dispatch. Without this distinction the materializer's own same-tick
+    stamp would exclude the mission on the very tick it became due (it would
+    never run at all).
+
+    Deliberately does NOT fall back to the layer-level marker. The layer marker
+    tracks whether a LAYER ran; the per-mission marker tracks whether THIS MISSION
+    ran. A mission with no per-mission marker → last_fired=None → is_mission_due
+    evaluates purely on cadence (time/day) without a "fired today" veto.
+    """
+    today_dir_str = ctx.get("today_dir")
+    if not today_dir_str:
+        # No today_dir in ctx → treat as never fired (mission is due).
+        return None
+
+    mid = mission.get("id", "")
+    if not mid:
+        return None
+
+    marker = read_last_run(Path(today_dir_str) / "missions" / mid)
+    if marker is None:
+        return None
+
+    # A marker stamped THIS tick (by the materializer at ctx['now_utc']) does not
+    # mean the dispatch already ran — it means the mission became due this tick.
+    # Treat it as "not yet fired" so select_due_missions still returns it now;
+    # next tick the marker will be < now_utc and correctly veto a re-dispatch.
+    now_utc = ctx.get("now_utc")
+    if now_utc is not None and marker == now_utc:
+        return None
+
+    return marker
+
+
+def select_due_missions(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+) -> "list[dict]":
+    """Return all due missions for the highest-priority eligible phase this tick.
+
+    This is the mission-centric dispatch primitive. The caller (the /loop
+    runtime) uses it to spawn ONE subagent per returned mission instead of ONE
+    per phase — so every secondary mission (ben's `market_wrapup`, content's
+    `newsletter_redaction`, etc.) runs, not just the primary one.
+
+    Input:
+      ctx     — the same dict that decide_dispatch consumes (built by
+                build_dispatch_ctx). May optionally carry `_repo_dir` (str or
+                Path) for input-queue checks on consumer missions.
+      missions — the dept's `recurring_missions` list from dept.yaml.
+
+    Selection criteria per mission (ALL must hold):
+      1. Its `layer` is on the highest-priority eligible phase (mirrors
+         decide_dispatch's priority order: L4 > L3 > L2 > L1).
+      2. The layer's time floor (Paris-local) is reached AND its
+         prerequisites are met (same gates as decide_dispatch).
+      3. `is_mission_due()` returns True using the mission's own per-mission
+         last-run timestamp (with layer-marker fallback for regression safety).
+      4. Its input is ready: producer missions always pass; consumer missions
+         (those with `input_queue`) require that queue to be non-empty.
+
+    Returns missions in layer-priority order, then by mission id for
+    determinism. Returns [] when no phase is eligible (heartbeat tick) or no
+    mission in the eligible phase is due.
+
+    Back-compat guarantee: decide_dispatch(ctx) returns the same phase string
+    as before — this function does NOT mutate ctx or alter any on-disk state.
+    The relationship is:
+      phase = decide_dispatch(ctx)
+      due   = select_due_missions(ctx, missions)
+      ∀ m ∈ due: m["layer"] == _layer_from_phase(phase)  (when due is non-empty)
+    """
+    now_utc: datetime = ctx.get("now_utc")
+    if now_utc is None or now_utc.tzinfo is None:
+        return []
+
+    # Determine the highest-priority eligible layer (same logic as decide_dispatch).
+    eligible_layer: "int | None" = None
+    for layer in _LAYER_PRIORITY:
+        if _mission_layer_eligible(ctx, layer):
+            eligible_layer = layer
+            break
+
+    if eligible_layer is None:
+        return []
+
+    # Among all missions on that layer, keep those that are due and have ready input.
+    due: list[dict] = []
+    for m in missions:
+        if int(m.get("layer", 0)) != eligible_layer:
+            continue
+        last_fired = _mission_last_fired(ctx, m)
+        if not is_mission_due(m, now=now_utc, last_fired=last_fired):
+            continue
+        if not _mission_input_ready(ctx, m):
+            continue
+        due.append(m)
+
+    # Sort by mission id for determinism (layer is uniform across the result).
+    due.sort(key=lambda m: m.get("id", ""))
+    return due
+
+
+def resolve_mission_prompt(repo_dir: "Path | str", mission: dict) -> Path:
+    """Return the Path to the PROMPT.md for a given mission.
+
+    Convention (mission-centric):
+      missions/<id>/PROMPT.md  — per-mission prompt (preferred when it exists)
+
+    Legacy shim (zero-regression):
+      layers/<layer>/PROMPT.md — monolithic layer prompt (used when no
+        per-mission prompt exists, so depts that have not yet migrated to
+        per-mission prompts keep running their existing layer prompt via the
+        primary mission — exactly the same behaviour as before this change).
+
+    The caller uses the returned Path as the task description for the Agent
+    tool invocation. A mission whose prompt is the legacy layer prompt behaves
+    identically to the old phase-centric dispatch.
+    """
+    repo = Path(repo_dir)
+    mid = mission.get("id", "")
+    layer = int(mission.get("layer", 0))
+
+    if mid:
+        per_mission = repo / "missions" / mid / "PROMPT.md"
+        if per_mission.exists():
+            return per_mission
+
+    # Legacy shim: fall back to the layer's monolithic PROMPT.md.
+    return repo / "layers" / str(layer) / "PROMPT.md"
 
 
 # ─── Independent dept liveness signal ({{OPERATOR}} flag 2026-06-01) ───────────────

@@ -265,21 +265,35 @@ At each tick (every 20 min):
 
 **STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores — so a merged change auto-lands; never blocks on a dirty tree).
 
-**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
+**STEP C** — decide what to dispatch via the CANONICAL deterministic helpers
 (NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
-only mission CONTENT varies):
+only mission CONTENT varies). The dispatch is **mission-centric**: enumerate ALL
+due missions on the highest-priority eligible phase, then spawn one subagent per mission:
 
-`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+```python
+from scripts.lib.dispatch_helpers import (
+    build_dispatch_ctx, decide_dispatch,
+    select_due_missions, resolve_mission_prompt,
+)
+import yaml
+ctx     = build_dispatch_ctx('.')
+phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
+dept    = yaml.safe_load(open('dept.yaml').read())
+missions = dept.get('recurring_missions') or []
+due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
+# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
+# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
+```
 
-The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
-encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
-> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
-of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
-fresh each tick) — never type the date from memory.
-
-The 22:00–22:30 UTC window is the eligibility band. The
-`outputs/<today>/4/.last-run` file is the idempotence guard-rail: a single
-Layer 4 execution per day, even if the service restarts within the window.
+`ctx['today']` is the authoritative UTC date (fresh each tick) — never type the date
+from memory. `decide_dispatch` encodes the full min-time priority tree (Layer 4 from
+19:00 Paris once L1+L2+L3 fired > research queue > inbox decisions > daily L1 >
+heartbeat) and is the SINGLE SOURCE of truth for *when* each phase fires.
+The 22:00–22:30 UTC window is the eligibility band for Layer 4; `outputs/<today>/4/.last-run`
+is the idempotence guard-rail (one Layer 4 execution per day).
+`select_due_missions` is the SINGLE SOURCE of truth for *which missions* fire on
+that phase. `resolve_mission_prompt` returns `missions/<id>/PROMPT.md` when it exists,
+else falls back to `layers/<N>/PROMPT.md` (zero-regression shim for existing depts).
 
 ## How I talk to {{OPERATOR}}
 
@@ -382,17 +396,33 @@ At each tick:
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
-**STEP C** — decide what to dispatch via the CANONICAL deterministic helper
+**STEP C** — decide what to dispatch via the CANONICAL deterministic helpers
 (NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
-only mission CONTENT varies):
+only mission CONTENT varies). The dispatch is **mission-centric**: enumerate ALL
+due missions on the highest-priority eligible phase, then spawn one subagent per mission:
 
-`python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+```python
+from scripts.lib.dispatch_helpers import (
+    build_dispatch_ctx, decide_dispatch,
+    select_due_missions, resolve_mission_prompt,
+)
+import yaml
+ctx     = build_dispatch_ctx('.')
+phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
+dept    = yaml.safe_load(open('dept.yaml').read())
+missions = dept.get('recurring_missions') or []
+due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
+# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
+# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
+```
 
-The helper scans my queues itself and returns `layer_1`/`2`/`3`/`4`/`heartbeat`,
-encoding the whole min-time priority tree (L4 from 19:00 Paris once L1+L2+L3 fired
-> research queue > inbox decisions > daily L1 > heartbeat). It is the SINGLE SOURCE
-of truth for *when* each layer fires. `<today>` = `ctx['today']` (authoritative UTC,
-fresh each tick) — never type the date from memory.
+`ctx['today']` is the authoritative UTC date (fresh each tick) — never type the
+date from memory. `decide_dispatch` is the SINGLE SOURCE of truth for *when* each
+phase fires (Layer 4 eligible from 19:00 Paris once L1+L2+L3 fired > research queue
+> inbox decisions > daily L1 > heartbeat). `select_due_missions` is the SINGLE SOURCE
+of truth for *which missions* fire. `resolve_mission_prompt` returns
+`missions/<id>/PROMPT.md` when it exists, else falls back to `layers/<N>/PROMPT.md`
+(zero-regression shim for existing depts).
 
 **STEP D** — heartbeat on EVERY tick: write a freshness line in
 `outputs/<today>/heartbeat.log` (create the dir if needed):
@@ -705,27 +735,29 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
 
-2. Call the deterministic helper — it **scans my queues itself** (never
-   a placeholder dict, otherwise it falls back to `heartbeat` and Moments 2/3 never
-   fire) and returns `layer_1`/`2`/`3`/`4`/`heartbeat`:
-   `python3 -c "from scripts.lib.dispatch_helpers import build_dispatch_ctx, decide_dispatch; print(decide_dispatch(build_dispatch_ctx('.')))"`
+2. **Mission-centric dispatch** (never a placeholder dict — queues must be scanned):
+   `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])`.
    `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
-3. If the decision ≠ `heartbeat` — spawn + verify each subagent:
-   - Read `layers/<N>/PROMPT.md` (the Moment's instruction sheet).
+3. If the decision ≠ `heartbeat` — spawn + verify each subagent (one per mission in `due`):
+   - For each mission: `resolve_mission_prompt('.', mission)` → `missions/<id>/PROMPT.md`
+     if it exists, else `layers/<N>/PROMPT.md` (legacy shim — zero regression for existing depts).
    - Call the **Agent tool** with that prompt as the task description, plus
      the specific context (queue item / time window / due mission).
-   - **Parallel fan-out** if several items in the queue (Moment 2 or 3):
-     spawn one Agent per item in the same tick (Anthropic supports it).
-   - The subagent writes its outputs in `outputs/<today>/<N>/`, first
-     action = `.last-run`, last = `round_counter.json[<N>] += 1`.
+   - **Parallel fan-out**: spawn one Agent per mission in the same tick (Anthropic
+     supports it). Multiple missions on the same phase run concurrently.
+   - WORK OUTPUTS go under the layer dir `outputs/<today>/<N>/` (with `<N>`); LAST
+     action is `round_counter.json[<N>] += 1`. The per-mission idempotence MARKER is a
+     DIFFERENT path WITHOUT `<N>`: as its FIRST action the subagent stamps
+     `outputs/<today>/missions/<id>/.last-run` (this is what `select_due_missions`
+     reads to skip an already-run mission — a layered `<N>/missions/<id>` path is never
+     found → re-selected every tick = fire-spin).
 
    **After each subagent returns** (I am responsible for verifying
    its work — an employee does not validate their own output):
 
-   a. **Read `outputs/<today>/<N>/summary.md`** — a few-line summary
-      of what the subagent says it did. It gives me the context for what
-      follows (and I surface it in the heartbeat or on Telegram if relevant).
+   a. **Read `outputs/<today>/<N>/summary.md`** — the subagent's few-line summary;
+      it gives me context for what follows (surfaced in the heartbeat/Telegram if relevant).
 
    b. **Call `validate_layer_output(N, outputs/<today>/<N>/, expected_artifacts)`**
       where `expected_artifacts` is defined by `layers/<N>/PROMPT.md`. Returns
@@ -733,16 +765,14 @@ each Moment task to a stateless subagent via Agent. The subagents
 
    c. **If `ok == True`**: note in the heartbeat (`subagent N OK`), move to step 4.
 
-   d. **If `ok == False`**: I re-launch the subagent (re-spawn via Agent tool)
-      with an incremented `retry_count` + the detail of the `missing/malformed` in
-      the task description. The helper `should_retry(retry_count, max=3)` tells me
-      whether I am entitled to another attempt.
+   d. **If `ok == False`**: re-spawn the subagent via Agent tool with an incremented
+      `retry_count` + the `missing/malformed` detail. `should_retry(retry_count, max=3)`
+      gates another attempt.
 
-   e. **If retries exhausted** (`should_retry == False`): immediate escalation
-      via Telegram (`MAX_RETRIES_DEFAULT == 3`). The tick continues anyway
-      (no /loop blocking) but the incident is logged in
-      `outputs/<today>/<N>/summary.md` with the prefix `[ERROR retry-exhausted]` and
-      `outputs/<today>/heartbeat.log` gets a `subagent N FAILED` line.
+   e. **If retries exhausted** (`should_retry == False`, `MAX_RETRIES_DEFAULT == 3`):
+      escalate on Telegram; the tick continues (no blocking), logging `[ERROR
+      retry-exhausted]` in `outputs/<today>/<N>/summary.md` + a `subagent N FAILED`
+      line in `outputs/<today>/heartbeat.log`.
 
 4. If the decision = `heartbeat`: `<ISO-ts> tick idle <queues-summary>` >>
    `outputs/<today>/heartbeat.log`.
@@ -763,10 +793,11 @@ each Moment task to a stateless subagent via Agent. The subagents
    No gate created = no message.
 
 **Available Python helpers** (`scripts/lib/dispatch_helpers.py`):
-`build_dispatch_ctx`, `decide_dispatch`, `read_last_run`, `write_last_run`, `read_round_counter`,
+`build_dispatch_ctx`, `decide_dispatch`, `select_due_missions`, `resolve_mission_prompt`,
+`read_last_run`, `write_last_run`, `read_round_counter`,
 `increment_round_counter`, `layer_1_gate_satisfied`, `is_mission_due`,
 `materialize_due_missions`, `validate_layer_output`, `should_retry`,
-`force_commit_and_push`. Details in each `layers/<N>/PROMPT.md`.
+`force_commit_and_push`. Details in each `layers/<N>/PROMPT.md` and `missions/<id>/PROMPT.md`.
 
 ## When I am blocked
 
