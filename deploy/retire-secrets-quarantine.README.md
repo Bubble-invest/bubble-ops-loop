@@ -15,7 +15,7 @@ retired, its **history** stays reviewable (GitHub repo + transcripts) but its
    prints the MANUAL steps still required (BotFather token revoke, GitHub App
    install removal — human actions that can't be automated).
 
-## Install (on Morty, as root)
+## Install (on the VPS, as root)
 ```bash
 install -m 0755 -o root -g root deploy/bin/retire-secrets-quarantine.sh \
   /usr/local/bin/retire-secrets-quarantine.sh
@@ -31,6 +31,6 @@ dept; it never deletes the SOPS env (archive only) and is idempotent.
 
 ## How retire_dept.py calls it
 `_quarantine_secrets(slug)` (Side effect 2b) runs `sudo -n
-/usr/local/bin/retire-secrets-quarantine.sh <slug>` (on Morty) or proxies via
+/usr/local/bin/retire-secrets-quarantine.sh <slug>` (on the VPS) or proxies via
 `ssh remote`. Non-blocking: a failure logs a WARN but does not block retirement
 (the dept is already disabled, so the security window is bounded).

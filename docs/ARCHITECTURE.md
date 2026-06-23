@@ -28,7 +28,7 @@
                  │ HTTPS (git, gh api) + Webhook (future v2)
                  ▼
    ┌───────────────────────────────────────────────────────────────────────────┐
-   │   MORTY VPS  (Hetzner CX33, {{VPS_HOST}}, Ubuntu 24.04, systemd 255)        │
+   │   VPS  (Hetzner CX33, {{VPS_HOST}}, Ubuntu 24.04, systemd 255)               │
    │                                                                           │
    │   /etc/systemd/system/                                                    │
    │     claude-agent-morty.service          (the bubble-internal agent)       │
@@ -48,13 +48,13 @@
    │   /home/claude/agents/<slug>/           (the cloned dept repo, working)   │
    │   /home/claude/.claude/channels/telegram-<slug>/access.json               │
    └─────────────┬─────────────────────────────────────────────────────────────┘
-                 │ Tailscale mesh (BUBBLE_MORTY_HOST=claude@morty.tailnet)
+                 │ Tailscale mesh (BUBBLE_VPS_HOST=claude@{{VPS_HOST}}.tailnet)
                  ▼
    ┌──────────────────────────────────┬──────────────────────────────────────┐
    │  {{OPERATOR}}'S MAC                     │   {{OPERATOR}}'S PHONE                       │
    │  bubble-ops-console              │   Telegram bots                       │
    │   (FastAPI + HTMX, single binary)│     @bubtiktikbot   (fixture)         │
-   │   8 routes (home/dept/gate/      │     @ContentbubbleClawbot (morty)     │
+   │   8 routes (home/dept/gate/      │     @ContentbubbleClawbot (concierge) │
    │    settings/health/agents/       │     @maya... (future per dept)        │
    │    onboarding/agents-new)        │   Gate cards + audit pings            │
    │   read-only on dept repos;       │   /pair flow per dept                 │
@@ -70,13 +70,13 @@
 | Asset | Storage | Access | Crosses internet? | Fail mode |
 |---|---|---|---|---|
 | GitHub App private key (`bubble-ops-bot.pem`) | `/srv/bubble-secrets/`, SOPS-encrypted with age | root-only, decrypted to in-memory `Callable[[], bytes]` by broker | Never crosses internet; in-tmpfs at runtime | fail-closed (broker exits 1) |
-| age decryption key (`/etc/age/key.txt`) | Morty disk, mode 0400 root:root | Root-only via SOPS preexec | Never | fail-closed |
-| Per-dept SOPS env (`/etc/bubble/secrets-<slug>.sops.env`) | Morty disk, encrypted | systemd `ExecStartPre=+` decrypts to `/run/claude-agent-<slug>/env` | Never | `ExecStopPost=+` rm on stop |
+| age decryption key (`/etc/age/key.txt`) | VPS disk, mode 0400 root:root | Root-only via SOPS preexec | Never | fail-closed |
+| Per-dept SOPS env (`/etc/bubble/secrets-<slug>.sops.env`) | VPS disk, encrypted | systemd `ExecStartPre=+` decrypts to `/run/claude-agent-<slug>/env` | Never | `ExecStopPost=+` rm on stop |
 | GitHub App installation tokens (`ghs_*`) | In-memory only in broker process; cached for `expires_at - 60s` | Single-process lifetime; never logged; redacted from any stderr capture | Crosses internet inside `Authorization: bearer` header on git push | fail-closed; `FORBIDDEN_FIELDS` audit guard |
-| Per-dept Telegram bot token | `/etc/bubble/secrets-<slug>.sops.env::DEPT_TELEGRAM_BOT_TOKEN` | Rewritten to `TELEGRAM_BOT_TOKEN=` in tmpfs env (drops morty's prod token) | Crosses internet to api.telegram.org | fail-open (bot silent) |
-| Dept repo content (`outputs/`, `queues/`, `inbox/`) | Public Morty disk + private GitHub repo | claude:claude on Morty | Crosses internet (HTTPS git push) | git-guard fail-closed on path violation |
-| Structural files (`dept.yaml`, `layers/`, `.claude/agents/`, `skills/`, `tools/`) | Same | claude:claude on Morty | Same; **PR-only via `settings_pr` action class** | guard rejects direct push |
-| Audit JSONL (`/var/log/bubble-*/audit.jsonl`) | Morty disk, append-only | root + claude read | Never | metadata-only; secret-leak guards |
+| Per-dept Telegram bot token | `/etc/bubble/secrets-<slug>.sops.env::DEPT_TELEGRAM_BOT_TOKEN` | Rewritten to `TELEGRAM_BOT_TOKEN=` in tmpfs env | Crosses internet to api.telegram.org | fail-open (bot silent) |
+| Dept repo content (`outputs/`, `queues/`, `inbox/`) | VPS disk + private GitHub repo | claude:claude on the VPS | Crosses internet (HTTPS git push) | git-guard fail-closed on path violation |
+| Structural files (`dept.yaml`, `layers/`, `.claude/agents/`, `skills/`, `tools/`) | Same | claude:claude on the VPS | Same; **PR-only via `settings_pr` action class** | guard rejects direct push |
+| Audit JSONL (`/var/log/bubble-*/audit.jsonl`) | VPS disk, append-only | root + claude read | Never | metadata-only; secret-leak guards |
 | Console authentication | Tailscale-fronted port + bearer token | {{OPERATOR}}'s Mac on Tailscale mesh only | Never (Tailscale-only) | 401 on missing/wrong bearer |
 
 The **fail-open** vs **fail-closed** split is deliberate: anything touching authorization or git writes is fail-closed (broker, guard, schema validation). Anything touching observability (Telegram pings, heartbeats) is fail-open so a Telegram outage doesn't wedge the loop.
@@ -160,7 +160,7 @@ Empirical proof of the quartet contract: `tests/round-trip/test_e2e_dispatch.py`
 | Data | Location | Lifetime | Format |
 |---|---|---|---|
 | Canonical dept state | `vdk888/bubble-ops-<slug>` on GitHub | Permanent (git history = audit) | YAML + Markdown |
-| Working copy | `/home/claude/agents/<slug>/` on Morty | Until manual `rm -rf` | git clone |
+| Working copy | `/home/claude/agents/<slug>/` on the VPS | Until manual `rm -rf` | git clone |
 | Secrets | `/etc/bubble/secrets-<slug>.sops.env` | Permanent (encrypted) | SOPS+age |
 | Decrypted env | `/run/claude-agent-<slug>/env` | Process lifetime (tmpfs, `ExecStopPost=+/bin/rm`) | KEY=val |
 | GitHub App installation token | Broker process memory | `expires_at - 60s` (max 60 min TTL) | string `ghs_*` |
@@ -169,7 +169,7 @@ Empirical proof of the quartet contract: `tests/round-trip/test_e2e_dispatch.py`
 | Heartbeat | `~/scripts/emit_heartbeat.sh` → `monitoring/heartbeats.jsonl` in Rick_RnD | Append-only | JSONL |
 | Dry-run sandbox | `outputs/dry-run/<ts>/` (under any dept root) | Manual cleanup | Same 4-file quartet, deterministic with `--seed=` |
 | Onboarding state | `onboarding/STATE.yaml` on `onboarding/<slug>` branch | Until merged at activation | YAML, schema state.schema.yaml |
-| Console runtime state | None (stateless; reads GitHub + Morty live) | N/A | N/A |
+| Console runtime state | None (stateless; reads GitHub + VPS live) | N/A | N/A |
 
 ---
 
@@ -187,7 +187,7 @@ The 12-step build produced 11 empirically-documented failure modes worth knowing
 | 6 | **Broker MCP disconnect** | `bubble-token-broker` subprocess returns non-zero or stdout is not `ghs_*` | Guard checks `_token.startswith("ghs_")` before invoking git; audit:mint_failed; fail-closed |
 | 7 | **Double-cron tick** | Cloud Routine + `/loop` both run in the same window, writing to the same `outputs/<date>/<layer>/` | Routines read `.last-run` and skip if newer than the layer's cadence ("fresh enough" guard) |
 | 8 | **Dry-run fixture path traversal** | A malicious `recurring_missions[0].output_queue` containing `../../etc/passwd` | Schema enforces `pattern: ^queues/.+/?$` on `output_queue:`; dry-run runner refuses outside dept root |
-| 9 | **journald flag plumbed but never activated on Morty** (STEP-11 Fix 1) | `journalctl SYSLOG_IDENTIFIER=bubble-token-broker` returns "No entries" despite 100+ mints | systemd unit needs `Environment=BUBBLE_BROKER_JOURNAL=on`; broker wrapper forwards `--journal "$BUBBLE_BROKER_JOURNAL"` |
+| 9 | **journald flag plumbed but never activated on the VPS** (STEP-11 Fix 1) | `journalctl SYSLOG_IDENTIFIER=bubble-token-broker` returns "No entries" despite 100+ mints | systemd unit needs `Environment=BUBBLE_BROKER_JOURNAL=on`; broker wrapper forwards `--journal "$BUBBLE_BROKER_JOURNAL"` |
 | 10 | **AppleDouble files (`._*`)** leaked from Mac `rsync` (QA-FIXES-COMPLEMENT) | `find /opt/bubble-token-broker -name '._*'` returned 22 entries owned by uid 501 | rsync `--exclude='._*'`; cleanup in INSTALL-ON-MORTY.md |
 | 11 | **Branch protection paywalled on private repos** (QA-FIXES-COMPLEMENT Fix A) | `gh api .../branches/main/protection` returns HTTP 403 with "Upgrade to GitHub Pro" | Pivoted to `.github/CODEOWNERS` + path-policy GitHub Actions workflow; CODEOWNERS is the live defense |
 | 12 | **Heartbeat fires once in 11 minutes** (QA-AUDIT-J2 finding) | `monitoring/heartbeats.jsonl` shows isolated entries, no `*/20` cadence | `ops-loop-watchdog.timer` (40-min threshold) Telegrams {{OPERATOR}} when stale; Mac scheduled-tasks registry needs explicit cron entry |
@@ -253,9 +253,9 @@ Console is FastAPI; routes live in `console/routes/`. Currently 8 route files pr
 | Bootstrap scripts | `scripts/` (bootstrap-dept.sh + validate-step.sh + activate-dept.sh + deploy-to-morty.sh + run-dry-run.sh + lib/) | The CLI entry points an operator types | 27 tests (UX-2) + 9 tests (UX-5) + activation tests |
 | Console | `console/` (FastAPI + HTMX, main.py + 8 routes + 12 templates) | The single-binary front-end on {{OPERATOR}}'s Mac | 21 tests |
 | Systemd unit template | `deploy/templates/ops-loop-dept.service.template` | Rendered per dept by deploy-to-morty.sh | tested via test_deploy_to_morty.py |
-| Watchdog | `scripts/loop-watchdog.sh` + `scripts/ops-loop-watchdog.{service,timer}` | 40-min cadence health check → Telegram on stale | live on Morty |
+| Watchdog | `scripts/loop-watchdog.sh` + `scripts/ops-loop-watchdog.{service,timer}` | 40-min cadence health check → Telegram on stale | live on the VPS |
 | Round-trip E2E | `tests/round-trip/test_e2e_dispatch.py` + `test_layer4_three_outputs.py` | Against live GitHub fixture | 6 + 11 = 17 assertions |
-| Observable non-negotiables | `tests/non_negotiables_observable.py` | 6 read-only health checks against live Morty + GitHub | 6 assertions |
+| Observable non-negotiables | `tests/non_negotiables_observable.py` | 6 read-only health checks against the live VPS + GitHub | 6 assertions |
 | Subagent perms | `tests/subagent-perms/*` | 4 personas × cross-pollination + perm-violation tests | 42 tests |
 
 Total: ~340+ individual test functions across the project (excluding `bubble-vps-platform` which adds another 209).

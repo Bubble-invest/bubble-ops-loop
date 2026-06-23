@@ -2,7 +2,7 @@
 
 **Audience:** an engineer who knows Python + Docker + Linux + GitHub but is fresh to `bubble-ops-loop`. After reading this guide you can deploy, operate, debug, and extend the framework end-to-end.
 
-**Status:** Live as of 2026-05-20. One reference department (`vdk888/bubble-ops-fixture`) is provisioned end-to-end on the Morty VPS; the Maya migration is the next planned department.
+**Status:** Live as of 2026-05-20. One reference department (`vdk888/bubble-ops-fixture`) is provisioned end-to-end on the VPS; the Maya migration is the next planned department.
 
 **Companion docs:** `docs/ARCHITECTURE.md` (post-build empirical map) · Notion source-of-truth `bubble-ops-loop — Architecture finale simplifiée` (id `366cfc52-0644-81dc-a58a-e2a41e79e11a`) · `MVP-ROADMAP.md` (12-step chronological build log).
 
@@ -12,7 +12,7 @@
 
 Bubble Invest runs a stack of department-shaped agents (Maya does sales, Ben runs the fund, Tony coordinates, Miranda owns content, Eliot owns security). Before this framework, each department was a heap of disjointed cron jobs — every cron embedded its own "see something / decide / act / log" logic, every department wrote its own Telegram pings, every behaviour change required editing N crons in M repos. Adding a new department took days. Pausing a runaway action required hunting through `crontab -l` on a Mac that sometimes sleeps.
 
-`bubble-ops-loop` collapses that into **one operating shape, applied per department**: each dept owns a GitHub repo with a `dept.yaml` manifest, four OODA layers (Data Refresh → Research → Execution → Risk Control), a flat `queues/` filesystem-as-bus, a `outputs/<date>/<layer>/` rolling audit trail, and a small set of "subagents" with isolated permissions. A `/loop` agent on the **Morty VPS** is the main engine — one long-running tmux-less systemd unit per dept, ticking every 20 minutes. **Four global Anthropic Cloud Routines** act as a daily safety net so the system keeps moving even if Morty dies.
+`bubble-ops-loop` collapses that into **one operating shape, applied per department**: each dept owns a GitHub repo with a `dept.yaml` manifest, four OODA layers (Data Refresh → Research → Execution → Risk Control), a flat `queues/` filesystem-as-bus, a `outputs/<date>/<layer>/` rolling audit trail, and a small set of "subagents" with isolated permissions. A `/loop` agent on the **VPS** is the main engine — one long-running tmux-less systemd unit per dept, ticking every 20 minutes. **Four global Anthropic Cloud Routines** act as a daily safety net so the system keeps moving even if the VPS dies.
 
 Three deliberate constraints make it operable rather than ornate:
 1. **No central orchestrator.** Git is the bus and the audit log. `queues/` directories are inboxes; `outputs/<date>/<layer>/` are append-only timelines.
@@ -34,7 +34,7 @@ Every department subscribes to one or more of four OODA layers. Each layer is a 
 | 3 | **Execution** | every 20 min | `executor` | `inbox/decisions/<id>.yaml` (human-validated) | broker actions + `outputs/<date>/3/exec-log.jsonl` |
 | 4 | **Risk Control** | daily 22:00 UTC | `mandate-guardian` | the full day's `outputs/<date>/{1,2,3}/` + `MANDATE.md` | `outputs/<date>/4/risk-brief.md` + `risk-kpis.yaml` + `outputs/<date>/management-export.yaml` |
 
-**Real-world flow observed on the fixture (STEP-8-ROUND-TRIP-RESULTS.md):** at 18:35 UTC a queue item `queues/research/research-roundtrip-test-001.yaml` was pushed to GitHub. The Morty `*/20` cron tick fired at 18:41:16 UTC; the `task-orchestrator` Layer-2 subagent ran, wrote the 4-file output quartet + a `queues/gates/gate-roundtrip-test-001.yaml`, and pushed commit `1a31ab7` to `main` at 18:44:52 UTC — **9 min 52 s end-to-end**, zero human touch. The input queue item was correctly consumed (GitHub Contents API returns 404 for the original path). Six pytest assertions in `tests/round-trip/test_e2e_dispatch.py` pass against the live GitHub state.
+**Real-world flow observed on the fixture (STEP-8-ROUND-TRIP-RESULTS.md):** at 18:35 UTC a queue item `queues/research/research-roundtrip-test-001.yaml` was pushed to GitHub. The VPS `*/20` cron tick fired at 18:41:16 UTC; the `task-orchestrator` Layer-2 subagent ran, wrote the 4-file output quartet + a `queues/gates/gate-roundtrip-test-001.yaml`, and pushed commit `1a31ab7` to `main` at 18:44:52 UTC — **9 min 52 s end-to-end**, zero human touch. The input queue item was correctly consumed (GitHub Contents API returns 404 for the original path). Six pytest assertions in `tests/round-trip/test_e2e_dispatch.py` pass against the live GitHub state.
 
 **Layer 4 specifically writes 3 outputs**, not one — `risk-brief.md` (qualitative), `risk-kpis.yaml` (numeric KPI snapshot), and `outputs/<date>/management-export.yaml` (compact, hierarchy-consumable, schema-validated against `management-export.schema.yaml`). The management export is the **only file a parent department is allowed to read** from its child.
 
@@ -93,7 +93,7 @@ Every gated action class declares an autonomy mode in `dept.yaml::gate_policies.
 
 ## 5. Token broker + git guard — the no-PAT chain
 
-Every git write from a `/loop` agent flows through two co-resident components on Morty: `bubble-token-broker` (mints short-lived GitHub-App installation tokens) and `bubble-git-guard` (verifies path policy before any push). Together they replace the long-lived PAT model that v1 used. The `GITHUB_TOKEN` environment variable is **stripped** from the env passed to `git push`; there is no fallback path.
+Every git write from a `/loop` agent flows through two co-resident components on the VPS: `bubble-token-broker` (mints short-lived GitHub-App installation tokens) and `bubble-git-guard` (verifies path policy before any push). Together they replace the long-lived PAT model that v1 used. The `GITHUB_TOKEN` environment variable is **stripped** from the env passed to `git push`; there is no fallback path.
 
 ```
 ops-loop-fixture.service
@@ -152,9 +152,9 @@ The console at `/agents/<slug>/onboarding` renders the 3-pane Notion mock-up: st
 
 ---
 
-## 7. Deploying to Morty
+## 7. Deploying to the VPS
 
-Once a department is activated on GitHub (`status: live`), Morty needs a systemd unit. The flow is two scripts + one Telegram pairing.
+Once a department is activated on GitHub (`status: live`), the VPS needs a systemd unit. The flow is two scripts + one Telegram pairing.
 
 ```
 $ ./scripts/deploy-to-morty.sh --slug=miranda --dry-run     # renders the unit, prints every SSH command, no side effects
@@ -168,7 +168,7 @@ The script renders `deploy/templates/ops-loop-dept.service.template` with three 
 
 The deploy script **refuses** to touch `/etc/systemd/system/claude-agent-morty.service` (MD5 `ecfc78ac20e182ca302e5081e2c80943`). Production unit is sacred; deploys add sibling units only.
 
-After provisioning, pair the dept's dedicated Telegram bot (one bot per dept; the fixture uses `@bubtiktikbot`, morty uses `@ContentbubbleClawbot`) by sending `/pair` from {{OPERATOR}}'s phone. The dept's `.claude/channels/telegram-<slug>/access.json` records the chat_id.
+After provisioning, pair the dept's dedicated Telegram bot (one bot per dept; the fixture uses `@bubtiktikbot`, the concierge uses `@ContentbubbleClawbot`) by sending `/pair` from {{OPERATOR}}'s phone. The dept's `.claude/channels/telegram-<slug>/access.json` records the chat_id.
 
 Verify:
 ```
@@ -224,7 +224,7 @@ $ diff -q schemas-draft/examples/dept-ops-leaf-fixture.yaml <(gh api repos/vdk88
 ```
 QA-AUDIT-J2 confirms this exits 0 on the live fixture today.
 
-**Runbook snippet — preview a Morty systemd unit before provisioning**
+**Runbook snippet — preview a VPS systemd unit before provisioning**
 
 ```
 $ ./scripts/deploy-to-morty.sh --slug=miranda --dry-run | head -30
@@ -278,7 +278,7 @@ These six are structural — they must be true on day 1 of every dept or they le
 - **action class** — One of the four token-broker permission tiers: `runtime_read`, `runtime_write_own`, `open_priority_pr`, `settings_pr`. Each maps to a minimal GitHub-App permission set at mint time.
 - **filesystem-as-bus** — The architectural doctrine that all inter-layer / inter-dept communication happens via files in a git repo. No DB, no message queue, no orchestrator.
 - **belt + suspenders** — The dual-rail safety doctrine: `/loop` is the main engine, Cloud Routines are the daily safety net; broker scopes the token, guard scopes the path; CODEOWNERS guards at the GitHub side, git-guard guards at the push side.
-- **Morty** — The Hetzner CX33 VPS (`{{VPS_HOST}}.tailnet`) hosting all `/loop` sessions. Provisioned by `bubble-vps-platform` (pyinfra, 209+ tests).
+- **VPS** — The Hetzner CX33 VPS (`{{VPS_HOST}}.tailnet`) hosting all `/loop` sessions. Provisioned by `bubble-vps-platform` (pyinfra, 209+ tests).
 
 ---
 
@@ -286,7 +286,7 @@ These six are structural — they must be true on day 1 of every dept or they le
 
 The Notion page records nine Telegram iterations between {{OPERATOR}} and Lab before the architecture stabilised. Five operating rules came out of those rounds and are non-obvious enough to call out:
 
-1. **The dept owns its own execution.** Cloud Routines and the Morty `/loop` both write to the same `outputs/` tree on the same git repo; they never coordinate via a third party. The "fresh enough" guard (`.last-run` newer than cadence → skip) is the only deconfliction mechanism. Notion: *"Le département cible reste propriétaire de son exécution."*
+1. **The dept owns its own execution.** Cloud Routines and the VPS `/loop` both write to the same `outputs/` tree on the same git repo; they never coordinate via a third party. The "fresh enough" guard (`.last-run` newer than cadence → skip) is the only deconfliction mechanism. Notion: *"Le département cible reste propriétaire de son exécution."*
 
 2. **Git is the bus AND the audit log.** Every state transition is a commit. The git log on a dept repo IS the day's narrative — you do not need a separate event store. This is why every layer write commits the 4-file quartet rather than streaming bytes into a database.
 

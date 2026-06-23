@@ -1,7 +1,7 @@
-# Disaster Recovery — Bubble Invest VPS (Morty)
+# Disaster Recovery — Bubble Invest VPS
 
-**Audience :** toi, à 3 h du matin, stressé, devant un Morty qui ne répond plus.
-**Promesse :** suis ce document dans l'ordre. Il t'amène d'un Morty mort à un Morty vivant en moins de 4 heures (la phase 1 du sprint sécurité 2026-05-21 vise ce SLA).
+**Audience :** toi, à 3 h du matin, stressé, devant un VPS qui ne répond plus.
+**Promesse :** suis ce document dans l'ordre. Il t'amène d'un VPS mort à un VPS vivant en moins de 4 heures (la phase 1 du sprint sécurité 2026-05-21 vise ce SLA).
 
 **Docs et scripts compagnons :**
 - `docs/DISASTER-RECOVERY-AGE-KEY.md` — détail du backup/restore de la clé age (deliverable A)
@@ -10,7 +10,7 @@
 - `scripts/morty-restic-setup.sh` + `scripts/morty-restic-restore-doc.sh` — Restic
 - `scripts/morty-security-audit.sh` — audit de posture (deliverable D)
 
-**Avant tout :** respire. Si Morty est mort mais que :
+**Avant tout :** respire. Si le VPS est mort mais que :
 - Tu as encore accès au Mac de {{OPERATOR}} ou de {{OPERATOR_2}}
 - Tu as encore accès au repo `bubble-vps-data` (privé, GitHub)
 - Tu te souviens des passphrases (1Password)
@@ -19,21 +19,21 @@
 
 ---
 
-## 1. Si Morty est mort (playbook chronologique complet)
+## 1. Si le VPS est mort (playbook chronologique complet)
 
 ### Étape 1 — Provisionner un nouveau VPS Hetzner CX33
 
 Cette étape est **MANUELLE**. Rick ne peut pas l'automatiser sans `HCLOUD_TOKEN` ({{OPERATOR}} doit fournir le token API Hetzner, pas encore configuré au moment de ce sprint).
 
 Va sur le dashboard Hetzner (https://console.hetzner.cloud/), section Cloud, et crée :
-- **Type d'instance :** CX33 (ARM64, 8 GB RAM, 80 GB SSD) — c'est l'identique de l'ancien Morty.
+- **Type d'instance :** CX33 (ARM64, 8 GB RAM, 80 GB SSD) — c'est l'identique de l'ancien VPS.
 - **OS :** Ubuntu 24.04 LTS.
 - **Région :** Nuremberg ou Falkenstein (latence Europe).
-- **Nom :** `morty` (réutilise le même nom — l'alias SSH `hetzner` dans `~/.ssh/config` pointera dessus).
+- **Nom :** `{{VPS_HOST}}` (réutilise le même nom — l'alias SSH `hetzner` dans `~/.ssh/config` pointera dessus).
 - **Clé SSH :** ajoute ta clé publique (`~/.ssh/id_ed25519.pub` de {{OPERATOR}} ou de {{OPERATOR_2}}).
 - **Réseau :** firewall par défaut suffit pour démarrer.
 
-Note l'IP publique du nouveau Morty (ex: `1.2.3.4`).
+Note l'IP publique du nouveau VPS (ex: `1.2.3.4`).
 
 ### Étape 2 — Mettre à jour l'alias SSH
 
@@ -47,7 +47,7 @@ Sur le Mac qui lance les scripts :
 #       User root
 #       IdentityFile ~/.ssh/id_ed25519
 ssh hetzner 'hostname && uname -a'
-# Doit répondre : morty Linux ... aarch64 ...
+# Doit répondre : {{VPS_HOST}} Linux ... aarch64 ...
 ```
 
 ### Étape 3 — Restaurer `/etc/age/key.txt`
@@ -60,7 +60,7 @@ bash scripts/restore-age-key.sh \
     | ssh hetzner 'install -m 400 /dev/stdin /etc/age/key.txt'
 ```
 
-`age` te prompte la passphrase (celle stockée dans 1Password sous le nom `age-key-morty backup passphrase`). Le clair de la clé voyage uniquement dans le pipe SSH, puis `install` l'écrit en mode 400 root:root sur Morty.
+`age` te prompte la passphrase (celle stockée dans 1Password sous le nom `age-key-morty backup passphrase`). Le clair de la clé voyage uniquement dans le pipe SSH, puis `install` l'écrit en mode 400 root:root sur le VPS.
 
 Vérifie :
 
@@ -74,7 +74,7 @@ ssh hetzner 'ls -la /etc/age/key.txt && wc -c /etc/age/key.txt'
 Le repo privé `bubble-vps-data` contient déjà tous les `*.sops.env` et `*.sops.pem` chiffrés. Maintenant que `/etc/age/key.txt` est restauré, on les remet en place.
 
 ```bash
-# Cloner le repo de données sur le nouveau Morty.
+# Cloner le repo de données sur le nouveau VPS.
 ssh hetzner 'sudo install -d -m 700 /srv && cd /srv && sudo git clone https://github.com/<owner>/bubble-vps-data.git'
 
 # Remettre les fichiers à leur place canonique.
@@ -103,7 +103,7 @@ done
 
 ### Étape 6 — Restaurer la mémoire agent depuis Restic (si disponible)
 
-**Phase 1 :** le repo Restic était local sur l'ancien Morty → il est **mort avec lui**. Tu n'as donc rien à restaurer ici, sauf si {{OPERATOR}} a déjà migré vers off-site (B2 ou Storage Box).
+**Phase 1 :** le repo Restic était local sur l'ancien VPS → il est **mort avec lui**. Tu n'as donc rien à restaurer ici, sauf si {{OPERATOR}} a déjà migré vers off-site (B2 ou Storage Box).
 
 **Phase 2 (off-site activée) :** restaure `/home/claude/.claude/agent-memory/` + `/home/claude/.claude/projects/` depuis le repo Restic distant.
 
@@ -141,7 +141,7 @@ Envoie `/start` aux bots Telegram de chaque dept pour re-pairer ton chat_id.
 
 ## 2. Si seulement `/etc/age/key.txt` est corrompu
 
-Cas moins grave : le reste de Morty est intact, seule la clé age a sauté (suppression accidentelle, disque corrompu sur ce fichier, etc.).
+Cas moins grave : le reste du VPS est intact, seule la clé age a sauté (suppression accidentelle, disque corrompu sur ce fichier, etc.).
 
 ```bash
 # Restaurer uniquement la clé depuis le backup chiffré.
@@ -171,7 +171,7 @@ Cf. `docs/DISASTER-RECOVERY-AGE-KEY.md` pour le détail du flux.
 - Pas de mémoire agent, pas de transcripts
 
 **Mitigation préventive (à faire MAINTENANT, pas après l'incident) :**
-- Stocker la passphrase Restic dans 1Password sous `Morty restic password`, partagée entre {{OPERATOR}} et {{OPERATOR_2}}.
+- Stocker la passphrase Restic dans 1Password sous `VPS restic password`, partagée entre {{OPERATOR}} et {{OPERATOR_2}}.
 - Imprimer la passphrase sur papier et la déposer dans le coffre physique.
 - Idem pour la passphrase du backup age-key (`age-key-morty backup passphrase`).
 
@@ -193,7 +193,7 @@ Scénario extrême : ton compte GitHub a été compromis ou supprimé, et tu n'a
 
 **Ce qu'on a encore en local sur les machines de {{OPERATOR}} et {{OPERATOR_2}} :**
 - Tous les clones locaux dans `~/claude-workspaces/Rick_RnD/projects/` — chaque clone contient le repo complet (objects, refs, branches), pas juste le working tree.
-- Le backup age-key chiffré (`bubble-vps-data/disaster-recovery/age-key-morty.age`) — il est sur ton disque local, pas seulement sur GitHub.
+- Le backup age-key chiffré (`bubble-vps-data/disaster-recovery/age-key-morty.age`) — il est sur ton disque local, pas seulement sur GitHub. (Filename kept as-is; the file backs up the VPS age key.)
 - Les fichiers SOPS chiffrés (idem — clonés en local).
 
 ```bash
@@ -243,19 +243,19 @@ ssh hetzner 'sudo rm -rf /tmp/drill-*'
 
 # 5. Vérifier que tu te souviens des deux passphrases (1Password) :
 #    - age-key-morty backup passphrase
-#    - Morty restic password
+#    - VPS restic password
 ```
 
 **Drill complet (1 demi-journée, à faire chaque semestre) :**
 
-Provisionner un VPS Hetzner CX21 (plus petit, moins cher) en mode jetable, et dérouler les étapes 1-7 de la section 1 ci-dessus jusqu'à un Morty fonctionnel. Puis détruire le VPS jetable. Si tu as buté sur une étape, mettre à jour ce document.
+Provisionner un VPS Hetzner CX21 (plus petit, moins cher) en mode jetable, et dérouler les étapes 1-7 de la section 1 ci-dessus jusqu'à un VPS fonctionnel. Puis détruire le VPS jetable. Si tu as buté sur une étape, mettre à jour ce document.
 
 ---
 
 ## 6. Hors-scope de ce sprint (limites connues)
 
 Ce sprint sécurité ne couvre PAS :
-- Authentification 2FA SSH sur Morty (mot de passe + token + clé)
+- Authentification 2FA SSH sur le VPS (mot de passe + token + clé)
 - Tripwire / AIDE (détection d'intrusion sur fichiers système)
 - Durcissement `PermitRootLogin` (passage en `prohibit-password`)
 - Fail2ban pour SSH
@@ -263,4 +263,4 @@ Ce sprint sécurité ne couvre PAS :
 - HCLOUD_TOKEN configuré → snapshot Hetzner automatique
 - B2 / Storage Box configuré → backup off-site réel
 
-Ces items sont dans le backlog. Le sprint actuel adresse la criticité #1 : « si Morty meurt, peut-on revenir en moins de 4 heures ? » — désormais oui, **à condition que les passphrases 1Password soient sauvegardées**.
+Ces items sont dans le backlog. Le sprint actuel adresse la criticité #1 : « si le VPS meurt, peut-on revenir en moins de 4 heures ? » — désormais oui, **à condition que les passphrases 1Password soient sauvegardées**.

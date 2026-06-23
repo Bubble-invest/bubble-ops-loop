@@ -36,7 +36,7 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 | `CONSOLE_BIND_HOST` | `127.0.0.1` | Bind host (do NOT change to `0.0.0.0`) |
 | `CONSOLE_BIND_PORT` | `8642` | Bind port |
 
-## systemd unit (Morty, follow-up — UX-5)
+## systemd unit (VPS, follow-up — UX-5)
 
 A template lives at `deploy/bubble-ops-console.service.template`. UX-5 will deliver the pyinfra integration for `bubble-vps-platform`.
 

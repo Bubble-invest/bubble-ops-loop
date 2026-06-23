@@ -1,4 +1,4 @@
-# Backup Strategy — Morty (Bubble Invest VPS)
+# Backup Strategy — Bubble Invest VPS
 
 **Statut :** phase 1 opérationnelle depuis le sprint sécurité 2026-05-21.
 **Audience :** {{OPERATOR}} (opérateur) et tout dept-manager qui aurait besoin de comprendre ce qui est sauvegardé et comment restaurer.
@@ -7,7 +7,7 @@
 
 ## 1. Modèle de menace en une phrase
 
-Avant ce sprint, **zéro backup automatisé** sur Morty (CX33 Hetzner). Pas de borg, pas de restic, pas de snapshot Hetzner, pas d'off-site. Si Morty tombe, on perd :
+Avant ce sprint, **zéro backup automatisé** sur le VPS (CX33 Hetzner). Pas de borg, pas de restic, pas de snapshot Hetzner, pas d'off-site. Si le VPS tombe, on perd :
 - `/etc/age/key.txt` — la clé racine SOPS (single point of failure absolu)
 - `/etc/bubble/` — secrets chiffrés (récupérables seulement avec la clé age ci-dessus)
 - `/srv/bubble-secrets/` — clé privée de l'App GitHub `bubble-ops-bot`
@@ -39,7 +39,7 @@ Restic configuré avec un **repo local** `/var/backups/bubble-restic` (mode 700 
 
 ### Cadence + rétention
 
-- **Backup :** toutes les 6h (00:00 / 06:00 / 12:00 / 18:00 UTC), `Persistent=true` → rattrapage si Morty éteint au tick.
+- **Backup :** toutes les 6h (00:00 / 06:00 / 12:00 / 18:00 UTC), `Persistent=true` → rattrapage si le VPS éteint au tick.
 - **Forget + prune :** 1x/jour à 03:30 UTC.
 - **Rétention :** 24 snapshots horaires, 7 journaliers, 4 hebdomadaires.
 
@@ -52,14 +52,14 @@ Soit ~5 semaines de rétention rolling.
 
 ## 3. TODO — passage off-site (phase 2)
 
-**Limite critique de la phase 1 :** le repo est sur le même disque que Morty. Si Morty meurt (disque, hack, oups `rm -rf`), le backup meurt avec lui. C'est **mieux que rien** (recovery point-in-time + déduplication + chiffrement client-side + protection contre les corruptions partielles), mais ce n'est PAS du vrai backup off-site.
+**Limite critique de la phase 1 :** le repo est sur le même disque que le VPS. Si le VPS meurt (disque, hack, oups `rm -rf`), le backup meurt avec lui. C'est **mieux que rien** (recovery point-in-time + déduplication + chiffrement client-side + protection contre les corruptions partielles), mais ce n'est PAS du vrai backup off-site.
 
 Migration prévue dès que {{OPERATOR}} fournit les credentials :
 
 | Cible | Coût | Setup | Pour qui |
 |---|---|---|---|
-| **Backblaze B2** | ~1€/mois pour 20GB | `RESTIC_REPOSITORY=b2:bucket-name:bubble-morty` + `B2_ACCOUNT_ID` + `B2_ACCOUNT_KEY` | Recommandé : pay-as-you-go, S3-compatible, restic-native |
-| **Hetzner Storage Box** | 3.81€/mois pour 100GB | `RESTIC_REPOSITORY=sftp:user@u123456.your-storagebox.de:/bubble-morty` | Si on veut rester chez Hetzner (un seul fournisseur, simpler billing) |
+| **Backblaze B2** | ~1€/mois pour 20GB | `RESTIC_REPOSITORY=b2:bucket-name:bubble-vps` + `B2_ACCOUNT_ID` + `B2_ACCOUNT_KEY` | Recommandé : pay-as-you-go, S3-compatible, restic-native |
+| **Hetzner Storage Box** | 3.81€/mois pour 100GB | `RESTIC_REPOSITORY=sftp:user@u123456.your-storagebox.de:/bubble-vps` | Si on veut rester chez Hetzner (un seul fournisseur, simpler billing) |
 
 La migration consiste à :
 1. Mettre à jour `Environment=RESTIC_REPOSITORY=` dans `bubble-restic-backup.service` (template)
@@ -130,7 +130,7 @@ ssh hetzner 'sudo ... restic restore <SNAPSHOT_ID> --target /tmp/rollback'
 
 ### Cas 3 — disaster recovery complet
 
-Cf. `docs/DISASTER-RECOVERY.md` pour le playbook chronologique (provisionner nouveau VPS → restaurer clé age → restaurer le reste). En phase 1, **si Morty est mort, le repo Restic est mort avec lui** — on s'appuie alors sur `bubble-vps-data` (git) + `scripts/restore-age-key.sh` + reclones GitHub.
+Cf. `docs/DISASTER-RECOVERY.md` pour le playbook chronologique (provisionner nouveau VPS → restaurer clé age → restaurer le reste). En phase 1, **si le VPS est mort, le repo Restic est mort avec lui** — on s'appuie alors sur `bubble-vps-data` (git) + `scripts/restore-age-key.sh` + reclones GitHub.
 
 ## 6. Drill recommandé
 
@@ -138,7 +138,7 @@ Cf. `docs/DISASTER-RECOVERY.md` pour le playbook chronologique (provisionner nou
 
 ## 7. Coût opérationnel (phase 1)
 
-- Disque Morty : `/var/backups/bubble-restic` initialement ~1-2 GB après dédup, croît lentement.
+- Disque VPS : `/var/backups/bubble-restic` initialement ~1-2 GB après dédup, croît lentement.
 - CPU pendant le backup : `Nice=10`, `IOSchedulingClass=best-effort` → invisible.
 - Bande passante : zéro (local).
 

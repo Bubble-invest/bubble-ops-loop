@@ -1,21 +1,21 @@
-# Disaster Recovery — Clé age de Morty
+# Disaster Recovery — Clé age du VPS
 
 **Statut :** opérationnel depuis le sprint sécurité 2026-05-21.
-**Risque adressé :** perte de `/etc/age/key.txt` sur Morty rend la totalité des secrets SOPS (env files, clé privée de l'App GitHub `bubble-ops-bot`) **inrécupérable**.
+**Risque adressé :** perte de `/etc/age/key.txt` sur le VPS rend la totalité des secrets SOPS (env files, clé privée de l'App GitHub `bubble-ops-bot`) **inrécupérable**.
 
 ---
 
 ## 1. Le problème en une phrase
 
-`/etc/age/key.txt` fait 184 octets, est en mode 400 root, et n'a aucune copie nulle part. C'est la racine de la chaîne SOPS pour toute la stack Bubble Invest. Si Morty meurt, tous les fichiers `*.sops.env` et `*.sops.pem` du repo `bubble-vps-data` deviennent du bruit chiffré sans clé.
+`/etc/age/key.txt` fait 184 octets, est en mode 400 root, et n'a aucune copie nulle part. C'est la racine de la chaîne SOPS pour toute la stack Bubble Invest. Si le VPS meurt, tous les fichiers `*.sops.env` et `*.sops.pem` du repo `bubble-vps-data` deviennent du bruit chiffré sans clé.
 
 ## 2. La parade
 
-On re-chiffre la clé age **symétriquement** avec une passphrase humaine (saisie par {{OPERATOR}}), via `age --encrypt --passphrase`. Le ciphertext qui en résulte est un fichier ASCII-armored qu'on commit dans `projects/bubble-vps-data/disaster-recovery/age-key-morty.age`. Trois propriétés en sortent :
+On re-chiffre la clé age **symétriquement** avec une passphrase humaine (saisie par {{OPERATOR}}), via `age --encrypt --passphrase`. Le ciphertext qui en résulte est un fichier ASCII-armored qu'on commit dans `projects/bubble-vps-data/disaster-recovery/age-key-morty.age` (nom du fichier conservé tel quel). Trois propriétés en sortent :
 
 1. **Le clair ne touche jamais le disque** — il transite uniquement dans le pipe `ssh hetzner 'sudo cat /etc/age/key.txt' | age --encrypt --passphrase --armor`.
 2. **Le ciphertext est commit-safe** — sans la passphrase, c'est inexploitable. La passphrase est stockée en 1Password par {{OPERATOR}}.
-3. **Le backup voyage avec le repo** — tous les clones de `bubble-vps-data` (Mac de {{OPERATOR}}, Morty, GitHub privé) portent la copie. Plus de single point of failure.
+3. **Le backup voyage avec le repo** — tous les clones de `bubble-vps-data` (Mac de {{OPERATOR}}, le VPS, GitHub privé) portent la copie. Plus de single point of failure.
 
 ## 3. Faire le backup (étape unique, à refaire si la clé age change)
 
@@ -35,7 +35,7 @@ git commit -m "disaster-recovery: backup age key (passphrase-encrypted)"
 git push
 ```
 
-## 4. Restaurer la clé sur un Morty neuf
+## 4. Restaurer la clé sur un nouveau VPS
 
 Tu as provisionné un nouveau VPS Hetzner CX33 (cf. `docs/DISASTER-RECOVERY.md`, étape 1). Tu as ajouté ta clé SSH. Reste à remettre `/etc/age/key.txt` en place.
 
@@ -47,11 +47,11 @@ bash scripts/restore-age-key.sh \
     | ssh root@<new-morty-ip> 'install -m 400 /dev/stdin /etc/age/key.txt'
 ```
 
-`age` prompte la passphrase sur `/dev/tty` (donc tu la saisis sur ton terminal local). Le clair sort sur stdout, traverse le pipe SSH, et `install -m 400` l'écrit directement sur Morty avec les bons droits (root:root, 400). Pas de fichier temporaire.
+`age` prompte la passphrase sur `/dev/tty` (donc tu la saisis sur ton terminal local). Le clair sort sur stdout, traverse le pipe SSH, et `install -m 400` l'écrit directement sur le VPS avec les bons droits (root:root, 400). Pas de fichier temporaire.
 
 ## 5. Vérification post-restauration
 
-Sur le nouveau Morty :
+Sur le nouveau VPS :
 
 ```bash
 ssh root@<new-morty-ip> 'ls -la /etc/age/key.txt && wc -c /etc/age/key.txt'

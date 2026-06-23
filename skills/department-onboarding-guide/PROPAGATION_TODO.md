@@ -3,7 +3,7 @@
 **Why this file exists:** `/home/claude/bubble-ops-loop/skills/department-onboarding-guide/`
 on the box is **NOT a git repo**. The changes below were made LOCAL-ONLY by the
 final systemic anti-regression pass. They will NOT persist across a redeploy and
-are NOT yet in the source of truth. The VPS lead (Morty) must propagate them via
+are NOT yet in the source of truth. The VPS lead must propagate them via
 pyinfra into `bubble-vps-data` (the canonical copy of `bubble-ops-loop`), then
 re-deploy.
 

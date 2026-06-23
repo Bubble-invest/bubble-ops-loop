@@ -1,6 +1,6 @@
-# `bubble-ops-loop` — MVP-ROADMAP v2 (Notion-aligned, fixture round-trip on Morty)
+# `bubble-ops-loop` — MVP-ROADMAP v2 (Notion-aligned, fixture round-trip on the VPS)
 
-**Owner:** Rick (R&D) • **Co-builder:** {{OPERATOR}} (founder) • **Target:** Morty ({{VPS_HOST}})
+**Owner:** Rick (R&D) • **Co-builder:** {{OPERATOR}} (founder) • **Target:** {{VPS_HOST}}
 **Source of truth:** Notion page `bubble-ops-loop — Architecture finale simplifiée` (id `366cfc52-0644-81dc-a58a-e2a41e79e11a`, last edited **2026-05-20T14:01 UTC** by {{OPERATOR}}). Dump at `/tmp/notion_final.txt` (464 lines).
 **Scope:** Smallest possible slice that compiles end-to-end with **full Notion v2 contracts** (not a stripped-down precursor). One fixture dept, one repo, one tmux+systemd unit, one `/loop`.
 **Budget:** ≤5 working days (target: 3).
@@ -34,10 +34,10 @@ Read `/tmp/notion_final.txt` in full. Citation proof: page TL;DR line 7 reads "C
 Re-ran the audit commands. **Zero material change** since the v1 attempt. Confirming the v1 audit (§1.1–§1.6 of `MVP-ROADMAP.bak-v1-incomplete-20260520.md`) still holds:
 
 - `claude-agent-morty.service` → still `active`. ExecStartPre/SOPS pattern unchanged.
-- `gh` on Morty → still **NOT installed**. Git auth = custom `git-credential-helper.sh` + `GITHUB_TOKEN`.
+- `gh` on the VPS → still **NOT installed**. Git auth = custom `git-credential-helper.sh` + `GITHUB_TOKEN`.
 - `Bubble-invest/bubble-ops-fixture` → still does NOT exist. `Bubble-invest/bubble-ops-loop` → still does NOT exist.
 - `/home/claude/depts/` → does not exist yet; will be created by `ops-loop-fixture.service` `ExecStartPre`.
-- Morty disk/RAM/Tailscale/systemd-timers → unchanged.
+- VPS disk/RAM/Tailscale/systemd-timers → unchanged.
 - `/loop` semantics (built-in in v2.1.x, headless-tmux behavior unproven on Linux) → still the load-bearing unknown → **Step 4 dedicated smoke test stays**.
 
 **New since v1:** the Notion page was edited **2026-05-20T14:01** (after v1 MVP-ROADMAP was written at 16:20 local time but with stale Notion context). v2 reflects the post-14:01 architecture in full.
@@ -61,8 +61,8 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
    git pull│ (every tick)                       git push│ (every mutation)
           ▼                                              │
 ┌─────────────────────────────────────────────────────────┴───────────────┐
-│ MORTY VPS ({{VPS_HOST}}, Hetzner CX33)                                    │
-│  systemd: ops-loop-fixture.service (Restart=always, copies morty unit)  │
+│ VPS ({{VPS_HOST}}, Hetzner CX33)                                          │
+│  systemd: ops-loop-fixture.service (Restart=always, copies existing unit pattern)  │
 │   └─ /usr/bin/script -qfc 'loop-autostart.sh' /dev/null   (pty wrap)    │
 │       └─ tmux new-session -A -s ops-loop-fixture                        │
 │           └─ claude --resume --dangerously-skip-permissions \           │
@@ -122,10 +122,10 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 - **Acceptance:** `gh repo view Bubble-invest/bubble-ops-fixture` returns 200; first commit lands.
 - **Effort:** 15 min • **Blocked by:** Step 1.
 
-### Step 3 — Widen Morty's GITHUB_TOKEN to include the fixture repo (15 min)
+### Step 3 — Widen the VPS GITHUB_TOKEN to include the fixture repo (15 min)
 
 - **What:** github.com → Settings → Developer settings → edit the existing PAT in `secrets.sops.env`. Add `Bubble-invest/bubble-ops-fixture` to repo scope (fine-grained) OR confirm `repo` classic scope already covers it.
-- **Verify on Morty:**
+- **Verify on the VPS:**
   ```bash
   ssh hetzner "sudo systemctl restart claude-agent-morty.service && sleep 5 && \
     sudo -u claude bash -c 'source /run/claude-agent/env && \
@@ -135,7 +135,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 - **Acceptance:** `git ls-remote` returns HEAD SHA.
 - **Effort:** 15 min • **Blocked by:** Step 2.
 
-### Step 4 — Smoke-test `/loop` in disposable tmux on Morty (1 h) — **single biggest unknown**
+### Step 4 — Smoke-test `/loop` in disposable tmux on the VPS (1 h) — **single biggest unknown**
 
 - **What:**
   ```bash
@@ -186,8 +186,8 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 
 ### Step 7 — Hand-roll `ops-loop-fixture.service` + autostart wrapper (1.5 h)
 
-- **What:** Two files, scp'd to Morty (no pyinfra for MVP):
-  1. `/etc/systemd/system/ops-loop-fixture.service` — clone of `claude-agent-morty.service` with:
+- **What:** Two files, scp'd to the VPS (no pyinfra for MVP):
+  1. `/etc/systemd/system/ops-loop-fixture.service` — clone of the existing agent service unit with:
      - `WorkingDirectory=/home/claude/depts/bubble-ops-fixture`
      - `ExecStartPre=+/bin/sh -c 'test -d /home/claude/depts/bubble-ops-fixture || (mkdir -p /home/claude/depts && chown claude:claude /home/claude/depts && sudo -u claude git clone https://x-access-token:$(grep ^GITHUB_TOKEN /run/claude-agent/env | cut -d= -f2-)@github.com/Bubble-invest/bubble-ops-fixture /home/claude/depts/bubble-ops-fixture)'`
      - `ExecStart=/bin/sh -c '/usr/bin/script -qfc "/home/claude/scripts/loop-autostart.sh" /dev/null'`
@@ -203,12 +203,12 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
        "/usr/bin/claude --resume --dangerously-skip-permissions -p \
         '/loop 20m  read dept.yaml; scan queues/management/ then queues/research/; dispatch to the right layer subagent per dept.yaml.cadence; on each layer write produce summary.md + artifacts/.gitkeep + logs.jsonl + .last-run; layer 4 also writes risk-kpis.yaml + ../management-export.yaml; commit + push.'"
      ```
-- **Why:** wires the proven `claude-agent-morty.service` pattern (PATH-for-bun, SOPS env, pty wrap) to the new loop. The /loop prompt explicitly mentions the 4-file output schema + Layer 4's 3-output split so it can't drift.
+- **Why:** wires the proven agent service pattern (PATH-for-bun, SOPS env, pty wrap) to the new loop. The /loop prompt explicitly mentions the 4-file output schema + Layer 4's 3-output split so it can't drift.
 - **Acceptance:**
   - `systemctl status ops-loop-fixture` → active (running) within 30 s of `systemctl start`.
   - `tmux ls` shows `ops-loop-fixture`.
   - `systemctl kill ops-loop-fixture` → auto-restart within 5 s. Repeat 3×.
-- **Effort:** 1.5 h • **Risk:** Med (tmux-inside-systemd; mitigation = pty wrap proven on morty).
+- **Effort:** 1.5 h • **Risk:** Med (tmux-inside-systemd; mitigation = pty wrap proven on VPS).
 - **Fallback if Step 4 said /loop is broken:** replace `claude --resume + /loop 20m ...` with `while true; do claude -p "$(cat .claude/loop-prompt.md)"; sleep 1200; done` wrapper.
 - **Blocked by:** Step 6.
 
@@ -257,7 +257,7 @@ Re-ran the audit commands. **Zero material change** since the v1 attempt. Confir
 
 - **What:** Run all 3 v1 robustness checks PLUS verify all 6 Notion non-negotiables are observable in the running fixture:
   1. `systemctl kill ops-loop-fixture` → auto-restart in ≤5 s. Repeat 3×.
-  2. `sudo reboot` Morty → after boot, unit active + tmux session reachable within 60 s.
+  2. `sudo reboot` the VPS → after boot, unit active + tmux session reachable within 60 s.
   3. Push malformed `dept.yaml` → loop writes `outputs/<date>/error.log`, does NOT exit; revert recovers.
   4. **Non-negotiables observable:**
      - `gh api repos/Bubble-invest/bubble-ops-fixture/contents/dept.yaml --jq .content | base64 -d | grep optional_domain_ledger` → present
@@ -300,7 +300,7 @@ Buffer: 1 day for `/loop` surprises in Step 4. Realistic ship: **Day 3** (target
 
 | # | Risk | P | I | Mitigation |
 |---|---|---|---|---|
-| R1 | `/loop` does not wake reliably in headless tmux on Morty | Med | **Critical** | Step 4 smoke test BEFORE wiring systemd; bash-while-loop fallback documented in Step 7 |
+| R1 | `/loop` does not wake reliably in headless tmux on the VPS | Med | **Critical** | Step 4 smoke test BEFORE wiring systemd; bash-while-loop fallback documented in Step 7 |
 | R2 | `GITHUB_TOKEN` scope wrong → push fails silently | Med | High | Step 3 verifies push before Step 7; loop prompt writes errors to `outputs/<date>/error.log` |
 | R3 | tmux dies but systemd reports active (semantic gap) | Low | Med | `tmux new-session -A` idempotent; heartbeat checks `tmux ls`; reuse `phone-home.sh` to alert |
 | R4 | Subagent perm allowlist syntax wrong → leak | Med | High | Step 6 includes 4 negative tests; cite https://code.claude.com/docs/en/sub-agents §Supported frontmatter |
@@ -443,7 +443,7 @@ outputs_schema:
 3. **Gate UX:** {{OPERATOR}} approves 3 gates from phone via Telegram or by committing `inbox/decisions/<id>.yaml` from a phone-friendly path. Each consumed in ≤2 ticks.
 4. **Cost:** total Anthropic tokens ≤ $5 over the 24 h. >$5 → demote to Haiku/Sonnet via subagent frontmatter.
 5. **Memory:** `ps aux | grep claude` stays bounded over 24 h.
-6. **No regression:** `claude-agent-morty.service` still active; telegram-rnd channel still responsive.
+6. **No regression:** existing agent services still active; telegram-rnd channel still responsive.
 7. **All 6 Notion non-negotiables observable in running fixture:**
    - `dept.yaml.hierarchy` present and non-empty (jq)
    - `dept.yaml.optional_domain_ledger` field exists (even if null)

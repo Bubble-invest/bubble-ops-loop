@@ -1,14 +1,14 @@
 # INSTALL-ON-MORTY — bubble-git-guard operator runbook
 
-**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
+**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to the VPS (Hetzner CX33).
 **Pairs with:** `token-broker/deploy/INSTALL-ON-MORTY.md`.
 **Doctrine:** Notion v4 line 725 — "GitHub ne fournit pas un vrai path-scope au
 niveau token `contents:write`. Les paths autorisés sont donc appliqués par
-wrapper local / git guard sur Morty, CI path guard, branch protection et audit
+wrapper local / git guard sur le VPS, CI path guard, branch protection et audit
 Layer 4. Les tokens limitent les repos et permissions ; les guards limitent les
 chemins."
 
-This guard is the **wrapper local / git guard sur Morty** half of that line.
+This guard is the **wrapper local / git guard on the VPS** half of that line.
 The broker (Step 3b) covers repo + permission class.
 
 ---
@@ -16,7 +16,7 @@ The broker (Step 3b) covers repo + permission class.
 ## 0. Pre-flight
 
 The token-broker must already be installed at `/opt/bubble-token-broker/` per
-its `INSTALL-ON-MORTY.md`. The guard requires:
+its `INSTALL-ON-MORTY.md`. The guard requires (verify these are true on the VPS):
 
 ```bash
 # Broker binary present and executable
@@ -31,7 +31,7 @@ ssh hetzner "python3 -c 'import yaml; print(yaml.__version__)'"
 
 ---
 
-## 1. Ship the guard package to Morty
+## 1. Ship the guard package to the VPS
 
 From your laptop (Mac):
 
@@ -288,7 +288,7 @@ Enforced in code:
    so an attacker-set env var can't substitute for a broker token (fail-closed
    against PAT fallback).
 
-Verify on Morty:
+Verify on the VPS:
 ```bash
 ssh hetzner "grep -rE 'print.*token|logger.*token' /opt/bubble-git-guard/src/"
 # Expect: ONE false-positive line in src/guard.py mentioning 'token shape'
