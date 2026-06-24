@@ -31,7 +31,7 @@ Test coverage mandated by the brief:
 from __future__ import annotations
 
 import yaml
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
@@ -1079,4 +1079,429 @@ def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
     assert due2 == [], (
         "market_wrapup must be EXCLUDED on tick 2 — per-mission marker from tick 1 "
         "is < now_utc → fire-spin guard active"
+    )
+
+
+# ── event cadence — fix #282 (content publish_execution unblocked) ────────────
+#
+# BACKGROUND: is_mission_due previously returned False for any unrecognised
+# cadence, including "event". Content's publish_execution (L3, cadence: event,
+# no input_queue) was therefore never selected, even when approved items waited
+# in inbox/decisions. Miranda's pipeline was blocked.
+#
+# FIX: is_mission_due returns True for cadence=event unconditionally.
+# Whether the mission ACTUALLY fires is then decided by the existing gates:
+#   • Phase eligibility: L3 requires has_inbox_decisions=True. Zero decisions
+#     → L3 not eligible → select_due_missions returns [] (SAFETY property).
+#   • Input readiness: no input_queue → producer-style → always True.
+#   • Per-mission same-tick marker: materializer stamps now_utc; _mission_last_fired
+#     returns None for a same-tick stamp → mission fires this tick; next tick the
+#     marker is < now_utc → is_mission_due still returns True (event has no daily
+#     veto), but the per-mission marker exclusion is NOT applied here — the L3
+#     phase gate (has_inbox_decisions) is the re-fire guard once the item is
+#     consumed. This allows a second approved item the same day to be processed.
+
+def _mk_event(mid: str, layer: int = 3,
+              output_queue: str = "queues/published/",
+              creates: list | None = None, **extra) -> dict:
+    """Helper: build an event-cadence mission dict."""
+    m = {
+        "id": mid,
+        "layer": layer,
+        "cadence": "event",
+        "output_queue": output_queue,
+        "creates": creates if creates is not None else [],
+    }
+    m.update(extra)
+    return m
+
+
+# ── (a) is_mission_due returns True for event cadence, any time, any last_fired ─
+
+def test_is_mission_due_event_no_last_fired():
+    """is_mission_due returns True for cadence=event when never fired."""
+    m = _mk_event("publish_execution")
+    assert is_mission_due(m, now=AFTER_L3, last_fired=None) is True, (
+        "event mission with no last_fired must be due (trigger-gated, always True)"
+    )
+
+
+def test_is_mission_due_event_with_last_fired_same_day():
+    """is_mission_due returns True for cadence=event even if last_fired is today.
+
+    An event mission must NOT be blocked by a same-day last_fired — a second
+    approved item the same day must still be processable.  Clock-based daily
+    vetoes do NOT apply to event cadence.
+    """
+    prior = datetime(2026, 6, 23, 14, 0, tzinfo=timezone.utc)  # 16:00 Paris
+    m = _mk_event("publish_execution")
+    assert is_mission_due(m, now=AFTER_L3, last_fired=prior) is True, (
+        "event mission must return True even if last_fired is earlier today — "
+        "no daily clock veto applies (fix #282: second item same day must be processable)"
+    )
+
+
+def test_is_mission_due_event_with_last_fired_yesterday():
+    """is_mission_due returns True for cadence=event when last_fired was yesterday."""
+    yesterday = datetime(2026, 6, 22, 16, 0, tzinfo=timezone.utc)
+    m = _mk_event("publish_execution")
+    assert is_mission_due(m, now=AFTER_L3, last_fired=yesterday) is True, (
+        "event mission with last_fired yesterday must be due"
+    )
+
+
+def test_is_mission_due_event_predawn():
+    """is_mission_due returns True for cadence=event even before L3 floor.
+
+    The time gate for the L3 PHASE is enforced by _mission_layer_eligible, not
+    by is_mission_due. is_mission_due itself is time-agnostic for event cadence.
+    """
+    m = _mk_event("publish_execution")
+    assert is_mission_due(m, now=PREDAWN, last_fired=None) is True, (
+        "event mission is always True from is_mission_due — time gating is "
+        "done by _mission_layer_eligible, not here"
+    )
+
+
+# ── (b) FULL PIPELINE safety: event L3 mission selected iff decisions present ──
+
+def test_event_l3_mission_selected_when_decisions_present(tmp_path: Path):
+    """SAFETY + CORRECTNESS: an event L3 mission is selected when inbox/decisions has items.
+
+    Full pipeline test: build_dispatch_ctx populates has_inbox_decisions from disk,
+    _mission_layer_eligible gates L3 on has_decisions, select_due_missions checks
+    is_mission_due (True for event) + _mission_input_ready (True for no input_queue).
+    """
+    repo = _mk_repo(tmp_path)
+    publish_execution = _mk_event(
+        "publish_execution",
+        layer=3,
+        output_queue="queues/published/",
+        creates=["published_post"],
+    )
+    _write_dept_yaml(repo, [publish_execution])
+
+    # Drop an approved decision into inbox/decisions/ (build_dispatch_ctx checks this path).
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    (decisions_dir / "approved-001.yaml").write_text(
+        yaml.dump({
+            "id": "approved-001",
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": AFTER_L3.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    ctx = _full_ctx(repo, AFTER_L3)
+    ctx["_repo_dir"] = str(repo)
+
+    # Verify the pipeline correctly signals has_inbox_decisions.
+    assert ctx["has_inbox_decisions"] is True, (
+        "build_dispatch_ctx must detect the approved decision in inbox/decisions/"
+    )
+
+    due = select_due_missions(ctx, [publish_execution])
+    ids = [m["id"] for m in due]
+    assert "publish_execution" in ids, (
+        "event L3 mission (publish_execution) MUST be selected when inbox/decisions "
+        "has an approved item — this is the fix #282 correctness assertion"
+    )
+
+
+def test_event_l3_mission_NOT_selected_when_decisions_empty(tmp_path: Path):
+    """SAFETY (non-negotiable): event L3 mission must NOT fire when inbox/decisions is empty.
+
+    This is the publish-on-inference guard. With cadence=event returning
+    is_mission_due=True unconditionally, the ONLY guard against spurious L3
+    dispatch is the phase eligibility check:
+        _mission_layer_eligible(ctx, 3) → _time_reached(...) and has_decisions
+    When has_decisions is False, L3 is not eligible → eligible_layer is never 3
+    → select_due_missions returns [].
+
+    TRACE:
+      1. select_due_missions iterates _LAYER_PRIORITY = [4, 3, 2, 1]
+      2. layer=4: time < 19:00 Paris, _time_reached returns False → skip
+      3. layer=3: _mission_layer_eligible(ctx, 3) = _time_reached AND has_decisions
+                  has_decisions=False → returns False → skip
+      4. layer=2: _time_reached(16:30 Paris, 2)=True but has_research_items=False → skip
+      5. layer=1: L1 already fired → cycle gate check fails (L2/L3/L4 not advanced)
+      6. eligible_layer=None → return []
+    """
+    repo = _mk_repo(tmp_path)
+    publish_execution = _mk_event(
+        "publish_execution",
+        layer=3,
+        output_queue="queues/published/",
+        creates=["published_post"],
+    )
+    _write_dept_yaml(repo, [publish_execution])
+
+    # inbox/decisions is EMPTY — no approved items.
+    # L1 already ran today (MORNING), so it won't re-fire from the daily floor.
+    today = AFTER_L3.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / "1", MORNING)
+    increment_round_counter(repo / "outputs" / today, layer=1)
+    write_l1_baseline(repo / "outputs" / today)
+
+    ctx = _full_ctx(repo, AFTER_L3)
+    ctx["_repo_dir"] = str(repo)
+
+    assert ctx["has_inbox_decisions"] is False, (
+        "precondition: inbox/decisions must be empty for the safety test"
+    )
+
+    due = select_due_missions(ctx, [publish_execution])
+    assert due == [], (
+        "SAFETY (non-negotiable): event L3 mission must NOT be selected when "
+        "inbox/decisions is EMPTY — has_inbox_decisions=False → L3 phase not "
+        "eligible → select_due_missions returns []. "
+        "This is the publish-on-inference guard."
+    )
+
+
+# ── (c) event mission does NOT clock-block a second same-day approved item ────
+
+def test_event_mission_second_same_day_item_processable(tmp_path: Path):
+    """Two approved items the same day: the second must be processable after the first.
+
+    Scenario:
+      - Item 1 arrives at 16:30 Paris; mission selected and dispatched; subagent
+        archives Item 1 out of inbox/decisions. Per-mission marker stamped at 16:30.
+      - Item 2 arrives at 18:00 Paris (same day, different gate card).
+      - At 18:01 Paris, inbox/decisions still has Item 2.
+      - select_due_missions must return [publish_execution] again.
+
+    The key invariant: is_mission_due for event returns True regardless of
+    last_fired being earlier the same day. The phase gate (has_inbox_decisions=True)
+    is the only re-enable signal needed.
+    """
+    repo = _mk_repo(tmp_path)
+    publish_execution = _mk_event(
+        "publish_execution",
+        layer=3,
+        output_queue="queues/published/",
+        creates=["published_post"],
+    )
+    _write_dept_yaml(repo, [publish_execution])
+
+    # Item 2 is now in inbox/decisions (Item 1 was already archived by the subagent).
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    AT_18_01_UTC = datetime(2026, 6, 23, 16, 1, tzinfo=timezone.utc)  # 18:01 Paris
+    (decisions_dir / "approved-002.yaml").write_text(
+        yaml.dump({
+            "id": "approved-002",
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": AT_18_01_UTC.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    today = AT_18_01_UTC.strftime("%Y-%m-%d")
+
+    # Simulate: mission fired for Item 1 at 16:30 Paris (the per-mission marker).
+    # This is a PRIOR tick relative to AT_18_01_UTC, so _mission_last_fired returns it.
+    # is_mission_due for event must still return True despite this prior-tick last_fired.
+    AT_16_30_UTC = datetime(2026, 6, 23, 14, 30, tzinfo=timezone.utc)  # 16:30 Paris
+    _stamp_mission_lastrun(repo, "publish_execution", AT_16_30_UTC)
+
+    # L1 already ran today.
+    write_last_run(repo / "outputs" / today / "1", MORNING)
+    increment_round_counter(repo / "outputs" / today, layer=1)
+    write_l1_baseline(repo / "outputs" / today)
+
+    ctx = _full_ctx(repo, AT_18_01_UTC)
+    ctx["_repo_dir"] = str(repo)
+
+    assert ctx["has_inbox_decisions"] is True, (
+        "precondition: Item 2 must be detected in inbox/decisions"
+    )
+
+    due = select_due_missions(ctx, [publish_execution])
+    ids = [m["id"] for m in due]
+    assert "publish_execution" in ids, (
+        "event mission must be selectable for a SECOND approved item the same day — "
+        "is_mission_due for event returns True regardless of same-day last_fired. "
+        "A 'fired today → False' clock veto would wrongly block Item 2."
+    )
+
+
+# ── (d) clock-cadence missions unchanged — regression guard ──────────────────
+
+def test_clock_cadence_daily_unchanged_by_event_support():
+    """REGRESSION: adding event support must not affect daily cadence behavior.
+
+    A daily mission at 07:00 Paris fired this morning must return False on a
+    same-day later check — the daily already-fired-today gate is preserved.
+    """
+    m = _mk_daily("morning_sync", layer=1, time="07:00")
+    # last_fired = earlier today (Paris-local), same date as now.
+    last_fired_today = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)  # 07:30 Paris
+    result = is_mission_due(m, now=MORNING, last_fired=last_fired_today)
+    assert result is False, (
+        "REGRESSION: daily mission with last_fired same Paris day must return "
+        "False — adding event support must not alter clock-cadence logic"
+    )
+
+
+def test_clock_cadence_weekly_unchanged_by_event_support():
+    """REGRESSION: weekly cadence on the correct day still returns True."""
+    m = _mk_weekly("tuesday_brief", layer=1, time="07:00", day="tuesday")
+    assert is_mission_due(m, now=MORNING, last_fired=None) is True, (
+        "REGRESSION: weekly mission on correct day must still be due — "
+        "event support must not affect weekly cadence"
+    )
+
+
+def test_clock_cadence_hourly_unchanged_by_event_support():
+    """REGRESSION: hourly cadence returns False if fired this same hour."""
+    m = {"id": "heartbeat", "layer": 1, "cadence": "hourly", "output_queue": "q/", "creates": []}
+    last_fired = datetime(2026, 6, 23, 6, 10, tzinfo=timezone.utc)  # 08:10 Paris same hour
+    result = is_mission_due(m, now=MORNING, last_fired=last_fired)
+    assert result is False, (
+        "REGRESSION: hourly mission fired this same hour must return False — "
+        "event support must not affect hourly cadence"
+    )
+
+
+def test_clock_cadence_every_nh_unchanged_by_event_support():
+    """REGRESSION: every_Nh cadence unchanged."""
+    m = {"id": "ticker", "layer": 2, "cadence": "every_4h", "output_queue": "q/", "creates": []}
+    last_fired = datetime(2026, 6, 23, 4, 0, tzinfo=timezone.utc)  # fired 2h ago
+    result = is_mission_due(m, now=MORNING, last_fired=last_fired)
+    assert result is False, (
+        "REGRESSION: every_4h mission fired 2h ago must return False — "
+        "event support must not affect every_Nh cadence"
+    )
+    # Fired 5h ago → now due.
+    last_fired_old = datetime(2026, 6, 23, 1, 0, tzinfo=timezone.utc)  # fired 5h ago
+    result2 = is_mission_due(m, now=MORNING, last_fired=last_fired_old)
+    assert result2 is True, (
+        "REGRESSION: every_4h mission fired 5h ago must return True"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #282 re-fire-loop closure — per-item dispatched-id ledger
+# ---------------------------------------------------------------------------
+
+def _write_decision(repo: Path, decision_id: str, when: datetime) -> None:
+    d = repo / "inbox" / "decisions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{decision_id}.yaml").write_text(
+        yaml.dump({"id": decision_id, "kind": "publish_decision",
+                   "status": "approved", "created_at": when.isoformat()},
+                  allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
+def test_event_loop_closure_same_item_not_redispatched_next_tick(tmp_path: Path):
+    """THE #282 FIX: an unprocessed item that persists across ticks is dispatched
+    ONCE (tick 1), NOT re-dispatched on tick 2 — closing the per-tick re-fire loop,
+    WITHOUT the subagent archiving the item (crash/abort-safe)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # TICK 1 — build_dispatch_ctx runs the materializer (ledgers id at now_utc),
+    # selector ignores the same-tick marker → item IS selected.
+    ctx1 = _full_ctx(repo, AFTER_L3)
+    due1 = [m["id"] for m in select_due_missions(ctx1, [pub])]
+    assert "publish_execution" in due1, "tick 1 must dispatch the new approved item"
+
+    # TICK 2 — 30 min later, item still in inbox/decisions (subagent didn't archive).
+    tick2 = AFTER_L3 + timedelta(minutes=30)
+    ctx2 = _full_ctx(repo, tick2)
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" not in due2, (
+        "tick 2 must NOT re-dispatch the same item — the prior-tick ledger marker "
+        "closes the re-fire loop (the #282 bug fix)"
+    )
+
+
+def test_event_second_item_redispatches_after_first_ledgered(tmp_path: Path):
+    """R3: a 2nd, different-id approved item the same day IS dispatched even though
+    the first id is already ledgered (trigger-identity, not a clock veto)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # Tick 1 dispatches item 1.
+    _full_ctx(repo, AFTER_L3)  # materializer ledgers approved-001
+    # Tick 2: item 1 archived OUT, item 2 arrives (different id).
+    (repo / "inbox" / "decisions" / "approved-001.yaml").unlink()
+    tick2 = AFTER_L3 + timedelta(minutes=30)
+    _write_decision(repo, "approved-002", tick2)
+    ctx2 = _full_ctx(repo, tick2)
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" in due2, (
+        "a 2nd approved item (new id) must dispatch — R3, no clock veto"
+    )
+
+    # Tick 3: item 2 still present, must NOT re-dispatch (loop closed for it too).
+    tick3 = tick2 + timedelta(minutes=30)
+    ctx3 = _full_ctx(repo, tick3)
+    due3 = [m["id"] for m in select_due_missions(ctx3, [pub])]
+    assert "publish_execution" not in due3, "item 2 must not re-fire on tick 3"
+
+
+def test_event_crash_resilience_ledger_blocks_redispatch(tmp_path: Path):
+    """Crash-safety: the ledger is written at DISPATCH (materializer), not by the
+    subagent. So even if the subagent crashes after publishing but before
+    archiving, the item is NOT re-dispatched next tick (no duplicate publish)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # Tick 1: dispatched + ledgered. (Simulate subagent crash: item NOT archived.)
+    _full_ctx(repo, AFTER_L3)
+    # Confirm the ledger marker exists for the id.
+    from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
+    later = AFTER_L3 + timedelta(minutes=30)
+    blocked = _dispatched_trigger_ids(
+        Path(_full_ctx(repo, later)["today_dir"]), "publish_execution", before=later
+    )
+    assert "approved-001" in blocked, "ledger must record the dispatched id (crash-safe)"
+
+
+def test_event_safety_no_decisions_still_empty(tmp_path: Path):
+    """SAFETY unchanged: zero inbox/decisions → L3 phase ineligible → []."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    # No decision written.
+    ctx = _full_ctx(repo, AFTER_L3)
+    due = [m["id"] for m in select_due_missions(ctx, [pub])]
+    assert due == [], "no approved decision → publish_execution NOT selected (no publish-on-inference)"
+
+
+def test_event_ledger_engages_without_manual_repo_dir_injection(tmp_path: Path):
+    """PROD-REALISTIC: build_dispatch_ctx must set ctx['_repo_dir'] itself so the
+    event ledger is READ in production. Earlier bug: tests injected _repo_dir
+    manually; without it the selector fail-opened and the re-fire loop returned
+    live. This test uses build_dispatch_ctx WITHOUT manual injection."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    ctx1 = build_dispatch_ctx(repo, now_utc=AFTER_L3)  # NO manual _repo_dir
+    assert ctx1.get("_repo_dir"), "build_dispatch_ctx MUST set _repo_dir for prod ledger reads"
+    assert "publish_execution" in [m["id"] for m in select_due_missions(ctx1, [pub])]
+
+    ctx2 = build_dispatch_ctx(repo, now_utc=AFTER_L3 + timedelta(minutes=30))
+    assert "publish_execution" not in [m["id"] for m in select_due_missions(ctx2, [pub])], (
+        "re-fire loop must be closed in PROD ctx (no manual _repo_dir injection)"
     )

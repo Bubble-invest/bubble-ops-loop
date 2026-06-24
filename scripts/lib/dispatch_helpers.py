@@ -397,6 +397,17 @@ def is_mission_due(mission: dict, *, now: datetime,
       hourly           — top of every Paris hour.
       every_<N>h       — every N hours since last fire.
       every_<N>m       — every N minutes since last fire.
+      event            — trigger-gated, not time-gated. is_mission_due always
+                         returns True; whether the mission actually fires is
+                         decided downstream by phase eligibility (has_inbox_decisions
+                         gates L3) and input-readiness (_mission_input_ready) and
+                         the per-mission same-tick marker. Do NOT add a time-based
+                         "already fired" veto here — a second approved item the same
+                         day must be processable. Idempotence is provided by the
+                         per-mission .last-run marker (stamped this tick by the
+                         materializer → treated as "not yet dispatched" by
+                         _mission_last_fired) and by the approved-item being
+                         consumed/archived out of inbox/decisions by the subagent.
       cron:<expr>      — escape hatch; NOT evaluated here, returns False
                          (caller / agent must handle cron expressions).
     """
@@ -478,6 +489,34 @@ def is_mission_due(mission: dict, *, now: datetime,
         delta_s = (now - last_fired).total_seconds()
         return delta_s >= n * 60
 
+    if cadence == "event":
+        # Event missions are trigger-gated, not time-gated.  "Is it time?" is
+        # ALWAYS yes from is_mission_due's perspective — the REAL question
+        # (is there a trigger to process?) is answered downstream:
+        #
+        #   • Phase eligibility (_mission_layer_eligible, L3 branch):
+        #       requires has_inbox_decisions=True, so an L3 event mission
+        #       is only in scope when approved decisions actually exist.
+        #   • Input readiness (_mission_input_ready):
+        #       for missions with no input_queue (producer-style, e.g.
+        #       publish_execution) this always returns True — the phase gate
+        #       above is the real guard.
+        #   • Per-mission same-tick marker (_mission_last_fired):
+        #       the materializer stamps outputs/<today>/missions/<id>/.last-run
+        #       at now_utc this tick; _mission_last_fired treats a same-tick
+        #       marker as "not yet dispatched", so the mission fires this tick
+        #       and is excluded on the NEXT tick (same Paris day).  If the
+        #       subagent archives the inbox/decisions item, has_inbox_decisions
+        #       becomes False → L3 no longer eligible → the mission is not
+        #       re-selected anyway.
+        #
+        # Why no time-based "fired today" veto here:
+        #   A second legitimately-approved item arriving the same day (different
+        #   gate card) must still be processable.  Adding a "same Paris day →
+        #   False" check would wrongly block that second item.  The per-mission
+        #   marker + inbox consumption provide sufficient idempotence.
+        return True
+
     # cron:<expr> — escape hatch. Out of scope for STEP C.0.
     return False
 
@@ -556,6 +595,114 @@ def materialize_due_missions(missions: Iterable[dict], *,
     return out
 
 
+# ---------------------------------------------------------------------------
+# Per-item dispatched-id ledger for cadence:event missions (#282)
+# ---------------------------------------------------------------------------
+#
+# WHY: an event mission's trigger is the inbox ITEM, not the clock. is_mission_due
+# is always True for event, so the per-mission .last-run marker cannot encode
+# "which trigger did we already act on" — it either re-fires every tick (R2 fail)
+# or blocks a 2nd same-day item (R3 fail). The fix keys idempotence on the trigger
+# item's id: each dispatched id gets a marker under
+#   outputs/<today>/missions/<id>/dispatched-items/<trigger_id>
+# An event mission is "due" only while at least one present trigger id is NOT yet
+# ledgered. The ledger is written by the materializer at dispatch time (crash-safe:
+# it does not depend on the subagent archiving the item) and only READ by
+# select_due_missions (keeping the selector non-mutating). Daily-scoped under
+# outputs/<today>/ like .last-run; trigger ids (gate filenames) are date-stamped
+# and unique, so cross-midnight re-dispatch is not a practical concern.
+
+
+def _event_trigger_dir(repo_dir: Path, mission: dict) -> Path:
+    """The directory whose *.yaml files are an event mission's trigger items.
+
+    Generic: the mission's `input_queue` if declared, else `inbox/decisions`
+    (the L3 approved-gate queue that content's publish_execution consumes). Not
+    hardcoded to any mission id.
+    """
+    iq = mission.get("input_queue")
+    return Path(repo_dir) / (iq if iq else "inbox/decisions")
+
+
+def _present_trigger_ids(repo_dir: Path, mission: dict) -> "set[str]":
+    """Ids (filename stems) of the event mission's current trigger items."""
+    d = _event_trigger_dir(repo_dir, mission)
+    if not d.is_dir():
+        return set()
+    return {p.stem for p in d.glob("*.yaml") if p.is_file() and not p.name.startswith(".")}
+
+
+def _dispatched_trigger_ids(today_dir: Path, mission_id: str, *, before: datetime) -> "set[str]":
+    """Ids dispatched for this event mission on a PRIOR tick (marker ts < before).
+
+    Each ledger marker stores the dispatch tick's ISO timestamp. Mirroring the
+    `_mission_last_fired` same-tick rule: a marker stamped THIS tick (ts ==
+    before) does NOT count as already-dispatched — otherwise the materializer,
+    which records ids at the top of build_dispatch_ctx, would hide a brand-new
+    item from select_due_missions in the very same tick (the item would never be
+    dispatched at all). A prior-tick marker (ts < before) DOES block re-dispatch
+    — that's what closes the per-tick re-fire loop.
+    """
+    led = Path(today_dir) / "missions" / mission_id / "dispatched-items"
+    if not led.is_dir():
+        return set()
+    out: set[str] = set()
+    for p in led.iterdir():
+        if not p.is_file():
+            continue
+        body = p.read_text(encoding="utf-8").strip()
+        if not body:
+            # legacy/empty marker — treat as prior (blocking), safest default
+            out.add(p.name)
+            continue
+        try:
+            ts = datetime.fromisoformat(body)
+        except ValueError:
+            out.add(p.name)
+            continue
+        if ts < before:
+            out.add(p.name)
+    return out
+
+
+def _event_pending_trigger_ids(repo_dir: Path, today_dir: Path, mission: dict,
+                               *, now_utc: datetime) -> "set[str]":
+    """Trigger ids present but NOT already-dispatched-on-a-prior-tick — the event
+    mission is due iff this is non-empty. Pure read (selector-safe)."""
+    mid = mission.get("id", "")
+    if not mid:
+        return set()
+    return _present_trigger_ids(repo_dir, mission) - _dispatched_trigger_ids(
+        today_dir, mid, before=now_utc
+    )
+
+
+def _record_dispatched_trigger_ids(today_dir: Path, mission_id: str, ids: "set[str]",
+                                   *, now_utc: datetime) -> None:
+    """Stamp trigger ids as dispatched THIS tick (marker body = now_utc ISO).
+
+    CALLER CONTRACT: only ever called with `ids` that are genuinely pending (not
+    yet in the ledger) — the materializer computes `pending = _event_pending_…`
+    and only calls this when `pending` is non-empty. So an already-dispatched id
+    is NEVER re-stamped here. That matters: re-stamping an existing id with the
+    current now_utc would set `ts == this tick`, which the same-tick rule treats
+    as NOT-blocking → the re-fire loop would reopen. The pending-guard upstream is
+    what keeps this safe; do not call this with already-ledgered ids.
+
+    Cross-UTC-midnight note: the ledger lives under outputs/<today>/, so a new UTC
+    day starts a fresh ledger. An item left UN-archived past midnight would
+    re-dispatch on day 2. This is acceptable because decision filenames (the
+    trigger ids) are date-unique in practice; if that ever changes, key the ledger
+    on a content hash or move it out of the daily dir."""
+    led = Path(today_dir) / "missions" / mission_id / "dispatched-items"
+    led.mkdir(parents=True, exist_ok=True)
+    stamp = now_utc.isoformat()
+    for tid in ids:
+        # sanitize: ids are filename stems already, but guard against path parts
+        safe = str(tid).replace("/", "_")
+        (led / safe).write_text(stamp, encoding="utf-8")
+
+
 def materialize_due_missions_for_tick(
     repo_dir: Path,
     today_dir: Path,
@@ -624,6 +771,21 @@ def materialize_due_missions_for_tick(
             continue
         mid = m.get("id", "")
         if not mid:
+            continue
+        # EVENT cadence (#282): the trigger identity is the inbox item, not the
+        # clock. is_mission_due(event) is always True, so the unconditional
+        # re-stamp below would refresh the marker to now_utc every tick →
+        # _mission_last_fired returns None every tick → re-spawn every tick while
+        # an item sits unprocessed (the re-fire loop). Instead, gate on a per-ITEM
+        # dispatched-id ledger: only "fire" (and record the ids) when there is a
+        # trigger item NOT yet dispatched. Once every present id is ledgered, do
+        # nothing — the loop closes structurally, independent of the subagent
+        # archiving the item (crash-safe). A new (different-id) item re-arms it.
+        if m.get("cadence") == "event":
+            pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
+            if pending:
+                _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
+                write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
         if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
             write_last_run(today_dir / "missions" / mid, when=now_utc)
@@ -890,6 +1052,12 @@ def build_dispatch_ctx(
 
     return {
         "now_utc": now_utc,
+        # Repo root, so consumer/event checks (_mission_input_ready, the #282
+        # event dispatched-id ledger read in select_due_missions) can resolve
+        # queue/ledger paths in PRODUCTION — not only when a test injects it.
+        # Without this the selector fail-opens and the event re-fire-loop guard
+        # never engages live (#282).
+        "_repo_dir": str(repo),
         # Deterministic UTC date for THIS tick. The agent MUST use these for
         # all outputs/<date>/ paths + the heartbeat, instead of hand-typing
         # the date from context — that froze Maya's loop on 2026-06-02 while
@@ -1315,6 +1483,19 @@ def select_due_missions(
             continue
         if not _mission_input_ready(ctx, m):
             continue
+        # EVENT cadence (#282): due ONLY when there is a trigger item whose id is
+        # not yet in the per-item dispatched ledger. This closes the per-tick
+        # re-fire loop (a still-pending-but-already-dispatched item does not
+        # re-select) while still firing for a NEW item (different id). Reads only;
+        # the materializer writes the ledger. repo_dir comes from ctx['_repo_dir']
+        # (build_dispatch_ctx injects it); if absent we fail-open to preserve the
+        # old behaviour rather than silently starve.
+        if m.get("cadence") == "event":
+            repo_dir = ctx.get("_repo_dir")
+            today_dir = Path(ctx["today_dir"]) if ctx.get("today_dir") else None
+            if repo_dir and today_dir is not None:
+                if not _event_pending_trigger_ids(Path(repo_dir), today_dir, m, now_utc=now_utc):
+                    continue
         due.append(m)
 
     # Sort by mission id for determinism (layer is uniform across the result).
