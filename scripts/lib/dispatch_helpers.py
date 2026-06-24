@@ -397,6 +397,17 @@ def is_mission_due(mission: dict, *, now: datetime,
       hourly           — top of every Paris hour.
       every_<N>h       — every N hours since last fire.
       every_<N>m       — every N minutes since last fire.
+      event            — trigger-gated, not time-gated. is_mission_due always
+                         returns True; whether the mission actually fires is
+                         decided downstream by phase eligibility (has_inbox_decisions
+                         gates L3) and input-readiness (_mission_input_ready) and
+                         the per-mission same-tick marker. Do NOT add a time-based
+                         "already fired" veto here — a second approved item the same
+                         day must be processable. Idempotence is provided by the
+                         per-mission .last-run marker (stamped this tick by the
+                         materializer → treated as "not yet dispatched" by
+                         _mission_last_fired) and by the approved-item being
+                         consumed/archived out of inbox/decisions by the subagent.
       cron:<expr>      — escape hatch; NOT evaluated here, returns False
                          (caller / agent must handle cron expressions).
     """
@@ -477,6 +488,34 @@ def is_mission_due(mission: dict, *, now: datetime,
             return True
         delta_s = (now - last_fired).total_seconds()
         return delta_s >= n * 60
+
+    if cadence == "event":
+        # Event missions are trigger-gated, not time-gated.  "Is it time?" is
+        # ALWAYS yes from is_mission_due's perspective — the REAL question
+        # (is there a trigger to process?) is answered downstream:
+        #
+        #   • Phase eligibility (_mission_layer_eligible, L3 branch):
+        #       requires has_inbox_decisions=True, so an L3 event mission
+        #       is only in scope when approved decisions actually exist.
+        #   • Input readiness (_mission_input_ready):
+        #       for missions with no input_queue (producer-style, e.g.
+        #       publish_execution) this always returns True — the phase gate
+        #       above is the real guard.
+        #   • Per-mission same-tick marker (_mission_last_fired):
+        #       the materializer stamps outputs/<today>/missions/<id>/.last-run
+        #       at now_utc this tick; _mission_last_fired treats a same-tick
+        #       marker as "not yet dispatched", so the mission fires this tick
+        #       and is excluded on the NEXT tick (same Paris day).  If the
+        #       subagent archives the inbox/decisions item, has_inbox_decisions
+        #       becomes False → L3 no longer eligible → the mission is not
+        #       re-selected anyway.
+        #
+        # Why no time-based "fired today" veto here:
+        #   A second legitimately-approved item arriving the same day (different
+        #   gate card) must still be processable.  Adding a "same Paris day →
+        #   False" check would wrongly block that second item.  The per-mission
+        #   marker + inbox consumption provide sufficient idempotence.
+        return True
 
     # cron:<expr> — escape hatch. Out of scope for STEP C.0.
     return False
