@@ -20,8 +20,34 @@
 # differs (cheap) and preserves the dept's own files for anything not in the set.
 set -uo pipefail
 
-FRAMEWORK="${BUBBLE_FRAMEWORK_ROOT:-/home/claude/bubble-ops-loop}"
 DEPT="${1:-}"
+
+# Resolve FRAMEWORK with host-aware fallback (fix #234: VPS-only default broke
+# Mac host:local agents like Miranda on Jade's machine).
+# Resolution order:
+#   1. $BUBBLE_FRAMEWORK_ROOT if set (explicit override, highest priority).
+#   2. Sibling of the dept dir: $(dirname <dept-dir>)/bubble-ops-loop
+#      — the Mac host:local layout where the dept workspace sits next to
+#      bubble-ops-loop in the same parent directory.
+#   3. /home/claude/bubble-ops-loop — the canonical VPS path (original default).
+# The first candidate that actually exists on disk wins.
+# If none resolve, FRAMEWORK stays empty and the existing fail-open guard below
+# catches it (logs WARN and exits 0).
+if [[ -n "${BUBBLE_FRAMEWORK_ROOT:-}" ]]; then
+  FRAMEWORK="$BUBBLE_FRAMEWORK_ROOT"
+else
+  FRAMEWORK=""
+  # candidate 2: sibling of dept dir (Mac host:local layout)
+  if [[ -n "$DEPT" ]]; then
+    _sibling="$(dirname "$DEPT")/bubble-ops-loop"
+    [[ -d "$_sibling" ]] && FRAMEWORK="$_sibling"
+  fi
+  # candidate 3: VPS path
+  if [[ -z "$FRAMEWORK" ]]; then
+    _vps="/home/claude/bubble-ops-loop"
+    [[ -d "$_vps" ]] && FRAMEWORK="$_vps"
+  fi
+fi
 
 log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*" >&2; }
 
