@@ -739,7 +739,7 @@ each Moment task to a stateless subagent via Agent. The subagents
    `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])`.
    `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
-3. If the decision ≠ `heartbeat` — spawn + verify each subagent (one per mission in `due`):
+3. If `due` is NON-empty — spawn + verify each subagent (one per mission in `due`; drive off `due`, NOT `decide_dispatch` — a secondary L4 mission can be in `due` while decide_dispatch=heartbeat):
    - For each mission: `resolve_mission_prompt('.', mission)` → `missions/<id>/PROMPT.md`
      if it exists, else `layers/<N>/PROMPT.md` (legacy shim — zero regression for existing depts).
    - Call the **Agent tool** with that prompt as the task description, plus
@@ -774,7 +774,7 @@ each Moment task to a stateless subagent via Agent. The subagents
       retry-exhausted]` in `outputs/<today>/<N>/summary.md` + a `subagent N FAILED`
       line in `outputs/<today>/heartbeat.log`.
 
-4. If the decision = `heartbeat`: `<ISO-ts> tick idle <queues-summary>` >>
+4. If `due` is empty (`heartbeat` tick — nothing fired): `<ISO-ts> tick idle <queues-summary>` >>
    `outputs/<today>/heartbeat.log`.
 
 5. Commit + push via `bubble-git-guard push --action runtime_write_own`
