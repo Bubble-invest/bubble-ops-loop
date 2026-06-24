@@ -405,20 +405,40 @@ def test_l4_missions_absent_when_l1_not_fired():
     )
 
 
-def test_l4_missions_absent_when_already_fired():
-    """L4 missions must not appear if L4 has already fired today (idempotence)."""
+def test_l4_missions_absent_when_already_fired(tmp_path: Path):
+    """Per-mission idempotence (#277): an L4 mission with its own per-mission
+    marker from a prior tick today must NOT be re-selected (fire-spin guard).
+
+    Under the new per-mission model, idempotence is provided by the per-mission
+    .last-run marker (same as L1-3), NOT by a once-per-day layer-wide cap.
+    The layer_4_last_run_today flag alone no longer blocks individual L4 missions;
+    only a per-mission marker stamped at a prior tick does.
+    """
+    repo = _mk_repo(tmp_path)
     l4_mission = _mk_daily("debrief", layer=4, time="19:00")
-    # L1, L2, L3 fired; L4 also already fired.
+    _write_dept_yaml(repo, [l4_mission])
+
+    # Stamp the per-mission marker at a prior tick: 19:30 Paris = 17:30 UTC.
+    # AFTER_L4 = 17:30 UTC (19:30 Paris), so prior_tick must be strictly earlier.
+    # Use 19:00 Paris = 17:00 UTC as the initial fire time, and check at 20:30 Paris.
+    prior_tick = datetime(2026, 6, 23, 17, 0, tzinfo=timezone.utc)   # 19:00 Paris
+    check_tick = datetime(2026, 6, 23, 18, 30, tzinfo=timezone.utc)  # 20:30 Paris
+    _stamp_mission_lastrun(repo, "debrief", prior_tick)
+
+    # Build a ctx where L4 window is open (L1/L2/L3 fired, time >= 19:00 Paris).
+    today_dir = str(repo / "outputs" / check_tick.strftime("%Y-%m-%d"))
     ctx = _bare_ctx(
-        AFTER_L4,
+        check_tick,
+        today_dir=today_dir,
         layer_1_last_run_today=MORNING,
         layer_2_last_run_today=AFTER_L2,
         layer_3_last_run_today=AFTER_L3,
-        layer_4_last_run_today=AFTER_L4,  # already fired!
+        layer_4_last_run_today=prior_tick,   # layer marker also set (as it would be in prod)
     )
     due = select_due_missions(ctx, [l4_mission])
     assert len(due) == 0, (
-        "L4 missions must not appear after L4 has already fired (idempotence guard)"
+        "L4 mission with a per-mission .last-run from a prior tick today must "
+        "NOT be re-selected — per-mission idempotence prevents fire-spin (#277)"
     )
 
 
@@ -854,29 +874,32 @@ def test_fire_spin_guard_wrong_layered_path_does_not_exclude(tmp_path: Path):
     )
 
 
-# ── Anti-fire-spin for a REAL L4 creates:[] mission (layer cap, not per-mission) ──
+# ── Anti-fire-spin for L4 missions — per-mission idempotence (#277) ───────────
 #
-# The fire-spin tests above label the mission market_wrapup but declare layer=1, so
-# they exercise the L1-3 per-mission-marker path. L4 is protected DIFFERENTLY: the
-# once-per-day layer cap `not l4_fired` in decide_dispatch's C.1 branch. L4 missions
-# are NOT materialized (materialize_due_missions_for_tick only handles layers 1-3),
-# so a creates:[] L4 mission never gets a per-mission marker — its protection is the
-# layer cap alone. Once the L4 subagent stamps the L4 LAYER marker
-# (outputs/<today>/4/.last-run) as its first action, the L4 phase becomes ineligible
-# (decide_dispatch returns "heartbeat"), so select_due_missions returns [] — no
-# fire-spin. This test makes that layer-cap reliance contractual.
+# Fix #277: L4 is now guarded by per-mission markers (same as L1-3), NOT by the
+# once-per-day layer-wide cap.  materialize_due_missions_for_tick now stamps the
+# per-mission .last-run for EVERY due L4 mission (no queue items are created —
+# only the anti-fire-spin marker).
+#
+# The old test made the L4 layer-cap contractual.  After #277 the contract is:
+#   • tick 1: L4 mission selected; materializer stamps per-mission marker at now_utc
+#             (same-tick semantics → _mission_last_fired returns None → mission fires)
+#   • tick 2: per-mission marker < now_utc → is_mission_due returns False → excluded
+#
+# decide_dispatch STILL uses `not l4_fired` for its own phase-string output (unchanged).
+# select_due_missions uses _mission_layer_eligible which no longer carries the cap,
+# and relies on per-mission markers for idempotence.
 
 def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     """FULL-PIPELINE anti-fire-spin for a REAL L4 creates:[] mission.
 
-    L4's protection is the once-per-day LAYER cap (`not l4_fired` in
-    decide_dispatch C.1), NOT the per-mission marker — unlike L1-3, which rely on
-    the per-mission marker because they have no daily layer cap. (L4 missions are
-    never materialized, so they get no per-mission marker.)
+    Per-mission idempotence (#277): L4's fire-spin guard is now the per-mission
+    .last-run marker (stamped by materialize_due_missions_for_tick), NOT the
+    once-per-day layer-wide cap.
 
-    tick 1: L4 mission selected (L1/L2/L3 fired, time >= 19:00 Paris, L4 not run).
-    L4 subagent stamps outputs/<today>/4/.last-run (the LAYER marker).
-    tick 2: L4 phase ineligible (l4_fired) → due == [] (no fire-spin).
+    tick 1: L4 mission selected; materializer stamps per-mission marker at now_utc.
+            (same-tick marker → _mission_last_fired returns None → mission fires)
+    tick 2 (later same day): per-mission marker < now_utc → mission EXCLUDED (no fire-spin).
     """
     repo = _mk_repo(tmp_path)
     # A REAL L4 report-mission: creates:[] and layer=4.
@@ -889,8 +912,8 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     for n in (1, 2, 3):
         write_last_run(repo / "outputs" / today / str(n), AFTER_L4)
 
-    l4_layer_marker = repo / "outputs" / today / "4" / ".last-run"
-    assert not l4_layer_marker.exists(), "precondition: L4 layer not yet fired"
+    per_mission_marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
+    assert not per_mission_marker.exists(), "precondition: no per-mission marker before tick 1"
 
     # ── TICK 1 ── (19:30 Paris) — L4 eligible, mission must be selected.
     ctx1 = _full_ctx(repo, AFTER_L4)
@@ -901,25 +924,159 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     assert "market_wrapup" in [x["id"] for x in due1], (
         "TICK 1: the due L4 creates:[] mission MUST be selected for dispatch"
     )
-    # L4 missions are NOT materialized, so no per-mission marker is created.
-    per_mission_marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
-    assert not per_mission_marker.exists(), (
-        "L4 missions are not materialized → no per-mission marker; L4's protection "
-        "is the layer cap, not the per-mission marker"
+    # FIX #277: materializer NOW stamps the per-mission marker for L4 missions.
+    assert per_mission_marker.exists(), (
+        "FIX #277: materialize_due_missions_for_tick must stamp "
+        "outputs/<today>/missions/<id>/.last-run for L4 missions too, "
+        "providing per-mission idempotence"
     )
 
-    # The L4 subagent stamps the LAYER marker as its FIRST action.
-    write_last_run(repo / "outputs" / today / "4", AFTER_L4)
-
-    # ── TICK 2 ── (20:30 Paris, same day) — L4 phase ineligible (l4_fired).
+    # ── TICK 2 ── (20:30 Paris, same day) — mission marker from prior tick → excluded.
     LATER_L4 = datetime(2026, 6, 23, 18, 30, tzinfo=timezone.utc)  # 20:30 Paris
     ctx2 = _full_ctx(repo, LATER_L4)
-    assert decide_dispatch(ctx2) == "heartbeat", (
-        "TICK 2: L4 already fired today → C.1 layer cap makes L4 ineligible → heartbeat"
-    )
     due2 = select_due_missions(ctx2, [m])
     assert due2 == [], (
-        "TICK 2 FIRE-SPIN GUARD (L4 layer cap): once outputs/<today>/4/.last-run "
-        "exists, the L4 phase is ineligible → select_due_missions returns EXACTLY [] "
-        "— the once-per-day layer cap prevents L4 fire-spin"
+        "TICK 2 FIRE-SPIN GUARD (per-mission): per-mission marker from tick 1 "
+        "is < now_utc → is_mission_due returns False → select_due_missions "
+        "returns EXACTLY [] — per-mission idempotence prevents L4 fire-spin"
+    )
+
+
+# ── Three-L4-mission scenario: risk_control + market_wrapup + weekly_review ───
+#
+# This is the key correctness test for #277.  With the layer-wide cap removed,
+# three L4 missions at different times must each fire exactly once per day/week:
+#   • risk_control   — daily 21:00 Paris, uses legacy layers/4/PROMPT.md shim
+#                      (no per-mission PROMPT.md → resolve_mission_prompt returns
+#                      the layer shim, but the per-mission .last-run marker is
+#                      still stamped by the materializer)
+#   • market_wrapup  — daily 22:30 Paris, per-mission prompt
+#   • weekly_review  — weekly Friday 17:00 Paris (Tuesday 2026-06-23 → NOT due today)
+#
+# Scenario time: 22:31 Paris (UTC+2 in June → 20:31 UTC).  At this point:
+#   • risk_control has already fired (per-mission marker from 21:00)
+#   • market_wrapup is now due (time 22:30 reached, no prior marker)
+#   • weekly_review is not due (wrong day — Tuesday not Friday)
+#
+# Expected: select_due_missions returns [market_wrapup] ONLY.
+
+AT_22_31_UTC = datetime(2026, 6, 23, 20, 31, tzinfo=timezone.utc)  # 22:31 Paris
+AT_21_00_UTC = datetime(2026, 6, 23, 19, 0, tzinfo=timezone.utc)   # 21:00 Paris
+
+
+def test_three_l4_missions_only_market_wrapup_due_at_2231(tmp_path: Path):
+    """Three-L4-mission scenario: at 22:31 after risk_control fired at 21:00,
+    select_due_missions returns [market_wrapup] only — not risk_control again,
+    not weekly_review (wrong day).
+
+    This is the PRIMARY correctness test for fix #277.
+    """
+    repo = _mk_repo(tmp_path)
+
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00",
+                             output_queue="queues/research/", creates=[])
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30",
+                              output_queue="queues/research/", creates=[])
+    weekly_review = _mk_weekly("weekly_review", layer=4, time="17:00", day="friday",
+                               output_queue="queues/research/")
+    _write_dept_yaml(repo, [risk_control, market_wrapup, weekly_review])
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+
+    # L1/L2/L3 prerequisites fired today.
+    for n in (1, 2, 3):
+        write_last_run(repo / "outputs" / today / str(n), MORNING)
+
+    # risk_control fired at 21:00 Paris — per-mission marker from prior tick.
+    _stamp_mission_lastrun(repo, "risk_control", AT_21_00_UTC)
+
+    # risk_control also stamps the LAYER marker (as the primary shim does in prod).
+    write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+
+    # Build ctx at 22:31 Paris.
+    ctx = _full_ctx(repo, AT_22_31_UTC)
+
+    due = select_due_missions(ctx, [risk_control, market_wrapup, weekly_review])
+    ids = [m["id"] for m in due]
+
+    assert "market_wrapup" in ids, (
+        "market_wrapup (daily 22:30 Paris) must be selected at 22:31 — "
+        "it has not fired today and its time is reached"
+    )
+    assert "risk_control" not in ids, (
+        "risk_control must NOT re-fire — it has a per-mission marker from 21:00 "
+        "earlier today (same Paris day → is_mission_due returns False)"
+    )
+    assert "weekly_review" not in ids, (
+        "weekly_review (Friday) must NOT appear — today is Tuesday 2026-06-23"
+    )
+    assert len(due) == 1, (
+        f"exactly ONE mission (market_wrapup) must be due at 22:31; got {ids}"
+    )
+
+
+def test_risk_control_does_not_refire_same_day(tmp_path: Path):
+    """risk_control fires once at 21:00 Paris and must not re-fire the same day.
+
+    This test verifies that the per-mission marker (stamped by the materializer
+    at 21:00 tick) correctly gates risk_control on subsequent ticks — proving
+    that removing the layer-wide cap does NOT reintroduce a risk_control fire-spin.
+    """
+    repo = _mk_repo(tmp_path)
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00",
+                             output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [risk_control])
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    for n in (1, 2, 3):
+        write_last_run(repo / "outputs" / today / str(n), MORNING)
+
+    # risk_control per-mission marker stamped at 21:00 (prior tick).
+    _stamp_mission_lastrun(repo, "risk_control", AT_21_00_UTC)
+
+    # Check at 22:31 — well after 21:00 but still same Paris day.
+    ctx = _full_ctx(repo, AT_22_31_UTC)
+    due = select_due_missions(ctx, [risk_control])
+    assert due == [], (
+        "risk_control must NOT re-fire at 22:31 — per-mission marker from 21:00 "
+        "same Paris day → is_mission_due daily gate returns False"
+    )
+
+
+def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
+    """market_wrapup fires at 22:30 then is excluded on the next tick.
+
+    tick 1 (22:31 Paris): market_wrapup selected; materializer stamps per-mission marker.
+    tick 2 (23:00 Paris): per-mission marker < now_utc → excluded (no fire-spin).
+    """
+    repo = _mk_repo(tmp_path)
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30",
+                              output_queue="queues/research/", creates=[])
+    _write_dept_yaml(repo, [market_wrapup])
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    for n in (1, 2, 3):
+        write_last_run(repo / "outputs" / today / str(n), MORNING)
+
+    per_mission_marker = (repo / "outputs" / today / "missions"
+                          / "market_wrapup" / ".last-run")
+    assert not per_mission_marker.exists(), "precondition: no marker before tick 1"
+
+    # ── TICK 1 ── market_wrapup is due; materializer stamps the per-mission marker.
+    ctx1 = _full_ctx(repo, AT_22_31_UTC)
+    due1 = select_due_missions(ctx1, [market_wrapup])
+    assert "market_wrapup" in [m["id"] for m in due1], (
+        "market_wrapup must be selected at 22:31 Paris (time 22:30 reached, never fired)"
+    )
+    assert per_mission_marker.exists(), (
+        "materializer must stamp per-mission marker for market_wrapup on tick 1"
+    )
+
+    # ── TICK 2 ── (23:00 Paris) — per-mission marker from prior tick → excluded.
+    AT_23_00_UTC = datetime(2026, 6, 23, 21, 0, tzinfo=timezone.utc)  # 23:00 Paris
+    ctx2 = _full_ctx(repo, AT_23_00_UTC)
+    due2 = select_due_missions(ctx2, [market_wrapup])
+    assert due2 == [], (
+        "market_wrapup must be EXCLUDED on tick 2 — per-mission marker from tick 1 "
+        "is < now_utc → fire-spin guard active"
     )

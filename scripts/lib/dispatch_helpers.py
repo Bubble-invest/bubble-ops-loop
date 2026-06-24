@@ -597,21 +597,31 @@ def materialize_due_missions_for_tick(
             if last:
                 last_fired_per_mission[mid] = last
 
-    # Anti-fire-spin (issue #261 / #235-#237 class): stamp the per-mission
-    # .last-run for EVERY due layer-1..3 mission, BEFORE the creates[]
-    # materialization loop below. A "pure report" mission (creates: [], e.g.
-    # ben's market_wrapup) is is_mission_due()=True but yields NO queue-item
-    # descriptors, so it never enters the `for item in due` loop and its marker
-    # would never be stamped → _mission_last_fired() returns None forever →
-    # select_due_missions re-selects it on EVERY tick (fire-spin). Stamping here
-    # closes the leak at the source, independent of whether the dept's subagent
-    # remembers to stamp it. Idempotent: the loop below re-stamps with the same
-    # now_utc value, which is a no-op overwrite. Only missions already fired
-    # today (in last_fired_per_mission, same Paris day) are skipped via
-    # is_mission_due returning False.
+    # Anti-fire-spin (issue #261 / #235-#237 class, extended to L4 in #277):
+    # stamp the per-mission .last-run for EVERY due mission on layers 1-4,
+    # BEFORE the creates[] materialization loop below. A "pure report" mission
+    # (creates: [], e.g. ben's market_wrapup) is is_mission_due()=True but
+    # yields NO queue-item descriptors, so it never enters the `for item in due`
+    # loop and its marker would never be stamped → _mission_last_fired() returns
+    # None forever → select_due_missions re-selects it on EVERY tick (fire-spin).
+    # Stamping here closes the leak at the source, independent of whether the
+    # dept's subagent remembers to stamp it. Idempotent: the loop below
+    # re-stamps with the same now_utc value, which is a no-op overwrite. Only
+    # missions already fired today (in last_fired_per_mission, same Paris day)
+    # are skipped via is_mission_due returning False.
+    #
+    # L4 inclusion rationale (#277): L4 missions previously relied on the
+    # once-per-day LAYER cap (`not l4_fired` in _mission_layer_eligible) as
+    # their sole fire-spin guard. That cap blocked ALL L4 missions once any one
+    # fired — preventing secondary L4 missions (market_wrapup 22:30,
+    # weekly_review Fri) from ever running. The cap has been removed from
+    # _mission_layer_eligible; per-mission idempotence now applies uniformly to
+    # ALL layers. Note: queue-item creation (materialize_due_missions below) still
+    # skips L4 — only the per-mission .last-run stamp is extended here.
     for m in missions:
-        if int(m.get("layer", 0)) not in (1, 2, 3):
-            continue  # L4 missions fire via C.1, not the materializer
+        layer_n = int(m.get("layer", 0))
+        if layer_n not in (1, 2, 3, 4):
+            continue
         mid = m.get("id", "")
         if not mid:
             continue
@@ -1088,6 +1098,30 @@ def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
     functions always agree on which layer is eligible. Only the PRIMARY
     mission per phase was ever checked before; we now expose this as a
     reusable predicate.
+
+    L4 note (fix #277): the old `and not l4_fired` once-per-day LAYER cap has
+    been removed. decide_dispatch still keeps it (it returns ONE phase string
+    and uses the cap as a once-daily gate for the primary debrief). Here, by
+    contrast, we want to know whether the L4 WINDOW is open — i.e. whether L4
+    time and prerequisites are met — so that EACH L4 mission can be evaluated
+    individually by is_mission_due() + its own per-mission .last-run marker
+    (stamped by materialize_due_missions_for_tick, which now covers L4 too).
+    Removing the layer cap here is safe because:
+      • per-mission idempotence: materialize_due_missions_for_tick stamps
+        outputs/<today>/missions/<id>/.last-run for every due L4 mission
+        (same same-tick semantics as L1-3). is_mission_due then vetoes
+        re-selection on the next tick for that specific mission.
+      • risk_control (primary L4 / legacy layer-shim) gets its own per-mission
+        marker stamped by the materializer, so it stays once-daily just like
+        any other daily mission — without relying on the layer-wide cap.
+      • decide_dispatch is UNCHANGED — it still returns 'layer_4' only when
+        not l4_fired, so its phase-string semantics are unaffected. The
+        invariant ∀ m ∈ select_due_missions: m['layer'] == phase_layer(decide)
+        holds on the first L4 tick (when l4_fired is False); on subsequent L4
+        ticks select_due_missions returns only missions whose own marker says
+        they haven't fired yet, which may be a non-empty subset — this is fine
+        because select_due_missions is ADDITIVE to decide_dispatch, not a
+        replacement for it.
     """
     now_paris_t = _to_paris(ctx["now_utc"]).time()
     has_research = bool(ctx.get("has_research_items", False))
@@ -1095,15 +1129,15 @@ def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
     l1_fired = _layer_fired_today(ctx, 1)
     l2_fired = _layer_fired_today(ctx, 2)
     l3_fired = _layer_fired_today(ctx, 3)
-    l4_fired = _layer_fired_today(ctx, 4)
 
     if layer == 4:
+        # Gate: time AND L4 prerequisites — per-mission idempotence handles
+        # whether a specific L4 mission has already fired today.
         return (
             _time_reached(now_paris_t, 4)
             and l1_fired
             and (l2_fired or not has_research)
             and (l3_fired or not has_decisions)
-            and not l4_fired
         )
     if layer == 3:
         return _time_reached(now_paris_t, 1) and has_decisions
@@ -1185,9 +1219,13 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     stamp would exclude the mission on the very tick it became due (it would
     never run at all).
 
-    Deliberately does NOT fall back to the layer-level marker. The layer marker
-    tracks whether a LAYER ran; the per-mission marker tracks whether THIS MISSION
-    ran. A mission with no per-mission marker → last_fired=None → is_mission_due
+    Does NOT fall back to the layer-level marker. The layer marker tracks whether
+    a LAYER ran (or more precisely, whether any one mission in that layer has
+    stamped the shared layer .last-run); the per-mission marker tracks whether
+    THIS MISSION ran. For L4: materialize_due_missions_for_tick now stamps the
+    per-mission marker for every due L4 mission (fix #277), so all L4 missions
+    have their own per-mission marker and do not need a layer-marker fallback.
+    A mission with no per-mission marker → last_fired=None → is_mission_due
     evaluates purely on cadence (time/day) without a "fired today" veto.
     """
     today_dir_str = ctx.get("today_dir")
@@ -1237,7 +1275,8 @@ def select_due_missions(
       2. The layer's time floor (Paris-local) is reached AND its
          prerequisites are met (same gates as decide_dispatch).
       3. `is_mission_due()` returns True using the mission's own per-mission
-         last-run timestamp (with layer-marker fallback for regression safety).
+         last-run timestamp (stamped by materialize_due_missions_for_tick for
+         all layers 1-4, so every mission has its own idempotence marker).
       4. Its input is ready: producer missions always pass; consumer missions
          (those with `input_queue`) require that queue to be non-empty.
 
