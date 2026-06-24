@@ -85,7 +85,8 @@ DRAINED_COUNT=0
 
 # Process line by line; write a temp queue of lines that failed.
 TMPQ=$(mktemp "${QUEUE}.tmp.XXXXXX")
-trap 'rm -f "$TMPQ"' EXIT
+TMPBODY=""
+trap 'rm -f "$TMPQ" "$TMPBODY"' EXIT
 
 while IFS= read -r line || [ -n "$line" ]; do
   [ -z "$line" ] && continue
