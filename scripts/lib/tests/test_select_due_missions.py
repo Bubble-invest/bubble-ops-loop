@@ -31,7 +31,7 @@ Test coverage mandated by the brief:
 from __future__ import annotations
 
 import yaml
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
@@ -1381,4 +1381,127 @@ def test_clock_cadence_every_nh_unchanged_by_event_support():
     result2 = is_mission_due(m, now=MORNING, last_fired=last_fired_old)
     assert result2 is True, (
         "REGRESSION: every_4h mission fired 5h ago must return True"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #282 re-fire-loop closure — per-item dispatched-id ledger
+# ---------------------------------------------------------------------------
+
+def _write_decision(repo: Path, decision_id: str, when: datetime) -> None:
+    d = repo / "inbox" / "decisions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{decision_id}.yaml").write_text(
+        yaml.dump({"id": decision_id, "kind": "publish_decision",
+                   "status": "approved", "created_at": when.isoformat()},
+                  allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
+def test_event_loop_closure_same_item_not_redispatched_next_tick(tmp_path: Path):
+    """THE #282 FIX: an unprocessed item that persists across ticks is dispatched
+    ONCE (tick 1), NOT re-dispatched on tick 2 — closing the per-tick re-fire loop,
+    WITHOUT the subagent archiving the item (crash/abort-safe)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # TICK 1 — build_dispatch_ctx runs the materializer (ledgers id at now_utc),
+    # selector ignores the same-tick marker → item IS selected.
+    ctx1 = _full_ctx(repo, AFTER_L3)
+    due1 = [m["id"] for m in select_due_missions(ctx1, [pub])]
+    assert "publish_execution" in due1, "tick 1 must dispatch the new approved item"
+
+    # TICK 2 — 30 min later, item still in inbox/decisions (subagent didn't archive).
+    tick2 = AFTER_L3 + timedelta(minutes=30)
+    ctx2 = _full_ctx(repo, tick2)
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" not in due2, (
+        "tick 2 must NOT re-dispatch the same item — the prior-tick ledger marker "
+        "closes the re-fire loop (the #282 bug fix)"
+    )
+
+
+def test_event_second_item_redispatches_after_first_ledgered(tmp_path: Path):
+    """R3: a 2nd, different-id approved item the same day IS dispatched even though
+    the first id is already ledgered (trigger-identity, not a clock veto)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # Tick 1 dispatches item 1.
+    _full_ctx(repo, AFTER_L3)  # materializer ledgers approved-001
+    # Tick 2: item 1 archived OUT, item 2 arrives (different id).
+    (repo / "inbox" / "decisions" / "approved-001.yaml").unlink()
+    tick2 = AFTER_L3 + timedelta(minutes=30)
+    _write_decision(repo, "approved-002", tick2)
+    ctx2 = _full_ctx(repo, tick2)
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" in due2, (
+        "a 2nd approved item (new id) must dispatch — R3, no clock veto"
+    )
+
+    # Tick 3: item 2 still present, must NOT re-dispatch (loop closed for it too).
+    tick3 = tick2 + timedelta(minutes=30)
+    ctx3 = _full_ctx(repo, tick3)
+    due3 = [m["id"] for m in select_due_missions(ctx3, [pub])]
+    assert "publish_execution" not in due3, "item 2 must not re-fire on tick 3"
+
+
+def test_event_crash_resilience_ledger_blocks_redispatch(tmp_path: Path):
+    """Crash-safety: the ledger is written at DISPATCH (materializer), not by the
+    subagent. So even if the subagent crashes after publishing but before
+    archiving, the item is NOT re-dispatched next tick (no duplicate publish)."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    # Tick 1: dispatched + ledgered. (Simulate subagent crash: item NOT archived.)
+    _full_ctx(repo, AFTER_L3)
+    # Confirm the ledger marker exists for the id.
+    from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
+    later = AFTER_L3 + timedelta(minutes=30)
+    blocked = _dispatched_trigger_ids(
+        Path(_full_ctx(repo, later)["today_dir"]), "publish_execution", before=later
+    )
+    assert "approved-001" in blocked, "ledger must record the dispatched id (crash-safe)"
+
+
+def test_event_safety_no_decisions_still_empty(tmp_path: Path):
+    """SAFETY unchanged: zero inbox/decisions → L3 phase ineligible → []."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    # No decision written.
+    ctx = _full_ctx(repo, AFTER_L3)
+    due = [m["id"] for m in select_due_missions(ctx, [pub])]
+    assert due == [], "no approved decision → publish_execution NOT selected (no publish-on-inference)"
+
+
+def test_event_ledger_engages_without_manual_repo_dir_injection(tmp_path: Path):
+    """PROD-REALISTIC: build_dispatch_ctx must set ctx['_repo_dir'] itself so the
+    event ledger is READ in production. Earlier bug: tests injected _repo_dir
+    manually; without it the selector fail-opened and the re-fire loop returned
+    live. This test uses build_dispatch_ctx WITHOUT manual injection."""
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+    _write_decision(repo, "approved-001", AFTER_L3)
+
+    ctx1 = build_dispatch_ctx(repo, now_utc=AFTER_L3)  # NO manual _repo_dir
+    assert ctx1.get("_repo_dir"), "build_dispatch_ctx MUST set _repo_dir for prod ledger reads"
+    assert "publish_execution" in [m["id"] for m in select_due_missions(ctx1, [pub])]
+
+    ctx2 = build_dispatch_ctx(repo, now_utc=AFTER_L3 + timedelta(minutes=30))
+    assert "publish_execution" not in [m["id"] for m in select_due_missions(ctx2, [pub])], (
+        "re-fire loop must be closed in PROD ctx (no manual _repo_dir injection)"
     )
