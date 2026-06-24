@@ -10,8 +10,10 @@
 # Assertions:
 #   T1  env override ($BUBBLE_FRAMEWORK_ROOT) wins when set.
 #   T2  sibling layout (Mac host:local): framework resolved from dirname(dept).
-#   T3  VPS fallback: /home/claude/bubble-ops-loop resolves when sibling absent
-#       (simulated by pointing $HOME at a fixture containing that subpath).
+#   T3  VPS fallback: verified by source inspection (grep for the hardcoded path
+#       "/home/claude/bubble-ops-loop"); the live execution sub-test fires only on
+#       a host where /home/claude/bubble-ops-loop exists (i.e. the VPS). We can't
+#       write /home/claude on a Mac, so there is no fixture simulation here.
 #   T4  fail-open: no framework anywhere → exits 0, logs WARN, nothing copied.
 #   T5  missing dept dir → exits 0 (fail-open), nothing copied.
 #   T6  end-to-end copy: stale lib in dept is refreshed from framework.
@@ -109,9 +111,10 @@ chk_contains "T2 log mentions re-vendored" "re-vendored" "$out2"
 
 # =============================================================================
 # T3: VPS fallback — no env var, no sibling, /home/claude/bubble-ops-loop exists
-#     (simulated: we can't write /home/claude, so we SKIP this test on a machine
-#     where that path doesn't exist AND we can't create it; instead we verify the
-#     fallback logic via a unit-test of the candidate computation in bash itself)
+#     We can't write /home/claude on a Mac, so we can't create a fixture for
+#     this path. Instead: (a) we verify the fallback is coded in the script via
+#     grep (source inspection), and (b) if /home/claude/bubble-ops-loop actually
+#     exists on this host (VPS only), we run a live resolution sub-test.
 # =============================================================================
 echo "== T3: VPS fallback path included in candidate list =="
 # We inspect the script source: confirm it references /home/claude/bubble-ops-loop
