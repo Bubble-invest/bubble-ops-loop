@@ -20,11 +20,18 @@ from pathlib import Path
 
 def _extract_step1_paragraph_from_claude_md(text: str) -> str:
     """Return only the step-1 paragraph from CLAUDE.md (the line under
-    the '## Les 7 étapes' enumeration that starts with '1.')."""
+    the 7-steps section heading that starts with '1.').
+
+    Scaffold v2 renamed the section from '## Les 7 étapes' to
+    '## The 7 hatching steps I drive on my own' (English voice migration).
+    Accept both headings for forward/backward compatibility.
+    """
     in_enum = False
     out = []
     for line in text.splitlines():
-        if line.strip().startswith("## Les 7 étapes"):
+        stripped_line = line.strip()
+        if (stripped_line.startswith("## Les 7 étapes") or
+                stripped_line.startswith("## The 7 hatching steps")):
             in_enum = True
             continue
         if in_enum:

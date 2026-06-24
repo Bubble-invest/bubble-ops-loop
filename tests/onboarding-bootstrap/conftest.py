@@ -202,18 +202,31 @@ def tmp_clone_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def run_bootstrap(mock_gh_bin: dict, tmp_clone_dir: Path) -> callable:
+def run_bootstrap(mock_gh_bin: dict, tmp_clone_dir: Path, tmp_path: Path) -> callable:
     """
     Callable that runs bootstrap-dept.sh with `gh` mocked + the local-clone
     target overridden. Returns the CompletedProcess.
+
+    Each invocation with a distinct slug gets its own fresh bare git remote so
+    that a second run_bootstrap(slug="other") called after bootstrapped_repo has
+    already populated the shared mock remote doesn't encounter a pre-existing
+    STATE.yaml in the clone.
     """
 
     def _run(slug: str, display_name: str, owner: str = "operator",
              extra_env: dict | None = None, expect_fail: bool = False):
+        # Create a per-slug bare repo so different slugs never share state.
+        per_slug_remote = tmp_path / f"remote-{slug}" / f"bubble-ops-{slug}.git"
+        per_slug_remote.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "--bare", str(per_slug_remote)],
+            check=True, capture_output=True,
+        )
+
         env = os.environ.copy()
         env["PATH"] = f"{mock_gh_bin['bin_dir']}:{env['PATH']}"
         env["BUBBLE_BOOTSTRAP_CLONE_DIR"] = str(tmp_clone_dir)
-        env["FAKE_GH_REPO_URL"] = str(mock_gh_bin["remote_dir"])
+        env["FAKE_GH_REPO_URL"] = str(per_slug_remote)
         env["FAKE_GH_REPO_EXISTS"] = mock_gh_bin["env_extras"]["FAKE_GH_REPO_EXISTS"]
         if extra_env:
             env.update(extra_env)

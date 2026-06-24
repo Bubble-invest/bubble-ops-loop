@@ -32,26 +32,28 @@ from scaffold import render_claude_md  # noqa: E402
 
 
 def test_claude_md_contains_principle_1_reflechir_avant_agir():
-    """Principle 1 — Think Before Acting (Karpathy 'Think Before Coding')."""
+    """Principle 1 — Think Before Acting (Karpathy 'Think Before Coding').
+    Scaffold v2 uses English headings; heading is 'Think before acting'."""
     body = render_claude_md("test-slug", "TestDept")
-    # The principle's heading
-    assert "Réfléchir avant d'agir" in body or "Réfléchir avant d'agir." in body, (
-        "Principle 1 'Réfléchir avant d'agir' missing from CLAUDE.md"
+    # The principle's heading (English in scaffold v2)
+    assert "Think before acting" in body, (
+        "Principle 1 'Think before acting' missing from CLAUDE.md"
     )
     # The principle's behavior: propose interpretations + ask rather than guess
-    assert "interprétation" in body.lower() or "options" in body.lower(), (
+    assert "interpretations" in body.lower() or "options" in body.lower(), (
         "Principle 1 must mention proposing multiple interpretations / options"
     )
-    assert "deviner" in body.lower() or "ambigu" in body.lower(), (
+    assert "ambiguous" in body.lower() or "ambiguity" in body.lower(), (
         "Principle 1 must mention not guessing on ambiguity"
     )
 
 
 def test_claude_md_contains_principle_2_simplicite_dabord():
-    """Principle 2 — Simplicity First (Karpathy 'Simplicity First')."""
+    """Principle 2 — Simplicity First (Karpathy 'Simplicity First').
+    Scaffold v2 uses English headings; heading is 'Simplicity first'."""
     body = render_claude_md("test-slug", "TestDept")
-    assert "Simplicité d'abord" in body, (
-        "Principle 2 'Simplicité d'abord' missing from CLAUDE.md"
+    assert "Simplicity first" in body, (
+        "Principle 2 'Simplicity first' missing from CLAUDE.md"
     )
     assert ("minimum" in body.lower() or "minimal" in body.lower() or
             "viable" in body.lower()), (
@@ -60,46 +62,48 @@ def test_claude_md_contains_principle_2_simplicite_dabord():
 
 
 def test_claude_md_contains_principle_3_changements_chirurgicaux():
-    """Principle 3 — Surgical Changes (Karpathy 'Surgical Changes')."""
+    """Principle 3 — Surgical Changes (Karpathy 'Surgical Changes').
+    Scaffold v2 uses English headings; heading is 'Surgical changes'."""
     body = render_claude_md("test-slug", "TestDept")
-    assert "Changements chirurgicaux" in body, (
-        "Principle 3 'Changements chirurgicaux' missing from CLAUDE.md"
+    assert "Surgical changes" in body, (
+        "Principle 3 'Surgical changes' missing from CLAUDE.md"
     )
     # The behavior: don't refactor adjacent unbroken code
-    assert ("ne refactore pas" in body.lower() or "ne touche que" in body.lower() or
-            "ne pas refactor" in body.lower() or "code adjacent" in body.lower()), (
+    assert ("do not refactor" in body.lower() or "adjacent" in body.lower() or
+            "already works" in body.lower()), (
         "Principle 3 must forbid refactoring adjacent unbroken code"
     )
 
 
 def test_claude_md_contains_principle_4_critere_de_succes_verifiable():
-    """Principle 4 — Goal-Driven Execution (Karpathy 'Goal-Driven Execution')."""
+    """Principle 4 — Goal-Driven Execution (Karpathy 'Goal-Driven Execution').
+    Scaffold v2 uses English headings; heading is 'Verifiable success criterion'."""
     body = render_claude_md("test-slug", "TestDept")
-    assert ("Critère de succès vérifiable" in body or
-            "Critères de succès vérifiables" in body or
-            "But-orienté" in body), (
-        "Principle 4 'Critère de succès vérifiable' missing from CLAUDE.md"
+    assert ("Verifiable success criterion" in body or
+            "Verifiable success criteria" in body), (
+        "Principle 4 'Verifiable success criterion' missing from CLAUDE.md"
     )
-    assert "vérifiable" in body.lower() or "vérifier" in body.lower(), (
+    assert "verifiable" in body.lower() or "verify" in body.lower(), (
         "Principle 4 must mention verifiable success criteria"
     )
 
 
 def test_claude_md_contains_principle_5_reste_dans_ton_perimetre():
-    """Principle 5 — Stay in your action class (bubble-ops specific)."""
+    """Principle 5 — Stay in your action class (bubble-ops specific).
+    Scaffold v2 uses English headings; heading is 'Stay within your scope'."""
     body = render_claude_md("test-slug", "TestDept")
-    assert ("Reste dans ton périmètre" in body or
-            "Reste dans ton scope" in body or
-            "Reste dans ta classe d'action" in body), (
-        "Principle 5 'Reste dans ton périmètre' missing from CLAUDE.md"
+    assert ("Stay within your scope" in body or
+            "Stay within your action class" in body or
+            "Stay in your scope" in body), (
+        "Principle 5 'Stay within your scope' missing from CLAUDE.md"
     )
     # The behavior: refuse out-of-scope requests; propose escalation
     assert ("gate_policies" in body or "gate policy" in body.lower() or
-            "périmètre" in body.lower() or "scope" in body.lower()), (
+            "scope" in body.lower()), (
         "Principle 5 must reference gate_policies / scope as the boundary"
     )
-    assert ("escalad" in body.lower() or "operator" in body.lower() or
-            "redirige" in body.lower()), (
+    assert ("escalat" in body.lower() or "operator" in body.lower() or
+            "redirect" in body.lower()), (
         "Principle 5 must mention escalating / redirecting out-of-scope requests"
     )
 

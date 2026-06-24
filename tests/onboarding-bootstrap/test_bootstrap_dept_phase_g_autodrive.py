@@ -50,9 +50,9 @@ def test_bootstrap_generates_per_dept_claude_md(bootstrapped_repo: Path) -> None
     for canonical, options in step_aliases.items():
         assert any(o in low for o in options), \
             f"CLAUDE.md missing step '{canonical}' (any of: {options})"
-    # Must specify French Bureau-de-Cadre voice.
-    assert "français" in low or "french" in low, \
-        "CLAUDE.md must specify the French voice"
+    # Must specify the agent's language (English as of scaffold v2).
+    assert "english" in low, \
+        "CLAUDE.md must specify the agent voice language (english)"
 
 
 def test_bootstrap_claude_md_substitutes_slug_and_display(bootstrapped_repo: Path) -> None:
