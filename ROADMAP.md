@@ -11,7 +11,7 @@
 
 ## 0. Executive Summary
 
-`bubble-ops-loop` is the **cloud-first agentic operating framework** for every department at Bubble Invest. It collapses the 9-iteration design into a deliberately minimal stack: **4 globally-shared Cloud Routines** (one per OODA layer: Data / Research / Execution / Risk) act as a daily safety net; each routine fans out subagents (one per dept subscribed) with **isolated permissions** defined by per-dept subagent files. The main engine is **`/loop`** running in a long-lived **tmux session per dept on the Morty VPS**, cadence tuned per dept. Inter-layer communication is **filesystem-only** (`queues/`, `outputs/`, `inbox/` folders in a per-dept GitHub repo forked from this template) — no DB, no orchestrator, no bus. A new department is **auto-detected by routines** scanning the parent org folder for any directory containing a `dept.yaml` manifest; user supplies the per-layer goals, then the loop progresses with **human-in-the-loop gates** between Research and Execution. Templates carry the prompts, tools, scoped permissions, and skill bindings — deployment is `register 4 routines + spawn N tmux sessions`. Reuses the production-grade `bubble-vps-platform` (209/209 tests passing) for VPS provisioning, SOPS secrets, and systemd units. **No backwards compat** — Ben & Maya migrate clean, legacy crons run in parallel only until parity is proven, then are retired.
+`bubble-ops-loop` is the **cloud-first agentic operating framework** for every department at Bubble Invest. It collapses the 9-iteration design into a deliberately minimal stack: **4 globally-shared Cloud Routines** (one per OODA layer: Data / Research / Execution / Risk) act as a daily safety net; each routine fans out subagents (one per dept subscribed) with **isolated permissions** defined by per-dept subagent files. The main engine is **`/loop`** running in a long-lived **tmux session per dept on the VPS**, cadence tuned per dept. Inter-layer communication is **filesystem-only** (`queues/`, `outputs/`, `inbox/` folders in a per-dept GitHub repo forked from this template) — no DB, no orchestrator, no bus. A new department is **auto-detected by routines** scanning the parent org folder for any directory containing a `dept.yaml` manifest; user supplies the per-layer goals, then the loop progresses with **human-in-the-loop gates** between Research and Execution. Templates carry the prompts, tools, scoped permissions, and skill bindings — deployment is `register 4 routines + spawn N tmux sessions`. Reuses the production-grade `bubble-vps-platform` (209/209 tests passing) for VPS provisioning, SOPS secrets, and systemd units. **No backwards compat** — Ben & Maya migrate clean, legacy crons run in parallel only until parity is proven, then are retired.
 
 ---
 
@@ -40,7 +40,7 @@
                                           │ git push (commits = audit trail)
                                           ▼
    ┌─────────────────────────────────────────────────────────────────────────────┐
-   │                       MORTY VPS  (Hetzner CX33, hardened)                   │
+   │                       VPS  (Hetzner CX33, hardened)                          │
    │   ┌────────────────────────────────────────────────────────────────────┐    │
    │   │ systemd: claude-agent-<dept>@.service  (per dept)                  │    │
    │   │   └─ tmux session: ops-loop-<dept>                                 │    │
@@ -235,15 +235,15 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 
 ### Phase 2 — VPS /loop engine (Days 6–9)
 
-- **Goal:** Morty hosts one tmux+systemd session running `/loop 20m` against the fixture dept; main engine takes over from cloud safety-net.
+- **Goal:** the VPS hosts one tmux+systemd session running `/loop 20m` against the fixture dept; main engine takes over from cloud safety-net.
 - **Deliverables:**
   - `pyinfra/tasks/ops_loop/*` modules in `bubble-vps-platform` (new SPEC-021)
-  - `ops-loop-fixture.service` systemd unit on Morty
+  - `ops-loop-fixture.service` systemd unit on the VPS
   - `loop-autostart.sh` invokes `claude --resume + /loop` inside tmux
   - Console smoke page at `/health` shows last-run timestamp per dept × layer
   - Tests: 15+ new pyinfra tests, all passing (push the suite from 209 → 225+)
 - **Acceptance:**
-  - `./scripts/deploy.sh --tenant=morty` provisions the new units idempotently
+  - `./scripts/deploy.sh --tenant={{VPS_HOST}}` provisions the new units idempotently
   - tmux session survives `systemctl restart ops-loop-fixture` (state rebuilt from git)
   - /loop produces new outputs every 20 min in fixture's repo on GitHub (visible via console /health)
   - Cloud routines + /loop coexist (no double-execution; routines detect "fresh enough" output and skip)
@@ -253,7 +253,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 
 ### Phase 3 — Maya migration (Days 10–14)
 
-- **Goal:** `bubble-ops-maya` repo runs on Morty in shadow mode alongside legacy crons; outputs match within ±10%.
+- **Goal:** `bubble-ops-maya` repo runs on the VPS in shadow mode alongside legacy crons; outputs match within ±10%.
 - **Deliverables:**
   - `bubble-ops-maya` repo forked from template + filled `dept.yaml`
   - All 4 layer prompts customized for Maya's mandate (prospection)
@@ -345,7 +345,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 3. **[Phase 1]** Cloud Routines cost ceiling: what's the monthly Anthropic-bill budget for routines so Rick can size cadences? *Default if no answer:* assume 4 routines × 10 depts × daily layer-1/layer-4 + half-hourly layer-2/3 = budget-friendly.
 4. **[Phase 1]** Cloud Routines: register under {{OPERATOR}}'s personal Anthropic account or a Bubble Invest team account? Affects which token to use in `gh secret set`.
 5. **[Phase 2]** /loop cadence default: 20 min reasonable starting point for layer-2/3, or do specific depts need faster (Ben in trading hours)? *Default:* 20 min, per-dept override via `dept.yaml`.
-6. **[Phase 2]** Single VPS (Morty) for v1 or sharded already? *Default:* single Morty, plan shard once we hit 5+ depts.
+6. **[Phase 2]** Single VPS for v1 or sharded already? *Default:* single VPS, plan shard once we hit 5+ depts.
 7. **[Phase 3, BLOCKING]** Maya migration strategy: shadow + parity (proposed) or hard cutover after 1 day? *Default:* shadow, lower risk.
 8. **[Phase 3]** Existing Maya skills (`maya-warming-batch`, `maya-draft-batch`, etc.) — re-package as Layer-2 subagent calls, or invoke as-is via `Skill` tool? *Default:* invoke as-is in v1, refactor in v2.
 9. **[Phase 4, BLOCKING]** Ben live execution: gate via OOB email auth per order, or batch-approve via console? *Default:* OOB per order for v1 (safer); batch later.
@@ -353,7 +353,7 @@ A new dept is live the moment its repo is pushed + `dept.yaml` lists the layer. 
 11. **[Phase 4]** Console auth: bearer token only, or also SSO via {{OPERATOR}}'s Gmail OAuth? *Default:* bearer + Tailscale-only port for v1.
 12. **[Phase 5]** Miranda + Eliot opt-in trigger: time-based (week 4) or capability-based (after 3 weeks zero-incident on Maya/Ben)? *Default:* capability-based.
 13. **[Phase 5]** Legacy crons: archive in-place under `_archive_<date>/` or delete entirely after 14-day parallel? *Default:* archive, never delete in v1.
-14. **[Cross-phase]** Saxo/Bourso auth on VPS — block Phase 4 Ben? Or can Ben Layer-3 stay shadow until Saxo OAuth refresh is live? *Default:* Ben stays shadow until Saxo OAuth verified on Morty.
+14. **[Cross-phase]** Saxo/Bourso auth on VPS — block Phase 4 Ben? Or can Ben Layer-3 stay shadow until Saxo OAuth refresh is live? *Default:* Ben stays shadow until Saxo OAuth verified on the VPS.
 15. **[Cross-phase]** Wiki integration: each dept repo symlinks to `bubble-shared-wiki`, or wiki stays in `Rick_RnD/` and depts read via HTTP? *Default:* symlink at clone time (already validated).
 
 ---
@@ -366,10 +366,10 @@ We are **NOT** doing the following in v1. Anything below requires written except
 2. **No new Python framework.** No SQLAlchemy models, no Pydantic-everywhere, no event bus, no Celery. Stdlib + PyYAML + FastAPI/HTMX (proven stack).
 3. **No DB.** Filesystem + git is the bus, log, and storage.
 4. **No real-time orchestrator daemon.** /loop is the engine; routines are the safety net. No always-on supervisor process beyond systemd.
-5. **No multi-VPS sharding in v1.** Single Morty box. Re-evaluate at 5+ depts.
+5. **No multi-VPS sharding in v1.** Single VPS box. Re-evaluate at 5+ depts.
 6. **No web UI for editing prompts.** Prompts edited via `git` + PR. Console only edits `dept.yaml` knobs.
 7. **No auto-merge of Layer-4 improvements into Layer-1 next-day prompts.** Improvements are queued; {{OPERATOR}}/Tony approve via gate before next-day cycle picks them up.
-8. **No live trading from Ben Layer-3 until Saxo OAuth + OOB email auth proven on Morty.** Ben Layer-3 starts shadow.
+8. **No live trading from Ben Layer-3 until Saxo OAuth + OOB email auth proven on the VPS.** Ben Layer-3 starts shadow.
 9. **No Miranda or Eliot in v1.** They opt in Phase 5 only.
 10. **No persistent user agent (the "modification retry handoff" mentioned in Layer 3 spec).** v1 sends modifications back to Layer 2 next loop tick; persistent agent is v2.
 11. **No multi-tenant frontend.** Console serves {{OPERATOR}}'s single org; per-client multi-tenancy is a future product (lives in `bubble-vps-platform`, not here).

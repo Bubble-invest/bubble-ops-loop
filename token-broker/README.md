@@ -1,6 +1,6 @@
 # bubble-token-broker
 
-GitHub App installation-token broker for **Morty VPS**. Implements **Step 3b**
+GitHub App installation-token broker for **the VPS**. Implements **Step 3b**
 of `bubble-ops-loop` MVP-ROADMAP v2.
 
 Mints short-lived (≤60 min) installation access tokens from a GitHub App
@@ -20,14 +20,14 @@ plaintext PEM or token ever touches disk.
 Per **Notion v4** (`/tmp/notion_final.txt`, §"GitHub access model — identities,
 tokens & PR boundaries", lines ~563-725):
 
-- The bubble-ops `/loop` agent on Morty needs to `git push` outputs/queues/inbox
+- The bubble-ops `/loop` agent on the VPS needs to `git push` outputs/queues/inbox
   files to per-dept GitHub repos every tick.
 - Using a long-lived PAT was the v1 fallback. It's **explicitly forbidden in v4**:
   *"Installation access token long-lived / PAT classique / GITHUB_TOKEN dans
   logs"* are all listed under "**À ne jamais stocker**" (lines 716-724).
 - The replacement is a GitHub App (`bubble-ops-bot`, ID `3782718`, installation
   `134075326` for `bubble-ops-fixture`) whose private key sits SOPS-encrypted on
-  Morty. The broker mints **short-lived installation tokens on demand**.
+  the VPS. The broker mints **short-lived installation tokens on demand**.
 
 ---
 
@@ -42,7 +42,7 @@ tokens & PR boundaries", lines ~563-725):
 | 5 | **Audit metadata only, never the token value** | `audit.py` (a) drops fields named `token`/`pem`/`secret`/etc., (b) raises `ValueError` on any string value starting with `ghs_`. |
 
 Citations to Notion v4 in code comments:
-- `src/broker.py` header → "Token broker Morty" (lines 592-614)
+- `src/broker.py` header → "Token broker for VPS" (lines 592-614)
 - `src/policy.py` header → "Classes de tokens éphémères" (lines 616-622), "Policies par type d'acteur" (lines 623-694)
 - `src/audit.py` header → audit schema example (lines 605-614)
 - `src/cli.py` examples → §"Secrets" (lines 702-724)
@@ -60,7 +60,7 @@ Citations to Notion v4 in code comments:
 
 > **Notion v4 line 725:** GitHub does not provide a true path-scope at the
 > `contents:write` token level. So **paths are enforced by THIS module** at
-> mint-time (against an actor policy YAML), AND by the Morty git guard
+> mint-time (against an actor policy YAML), AND by the VPS git guard
 > (Step 3c, separate component) at push-time. Belt and suspenders.
 
 ---
@@ -76,7 +76,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest --cov=src tests/
 ```
 
-### On Morty (production)
+### On the VPS (production)
 
 See [`deploy/INSTALL-ON-MORTY.md`](deploy/INSTALL-ON-MORTY.md) for the full
 runbook (SOPS env decrypt chain, smoke tests, real-mint validation, audit log
@@ -206,7 +206,7 @@ python3 -m src.cli check --dept <dept_slug> --action runtime_read \
 
 ## What this broker does NOT do (deliberately out of scope)
 
-- **Path-level enforcement at push time** — that's the Morty **git guard**
+- **Path-level enforcement at push time** — that's the VPS **git guard**
   (Step 3c, separate component). The broker only down-scopes the token's repo
   and permission class; the guard verifies the actual files being pushed.
 - **Webhook handling** — no inbound webhooks. The broker is a pull-only minter.

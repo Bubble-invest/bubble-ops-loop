@@ -1,6 +1,6 @@
 # INSTALL-ON-MORTY — bubble-token-broker operator runbook
 
-**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to Morty (Hetzner CX33).
+**Audience:** {{OPERATOR}} (CEO) + Rick (R&D) when deploying to the VPS (Hetzner CX33).
 **Status:** v1 = oneshot CLI. No daemon. Each `git push` workflow invokes the
 CLI, consumes the token, the process exits, and the token is gone.
 
@@ -8,7 +8,7 @@ CLI, consumes the token, the process exits, and the token is gone.
 
 ## 0. Pre-flight checks
 
-These should already be true on Morty (audited 2026-05-19). Verify if unsure:
+These should already be true on the VPS (audited 2026-05-19). Verify if unsure:
 
 ```bash
 # SOPS + age key present?
@@ -28,7 +28,7 @@ sudo SOPS_AGE_KEY_FILE=/etc/age/key.txt sops --decrypt /etc/bubble/secrets.sops.
 
 ---
 
-## 1. Ship the broker package to Morty
+## 1. Ship the broker package to the VPS
 
 From your laptop (Mac):
 
@@ -39,10 +39,10 @@ cd .
 tar --exclude='._*' --exclude='.DS_Store' \
     -czf /tmp/bubble-token-broker.tar.gz token-broker/
 
-# 1.2 Copy to Morty (hetzner SSH alias must be configured)
+# 1.2 Copy to the VPS (hetzner SSH alias must be configured)
 scp /tmp/bubble-token-broker.tar.gz hetzner:/tmp/
 
-# 1.3 Install on Morty
+# 1.3 Install on the VPS
 ssh hetzner bash -c "'
   sudo mkdir -p /opt/bubble-token-broker
   sudo tar xzf /tmp/bubble-token-broker.tar.gz -C /opt/bubble-token-broker --strip-components=1
@@ -50,7 +50,7 @@ ssh hetzner bash -c "'
   sudo chmod -R 0755 /opt/bubble-token-broker
 '"
 
-# 1.4 Python deps (system Python 3.12 on Ubuntu 24.04 on Morty)
+# 1.4 Python deps (system Python 3.12 on Ubuntu 24.04 on the VPS)
 ssh hetzner "sudo apt-get update && sudo apt-get install -y python3-cryptography python3-requests python3-yaml"
 
 # 1.5 Wrapper script
@@ -199,7 +199,7 @@ GIT_ASKPASS=/dev/null git -c \
 unset TOKEN
 ```
 
-The Morty git guard (Step 3c, separate component) verifies `$STAGED_PATHS`
+The VPS git guard (Step 3c, separate component) verifies `$STAGED_PATHS`
 is a subset of the runtime_write_own allow-list BEFORE the broker is called.
 
 ---

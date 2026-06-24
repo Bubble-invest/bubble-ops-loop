@@ -1,13 +1,13 @@
 # bubble-git-guard
 
-Path-allow-list enforcement at the **`git push` boundary** on Morty.
+Path-allow-list enforcement at the **`git push` boundary** on the VPS.
 Step 3c of the bubble-ops-loop MVP.
 
 ## Why this exists (Notion v4 line 725, verbatim)
 
 > "GitHub ne fournit pas un vrai path-scope au niveau token `contents:write`.
 > Les paths autorisés sont donc appliqués par wrapper local / git guard sur
-> Morty, CI path guard, branch protection et audit Layer 4. Les tokens
+> le VPS, CI path guard, branch protection et audit Layer 4. Les tokens
 > limitent les repos et permissions ; les guards limitent les chemins."
 
 GitHub's `contents:write` permission is **repo-wide**: a token that can write
@@ -45,7 +45,7 @@ ops-loop-fixture (the /loop agent)
 See `deploy/INSTALL-ON-MORTY.md` for the operator runbook. TL;DR:
 
 ```bash
-# On Morty (assumes token-broker already at /opt/bubble-token-broker/)
+# On the VPS (assumes token-broker already at /opt/bubble-token-broker/)
 sudo tar xzf /tmp/bubble-git-guard.tar.gz -C /opt/bubble-git-guard --strip-components=1
 sudo install -m 0755 /opt/bubble-git-guard/deploy/bubble-git-guard.template.sh \
     /opt/bubble-git-guard/bin/bubble-git-guard

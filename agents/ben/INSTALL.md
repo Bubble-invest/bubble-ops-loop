@@ -93,7 +93,7 @@ the per-dept unit pointed at this folder.
    can run it as a standalone unit pointed at `agents/ben`).
 2. Render + install the unit from the template, substituting the dept slug
    (`ben`) and the dept directory. The canonical helper is
-   `scripts/deploy-to-morty.sh --slug=ben` (it re-renders from the template and
+   `scripts/deploy-to-vps.sh --slug=ben` (it re-renders from the template and
    installs/reloads the unit), or hand-render the template if you run a different
    host layout.
 3. Provide credentials via the SOPS-decrypted env file the unit loads into the

@@ -1,6 +1,6 @@
 # bubble-ops-loop — box install manifest
 
-Canonical list of the box-level (Morty/VPS) install steps for the
+Canonical list of the box-level (VPS) install steps for the
 bubble-ops-loop platform. Run these on a fresh box bring-up, and re-run
 the idempotent ones on every deploy. Each step points at the script that
 performs it. This file exists so no step gets forgotten when the box is
@@ -17,10 +17,10 @@ rebuilt or a new tenant box is provisioned.
 | # | What | Script | Idempotent | Notes |
 |---|------|--------|------------|-------|
 | 1 | Per-dept agent units (`ops-loop-<slug>`) | `deploy/templates/ops-loop-dept.service.template` via `scripts/bootstrap-dept.sh` / `activate-dept.sh` | yes | One per live dept. Decrypts per-dept SOPS → `/run/claude-agent-<slug>/env`. |
-| 2 | Console (cockpit) | `console/deploy/bubble-ops-console.service.template` + `scripts/deploy-console-to-morty.sh` | yes | Tailscale-served `:8443`. |
+| 2 | Console (cockpit) | `console/deploy/bubble-ops-console.service.template` + `scripts/deploy-console-to-vps.sh` | yes | Tailscale-served `:8443`. |
 | 3 | Loop liveness watchdog (alerts) | `scripts/ops-loop-watchdog.{service,timer}` + `scripts/loop-watchdog.sh` | yes | Telegram alert on stale heartbeat. |
 | 4 | **Loop layer FLOOR (4 crons)** | **`scripts/install-loop-backup.sh`** | **yes** | **EXACTLY 4 cron units (`loop-layer1..4`), one per OODA layer (L1 07:00 / L2 12:00 / L3 16:00 / L4 19:00 Paris). Each fires its layer for every eligible dept, auto-discovered at runtime. The daily floor + safety net. New depts inherit it with ZERO config.** |
-| 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. |
+| 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. (Script filename kept as-is; see script for VPS-specific config.) |
 | 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
 | 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
 | 8 | **`/loop` boot re-arm (telegram plugin)** | **`scripts/install-boot-rearm.sh`** | **yes** | **Patches the telegram channel plugin so a dept's `/loop` re-arms on poller startup after ANY restart (synthetic boot turn via MCP channel notification — supersedes `bubble-loop-reinit.sh`). Re-run after every deploy / plugin update (the plugin cache is volatile). Source-of-truth in `deploy/telegram-plugin/`. Restart depts after to load the patched plugin. Requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>` in the unit (in the template for new depts; drop-in for existing ones — see below). See `tests/test_boot_rearm_install.sh`.** |
@@ -32,14 +32,14 @@ NEW depts inherit the boot-rearm env automatically: it is baked into
 `deploy/templates/ops-loop-dept.service.template`
 (`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`),
 substituted per-dept at scaffold/deploy time
-(`scripts/deploy-to-morty.sh`, `console/services/eclosure_launcher.py`).
+(`scripts/deploy-to-vps.sh`, `console/services/eclosure_launcher.py`).
 
 EXISTING live depts (tony, maya, cgp, claudette, …) were provisioned before
 this env existed, so their installed units lack it. Two ways to add it (Rick
 applies to live units; this installer never touches live units):
 
 - **Re-render + reinstall the unit** (preferred, keeps the unit in sync with
-  the template): `scripts/deploy-to-morty.sh --slug=<dept>` re-renders from the
+  the template): `scripts/deploy-to-vps.sh --slug=<dept>` re-renders from the
   template (now including the env) and reinstalls the unit, then
   `daemon-reload` + restart.
 - **systemd drop-in** (surgical, no full re-render):
