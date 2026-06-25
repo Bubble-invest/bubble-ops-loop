@@ -12,7 +12,8 @@
        style="font-size:13.5px; line-height:1.55;
               background: var(--paper); border:1px solid var(--line);
               border-radius:4px; padding:14px 16px; max-height:520px;
-              overflow-y:auto;">
+              overflow-y:auto; overflow-x:hidden; min-width:0;
+              overflow-wrap:anywhere; word-break:break-word;">
     {% for t in turns|reverse %}
       {% set tstime = t.ts[11:16] if t.ts|length >= 16 else t.ts %}
       {% if t.kind == 'tool' %}
@@ -39,7 +40,7 @@
             ·
             <b style="color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">{{ name|capitalize if t.role == 'assistant' else 'opérateur' }}</b>
           </div>
-          <div class="feed-md md-render" data-md="1" style="color: var(--ink); white-space:pre-wrap;">{{ t.text }}</div>
+          <div class="feed-md md-render" data-md="1" style="color: var(--ink); white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; min-width:0;">{{ t.text }}</div>
         </div>
       {% endif %}
     {% endfor %}
