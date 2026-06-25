@@ -232,6 +232,35 @@ print('\n'.join(lines))
 
 # ── Fallback: dashboard POST + queue ─────────────────────────────────────────
 
+# _kanban_queue_alert — fire a Telegram alert when a card falls to the local
+# queue. Reads TELEGRAM_BOT_TOKEN + BUBBLE_OPERATOR_CHAT_ID from env.
+# Degrades silently (no abort) when either is unset — the stderr WARN is the
+# primary signal; Telegram is a best-effort secondary.
+_kanban_queue_alert() {
+  local title="$1"
+  local queue="$2"
+  local tok="${TELEGRAM_BOT_TOKEN:-}"
+  local chat="${KANBAN_ALERT_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-}}"
+
+  if [ -z "$tok" ] || [ -z "$chat" ]; then
+    # No token or no chat_id — stderr WARN already emitted by caller; skip Telegram.
+    return 0
+  fi
+
+  local msg
+  msg="[emit-kanban WARN] card NOT on board — fell to local queue.
+Title: ${title}
+Queue: ${queue}
+Rick must run drain_kanban_queue.sh to replay."
+
+  # Best-effort POST; never let the alert itself crash the emitter.
+  curl -s -m 5 -o /dev/null \
+    "https://api.telegram.org/bot${tok}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=${msg}" \
+    2>/dev/null || true
+}
+
 _dashboard_emit() {
   local PAYLOAD
   PAYLOAD=$(TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
@@ -274,7 +303,10 @@ print(json.dumps(payload))
     QUEUE="${KANBAN_QUEUE:-$HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl}"
     mkdir -p "$(dirname "$QUEUE")" 2>/dev/null || true
     echo "$PAYLOAD" >> "$QUEUE"
+    # ── LOUD WARN: the card did NOT reach the board ───────────────────────────
+    echo "[WARN] emit fell to local queue — card NOT on board (Rick must drain): ${TITLE}" >&2
     echo "emit_kanban_item: dashboard at ${KANBAN_HOST} returned $HTTP, item queued at $QUEUE" >&2
+    _kanban_queue_alert "${TITLE}" "$QUEUE"
   fi
 }
 
