@@ -104,6 +104,11 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.vp-card-num {
+  color: var(--muted, #9a8f80);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .vp-card-title a {
   color: inherit;
   text-decoration: none;
@@ -239,7 +244,7 @@
      style="cursor:pointer;">
   <div class="vp-card-top">
     <div class="vp-card-title">
-      {{ item.title or item.summary or '(sans titre)' }}
+      {% if item.id %}<span class="vp-card-num">#{{ item.id }}</span> {% endif %}{{ item.title or item.summary or '(sans titre)' }}
     </div>
     {{ prio_chip(item) }}
   </div>
