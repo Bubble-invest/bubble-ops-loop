@@ -5,6 +5,39 @@
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"
         integrity="sha384-qX9VvWkP79m/O121ZE6sOYp0nf/pldQgtvWDbkpzi+3mUo4Wn4Ix4cFzNPay3VaB"
         crossorigin="anonymous"></script>
+<!-- Markdown renderer + sanitizer (client-side, CDN + SRI) — #300: cards render raw md otherwise -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+        integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
+        integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
+        crossorigin="anonymous"></script>
+<style>
+/* #300 — markdown-rendered card content, styled to the cockpit (cabinet) look */
+.md-render { font-size:14px; line-height:1.6; color:var(--body-soft); }
+.md-render h1,.md-render h2,.md-render h3,.md-render h4 {
+  color:var(--ink); font-weight:600; margin:14px 0 6px; line-height:1.3; }
+.md-render h1{font-size:18px;} .md-render h2{font-size:16px;} .md-render h3{font-size:15px;} .md-render h4{font-size:14px;}
+.md-render p{margin:6px 0;}
+.md-render strong{color:var(--ink); font-weight:600;}
+.md-render ul,.md-render ol{margin:6px 0 6px 20px; padding:0;}
+.md-render li{margin:2px 0;}
+.md-render a{color:var(--accent, #b06a2c); text-decoration:none;}
+.md-render a:hover{text-decoration:underline;}
+.md-render code{font-family:ui-monospace,Menlo,monospace; font-size:12.5px;
+  background:var(--paper-soft); border:1px solid var(--line); border-radius:3px; padding:1px 4px;}
+.md-render pre{background:var(--paper-soft); border:1px solid var(--line); border-radius:4px;
+  padding:10px 12px; overflow-x:auto; margin:8px 0;}
+.md-render pre code{background:none; border:none; padding:0; font-size:12.5px;}
+.md-render table{border-collapse:collapse; margin:10px 0; font-size:13px; width:auto; max-width:100%;}
+.md-render th,.md-render td{border:1px solid var(--line); padding:5px 10px; text-align:left; vertical-align:top;}
+.md-render th{background:var(--paper-soft); color:var(--ink); font-weight:600;}
+.md-render tr:nth-child(even) td{background:var(--paper-soft);}
+.md-render blockquote{border-left:3px solid var(--line); margin:8px 0; padding:2px 12px; color:var(--body-muted);}
+.md-render hr{border:none; border-top:1px solid var(--line); margin:12px 0;}
+.md-render .mermaid{background:var(--paper-soft); border:1px solid var(--line);
+  border-radius:4px; padding:10px; margin:10px 0; text-align:center;}
+</style>
 {% endblock %}
 
 {% block content %}
@@ -27,7 +60,7 @@
   </p>
 </header>
 
-{# ── Structured body sections ──────────────────────────────────────────── #}
+{# ── Structured body sections (markdown-rendered, #300) ────────────────── #}
 {% if sections %}
 <div class="gate-card" style="margin-bottom:24px;">
   {% for name, content in sections.items() %}
@@ -35,22 +68,19 @@
     <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px;">
       {{ name }}
     </h3>
-    <div style="font-size:14px; line-height:1.55; color:var(--body-soft); white-space:pre-line;">
-      {{ content[:2000] }}
-    </div>
+    {# raw markdown in the element text; rendered client-side by the script below (data-md flags it) #}
+    <div class="md-render" data-md="1">{{ content[:6000] }}</div>
   </div>
   {% endfor %}
 </div>
 {% else %}
-{# Fallback: render raw body #}
+{# Fallback: render raw body as markdown #}
 <div class="gate-card" style="margin-bottom:24px;">
-  <p style="font-size:14px; line-height:1.55; color:var(--body-soft); white-space:pre-line;">
-    {{ card.body or '(pas de contenu)' }}
-  </p>
+  <div class="md-render" data-md="1">{{ (card.body or '(pas de contenu)')[:6000] }}</div>
 </div>
 {% endif %}
 
-{# ── Mermaid diagram (reuses #89 render) ──────────────────────────────── #}
+{# ── Mermaid diagram (structured card.mermaid_src, body-level) ─────────── #}
 {% if card.mermaid_src %}
 <div class="gate-card" style="margin-bottom:24px;">
   <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">Diagramme</h3>
@@ -80,7 +110,7 @@
 </div>
 {% endif %}
 
-{# ── Comment thread ───────────────────────────────────────────────────── #}
+{# ── Comment thread (markdown-rendered, #300) ─────────────────────────── #}
 {% if comments %}
 <div class="gate-card" style="margin-bottom:24px;">
   <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 12px;">
@@ -92,9 +122,7 @@
       <strong>{{ c.user.login if c.user else 'inconnu' }}</strong>
       · {{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}
     </div>
-    <div style="font-size:13px; line-height:1.5; color:var(--body-soft); white-space:pre-line;">
-      {{ c.body[:3000] }}
-    </div>
+    <div class="md-render" data-md="1">{{ c.body[:6000] }}</div>
   </div>
   {% endfor %}
 </div>
@@ -108,11 +136,45 @@
   {% endif %}
 </footer>
 
-{# Initialise Mermaid #}
+{# Render markdown (+ extract fenced mermaid) then init Mermaid (#300) #}
 <script>
 (function () {
-  if (typeof mermaid === 'undefined') return;
-  mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'strict' });
+  var hasMarked = (typeof marked !== 'undefined');
+  var hasPurify = (typeof DOMPurify !== 'undefined');
+
+  // For each .md-render block: the element's textContent is the raw markdown
+  // (Jinja-escaped, so it's safe text). Pull ```mermaid fences out into .mermaid
+  // divs, markdown-render the rest, sanitize, inject. Fail-open: if a lib is
+  // missing or parse throws, leave the original text (pre-line) untouched.
+  document.querySelectorAll('.md-render[data-md]').forEach(function (el) {
+    var raw = el.textContent;
+    if (!hasMarked || !hasPurify) { el.style.whiteSpace = 'pre-line'; return; }
+    // 1. extract ```mermaid ... ``` blocks → placeholders → render as diagrams
+    var diagrams = [];
+    var stripped = raw.replace(/```mermaid\s*([\s\S]*?)```/g, function (_m, src) {
+      diagrams.push(src.trim());
+      return '\n\n@@MERMAID' + (diagrams.length - 1) + '@@\n\n';
+    });
+    // 2. markdown → HTML (gfm tables) → sanitize
+    var html;
+    try { html = marked.parse(stripped, { gfm: true, breaks: true }); }
+    catch (e) { el.style.whiteSpace = 'pre-line'; return; }
+    html = DOMPurify.sanitize(html);
+    // 3. swap placeholders back to mermaid divs (escape < to keep mermaid happy)
+    html = html.replace(/@@MERMAID(\d+)@@/g, function (_m, i) {
+      var src = (diagrams[+i] || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      return '<div class="mermaid">' + src + '</div>';
+    });
+    el.innerHTML = html;
+    el.removeAttribute('data-md');
+  });
+
+  // init Mermaid AFTER markdown injection so freshly-injected diagrams render
+  if (typeof mermaid !== 'undefined') {
+    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
+    try { mermaid.run({ querySelector: '.mermaid' }); }
+    catch (e) { if (mermaid.init) { try { mermaid.init(undefined, '.mermaid'); } catch (e2) {} } }
+  }
 }());
 </script>
 
