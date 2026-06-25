@@ -2699,3 +2699,36 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .desk-done-layer { font-size: 10px; font-weight: 700; color: #2e7d32; flex: 0 0 auto; }
 .desk-done-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk-empty { font-size: 12px; color: var(--body-muted); font-style: italic; margin: 4px 0; }
+
+/* ─── Pixel agent at his desk (#286) — center session zone ───────────────── */
+.desk-agent-stage { text-align:center; padding:6px 0 10px; }
+.pixel-agent { shape-rendering:crispEdges; }
+/* state visibility: working shows ^_^ + active screen; idle shows flat eyes + Zzz */
+.pixel-agent .pa-eyes-idle, .pixel-agent .pa-zzz { display:none; }
+.pixel-agent.is-idle .pa-eyes-work { display:none; }
+.pixel-agent.is-idle .pa-eyes-idle, .pixel-agent.is-idle .pa-zzz { display:inline; }
+.pa-screen { fill:#7fa8c9; }
+.pixel-agent.is-idle .pa-screen { fill:#54647a; }
+.pixel-agent.is-idle .pa-cl { display:none; }
+.pixel-agent.is-idle .pa-flag rect { opacity:.5; }
+/* WORKING animations */
+.pixel-agent.is-working { animation:pa-hop 1.1s steps(2) infinite; }
+@keyframes pa-hop { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-1.5px)} }
+.pixel-agent.is-working .pa-arm { animation:pa-type .3s steps(2) infinite; }
+@keyframes pa-type { 0%,100%{transform:translateY(0)} 50%{transform:translateY(1px)} }
+.pixel-agent.is-working .pa-cl { animation:pa-blink 1s steps(1) infinite; }
+.pixel-agent.is-working .pa-cl2 { animation-delay:.5s; }
+@keyframes pa-blink { 0%,50%{opacity:1} 51%,100%{opacity:.15} }
+.pixel-agent.is-working .pa-screen { animation:pa-glow 1.4s steps(2) infinite; }
+@keyframes pa-glow { 0%,100%{fill:#7fa8c9} 50%{fill:#9ec6e4} }
+.pixel-agent.is-working .pa-flag rect { animation:pa-wave .9s steps(2) infinite; }
+@keyframes pa-wave { 0%,100%{transform:translateX(0)} 50%{transform:translateX(.6px)} }
+/* IDLE animations */
+.pixel-agent.is-idle { animation:pa-breathe 3.2s steps(2) infinite; }
+@keyframes pa-breathe { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-.5px)} }
+.pixel-agent.is-idle .pa-zzz { animation:pa-zf 2.6s ease-in-out infinite; }
+@keyframes pa-zf { 0%{opacity:0;transform:translateY(2px)} 50%{opacity:1} 100%{opacity:0;transform:translateY(-3px)} }
+/* respect reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .pixel-agent, .pixel-agent * { animation:none !important; }
+}
