@@ -289,11 +289,25 @@ due     = select_due_missions(ctx, missions)  # list of due mission dicts on tha
 from memory. `decide_dispatch` encodes the full min-time priority tree (Layer 4 from
 19:00 Paris once L1+L2+L3 fired > research queue > inbox decisions > daily L1 >
 heartbeat) and is the SINGLE SOURCE of truth for *when* each phase fires.
-The 22:00–22:30 UTC window is the eligibility band for Layer 4; `outputs/<today>/4/.last-run`
-is the idempotence guard-rail (one Layer 4 execution per day).
+Layer 4 is eligible in the ~22:00 UTC dispatch window once L1+L2+L3 are done;
+idempotence is **per-mission** (`outputs/<today>/missions/<id>/.last-run`), NOT a
+once-per-day layer cap — so MULTIPLE Layer-4 missions at different fire-times
+(e.g. a risk debrief at 21:00 + a wrap-up at 22:30) each run once on their own
+cadence. (The old shared `outputs/<today>/4/.last-run` layer-cap was removed — it
+wrongly blocked every secondary L4 mission.)
 `select_due_missions` is the SINGLE SOURCE of truth for *which missions* fire on
 that phase. `resolve_mission_prompt` returns `missions/<id>/PROMPT.md` when it exists,
 else falls back to `layers/<N>/PROMPT.md` (zero-regression shim for existing depts).
+
+**Fan-out rule (prevents running the same shim N times):** for each mission in
+`due`, resolve its prompt; missions with a **dedicated** `missions/<id>/PROMPT.md`
+each get their OWN subagent (parallel fan-out); missions that resolve to the
+**shared `layers/<N>/PROMPT.md` shim** → run the layer's PRIMARY mission ONCE on
+that shim, do NOT spawn a second identical subagent for another shim-only mission
+on the same layer. A shim-only secondary is NOT yet truly un-orphaned — it needs
+its own `missions/<id>/PROMPT.md`; until then it rides the primary. **NEVER bolt a
+secondary mission's work into the primary's prompt** — that is the forbidden
+anti-pattern.
 
 ## How I talk to {{OPERATOR}}
 
@@ -422,7 +436,16 @@ phase fires (Layer 4 eligible from 19:00 Paris once L1+L2+L3 fired > research qu
 > inbox decisions > daily L1 > heartbeat). `select_due_missions` is the SINGLE SOURCE
 of truth for *which missions* fire. `resolve_mission_prompt` returns
 `missions/<id>/PROMPT.md` when it exists, else falls back to `layers/<N>/PROMPT.md`
-(zero-regression shim for existing depts).
+(zero-regression shim for existing depts). L4 idempotence is **per-mission**
+(`outputs/<today>/missions/<id>/.last-run`), so multiple L4 missions at different
+fire-times each run once — there is NO once-per-day L4 layer cap.
+
+**Fan-out rule:** missions with a dedicated `missions/<id>/PROMPT.md` each get
+their OWN subagent (parallel); missions resolving to the shared
+`layers/<N>/PROMPT.md` shim → run the layer PRIMARY once, do NOT spawn duplicate
+subagents for other shim-only missions, and NEVER bolt a secondary mission's work
+into the primary's prompt (the forbidden anti-pattern). A shim-only secondary is
+un-orphaned only once it has its own `missions/<id>/PROMPT.md`.
 
 **STEP D** — heartbeat on EVERY tick: write a freshness line in
 `outputs/<today>/heartbeat.log` (create the dir if needed):
