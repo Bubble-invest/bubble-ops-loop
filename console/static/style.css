@@ -2762,12 +2762,38 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 }
 
 /* ─── Desk view — mobile hardening (#286, fix mobile) ────────────────────── */
-@media (max-width: 720px) {
-  .desk-grid { gap: 12px; }
-  .desk-pile { padding: 10px 12px; min-height: auto; }
+
+
+/* ─── Mobile overflow hardening (#286 fix mobile, round 2) ───────────────── */
+/* Every desk pile + its content must stay within the viewport — long tokens,
+   code, URLs in the session feed were forcing horizontal scroll on phones. */
+.desk-grid, .desk-pile, .desk-pile--active, .desk-session,
+.desk-folder, .desk-folder-item, .desk-done-item, .desk-card--gate {
+  min-width: 0;
+  max-width: 100%;
+}
+.desk-pile { overflow-x: hidden; }
+.desk-session { overflow-x: hidden; }
+.desk-folder-item, .desk-done-text { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+/* markdown content inside the feed: code/pre/tables must scroll internally, not push the page */
+.feed-md.md-render, .feed-md.md-render * { max-width: 100%; }
+.feed-md.md-render pre { overflow-x: auto; }
+.feed-md.md-render code { overflow-wrap: anywhere; word-break: break-word; }
+.feed-md.md-render table { display: block; overflow-x: auto; max-width: 100%; }
+/* belt-and-suspenders: never let the app body scroll sideways */
+html, body { overflow-x: hidden; max-width: 100%; }
+
+/* ─── Desk view — UNIFIED mobile layout (single column, no overflow) ─────── */
+@media (max-width: 760px) {
+  /* force a real single-column stack; grid (not flex) so children fill width */
+  .desk-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+  .desk-pile { width: 100%; min-width: 0; max-width: 100%; padding: 10px 12px; min-height: auto; box-sizing: border-box; }
+  .desk-pile--active { order: -1; }          /* live session first — it's the focus */
   .desk-session { max-height: 360px; }
-  .desk-agent-stage svg { width: 108px; height: auto; }
-  /* center pile (session) first on mobile — it's the focus */
-  .desk-pile--active { order: -1; }
-  .desk-grid { display: flex; flex-direction: column; }
+  .desk-agent-stage svg { width: 96px; height: auto; }
+  .desk-pile-head { flex-wrap: wrap; }
 }
