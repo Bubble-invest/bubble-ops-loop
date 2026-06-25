@@ -39,7 +39,7 @@
             ·
             <b style="color: {{ '#9a5b00' if t.role == 'assistant' else 'var(--body-soft)' }};">{{ name|capitalize if t.role == 'assistant' else 'opérateur' }}</b>
           </div>
-          <div style="color: var(--ink); white-space:pre-wrap;">{{ t.text }}</div>
+          <div class="feed-md md-render" data-md="1" style="color: var(--ink); white-space:pre-wrap;">{{ t.text }}</div>
         </div>
       {% endif %}
     {% endfor %}

@@ -1,5 +1,47 @@
 {% extends "base.html" %}
 {% block title %}{{ dept.display_name }} — Cabinet d'éclosion{% endblock %}
+{% block head_extra %}
+<!-- #286/#300: markdown render for the live-session feed (prettier than raw) -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+        integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
+        integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
+        crossorigin="anonymous"></script>
+<style>
+/* prettify the session feed messages (markdown) */
+.feed-md.md-render { white-space: normal; }
+.feed-md.md-render p { margin: 4px 0; }
+.feed-md.md-render strong { color: var(--ink); font-weight: 600; }
+.feed-md.md-render code { font-family: var(--font-mono, monospace); font-size: 12px;
+  background: var(--paper-soft); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+.feed-md.md-render ul, .feed-md.md-render ol { margin: 4px 0 4px 18px; padding: 0; }
+.feed-md.md-render table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+.feed-md.md-render th, .feed-md.md-render td { border: 1px solid var(--line); padding: 3px 7px; }
+.feed-md.md-render a { color: #b06a2c; }
+</style>
+<script>
+// Shared: markdown-render every .md-render[data-md] (used by the session feed).
+// Fail-open: missing lib / parse error → leave the raw text (pre-wrap) untouched.
+window.bubbleRenderMarkdown = function (root) {
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') return;
+  (root || document).querySelectorAll('.md-render[data-md]').forEach(function (el) {
+    var raw = el.textContent;
+    var html;
+    try { html = marked.parse(raw, { gfm: true, breaks: true }); }
+    catch (e) { return; }
+    el.innerHTML = DOMPurify.sanitize(html);
+    el.removeAttribute('data-md');
+  });
+};
+// initial + after every htmx swap (the session feed refreshes every 5s)
+document.addEventListener('DOMContentLoaded', function () { window.bubbleRenderMarkdown(document); });
+document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
+  window.bubbleRenderMarkdown(e.target);
+});
+document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMarkdown(e.target); });
+</script>
+{% endblock %}
 {% block content %}
 
 {# Layer → human-name map (the 4 moments de la journée). #}
@@ -41,6 +83,93 @@
     {% endif %}
   </p>
 </header>
+
+{# ─── BUREAU (desk view, #286) — at-a-glance 3-zone desk: 📥 à traiter →
+   🔄 session en direct (center) → 📤 terminé. The detailed numbered
+   sections below remain as drill-down. Live depts only. ─────────────── #}
+{% if dept.is_live %}
+<section class="cabinet-section bureau" aria-label="Bureau — vue d'ensemble">
+  <div class="desk-grid">
+
+    {# 📥 LEFT — à traiter (missions by layer + kanban attention) #}
+    <div class="desk-pile desk-pile--inbox">
+      <div class="desk-pile-head"><span class="desk-emoji">📥</span> À traiter</div>
+      {% set _att = (kanban_summary.attention_total if kanban_summary else 0) %}
+      {% if _att %}
+        <a href="#dept-kanban-heading" class="desk-chip desk-chip--load">{{ _att }} carte{{ 's' if _att > 1 else '' }} en attente</a>
+      {% endif %}
+      {% set _ns = namespace(any=false) %}
+      {% for l in [1,2,3,4] %}
+        {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
+        {% if _ms %}{% set _ns.any = true %}
+          <div class="desk-folder">
+            <div class="desk-folder-layer">Couche {{ l }}</div>
+            {% for m in _ms %}
+              <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      {% if not _ns.any and not _att %}
+        <p class="desk-empty">Pile vide — rien en attente.</p>
+      {% endif %}
+    </div>
+
+    {# 🔄 CENTER — session en direct (the agent at their desk, live) #}
+    <div class="desk-pile desk-pile--active">
+      <div class="desk-pile-head">
+        <span class="desk-live-dot"></span> En cours · session en direct
+        <span class="desk-live-note">rafraîchi toutes les 5 s</span>
+      </div>
+      <div id="dept-session-desk"
+           class="desk-session"
+           hx-get="/dept/{{ dept.slug }}/session"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">
+        <p class="desk-empty">Chargement&hellip;</p>
+      </div>
+    </div>
+
+    {# 📤 RIGHT — terminé: 👀 à valider (gates) + ✅ posté/actionné (outputs) #}
+    <div class="desk-pile desk-pile--done">
+      <div class="desk-pile-head"><span class="desk-emoji">📤</span> Terminé</div>
+
+      <div class="desk-sub desk-sub--validate">
+        <div class="desk-sub-head"><span class="desk-emoji">👀</span> À valider</div>
+        {% if gate_groups %}
+          {% for grp in gate_groups %}
+            <a class="desk-card desk-card--gate"
+               href="{% if grp.count > 1 %}/gate/{{ dept.slug }}/kind/{{ grp.kind }}{% else %}/gate/{{ dept.slug }}/{{ grp.gates[0].id }}{% endif %}">
+              <span class="desk-card-count">{{ grp.count }}</span>
+              <span class="desk-card-title">{{ grp.kind_label or grp.kind }}</span>
+            </a>
+          {% endfor %}
+        {% else %}
+          <p class="desk-empty">Rien à valider.</p>
+        {% endif %}
+      </div>
+
+      <div class="desk-sub desk-sub--posted">
+        <div class="desk-sub-head"><span class="desk-emoji">✅</span> Posté / actionné</div>
+        {% set _ns2 = namespace(any=false) %}
+        {% for l in [1,2,3,4] %}
+          {% set _ro = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
+          {% if _ro %}{% set _ns2.any = true %}
+            <div class="desk-done-item">
+              <span class="desk-done-layer">L{{ l }}</span>
+              <span class="desk-done-text">{{ (_ro.title if _ro.title is defined else _ro) | string | truncate(48) }}</span>
+            </div>
+          {% endif %}
+        {% endfor %}
+        {% if not _ns2.any %}
+          <p class="desk-empty">Rien posté aujourd'hui pour l'instant.</p>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+</section>
+{% endif %}
 
 {# Sprint Lifecycle — banner for Cancelled/Retired (read-only archive). #}
 {% if dept.is_ancien %}
@@ -260,34 +389,6 @@
 </section>
 
 
-{# Session en direct — live view of this dept's agent. Moved BELOW decisions per
-   {{OPERATOR}} 2026-06-16: actionable decisions deserve top placement. #}
-<details style="margin-bottom:32px;" id="dept-session-details">
-  <summary style="cursor:pointer; font-size:15px; font-weight:600; padding:4px 0; color:var(--ink);">
-    <span style="display:inline-flex; align-items:center; gap:6px;">
-      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
-      Session en direct
-      <span style="font-weight:400; font-size:11px; color:var(--body-soft);">· rafraîchi toutes les 5s</span>
-    </span>
-  </summary>
-  <div style="margin-top:8px;">
-    <span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#2e7d32;">
-      <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32; animation: dept-pulse 1.6s infinite;"></span>
-      live &middot; rafraîchi toutes les 5 s
-    </span>
-  </div>
-  <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
-    Ce que {{ dept.display_name }} fait en ce moment — messages et
-    actions, le plus récent en haut.
-  </p>
-  <div id="dept-session"
-       hx-get="/dept/{{ dept.slug }}/session"
-       hx-trigger="load, every 5s"
-       hx-swap="innerHTML">
-    <p class="muted-italic" style="font-size:13px;">Chargement&hellip;</p>
-  </div>
-  </div>
-</details>
 <style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
 {# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
    Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
