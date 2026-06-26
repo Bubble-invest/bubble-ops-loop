@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh the short-lived contents:write token for the cockpit (/run/bubble-ops-contents/token)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bubble-ops-contents-token-refresh.sh

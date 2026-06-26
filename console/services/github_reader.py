@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import base64
+import os
 import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -24,6 +25,27 @@ from console import settings
 from console.services.dept_registry import repo_path
 
 _log = logging.getLogger("console.github_reader")
+
+# A short-lived GitHub-App installation token scoped to **contents:write** on the
+# Bubble-invest dept repos, minted by a root timer into this tmpfs file (0640,
+# root:claude), mirroring the issues-only board token used by routes/kanban.py.
+# host=local depts (e.g. content/Miranda) have NO repo on the cockpit disk, so
+# their decisions must be committed to GitHub — which needs auth the console
+# service otherwise lacks (it runs NoNewPrivileges, no `gh auth`, no PAT). The
+# console only reads this file and passes the token to `gh` via GH_TOKEN.
+_CONTENTS_TOKEN_FILE = "/run/bubble-ops-contents/token"
+
+
+def _read_contents_token() -> Optional[str]:
+    """Read the short-lived contents:write token the root timer mints.
+    Fallback to GH_TOKEN/GITHUB_TOKEN env (dev/CI). None if none available."""
+    try:
+        tok = open(_CONTENTS_TOKEN_FILE).read().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or None
 
 
 def load_dept_yaml(slug: str) -> Optional[dict]:
@@ -779,7 +801,18 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
     host = getattr(dept, "host", "vps") if dept is not None else "vps"
 
     if host == "local":
-        return _write_gate_decision_github(slug, gate_id, decision)
+        out = _write_gate_decision_github(slug, gate_id, decision)
+        # Instant-hide: a host=local decision lands on GitHub, so the card would
+        # otherwise linger in the cockpit until the agent pulls it, resolves the
+        # gate, and pushes `resolved:true` back (minutes when the loop is alive,
+        # up to the launchd backstop otherwise). If the dept's repo is ALSO
+        # mirrored on the cockpit disk (the hybrid case — gates render from it),
+        # drop the same decision file there as a local hide-marker so
+        # list_pending_gates filters the card immediately, exactly like host=vps.
+        # Best-effort, only on a successful GitHub commit; never fails the call.
+        if out is not None:
+            _write_local_hide_marker(slug, gate_id, decision)
+        return out
 
     # host=vps — write to the on-disk repo (unchanged).
     root = repo_path(slug)
@@ -793,6 +826,27 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
     return out
 
 
+def _write_local_hide_marker(slug: str, gate_id: str, decision: Dict[str, Any]
+                             ) -> None:
+    """For a host=local dept whose repo is ALSO mirrored on the cockpit disk,
+    drop the decision file into the local inbox/decisions/ as a hide-marker so
+    list_pending_gates filters the card immediately (the authoritative copy still
+    went to GitHub). Best-effort: silently no-op if the repo isn't on disk or the
+    write fails — it must never turn a successful GitHub commit into an error."""
+    try:
+        root = repo_path(slug)
+        if root is None:
+            return  # no on-disk mirror (pure local dept) — nothing to mark
+        decisions_dir = root / "inbox" / "decisions"
+        decisions_dir.mkdir(parents=True, exist_ok=True)
+        (decisions_dir / f"{gate_id}.yaml").write_text(
+            yaml.safe_dump(decision, sort_keys=False, allow_unicode=True),
+            encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "local hide-marker write failed for %s/%s: %s", slug, gate_id, exc)
+
+
 def _write_gate_decision_github(slug: str, gate_id: str, decision: Dict[str, Any]
                                 ) -> Optional[Path]:
     """Commit inbox/decisions/<gate_id>.yaml to the dept's GitHub repo via gh api
@@ -800,19 +854,39 @@ def _write_gate_decision_github(slug: str, gate_id: str, decision: Dict[str, Any
     sentinel Path on success (the repo-relative path), None on failure."""
     repo = f"bubble-ops-{slug}"
     rel_path = f"inbox/decisions/{gate_id}.yaml"
+    contents_api = f"repos/{settings.GITHUB_ORG}/{repo}/contents/{rel_path}"
     body = yaml.safe_dump(decision, sort_keys=False, allow_unicode=True)
     content_b64 = base64.b64encode(body.encode("utf-8")).decode("ascii")
-    # PUT repos/<org>/<repo>/contents/<path> creates (or updates) a file in one
-    # commit. -f content=<base64>, -f message=<msg>. (For an update GitHub also
-    # needs the blob sha; a fresh gate decision id is new each time, so create.)
+
+    # The console runs without ambient `gh auth` (NoNewPrivileges, no PAT), so we
+    # inject a short-lived contents:write token via GH_TOKEN. Without it the PUT
+    # 401s and the decision silently never reaches GitHub (the host=local
+    # delivery bug: Miranda/content never received cockpit decisions). gh prefers
+    # GH_TOKEN over any stored auth, so this is the one auth source.
+    token = _read_contents_token()
+    env = {**os.environ, "GH_TOKEN": token} if token else dict(os.environ)
+
+    def _gh(args: list) -> "subprocess.CompletedProcess":
+        return subprocess.run(["gh", "api", *args],
+                              capture_output=True, text=True, check=False, env=env)
+
+    def _put(extra: list) -> "subprocess.CompletedProcess":
+        # PUT repos/<org>/<repo>/contents/<path> creates OR updates a file in one
+        # commit. gate_id travels as a DISCRETE argv element (no shell), so a
+        # gate_id with shell metacharacters can't break out — see hybrid tests.
+        return _gh(["-X", "PUT", contents_api,
+                    "-f", f"message=cockpit: gate {gate_id} decision",
+                    "-f", f"content={content_b64}", *extra])
+
     try:
-        r = subprocess.run(
-            ["gh", "api", "-X", "PUT",
-             f"repos/{settings.GITHUB_ORG}/{repo}/contents/{rel_path}",
-             "-f", f"message=cockpit: gate {gate_id} decision",
-             "-f", f"content={content_b64}"],
-            capture_output=True, text=True, check=False,
-        )
+        r = _put([])
+        if r.returncode != 0 and _looks_like_already_exists(r):
+            # File already there (re-decision): GitHub needs the existing blob
+            # sha to update. Fetch it and retry once as an update. A bare 422
+            # without this would otherwise look like a hard failure.
+            sha = _gh_contents_sha(contents_api, env)
+            if sha:
+                r = _put(["-f", f"sha={sha}"])
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).warning("gate decision gh api failed: %s", exc)
         return None
@@ -822,6 +896,27 @@ def _write_gate_decision_github(slug: str, gate_id: str, decision: Dict[str, Any
             r.returncode, (r.stderr or r.stdout or "")[:200])
         return None
     return Path(rel_path)
+
+
+def _looks_like_already_exists(r: "subprocess.CompletedProcess") -> bool:
+    """True if a contents PUT failed because the file exists (needs blob sha)."""
+    blob = (r.stderr or "") + (r.stdout or "")
+    return "sha" in blob and ("422" in blob or "wasn't supplied" in blob
+                              or "already exists" in blob)
+
+
+def _gh_contents_sha(contents_api: str, env: Dict[str, str]) -> Optional[str]:
+    """GET a contents path's current blob sha (for an update PUT). None on any
+    failure — caller then leaves the original error in place."""
+    import json
+    try:
+        r = subprocess.run(["gh", "api", contents_api, "--jq", ".sha"],
+                           capture_output=True, text=True, check=False, env=env)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------

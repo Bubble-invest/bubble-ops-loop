@@ -31,8 +31,11 @@ BEARER_TOKEN = os.environ.get("CONSOLE_BEARER_TOKEN", "")
 # call `gh api` to read from github.
 READ_FROM_DISK = os.environ.get("READ_FROM_DISK", "")
 
-# GitHub org that hosts bubble-ops-<slug> repos.
-GITHUB_ORG = os.environ.get("BUBBLE_OPS_GITHUB_ORG", "vdk888")
+# GitHub org that hosts bubble-ops-<slug> repos. The live dept repos are under
+# Bubble-invest (e.g. Bubble-invest/bubble-ops-content); the old "vdk888" default
+# meant host=local decision PUTs targeted the wrong org (404). Override with
+# BUBBLE_OPS_GITHUB_ORG if a deployment hosts the repos elsewhere.
+GITHUB_ORG = os.environ.get("BUBBLE_OPS_GITHUB_ORG", "Bubble-invest")
 
 # Cache TTL for `gh api` calls (seconds).
 GH_CACHE_TTL_SECONDS = int(os.environ.get("GH_CACHE_TTL", "60"))
