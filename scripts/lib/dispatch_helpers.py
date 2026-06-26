@@ -835,6 +835,19 @@ def materialize_due_missions_for_tick(
             write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
+        # Guard (#302): never write a bare stub into queues/gates/ — gate cards
+        # are always hand-authored by the agent layers (rich payload, no
+        # created_by). A bare stub would create a phantom ghost decision card
+        # whenever the upstream funnel is dry (confirmed across ben/maya/content).
+        # Still stamp .last-run so the mission doesn't fire-spin on the next tick.
+        if oq.rstrip("/") == "queues/gates":
+            print(
+                f"[materialize] suppressed bare gate stub for mission={mid!r}"
+                f" (output_queue={oq!r} — gates are hand-authored by agents)"
+            )
+            write_last_run(today_dir / "missions" / mid, when=now_utc)
+            continue
+
         # Create the queue item.
         ts = now_utc.isoformat()
         item_id = f"{kind}-{mid}-{now_utc.strftime('%Y%m%d-%H%M%S')}"
