@@ -161,7 +161,7 @@ def gate_decide(
         "decided_by": "operator",  # single-operator console
     }
     out_path = github_reader.write_gate_decision(slug, gate_id, decision)
-    return request.app.state.templates.TemplateResponse(
+    resp = request.app.state.templates.TemplateResponse(
         "partials/gate_decision_ok.html",
         {
             "request": request,
@@ -171,6 +171,15 @@ def gate_decide(
             "out_path": str(out_path),
         },
     )
+    # After a TERMINAL decision the gate is hidden server-side, but the operator
+    # is still on the now-resolved single-gate page. Send them back to the dept
+    # list (htmx HX-Redirect) so the card visibly disappears and the remaining
+    # decisions are in view. `modify` is NOT terminal — the gate stays visible
+    # "en révision" — so we keep the operator here to read the confirmation
+    # instead of redirecting.
+    if action in ("approve", "reject", "defer"):
+        resp.headers["HX-Redirect"] = f"/dept/{slug}"
+    return resp
 
 
 @router.post("/gate/{slug}/{gate_id}/undo", response_class=HTMLResponse)
