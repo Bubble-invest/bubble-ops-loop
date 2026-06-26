@@ -395,27 +395,75 @@
                 white-space:pre-wrap; overflow-x:auto;">{{ gate_raw }}</pre>
   </details>
 
-  <form hx-post="/gate/{{ slug }}/{{ gate_id }}/decide"
+  {# ─── Comment field + decision actions ──────────────────────────────────
+     The textarea is the place to type a note for the agent. It reads clearly
+     as an input (gate-comment-input: 2px ochre border + focus ring) rather
+     than a faint hairline — modify especially needs a comment to be useful.
+     The modify button is guarded (data-confirm-empty): submitting a redraft
+     with no note pops a confirm() first; approve/reject/defer never prompt. #}
+  <style>
+    .gate-comment-input {
+      width:100%; background: var(--paper); color: var(--ink);
+      border:2px solid var(--ochre); border-radius:3px;
+      padding:11px 13px; font-family: var(--font-body); font-size:14px;
+      resize:vertical; transition: border-color .12s ease, box-shadow .12s ease;
+    }
+    .gate-comment-input::placeholder { color: var(--body-muted); }
+    .gate-comment-input:focus {
+      outline: none; border-color: var(--ink);
+      box-shadow: 0 0 0 3px rgba(184,128,74,0.22);
+    }
+    .gate-comment-label {
+      display:block; margin-bottom:6px; font-weight:500; color: var(--ink);
+    }
+    .gate-comment-hint {
+      display:block; margin-top:5px; font-size:12px; color: var(--body-muted);
+    }
+  </style>
+  <form id="gate-decide-form"
+        hx-post="/gate/{{ slug }}/{{ gate_id }}/decide"
         hx-target="#decision-result" hx-swap="innerHTML"
         style="margin-top:22px;">
     <div class="cabinet-field">
-      <label for="gate-comment">Un mot pour {{ slug }} (facultatif)</label>
+      <label class="gate-comment-label" for="gate-comment">Un mot pour {{ slug }}</label>
       <textarea name="comment" id="gate-comment" rows="3"
-                style="width:100%; background: var(--paper); border:1px solid var(--line);
-                       padding:10px 12px; font-family: var(--font-body); font-size:14px;
-                       color: var(--ink); border-radius:2px; resize:vertical;"
-                placeholder="pourquoi cette décision…"></textarea>
+                class="gate-comment-input"
+                placeholder="pourquoi cette décision… (obligatoire pour une demande de modif)"></textarea>
+      <span class="gate-comment-hint">Pour <em>modify</em>, écris ici ce que {{ slug }} doit changer.</span>
     </div>
 
     <div class="gate-actions">
       <button type="submit" name="action" value="approve" class="btn-ochre">approve</button>
       <button type="submit" name="action" value="reject" class="btn-ghost">reject</button>
-      <button type="submit" name="action" value="modify" class="btn-ghost">modify</button>
+      <button type="submit" name="action" value="modify" class="btn-ghost"
+              data-confirm-empty="La modification demande à {{ slug }} de refaire le travail. Tu n'as pas écrit ce qu'il faut changer. Envoyer quand même ?">modify</button>
       <button type="submit" name="action" value="defer" class="btn-ghost">defer</button>
     </div>
 
     <div id="decision-result"></div>
   </form>
+
+  {# Guard: clicking a button carrying data-confirm-empty (modify) with a blank
+     comment pops a native confirm() and aborts on cancel. htmx fires the request
+     from the clicked submitter, so we intercept at the submit/click layer.
+     approve/reject/defer have no data-confirm-empty → never prompted. #}
+  <script>
+    (function () {
+      var form = document.getElementById('gate-decide-form');
+      if (!form) return;
+      var comment = document.getElementById('gate-comment');
+      form.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('button[data-confirm-empty]');
+        if (!btn) return;
+        var empty = !comment || comment.value.trim() === '';
+        if (empty && !window.confirm(btn.getAttribute('data-confirm-empty'))) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (comment) comment.focus();
+        }
+      }, true);
+    })();
+  </script>
 </div>
 
 <p style="margin-top:24px;">
