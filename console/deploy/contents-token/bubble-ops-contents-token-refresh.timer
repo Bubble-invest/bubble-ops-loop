@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh contents:write token every 45 min (tokens are ~1h-lived)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=45min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

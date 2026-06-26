@@ -31,7 +31,7 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 |---|---|---|
 | `CONSOLE_BEARER_TOKEN` | (empty -> 503) | Required; the single shared bearer the operator uses |
 | `READ_FROM_DISK` | (empty -> github mode) | Parent dir of `bubble-ops-<slug>` repos. v1 ships disk-mode only |
-| `BUBBLE_OPS_GITHUB_ORG` | `vdk888` | GitHub org for the gh-mode follow-up (UX-5) |
+| `BUBBLE_OPS_GITHUB_ORG` | `Bubble-invest` | GitHub org hosting `bubble-ops-<slug>` repos (host=local decision PUTs) |
 | `GH_CACHE_TTL` | `60` | Seconds to cache `gh api` responses |
 | `CONSOLE_BIND_HOST` | `127.0.0.1` | Bind host (do NOT change to `0.0.0.0`) |
 | `CONSOLE_BIND_PORT` | `8642` | Bind port |
