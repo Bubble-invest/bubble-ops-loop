@@ -9,8 +9,8 @@
 #
 # USAGE (identical arg surface to emit_kanban_item.sh):
 #   scripts/emit.sh task=<id> title="..." [body="..." type=... priority=... \
-#                   owner=... actions=... context_url=... diagram_mermaid="..." \
-#                   visual_attachments="..."]
+#                   owner=... proj=... due=YYYY-MM-DD host=local|vps actions=... \
+#                   context_url=... diagram_mermaid="..." visual_attachments="..."]
 #
 # Resolution order:
 #   1. <dept-repo-root>/tools/kanban/emit_kanban_item.sh  (the vendored copy)
