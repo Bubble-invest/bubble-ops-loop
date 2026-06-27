@@ -45,6 +45,9 @@ CONTEXT_URL=""
 TELEGRAM_REF=""
 DIAGRAM_MERMAID=""
 VISUAL_ATTACHMENTS=""
+PROJ=""
+DUE=""
+HOST=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -54,6 +57,9 @@ for arg in "$@"; do
     type=*)         TYPE="${arg#type=}"         ;;
     priority=*)     PRIORITY="${arg#priority=}" ;;
     owner=*)        OWNER="${arg#owner=}"       ;;
+    proj=*)         PROJ="${arg#proj=}"         ;;
+    due=*)          DUE="${arg#due=}"           ;;
+    host=*)         HOST="${arg#host=}"         ;;
     actions=*)      ACTIONS="${arg#actions=}"   ;;
     context_url=*)        CONTEXT_URL="${arg#context_url=}" ;;
     telegram_ref=*)       TELEGRAM_REF="${arg#telegram_ref=}" ;;
@@ -77,18 +83,50 @@ _gh_emit() {
   local dept_label=""
   local owner_norm
   owner_norm=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
+  # host default per owner (overridable by explicit host=). Tonio = the LOCAL
+  # Tony (main-strategist) — @ClaudeRickyBot, runs rnd_loop on the Mac — so it
+  # routes to dept:tony + host:local. VPS depts default host:vps.
+  local host_default=""
   case "$owner_norm" in
     rnd|rick|rick_rnd)          dept_label="dept:rnd"        ;;
-    ben)                        dept_label="dept:ben"        ;;
-    maya)                       dept_label="dept:maya"       ;;
-    tony|main|main_strategist|ricky) dept_label="dept:tony"  ;;
-    content|miranda)            dept_label="dept:content"    ;;
+    ben)                        dept_label="dept:ben"; host_default="vps"   ;;
+    maya)                       dept_label="dept:maya"; host_default="vps"  ;;
+    tonio)                      dept_label="dept:tony"; host_default="local" ;;
+    tony|main|main_strategist|ricky) dept_label="dept:tony"; host_default="vps" ;;
+    content|miranda)            dept_label="dept:content"; host_default="local" ;;
     security|eliot)             dept_label="dept:security"   ;;
-    accountant|geraldine|géraldine) dept_label="dept:accountant" ;;
-    morty)                      dept_label="dept:morty"      ;;
-    claudette)                  dept_label="dept:claudette"  ;;
+    accountant|geraldine|géraldine) dept_label="dept:accountant"; host_default="vps" ;;
+    morty)                      dept_label="dept:morty"; host_default="vps" ;;
+    claudette)                  dept_label="dept:claudette"; host_default="local" ;;
     *)                          dept_label=""                ;;
   esac
+  # explicit host= wins; else the owner default
+  local host_norm
+  host_norm=$(echo "${HOST:-$host_default}" | tr '[:upper:]' '[:lower:]')
+  local host_label=""
+  case "$host_norm" in
+    local|mac)  host_label="host:local" ;;
+    vps|remote) host_label="host:vps"   ;;
+    *)          host_label=""           ;;
+  esac
+
+  # proj → proj:<slug> label (free-form slug, lowercased; the cockpit map decides display)
+  local proj_label=""
+  if [ -n "$PROJ" ]; then
+    local proj_norm
+    proj_norm=$(echo "$PROJ" | tr '[:upper:]' '[:lower:]' | tr ' _' '--' | sed 's/^proj://')
+    proj_label="proj:${proj_norm}"
+  fi
+
+  # due → due:YYYY-MM-DD label (validate the shape; ignore if malformed)
+  local due_label=""
+  if [ -n "$DUE" ]; then
+    if echo "$DUE" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+      due_label="due:${DUE}"
+    else
+      echo "emit_kanban_item: due=${DUE} is not YYYY-MM-DD — ignoring" >&2
+    fi
+  fi
 
   # Map type → type label
   local type_label=""
@@ -205,9 +243,24 @@ print('\n'.join(lines))
     return 1
   fi
 
+  # due:<date> is a dynamic label — ensure it exists before applying (gh issue
+  # create fails the whole call on an unknown label). proj:/host: are pre-created.
+  if [ -n "$due_label" ]; then
+    gh label create "$due_label" --repo "$BOARD_REPO" --color "fef2c0" \
+      --description "Due date" --force >/dev/null 2>&1 || true
+  fi
+  # proj: may be a brand-new project slug — create it if missing (idempotent).
+  if [ -n "$proj_label" ]; then
+    gh label create "$proj_label" --repo "$BOARD_REPO" --color "5319e7" \
+      --description "Super-project" --force >/dev/null 2>&1 || true
+  fi
+
   # Assemble --label flags
   local label_args=()
   [ -n "$dept_label"    ] && label_args+=("--label" "$dept_label")
+  [ -n "$host_label"    ] && label_args+=("--label" "$host_label")
+  [ -n "$proj_label"    ] && label_args+=("--label" "$proj_label")
+  [ -n "$due_label"     ] && label_args+=("--label" "$due_label")
   [ -n "$type_label"    ] && label_args+=("--label" "$type_label")
   [ -n "$routing_label" ] && label_args+=("--label" "$routing_label")
 
