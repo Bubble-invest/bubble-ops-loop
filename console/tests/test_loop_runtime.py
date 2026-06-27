@@ -101,3 +101,22 @@ def test_dept_page_renders_self_paced_prompt(client, monkeypatch):
     assert "Auto-rythmée" in r.text
     assert "Resume your OODA loop" in r.text
     assert "boot-inject.conf" in r.text
+
+
+def test_dept_page_fixed_interval_is_warn_not_fail(client, monkeypatch):
+    """A fixed-interval dept is correctly configured → amber 'warn', not red
+    'fail' (which would alarm operators). Only 'unknown' is fail."""
+    from console.routes import dept as dept_route
+    monkeypatch.setattr(
+        dept_route.loop_runtime, "load_loop_runtime_prompt",
+        lambda slug: {
+            "prompt": "Arm a /loop cron every 1h.",
+            "source": "/etc/systemd/system/ops-loop-fixture.service.d/boot-inject.conf",
+            "cadence": "fixed-interval",
+        },
+    )
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "backup-latest--warn" in r.text
+    assert "backup-latest--fail" not in r.text.split("Rythme de la boucle")[1].split("Filet")[0]
+    assert "Intervalle fixe" in r.text

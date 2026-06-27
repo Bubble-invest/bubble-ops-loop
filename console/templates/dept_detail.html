@@ -552,7 +552,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       <span class="backup-net-sub">consigne de cadence injectée au démarrage (lecture seule)</span>
     </div>
     {% if loop_runtime_prompt %}
-      <div class="backup-latest backup-latest--{{ 'ok' if loop_runtime_prompt.cadence == 'self-paced' else 'fail' }}">
+      <div class="backup-latest backup-latest--{{ 'ok' if loop_runtime_prompt.cadence == 'self-paced' else ('fail' if loop_runtime_prompt.cadence == 'unknown' else 'warn') }}">
         <span class="backup-dot" aria-hidden="true"></span>
         <span class="backup-verdict">
           {%- if loop_runtime_prompt.cadence == 'self-paced' -%}Auto-rythmée (l'agent choisit son prochain réveil)

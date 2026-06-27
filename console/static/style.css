@@ -2078,6 +2078,8 @@ code, .code {
 .backup-latest--fail .backup-dot { background: #a3503f; }
 .backup-verdict { color: var(--body); }
 .backup-latest--fail .backup-verdict { color: #a3503f; font-weight: 600; }
+.backup-latest--warn .backup-dot { background: #b8862b; }
+.backup-latest--warn .backup-verdict { color: #b8862b; font-weight: 600; }
 .backup-when {
   font-family: var(--font-mono);
   font-size: 11px;

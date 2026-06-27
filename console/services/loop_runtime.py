@@ -49,6 +49,8 @@ def _extract_prompt(conf_text: str) -> Optional[str]:
         if not cand:
             continue
         # The prompt is the longest meaningful chunk (the format arg is short).
+        # Assumes the redirect target (>> .../inject) is NOT single-quoted, which
+        # holds for both forms we ship; a single-quoted long path would mis-win here.
         txt = max(cand, key=len)
         txt = txt.replace("\\n", "").strip()
         return txt or None
@@ -77,7 +79,7 @@ def load_loop_runtime_prompt(slug: str) -> Optional[Dict[str, str]]:
         if not path.is_file():
             return None
         text = path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, PermissionError):
+    except OSError:
         return None
     prompt = _extract_prompt(text)
     if not prompt:
