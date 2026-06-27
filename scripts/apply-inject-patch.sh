@@ -53,6 +53,14 @@ try {
       for (const line of raw.split('\n')) {
         const text = line.trim()
         if (!text) continue
+        // Drop stray bare shell-path lines (e.g. "/usr/bin/bash") — a session
+        // STARTUP-RACE artifact written into the inject file at restart, never a
+        // legitimate agent turn. Was delivered as a forged-Joris no-op turn that
+        // churned the agent. (Rick 2026-06-27, board #336.)
+        if (/^\/(usr\/)?bin\/(ba|z|fi|a|da)?sh$/.test(text)) {
+          process.stderr.write(`telegram inject: dropped stray shell-path line: ${text}\n`)
+          continue
+        }
         process.stderr.write(`telegram inject: delivering as ${injectAs}: ${text.slice(0, 80)}\n`)
         mcp.notification({
           method: 'notifications/claude/channel',
