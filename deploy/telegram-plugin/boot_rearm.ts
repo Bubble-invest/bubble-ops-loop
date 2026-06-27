@@ -48,7 +48,8 @@ export function bootRearmNotification(
     "You woke via --resume so you have full context. " +
     "FIRST run ONE normal session-start + dispatch tick now — do this unconditionally on boot/heal (the floor timers are a net, not a substitute). " +
     "THEN " +
-    "arm your OWN next wake with a single CronCreate (run CronList first and delete any stale/duplicate loop task so you never stack two): " +
+    "arm your OWN next wake with a single CronCreate (run CronList first and delete any stale/duplicate loop task so you never stack two). " +
+    "The CronCreate prompt MUST be your full tick protocol text (STEP A-F per CLAUDE.md), NEVER a bare slash-command like /loop-now (a bare slash-command delivers as a malformed inbound that can trip the deaf-watchdog). " +
     "work pending or a layer still due today -> schedule toward that layer time; quiet but more may come today -> a longer cadence is fine (e.g. 0 */2 * * *); " +
     "all 4 layers done and nothing explicitly awaited -> set ONE one-shot for tomorrow 08:03 Paris (3 8 * * *) and arm nothing else. " +
     "Never hardcode an hourly cron. Your loop-layer floor timers remain the safety net. " +
