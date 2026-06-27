@@ -510,7 +510,7 @@ git pull; read layers/${FORCE_LAYER}/PROMPT.md; spawn the Layer ${FORCE_LAYER}
 subagent(s); VERIFY their output; validate; commit+push. Do NOT run
 decide_dispatch and do NOT run any other layer — this tick is Layer
 ${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then:
-  1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe) — toward the next due layer if work remains, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron.
+  1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe) — toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *) if quiet but more may come, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron.
   2. Write heartbeat to outputs/<today>/heartbeat.log.
   3. Then STOP.
 
