@@ -43,9 +43,15 @@ export function bootRearmNotification(
 
   const dept = env.OPS_LOOP_DEPT
   const content =
-    "[boot] Service (re)started — re-arm your /loop. " +
-    "This is a system boot signal, not an operator instruction: " +
-    "run your normal session-start + dispatch tick and re-register the loop. " +
+    "[boot] Service (re)started — re-arm your /loop, SELF-PACED. " +
+    "This is a system boot signal, not an operator instruction. " +
+    "You woke via --resume so you have full context. " +
+    "FIRST run ONE normal session-start + dispatch tick now — do this unconditionally on boot/heal (the floor timers are a net, not a substitute). " +
+    "THEN " +
+    "arm your OWN next wake with a single CronCreate (run CronList first and delete any stale/duplicate loop task so you never stack two): " +
+    "work pending or a layer still due today -> schedule toward that layer time; quiet but more may come today -> a longer cadence is fine (e.g. 0 */2 * * *); " +
+    "all 4 layers done and nothing explicitly awaited -> set ONE one-shot for tomorrow 08:03 Paris (3 8 * * *) and arm nothing else. " +
+    "Never hardcode an hourly cron. Your loop-layer floor timers remain the safety net. " +
     "Do not reply to a human; just resume cadence."
 
   return {
