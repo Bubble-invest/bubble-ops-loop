@@ -410,6 +410,19 @@ At each tick:
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
+**STEP B.5** — surface MY assigned board cards (the punctual-mission funnel). Any open issue
+on the ops board labeled `dept:{slug}` + `host:vps` is a one-off task assigned to me at its
+creation. List them due-sorted (overdue first) and fold them into this tick's work — act on the
+safe ones, surface decisions to Joris, escalate overdue ones I can't act on. The board is no
+longer write-only for me:
+```bash
+tools/kanban/list_my_board_cards.sh {slug} vps
+```
+For a surfaced card: if `risk:low` + `agent:ready` + end-of-chain → do it (or dispatch a worker,
+maker≠checker); if it needs a decision → `emit`/comment a researched recommendation to Joris;
+when done → close the issue with evidence. Never silent-auto-exec anything non-trivial.
+
+
 **STEP C** — decide what to dispatch via the CANONICAL deterministic helpers
 (NEVER hand-roll the dispatch logic — how a dept runs is identical fleet-wide;
 only mission CONTENT varies). The dispatch is **mission-centric**: enumerate ALL
