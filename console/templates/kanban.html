@@ -7,6 +7,16 @@
         integrity="sha384-qX9VvWkP79m/O121ZE6sOYp0nf/pldQgtvWDbkpzi+3mUo4Wn4Ix4cFzNPay3VaB"
         crossorigin="anonymous"></script>
 <style>
+/* ── Due chip (P3 timeline) ──────────────────────────────────────── */
+.vp-due-chip {
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--paper-soft, #f3eee7); color: var(--body, #6b5d4f);
+  border: 1px solid var(--line, #e0d6c8);
+}
+.vp-due-overdue {
+  background: #fbe7e4; color: #a3503f; border-color: #e6b8af; font-weight: 600;
+}
 /* ── View-switcher tabs ──────────────────────────────────────────── */
 .vp-tabs {
   display: flex;
@@ -251,6 +261,10 @@
   <div class="vp-card-meta">
     {% if show_dept %}{{ dept_badge(item) }}{% endif %}
     {% if show_status %}{{ status_chip(item) }}{% endif %}
+    {% if item.due %}
+    <span class="vp-due-chip{% if item.overdue %} vp-due-overdue{% endif %}"
+          title="Échéance {{ item.due }}">⏱ {{ item.due }}</span>
+    {% endif %}
     {% if item.context_url %}
     <a href="{{ item.context_url }}" target="_blank" rel="noopener"
        onclick="event.stopPropagation()"
@@ -313,6 +327,8 @@
   <button class="vp-tab" data-view="projet" role="tab" aria-selected="true">Par projet</button>
   <button class="vp-tab" data-view="statut" role="tab" aria-selected="false">Par statut</button>
   <button class="vp-tab" data-view="dept" role="tab" aria-selected="false">Par département</button>
+  <button class="vp-tab" data-view="echeances" role="tab" aria-selected="false">Échéances</button>
+  <button class="vp-tab" data-view="recent" role="tab" aria-selected="false">Récent</button>
 </div>
 
 {# ─── VIEW: Par projet ────────────────────────────────────────────── #}
@@ -351,6 +367,38 @@
     {{ render_group(dept_name, cards, accents_dept, show_status=True, show_dept=False) }}
   {% endfor %}
   {% if ns_dept.total == 0 and not error %}
+    <p class="vp-empty">Aucune carte active.</p>
+  {% endif %}
+</div>
+
+{# ─── VIEW: Échéances (timeline by due date) ──────────────────────── #}
+<div class="vp-panel" id="vp-panel-echeances" role="tabpanel" hidden>
+  {% set ns_tl = namespace(total=0) %}
+  {% for bucket_name, cards in by_timeline.items() %}
+    {% set ns_tl.total = ns_tl.total + cards | length %}
+    {{ render_group(bucket_name, cards, accents_timeline, show_status=True, show_dept=True) }}
+  {% endfor %}
+  {% if ns_tl.total == 0 and not error %}
+    <p class="vp-empty">Aucune carte avec échéance. Ajoute <code>due=YYYY-MM-DD</code> en créant une carte.</p>
+  {% endif %}
+</div>
+
+{# ─── VIEW: Récent (newest-created first) ─────────────────────────── #}
+<div class="vp-panel" id="vp-panel-recent" role="tabpanel" hidden>
+  {% if by_date_added %}
+  <div class="vp-group">
+    <div class="vp-group-header" style="--vp-accent:#8a6d3b;">
+      <div class="vp-group-accent"></div>
+      <span class="vp-group-name">Ajoutées récemment</span>
+      <span class="vp-group-count">{{ by_date_added | length }} carte{{ 's' if by_date_added | length != 1 else '' }}</span>
+    </div>
+    <div class="vp-grid">
+      {% for item in by_date_added %}
+        {{ render_card(item, show_status=True, show_dept=True) }}
+      {% endfor %}
+    </div>
+  </div>
+  {% elif not error %}
     <p class="vp-empty">Aucune carte active.</p>
   {% endif %}
 </div>

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import date as _dt_date
 import time
 import urllib.error
 import urllib.request
@@ -116,6 +117,7 @@ def _fetch_issues() -> tuple[list, str | None]:
                     # normalize REST field names → what issue_to_card expects.
                     "url": it.get("html_url") or "",
                     "updatedAt": it.get("updated_at") or "",
+                    "createdAt": it.get("created_at") or "",
                     "state": it.get("state") or "open",
                 })
             if len(batch) < 100:
@@ -135,6 +137,8 @@ def _fetch_issues() -> tuple[list, str | None]:
 # Maps proj:<x> label value → human project bucket name.
 # If an issue has a proj: label its bucket is authoritative; no keyword guessing.
 _PROJ_LABEL_MAP = {
+    "client-dev":           "Client Dev",
+    "bubble-shield":        "Bubble Shield",
     "cockpit":              "Cockpit & Dashboard",
     "wiki-memory":          "Wiki & Mémoire",
     "fund":                 "Fund & Investissement",
@@ -285,6 +289,18 @@ def issue_to_card(issue: dict) -> dict:
     # updatedAt is ISO-8601 with Z: "2026-06-19T12:34:56Z" → show first 16 chars
     ts_display = raw_ts[:16].replace("T", " ") if raw_ts else ""
 
+    # P3: due date (due:<YYYY-MM-DD> label), created date, host (host:<x> label).
+    due       = _extract_label_value(labels, "due") or ""
+    _overdue  = False
+    if due:
+        try:
+            _overdue = _dt_date.fromisoformat(due) < _dt_date.today()
+        except ValueError:
+            _overdue = False
+    created_raw = issue.get("createdAt") or ""
+    created_display = created_raw[:10] if created_raw else ""
+    host_val  = _extract_label_value(labels, "host") or ""
+
     card = {
         "id":           str(issue.get("number", "")),
         "title":        (issue.get("title") or "").strip(),
@@ -296,6 +312,11 @@ def issue_to_card(issue: dict) -> dict:
         "kanban_type":  kanban_type,
         "context_url":  issue.get("url") or "",
         "ts_display":   ts_display,
+        "due":          due,
+        "overdue":      _overdue,
+        "created":      created_display,
+        "created_raw":  created_raw,
+        "host":         host_val,
         # Resolved project bucket (used by group_by_project; "" means fall through
         # to derive_project keyword heuristic).
         "project":      project,
@@ -556,6 +577,43 @@ def kanban_card_detail(number: int, request: Request):
     )
 
 
+import datetime as _dt
+
+
+def group_by_timeline(cards: list) -> dict:
+    """Bucket cards by due-date horizon for the timeline view. Only cards WITH a
+    due: label appear (undated cards are not on a timeline). Buckets ordered
+    overdue → today → this week → later. Within a bucket, soonest-due first."""
+    today = _dt.date.today()
+    week_end = today + _dt.timedelta(days=7)
+    buckets = {"En retard": [], "Aujourd'hui": [], "Cette semaine": [], "Plus tard": []}
+    for c in cards:
+        due = (c.get("due") or "").strip()
+        if not due:
+            continue
+        try:
+            d = _dt.date.fromisoformat(due)
+        except ValueError:
+            continue
+        if d < today:
+            buckets["En retard"].append(c)
+        elif d == today:
+            buckets["Aujourd'hui"].append(c)
+        elif d <= week_end:
+            buckets["Cette semaine"].append(c)
+        else:
+            buckets["Plus tard"].append(c)
+    for k in buckets:
+        buckets[k] = sorted(buckets[k], key=lambda c: c.get("due") or "9999")
+    # drop empty buckets, preserve order
+    return {k: v for k, v in buckets.items() if v}
+
+
+def sort_by_date_added(cards: list) -> list:
+    """Flat list of all cards, newest-created first (the 'date added' view)."""
+    return sorted(cards, key=lambda c: c.get("created_raw") or "", reverse=True)
+
+
 @router.get("/kanban", response_class=HTMLResponse)
 async def kanban_board(request: Request):
     """Full kanban board — all open issues from the GitHub board repo.
@@ -610,6 +668,8 @@ async def kanban_board(request: Request):
 
     by_department = group_by_department(all_cards)
     by_project    = group_by_project(all_cards)
+    by_timeline   = group_by_timeline(all_cards)
+    by_date_added = sort_by_date_added(all_cards)
 
     # Pre-compute accent colours server-side — Jinja2 has no ord() filter
     status_labels = {
@@ -630,10 +690,13 @@ async def kanban_board(request: Request):
         "by_status":     by_status_labelled,
         "by_department": by_department,
         "by_project":    by_project,
+        "by_timeline":   by_timeline,
+        "by_date_added": by_date_added,
         # Pre-computed accent colours {group_name -> hex}
         "accents_status":  build_accent_map(by_status_labelled),
         "accents_dept":    build_accent_map(by_department),
         "accents_project": build_accent_map(by_project),
+        "accents_timeline": build_accent_map(by_timeline),
         "error":        error,
         "generated_at": generated_at,
         "counts":       counts,
