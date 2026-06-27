@@ -492,7 +492,7 @@ instead of silence:
   • Flag anything time-sensitive that the downtime may have delayed.
 Still WRITE the L4 artifact (outputs/<today>/4/management-export.yaml +
 risk-brief.md) marked degraded=true, so Tony's morning brief can read it.
-Execute EXACTLY ONE tick, then: 1. If your /loop cron is NOT armed, arm it NOW (CronCreate, every 1h). 2. Write heartbeat. 3. STOP.
+Execute EXACTLY ONE tick, then: 1. If no /loop wake is armed, arm ONE self-paced next wake via CronCreate (CronList first; dedupe) — toward the next due layer if work remains, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron. 2. Write heartbeat. 3. STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your final
 message to {{OPERATOR}} automatically. END your turn with a concise report (max ~6
@@ -510,7 +510,7 @@ git pull; read layers/${FORCE_LAYER}/PROMPT.md; spawn the Layer ${FORCE_LAYER}
 subagent(s); VERIFY their output; validate; commit+push. Do NOT run
 decide_dispatch and do NOT run any other layer — this tick is Layer
 ${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then:
-  1. If your /loop cron is NOT armed: arm it NOW (CronCreate, every 1h).
+  1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe) — toward the next due layer if work remains, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron.
   2. Write heartbeat to outputs/<today>/heartbeat.log.
   3. Then STOP.
 
@@ -576,7 +576,7 @@ inject_live_loop() {
     local before; before=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
-    printf 'Arm a /loop cron every 1h. Then run your full tick: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log.\n' >> "$inject" 2>/dev/null || return 1
+    printf 'Resume your OODA loop (self-paced). Run your full tick now: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log. Then arm your OWN next wake via a single CronCreate (CronList first, dedupe): toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *) if quiet, or a one-shot tomorrow 08:03 Paris (3 8 * * *) if all 4 layers are done. Never hardcode an hourly cron.\n' >> "$inject" 2>/dev/null || return 1
 
     # Wait up to ~240s for the live session to tick (heartbeat mtime advances).
     # 90s was too short: the inject IS delivered but a quiet session can take a
