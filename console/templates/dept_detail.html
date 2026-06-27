@@ -545,6 +545,32 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     Historique des boucles
   </h2>
 
+  {# ─── Rythme de la boucle (runtime /loop prompt) ─ board #331 ── #}
+  <div class="backup-net" style="margin-bottom:14px;">
+    <div class="backup-net-head">
+      <span class="backup-net-title">Rythme de la boucle</span>
+      <span class="backup-net-sub">consigne de cadence injectée au démarrage (lecture seule)</span>
+    </div>
+    {% if loop_runtime_prompt %}
+      <div class="backup-latest backup-latest--{{ 'ok' if loop_runtime_prompt.cadence == 'self-paced' else 'fail' }}">
+        <span class="backup-dot" aria-hidden="true"></span>
+        <span class="backup-verdict">
+          {%- if loop_runtime_prompt.cadence == 'self-paced' -%}Auto-rythmée (l'agent choisit son prochain réveil)
+          {%- elif loop_runtime_prompt.cadence == 'fixed-interval' -%}Intervalle fixe (cron périodique)
+          {%- else -%}Cadence indéterminée{%- endif -%}
+        </span>
+      </div>
+      <details class="backup-recent" style="margin-top:8px;">
+        <summary>Lire la consigne de cadence injectée →</summary>
+        <article style="white-space:pre-wrap; word-break:break-word; margin-top:8px;
+                        font-size:0.86em; line-height:1.5; color:var(--ink);">{{ loop_runtime_prompt.prompt }}</article>
+        <p style="margin-top:8px; font-size:0.78em; opacity:0.65;">source : <code>{{ loop_runtime_prompt.source }}</code></p>
+      </details>
+    {% else %}
+      <p class="backup-empty">Consigne de cadence non disponible pour ce département (agent hébergé sur une autre machine, ou pas de drop-in boot-inject — il s'arme via le filet de sécurité / sa propre logique /loop).</p>
+    {% endif %}
+  </div>
+
   {# ─── Filet de sécurité (loop-backup) ────────────────────────────── #}
   <div class="backup-net">
     <div class="backup-net-head">
