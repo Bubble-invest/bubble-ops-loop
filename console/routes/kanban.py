@@ -231,6 +231,39 @@ def _parse_body_sections(body_text: str) -> dict[str, str]:
     return sections
 
 
+_LINK_KINDS = ("parent", "relates", "blocks")
+
+
+def parse_card_links(sections: dict) -> dict:
+    """Parse the '## Links' section body into typed link lists of issue numbers.
+
+    The Links section (written by emit_kanban_item.sh) looks like:
+        - **Parent:** #258
+        - **Relates:** #318, #324
+        - **Blocks:** #340
+    Returns {"parent": [258], "relates": [318, 324], "blocks": [340]} (ints, deduped,
+    empty kinds omitted). Tolerant of casing / missing kinds / stray text.
+    """
+    out: dict[str, list[int]] = {}
+    raw = sections.get("Links") or ""
+    if not raw:
+        return out
+    for line in raw.splitlines():
+        m = re.match(r"\s*[-*]\s*\*\*\s*(parent|relates|blocks)\s*:?\s*\*\*\s*:?(.*)$",
+                     line.strip(), re.I)
+        if not m:
+            continue
+        kind = m.group(1).lower()
+        nums = [int(n) for n in re.findall(r"#?(\d+)", m.group(2))]
+        if nums:
+            seen: list[int] = []
+            for n in nums:
+                if n not in seen:
+                    seen.append(n)
+            out.setdefault(kind, []).extend(seen)
+    return out
+
+
 def issue_to_card(issue: dict) -> dict:
     """Map one GitHub Issue dict → the card dict the three views consume.
 
@@ -270,6 +303,7 @@ def issue_to_card(issue: dict) -> dict:
     # Prefer the Job section's content; fall back to the first non-header,
     # non-"(none)"/"(to be scoped…)" line; finally the raw body.
     _sections = _parse_body_sections(body_text)
+    _links = parse_card_links(_sections)
     _preview_src = (_sections.get("Job") or "").strip()
     if not _preview_src:
         for _line in body_text.splitlines():
@@ -314,6 +348,7 @@ def issue_to_card(issue: dict) -> dict:
         "ts_display":   ts_display,
         "due":          due,
         "overdue":      _overdue,
+        "links":        _links,
         "created":      created_display,
         "created_raw":  created_raw,
         "host":         host_val,
@@ -580,6 +615,55 @@ def kanban_card_detail(number: int, request: Request):
 import datetime as _dt
 
 
+def build_project_graph(cards: list) -> str:
+    """Build a Mermaid `graph LR` of the typed links among the given cards.
+    Edges: parent (──▷ hierarchy), blocks (──■ sequencing), relates (┄┄ soft).
+    Only cards that have a link (in or out) appear. Returns '' if no links."""
+    ids = {int(c["id"]) for c in cards if str(c.get("id", "")).isdigit()}
+    title = {int(c["id"]): (c.get("title") or "")[:38].replace('"', "'") for c in cards if str(c.get("id","")).isdigit()}
+    edges = []
+    nodes = set()
+    for c in cards:
+        if not str(c.get("id", "")).isdigit():
+            continue
+        src = int(c["id"])
+        links = c.get("links") or {}
+        for tgt in links.get("parent", []):
+            edges.append((src, "parent", tgt)); nodes.add(src); nodes.add(tgt)
+        for tgt in links.get("blocks", []):
+            edges.append((src, "blocks", tgt)); nodes.add(src); nodes.add(tgt)
+        for tgt in links.get("relates", []):
+            a, b = sorted((src, tgt))
+            edges.append((a, "relates", b)); nodes.add(src); nodes.add(tgt)
+    if not edges:
+        return ""
+    # dedupe edges
+    seen = set(); uniq = []
+    for e in edges:
+        if e not in seen:
+            seen.add(e); uniq.append(e)
+    out = ["graph LR"]
+    for n in sorted(nodes):
+        label = f"#{n}" + (": " + title[n] if n in title and title[n] else "")
+        out.append(f'  N{n}["{label}"]')
+    for src, kind, tgt in uniq:
+        if kind == "parent":
+            out.append(f"  N{tgt} -->|parent| N{src}")     # parent points down to child
+        elif kind == "blocks":
+            out.append(f"  N{src} -.->|blocks| N{tgt}")
+        else:
+            out.append(f"  N{src} ---|relates| N{tgt}")
+    return "\n".join(out)
+
+
+def project_graphs(by_project: dict) -> dict:
+    """One Mermaid graph per project bucket (empty string if that project has no links)."""
+    return {name: build_project_graph(cards) for name, cards in by_project.items()}
+
+
+
+
+
 def group_by_timeline(cards: list) -> dict:
     """Bucket cards by due-date horizon for the timeline view. Only cards WITH a
     due: label appear (undated cards are not on a timeline). Buckets ordered
@@ -668,6 +752,7 @@ async def kanban_board(request: Request):
 
     by_department = group_by_department(all_cards)
     by_project    = group_by_project(all_cards)
+    proj_graphs   = project_graphs(by_project)
     by_timeline   = group_by_timeline(all_cards)
     by_date_added = sort_by_date_added(all_cards)
 
@@ -690,6 +775,7 @@ async def kanban_board(request: Request):
         "by_status":     by_status_labelled,
         "by_department": by_department,
         "by_project":    by_project,
+        "proj_graphs":   proj_graphs,
         "by_timeline":   by_timeline,
         "by_date_added": by_date_added,
         # Pre-computed accent colours {group_name -> hex}
