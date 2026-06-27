@@ -13,6 +13,7 @@ from console.services import (
     dept_registry,
     github_reader,
     loop_history,
+    loop_runtime,
     markdown_render,
     whiteboard_series,
 )
@@ -116,6 +117,10 @@ def dept_detail(slug: str, request: Request):
     # {{OPERATOR}} msg 1171, 2026-06-01.
     backup_events = backup_history.recent_backups(slug)
     latest_backup = backup_history.latest_backup(slug)
+    # Runtime /loop prompt - the boot-inject message that governs HOW the session
+    # paces its loop (self-paced vs fixed cron). Read-only, from the systemd
+    # drop-in. None for host:local depts (drop-in on another machine). Board #331.
+    loop_runtime_prompt = loop_runtime.load_loop_runtime_prompt(slug)
     # Compact firm-wide kanban snapshot — ONLY for the management dept (Tony).
     # The management cockpit should surface the cross-dept board (counts + the
     # few items needing attention); the full board lives at /kanban. Read-only.
@@ -149,6 +154,7 @@ def dept_detail(slug: str, request: Request):
             "decision_events": decision_events,
             "backup_events": backup_events,
             "latest_backup": latest_backup,
+            "loop_runtime_prompt": loop_runtime_prompt,
             "kanban_summary": kanban_summary,
         },
     )
