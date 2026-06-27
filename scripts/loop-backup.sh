@@ -492,7 +492,7 @@ instead of silence:
   • Flag anything time-sensitive that the downtime may have delayed.
 Still WRITE the L4 artifact (outputs/<today>/4/management-export.yaml +
 risk-brief.md) marked degraded=true, so Tony's morning brief can read it.
-Execute EXACTLY ONE tick, then: 1. If no /loop wake is armed, arm ONE self-paced next wake via CronCreate (CronList first; dedupe) — toward the next due layer if work remains, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron. 2. Write heartbeat. 3. STOP.
+Execute EXACTLY ONE tick, then: 1. If no /loop wake is armed, arm ONE self-paced next wake via CronCreate (CronList first; dedupe) — toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *) if quiet but more may come, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron. 2. Write heartbeat. 3. STOP.
 
 Do NOT send your own Telegram message — the backup wrapper relays your final
 message to {{OPERATOR}} automatically. END your turn with a concise report (max ~6
