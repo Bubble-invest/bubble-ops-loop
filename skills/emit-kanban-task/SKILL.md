@@ -36,7 +36,10 @@ so you never have to figure out where the tool lives:
   body="<self-contained context, ≤2000 chars — readable COLD, no 'as we discussed'>" \
   type=<approval|decision|incident|findings|manual|bug|feature|infra|docs|chore|research> \
   priority=<normal|high|urgent> \
-  owner=<your dept slug, e.g. ben|maya|tony|content|accountant|rnd> \
+  owner=<your dept slug, e.g. ben|maya|tony|content|accountant|rnd|tonio> \
+  proj=<optional project slug, e.g. bubble-shield, client-dev, cockpit, fund> \
+  due=<optional YYYY-MM-DD> \
+  host=<optional local|vps — usually inferred from owner> \
   actions=<comma-separated, e.g. accept,investigate,escalate> \
   context_url=<optional link to wiki/PR/dashboard> \
   diagram_mermaid="<Mermaid source, ≤3000 chars>" \
@@ -80,6 +83,15 @@ lost — and does it matter?"* If yes to both → emit a card.
   (something broke), `findings` (something to look into), `bug`/`feature`/`infra`/`chore`.
 - **priority** — `urgent` (today/now), `high` (this week), `normal` (backlog). Don't inflate;
   urgent-everything trains people to ignore it.
+- **proj** — the project/initiative the card serves (the cockpit `proj:` grouping). Use
+  `client-dev` (umbrella) + a per-product slug like `bubble-shield` for client work; or `cockpit`,
+  `fund`, `infra`, etc. `dept:` = WHO acts, `proj:` = WHAT it serves — set BOTH where they differ
+  (a Bubble Shield bug = `owner=security proj=bubble-shield`). Unknown slugs are auto-created.
+- **due** — `YYYY-MM-DD` deadline → a `due:<date>` label. Renders on the cockpit **timeline**
+  (Échéances) view + sorts surfaced cards (overdue first). Malformed dates are ignored.
+- **host** — `local` or `vps`; normally inferred from owner (tonio/content/claudette→local,
+  ben/maya/tony/accountant/morty→vps). `owner=tonio` → `dept:tony` + `host:local` (the local
+  Tony, @ClaudeRickyBot). With `owner`+`host`, the card surfaces on THAT agent's loop tick.
 - **owner** — who should act: your own dept slug, another dept, `rnd` (Rick/R&D for
   infra/tooling), or `operator`/`operator2` (principals). Omit only if genuinely unassigned.
 - **actions** — the buttons the triager gets: e.g. `accept,reject,escalate` or
