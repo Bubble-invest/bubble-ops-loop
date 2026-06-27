@@ -48,6 +48,7 @@ VISUAL_ATTACHMENTS=""
 PROJ=""
 DUE=""
 HOST=""
+LINKS=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -60,6 +61,7 @@ for arg in "$@"; do
     proj=*)         PROJ="${arg#proj=}"         ;;
     due=*)          DUE="${arg#due=}"           ;;
     host=*)         HOST="${arg#host=}"         ;;
+    links=*)        LINKS="${arg#links=}"       ;;
     actions=*)      ACTIONS="${arg#actions=}"   ;;
     context_url=*)        CONTEXT_URL="${arg#context_url=}" ;;
     telegram_ref=*)       TELEGRAM_REF="${arg#telegram_ref=}" ;;
@@ -169,7 +171,7 @@ _gh_emit() {
 
   TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
   OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
-  DIAGRAM_MERMAID="$DIAGRAM_MERMAID" VISUAL_ATTACHMENTS="$VISUAL_ATTACHMENTS" \
+  DIAGRAM_MERMAID="$DIAGRAM_MERMAID" VISUAL_ATTACHMENTS="$VISUAL_ATTACHMENTS" LINKS="$LINKS" \
   python3 -c "
 import os
 
@@ -179,6 +181,7 @@ body              = os.environ['BODY']
 context_url       = os.environ['CONTEXT_URL']
 actions           = os.environ['ACTIONS']
 telegram_ref      = os.environ['TELEGRAM_REF']
+links_raw         = os.environ.get('LINKS', '')
 diagram_mermaid   = os.environ.get('DIAGRAM_MERMAID', '')
 visual_attach_raw = os.environ.get('VISUAL_ATTACHMENTS', '')
 
@@ -206,6 +209,41 @@ lines.append('---')
 if body:
     lines.append(body[:2000])
     lines.append('')
+
+# ── Typed links (parent / relates / blocks) — Obsidian-style card map ──────────
+# Syntax: links=parent:258;relates:312,318;blocks:340  (each value = issue #s).
+# Rendered as a ## Links section of #N refs (auto-linked + clickable on GitHub,
+# parsed by the cockpit for link-chips + the per-project Mermaid graph).
+if links_raw and links_raw.strip():
+    _order = ['parent', 'relates', 'blocks']
+    _labels = {'parent': 'Parent', 'relates': 'Relates', 'blocks': 'Blocks'}
+    _groups = {}
+    for chunk in links_raw.split(';'):
+        chunk = chunk.strip()
+        if ':' not in chunk:
+            continue
+        kind, nums = chunk.split(':', 1)
+        kind = kind.strip().lower()
+        if kind not in _labels:
+            continue
+        refs = []
+        for n in nums.split(','):
+            n = n.strip().lstrip('#')
+            if n.isdigit():
+                refs.append('#' + n)
+        if refs:
+            _groups.setdefault(kind, []).extend(refs)
+    if _groups:
+        lines.append('## Links')
+        for kind in _order:
+            if kind in _groups:
+                # de-dupe, preserve order
+                seen = []
+                for r in _groups[kind]:
+                    if r not in seen:
+                        seen.append(r)
+                lines.append('- **' + _labels[kind] + ':** ' + ', '.join(seen))
+        lines.append('')
 
 # ── Visual planning fields (B2 — ROUND2) ──────────────────────────
 if diagram_mermaid and diagram_mermaid.strip():

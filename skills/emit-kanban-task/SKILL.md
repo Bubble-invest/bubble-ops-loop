@@ -40,6 +40,7 @@ so you never have to figure out where the tool lives:
   proj=<optional project slug, e.g. bubble-shield, client-dev, cockpit, fund> \
   due=<optional YYYY-MM-DD> \
   host=<optional local|vps — usually inferred from owner> \
+  links=<optional typed links, e.g. parent:258;relates:318,324;blocks:340> \
   actions=<comma-separated, e.g. accept,investigate,escalate> \
   context_url=<optional link to wiki/PR/dashboard> \
   diagram_mermaid="<Mermaid source, ≤3000 chars>" \
@@ -92,6 +93,11 @@ lost — and does it matter?"* If yes to both → emit a card.
 - **host** — `local` or `vps`; normally inferred from owner (tonio/content/claudette→local,
   ben/maya/tony/accountant/morty→vps). `owner=tonio` → `dept:tony` + `host:local` (the local
   Tony, @ClaudeRickyBot). With `owner`+`host`, the card surfaces on THAT agent's loop tick.
+- **links** — typed links to OTHER cards, to map out a project (Obsidian-style). Syntax:
+  `links=parent:258;relates:318,324;blocks:340` — three kinds: `parent` (this card is a child of N),
+  `relates` (soft link), `blocks` (this card blocks N). Rendered as a `## Links` section of `#N` refs
+  (clickable on GitHub) → the cockpit shows link-chips on the card + a per-project **Carte des liens**
+  graph (Mermaid). Use it to connect an epic to its sub-tasks and sequence dependencies.
 - **owner** — who should act: your own dept slug, another dept, `rnd` (Rick/R&D for
   infra/tooling), or `operator`/`operator2` (principals). Omit only if genuinely unassigned.
 - **actions** — the buttons the triager gets: e.g. `accept,reject,escalate` or
