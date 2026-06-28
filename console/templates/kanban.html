@@ -305,7 +305,7 @@
     <span class="vp-decision-chip" title="Décision attendue de Joris">⬥ Décision</span>
     {% endif %}
     {% if item.budget %}
-    <span class="vp-budget-chip" title="Budget réel-équivalent (hors cache) pour cette carte">💰 {{ item.budget }}</span>
+    <span class="vp-budget-chip" title="Budget réel-équivalent (hors cache){% if item.budget_pct %} · {{ item.budget_pct }} du budget hebdo{% endif %}">💰 {{ item.budget }}{% if item.budget_pct %} · {{ item.budget_pct }}{% endif %}</span>
     {% endif %}
     {% if item.due %}
     <span class="vp-due-chip{% if item.overdue %} vp-due-overdue{% endif %}"

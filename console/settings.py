@@ -40,6 +40,12 @@ GITHUB_ORG = os.environ.get("BUBBLE_OPS_GITHUB_ORG", "Bubble-invest")
 # Cache TTL for `gh api` calls (seconds).
 GH_CACHE_TTL_SECONDS = int(os.environ.get("GH_CACHE_TTL", "60"))
 
+# Weekly budget envelope (USD, real-equivalent non-cache cost). The DENOMINATOR for
+# "% of weekly budget" on cards/depts/projects (board #358). Anchored at ~last week's
+# actual real-work spend; tweak via env as it drifts from real usage. A card budgeted
+# at $45 ≈ 1% of the week. NOT Anthropic's subscription % (unreadable) — our own envelope.
+WEEKLY_BUDGET_USD = float(os.environ.get("BUBBLE_WEEKLY_BUDGET_USD", "4500"))
+
 # Where to bind in prod. Operator sets this; default is 127.0.0.1:8642
 # (Notion v5 line 1011 — Tailscale-only, not clearnet).
 BIND_HOST = os.environ.get("CONSOLE_BIND_HOST", "127.0.0.1")
