@@ -60,6 +60,7 @@ for arg in "$@"; do
     owner=*)        OWNER="${arg#owner=}"       ;;
     proj=*)         PROJ="${arg#proj=}"         ;;
     due=*)          DUE="${arg#due=}"           ;;
+    budget=*)       BUDGET="${arg#budget=}"     ;;
     host=*)         HOST="${arg#host=}"         ;;
     links=*)        LINKS="${arg#links=}"       ;;
     actions=*)      ACTIONS="${arg#actions=}"   ;;
@@ -127,6 +128,19 @@ _gh_emit() {
       due_label="due:${DUE}"
     else
       echo "emit_kanban_item: due=${DUE} is not YYYY-MM-DD — ignoring" >&2
+    fi
+  fi
+
+  # budget → budget:$N label (real-$ budget for this card, cache-excluded; a tweakable
+  # constraint + an importance signal — board #358 v3). Accept a bare integer (dollars).
+  local budget_label=""
+  if [ -n "$BUDGET" ]; then
+    # strip a leading $ if present, accept integer
+    local _b="${BUDGET#\$}"
+    if echo "$_b" | grep -qE '^[0-9]+$'; then
+      budget_label="budget:\$${_b}"
+    else
+      echo "emit_kanban_item: budget=${BUDGET} is not an integer dollar amount — ignoring" >&2
     fi
   fi
 
@@ -283,6 +297,10 @@ print('\n'.join(lines))
 
   # due:<date> is a dynamic label — ensure it exists before applying (gh issue
   # create fails the whole call on an unknown label). proj:/host: are pre-created.
+  if [ -n "$budget_label" ]; then
+    gh label create "$budget_label" --repo "$BOARD_REPO" --color "0e8a16" \
+      --description "Real-\$ budget (cache-excluded) for this card" --force >/dev/null 2>&1 || true
+  fi
   if [ -n "$due_label" ]; then
     gh label create "$due_label" --repo "$BOARD_REPO" --color "fef2c0" \
       --description "Due date" --force >/dev/null 2>&1 || true
@@ -299,6 +317,7 @@ print('\n'.join(lines))
   [ -n "$host_label"    ] && label_args+=("--label" "$host_label")
   [ -n "$proj_label"    ] && label_args+=("--label" "$proj_label")
   [ -n "$due_label"     ] && label_args+=("--label" "$due_label")
+  [ -n "$budget_label"  ] && label_args+=("--label" "$budget_label")
   [ -n "$type_label"    ] && label_args+=("--label" "$type_label")
   [ -n "$routing_label" ] && label_args+=("--label" "$routing_label")
 

@@ -325,6 +325,17 @@ def issue_to_card(issue: dict) -> dict:
 
     # P3: due date (due:<YYYY-MM-DD> label), created date, host (host:<x> label).
     due       = _extract_label_value(labels, "due") or ""
+    budget    = _extract_label_value(labels, "budget") or ""   # "$N" real-$ budget (board #358)
+    budget_pct = ""                                            # % of the weekly envelope
+    if budget:
+        try:
+            _bn = float(str(budget).lstrip("$"))
+            _wk = float(getattr(settings, "WEEKLY_BUDGET_USD", 4500) or 4500)
+            if _wk > 0:
+                _p = 100.0 * _bn / _wk
+                budget_pct = (f"{_p:.0f}%" if _p >= 1 else f"{_p:.1f}%")
+        except (ValueError, TypeError):
+            budget_pct = ""
     # needs:human = a decision Rick (or a dept) owes Joris — surface it (board #358).
     _label_names = {(l.get("name") or "").lower() for l in labels}
     needs_human = "needs:human" in _label_names
@@ -350,6 +361,8 @@ def issue_to_card(issue: dict) -> dict:
         "context_url":  issue.get("url") or "",
         "ts_display":   ts_display,
         "due":          due,
+        "budget":       budget,
+        "budget_pct":   budget_pct,
         "overdue":      _overdue,
         "needs_human":  needs_human,
         "links":        _links,
