@@ -65,6 +65,23 @@ def _price_for_model(model: str, pricing: dict) -> dict:
     return pricing.get("sonnet", {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75})
 
 
+def _cost_split(model_usage: dict, pricing: dict) -> dict:
+    """Split cost into {real, cache}. real = input+output (the neutralized
+    'real-equivalent API cost' — what the work would cost without prompt caching);
+    cache = cache_read + cache_write (shown SEPARATELY on /costs, board #358).
+    Cache-read is ~98% of token VOLUME (the loop re-reading context each turn) and
+    is noise for a real-cost/budget read — so we surface the non-cache figure as the
+    headline and keep cache discrete."""
+    real = 0.0
+    cache = 0.0
+    for model, u in model_usage.items():
+        r = _price_for_model(model, pricing)
+        real += (u.get("input", 0) * r["input"] + u.get("output", 0) * r["output"]) / 1_000_000.0
+        cache += (u.get("cache_read", 0) * r["cache_read"]
+                  + u.get("cache_create", 0) * r["cache_write"]) / 1_000_000.0
+    return {"real": round(real, 4), "cache": round(cache, 4)}
+
+
 def _cost_of(model_usage: dict, pricing: dict) -> float:
     """model_usage = {model: {input, output, cache_read, cache_create}}."""
     total = 0.0
@@ -227,8 +244,8 @@ def build_report(refresh: bool = False) -> dict:
     # agent -> {today:{...}, week:{...}} accumulators
     def _blank():
         return {
-            "today": {"cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
-            "week": {"cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
+            "today": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
+            "week": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
         }
 
     agents: dict[str, dict] = {}
@@ -280,7 +297,9 @@ def build_report(refresh: bool = False) -> dict:
             if label0 == "_p_crons":
                 label = _detect_job(parsed.get("first_user_text", ""))
 
-            cost = _cost_of(parsed["model_usage"], pricing)
+            _split = _cost_split(parsed["model_usage"], pricing)
+            cost = _split["real"]          # neutralized: non-cache (the headline cost)
+            cache_cost = _split["cache"]   # shown separately on /costs
             toks = sum(sum(mu.values()) for mu in parsed["model_usage"].values())
 
             ag = agents.setdefault(label, _blank())
@@ -289,6 +308,7 @@ def build_report(refresh: bool = False) -> dict:
                 buckets.append(ag["today"])
             for b in buckets:
                 b["cost"] += cost
+                b["cache_cost"] += cache_cost
                 b["tokens"] += toks
                 b["runs"] += 1
                 for model, mu in parsed["model_usage"].items():
@@ -307,13 +327,16 @@ def build_report(refresh: bool = False) -> dict:
     for ag in agents.values():
         for span in ("today", "week"):
             ag[span]["cost"] = round(ag[span]["cost"], 3)
+            ag[span]["cache_cost"] = round(ag[span]["cache_cost"], 3)
             totals[span]["cost"] += ag[span]["cost"]
+            totals[span]["cache_cost"] += ag[span]["cache_cost"]
             totals[span]["tokens"] += ag[span]["tokens"]
             totals[span]["runs"] += ag[span]["runs"]
             for m, bm in ag[span]["by_model"].items():
                 bm["cost"] = round(bm["cost"], 3)
     for span in ("today", "week"):
         totals[span]["cost"] = round(totals[span]["cost"], 3)
+        totals[span]["cache_cost"] = round(totals[span]["cache_cost"], 3)
 
     # sort agents by week cost desc
     agents_sorted = dict(sorted(agents.items(), key=lambda kv: kv[1]["week"]["cost"], reverse=True))

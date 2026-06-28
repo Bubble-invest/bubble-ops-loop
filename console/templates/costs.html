@@ -9,6 +9,11 @@
     · 7&nbsp;derniers jours&nbsp;: <span class="ochre-num">${{ '%.2f'|format(report.totals.week.cost) }}</span>
     · {{ report.totals.week.runs }} sessions.
   </p>
+  <p class="page-hero-lede" style="font-size:.85em;opacity:.75">
+    Coût <strong>réel-équivalent API</strong> (input + output) — le cache est neutralisé.
+    Cache (lecture/écriture), affiché à part&nbsp;:
+    <span style="opacity:.85">${{ '%.2f'|format(report.totals.week.cache_cost) }} sur 7&nbsp;j</span>.
+  </p>
   <p class="page-hero-lede" style="font-size:.85em;opacity:.7">
     {{ report.pricing_note }} Dernier scan&nbsp;: {{ report.scanned_at[:16] }}Z.
   </p>
@@ -29,6 +34,7 @@
         <th style="padding:.5em .6em">Agent / Job</th>
         <th style="padding:.5em .6em;text-align:right">Aujourd'hui</th>
         <th style="padding:.5em .6em;text-align:right">7&nbsp;jours</th>
+        <th style="padding:.5em .6em;text-align:right;opacity:.6">Cache&nbsp;(7j)</th>
         <th style="padding:.5em .6em;text-align:right">Sessions&nbsp;(7j)</th>
         <th style="padding:.5em .6em">Modèles&nbsp;(7j)</th>
       </tr>
@@ -41,6 +47,7 @@
           {% if a.today.cost > 0 %}${{ '%.2f'|format(a.today.cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}
         </td>
         <td style="padding:.5em .6em;text-align:right;font-weight:600">${{ '%.2f'|format(a.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right;opacity:.55">{% if a.week.cache_cost > 0 %}${{ '%.2f'|format(a.week.cache_cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}</td>
         <td style="padding:.5em .6em;text-align:right">{{ a.week.runs }}</td>
         <td style="padding:.5em .6em;font-size:.85em;opacity:.8">
           {% for m, bm in a.week.by_model.items() %}{{ m }} ${{ '%.2f'|format(bm.cost) }}{% if not loop.last %} · {% endif %}{% endfor %}
@@ -53,6 +60,7 @@
         <td style="padding:.5em .6em">Total</td>
         <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.today.cost) }}</td>
         <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right;opacity:.55">${{ '%.2f'|format(report.totals.week.cache_cost) }}</td>
         <td style="padding:.5em .6em;text-align:right">{{ report.totals.week.runs }}</td>
         <td></td>
       </tr>
