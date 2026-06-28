@@ -6,8 +6,8 @@
 <section class="page-hero">
   <h1 class="page-hero-title">Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.</h1>
   <p class="page-hero-lede">
-    <span class="ochre-num">{{ total_gates }}</span>
-    décision{{ '' if total_gates == 1 else 's' }} qu'on attend de toi ·
+    <span class="ochre-num">{{ total_gates + (rnd_decision_count or 0) }}</span>
+    décision{{ '' if (total_gates + (rnd_decision_count or 0)) == 1 else 's' }} qu'on attend de toi ·
     <span class="ochre-num">{{ eclore_count }}</span>
     collègue{{ '' if eclore_count == 1 else 's' }} en éclosion ·
     le reste tourne en silence.
@@ -34,12 +34,13 @@
     Décisions qu'on attend de toi
   </h2></div>
 
-  {% if total_gates == 0 %}
+  {% if total_gates == 0 and (rnd_decision_count or 0) == 0 %}
     {% with title="Personne ne te demande rien.",
             body="L'équipe travaille en silence." %}
       {% include "components/empty-state.html" %}
     {% endwith %}
   {% else %}
+    {% if total_gates > 0 %}
     <div class="decisions-grid">
       {% for col in columns %}
         {% for grp in col.gate_groups %}
@@ -52,6 +53,24 @@
         {% endfor %}
       {% endfor %}
     </div>
+    {% endif %}
+
+    {# Rick's build-side decisions (needs:human board cards) — board #358 #}
+    {% if rnd_decisions %}
+    <h3 class="section-subheading" style="margin-top:18px; font-size:14px; color:var(--body-muted);">
+      ⬥ Décisions R&amp;D / build ({{ rnd_decision_count }})
+    </h3>
+    <div class="decisions-grid">
+      {% for c in rnd_decisions %}
+      <a href="/kanban/card/{{ c.id }}" class="decision-card" style="text-decoration:none; display:block;">
+        <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
+        <div class="decision-card-title">{{ c.title or c.summary or 'Décision' }}</div>
+        {% if c.summary and c.summary != c.title %}<div class="decision-card-sub" style="font-size:13px; color:var(--body-soft); margin-top:4px;">{{ c.summary }}</div>{% endif %}
+        <div class="decision-card-cta" style="margin-top:8px; font-size:12px; text-transform:uppercase; color:var(--ochre-deep); letter-spacing:0.04em;">Décider →</div>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
   {% endif %}
 </section>
 

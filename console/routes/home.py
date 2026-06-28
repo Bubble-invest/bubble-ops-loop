@@ -54,6 +54,26 @@ def _kanban_queue_counts() -> Dict[str, int]:
     }
 
 
+def _board_decision_cards() -> list:
+    """needs:human board cards Joris owes a decision on — surfaced on the landing
+    page next to the dept gates (board #358). Reuses the kanban in-process cache,
+    so no extra network call. Returns the cards sorted: overdue/soonest-due first,
+    then by recency. Each carries id/title/summary/owner/due for the decision-card UI."""
+    from console.routes import kanban as _kanban  # lazy — avoid circular import
+    issues, _err = _kanban._fetch_issues()
+    out = []
+    for issue in issues:
+        card = _kanban.issue_to_card(issue)
+        # Rick's own decisions (dept:rnd) — the dept gates already cover the others.
+        if card.get("needs_human") and (card.get("owner") or "") == "rnd":
+            out.append(card)
+    # overdue/soonest-due first, undated last
+    def _key(c):
+        d = c.get("due") or ""
+        return (0, d) if d else (1, c.get("id", ""))
+    return sorted(out, key=_key)
+
+
 @router.get("/", response_class=HTMLResponse)
 def home(request: Request):
     # Exclude anciens (Retired/Cancelled) — they have their own section on
@@ -87,6 +107,7 @@ def home(request: Request):
     concierges = concierge_reader.list_concierges()
     # Kanban queue counts — reuse kanban.py's in-process cache (no added latency).
     kanban_counts = _kanban_queue_counts()
+    rnd_decisions = _board_decision_cards()  # needs:human cards (board #358)
     # Recent decisions tray — last ~10 decisions across all live depts, newest first.
     all_slugs = [col["dept"].slug for col in columns]
     recent_decisions = github_reader.list_recent_decisions(all_slugs, limit=10)
@@ -96,6 +117,8 @@ def home(request: Request):
             "request": request,
             "columns": columns,
             "total_gates": total_gates,
+            "rnd_decisions": rnd_decisions,
+            "rnd_decision_count": len(rnd_decisions),
             "live_count": len([c for c in columns if c["dept"].is_live]),
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
             "backup_rollup": backup_rollup,
