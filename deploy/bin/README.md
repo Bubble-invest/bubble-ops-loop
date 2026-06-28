@@ -118,3 +118,20 @@ calls it via a tightly-scoped sudoers rule.
 - **Install:** `/usr/local/bin/bubble-watchdog-resume-dropin`, root-owned `0755`.
 - **Sudoers:** `sudo /usr/local/bin/bubble-watchdog-resume-dropin install|remove <svc>`
   for the watchdog; the script itself runs `systemctl daemon-reload`.
+
+## guard-stale-credentials.sh
+
+ExecStartPre guard that prevents a stale `~/.claude/.credentials.json` from
+SHADOWING the env `CLAUDE_CODE_OAUTH_TOKEN` (board #294 / incident 2026-06-25:
+the shared on-disk creds file expired 2026-06-03 and 401'd all 5 depts, because
+claude prefers the on-disk credentials file over the env token).
+
+- **What it does:** if the dept env file provides `CLAUDE_CODE_OAUTH_TOKEN` AND
+  `/home/claude/.claude/.credentials.json` exists, moves the file aside
+  (`.shadowed-<ts>`) so claude falls back to the env token. Only acts when an env
+  token exists to fall back to — never strips the sole available auth.
+- **Reversible / fail-open:** renames (never deletes), and always `exit 0` so it
+  can never block a dept from starting. Never echoes secret values.
+- **Install:** `/usr/local/bin/guard-stale-credentials.sh`, root-owned `0755`.
+- **Called by:** `ExecStartPre=+/usr/local/bin/guard-stale-credentials.sh ${ENV_FILE}`
+  in `ops-loop-dept.service.template` (runs as root, before `EnvironmentFile`).
