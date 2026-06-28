@@ -61,6 +61,7 @@ MAP=(
   "scripts/lib/notify.py             scripts/lib/notify.py"
   "scripts/lib/loop_notify.py        scripts/lib/loop_notify.py"
   "scripts/lib/notion_logbook.py     scripts/lib/notion_logbook.py"
+  "scripts/lib/budget.py             scripts/lib/budget.py"
   "tools/notify_layer.py             tools/notify_layer.py"
 )
 
