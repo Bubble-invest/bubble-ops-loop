@@ -39,6 +39,7 @@ so you never have to figure out where the tool lives:
   owner=<your dept slug, e.g. ben|maya|tony|content|accountant|rnd|tonio> \
   proj=<optional project slug, e.g. bubble-shield, client-dev, cockpit, fund> \
   due=<optional YYYY-MM-DD> \
+  budget=<optional integer USD, e.g. 45 — the card's real-$ (cache-excluded) budget> \
   host=<optional local|vps — usually inferred from owner> \
   links=<optional typed links, e.g. parent:258;relates:318,324;blocks:340> \
   actions=<comma-separated, e.g. accept,investigate,escalate> \
