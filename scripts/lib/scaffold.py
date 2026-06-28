@@ -410,6 +410,16 @@ At each tick:
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
+**STEP B.4 — consult your living-config registries (the moving parts you OWN).** Your stable
+missions reference, by a one-line pointer, the runtime-editable config files YOU maintain in
+`config/` — your "address book", kept separate from the structural mission files. The canonical one
+is `config/sources.yaml` (your data/lead/tool sources: type, how to query, what it returns, status).
+A mission says "consult the sources registry" and you read the *current* list here — so adding or
+dropping a source is a one-line edit to `config/<name>.yaml` that YOU push (it's on your allowlist —
+`config/` is runtime, not structural), **no mission PR**. Treat these as your self-curated moving
+parts: keep them current, add what works, retire what doesn't. (Contrast with budgets in STEP B.6,
+which are operator-set and read-only — `config/` is what you OWN, budgets are what you RESPECT.)
+
 **STEP B.5** — surface MY assigned board cards (the punctual-mission funnel). Any open issue
 on the ops board labeled `dept:{slug}` + `host:vps` is a one-off task assigned to me at its
 creation. List them due-sorted (overdue first) and fold them into this tick's work — act on the
@@ -421,6 +431,28 @@ tools/kanban/list_my_board_cards.sh {slug} vps
 For a surfaced card: if `risk:low` + `agent:ready` + end-of-chain → do it (or dispatch a worker,
 maker≠checker); if it needs a decision → `emit`/comment a researched recommendation to Joris;
 when done → close the issue with evidence. Never silent-auto-exec anything non-trivial.
+
+
+**STEP B.6 — Budget awareness (warn-first, YOUR judgment — never a hard stop).**
+Some work carries a dollar budget: a board card may have a `budget:$N` label (read from STEP B.5,
+it rides along on the card's labels — just a new field on a source you already pull), and a
+`recurring_missions:` entry in `dept.yaml` may carry a `budget_usd: N`. This is the real-equivalent
+(cache-excluded) \$ this card/mission *should* cost. **The budget is set by the operator (Joris) — it
+is READ-ONLY for you. You read it and respect it; you never change your own allocation** (the card
+label and the `dept.yaml` budget are operator-owned; `dept.yaml` is push-locked for exactly this
+reason). Before you dispatch workers for a budgeted item:
+1. Read its spend-so-far: `python3 scripts/lib/budget.py consumed <card-or-mission-id>` (sums the
+   self-reported worker spend in `state/budget-ledger.jsonl`). Let `pct = consumed / budget`.
+2. Spend like a manager watching a number, not a machine hitting a wall:
+   - `pct < 0.8` → proceed normally.
+   - `0.8 ≤ pct < 1.0` → **tighten**: spawn fewer workers, prefer Sonnet over Opus, go less deep.
+   - `pct ≥ 1.0` → you've crossed budget. Do **NOT** hard-stop — finish only what's genuinely
+     needed, minimally — and **warn Joris** once (a one-line Telegram: `card #N over budget:
+     $consumed / $budget`). Then keep moving.
+The budget is a *steer*, not a *gate*. It informs how much you spend; it never blocks the work.
+**When a worker subagent finishes**, record its spend: have it report its real-\$ (input+output,
+cache-excluded) in its result, then append it to the ledger:
+`python3 scripts/lib/budget.py record --card <id> --usd <amount>`. That's how spend-so-far stays current.
 
 
 **STEP C** — decide what to dispatch via the CANONICAL deterministic helpers
