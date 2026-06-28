@@ -14,6 +14,8 @@ __pycache__/
 .env
 *.sops.env
 *credentials*
+# guard-stale-credentials.sh is a GUARD script (not a credential file) — keep it tracked
+!deploy/bin/guard-stale-credentials.sh
 *.pem
 *.key
 *.private*
