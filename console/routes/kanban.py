@@ -325,6 +325,7 @@ def issue_to_card(issue: dict) -> dict:
 
     # P3: due date (due:<YYYY-MM-DD> label), created date, host (host:<x> label).
     due       = _extract_label_value(labels, "due") or ""
+    budget    = _extract_label_value(labels, "budget") or ""   # "$N" real-$ budget (board #358)
     # needs:human = a decision Rick (or a dept) owes Joris — surface it (board #358).
     _label_names = {(l.get("name") or "").lower() for l in labels}
     needs_human = "needs:human" in _label_names
@@ -350,6 +351,7 @@ def issue_to_card(issue: dict) -> dict:
         "context_url":  issue.get("url") or "",
         "ts_display":   ts_display,
         "due":          due,
+        "budget":       budget,
         "overdue":      _overdue,
         "needs_human":  needs_human,
         "links":        _links,

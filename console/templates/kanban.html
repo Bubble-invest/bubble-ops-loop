@@ -23,6 +23,11 @@
   background: #eef0fb; color: #4a5fd0; border: 1px solid #c3ccf5;
 }
 .vp-card:has(.vp-decision-chip) { border-left: 3px solid #667eea; }
+/* budget chip — green (money); the card's real-$ budget (board #358) */
+.vp-budget-chip {
+  font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  background: #e7f5ea; color: #1a7f37; border: 1px solid #aadcb8;
+}
 .vp-link-chip {
   font-size: 10.5px; font-variant-numeric: tabular-nums; text-decoration: none;
   padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line, #e0d6c8);
@@ -298,6 +303,9 @@
     {% if show_status %}{{ status_chip(item) }}{% endif %}
     {% if item.needs_human %}
     <span class="vp-decision-chip" title="Décision attendue de Joris">⬥ Décision</span>
+    {% endif %}
+    {% if item.budget %}
+    <span class="vp-budget-chip" title="Budget réel-équivalent (hors cache) pour cette carte">💰 {{ item.budget }}</span>
     {% endif %}
     {% if item.due %}
     <span class="vp-due-chip{% if item.overdue %} vp-due-overdue{% endif %}"
