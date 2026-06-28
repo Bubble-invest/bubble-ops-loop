@@ -488,6 +488,22 @@
 }());
 </script>
 
+{# Auto-refresh: re-fetch the board so cards closed/changed on GitHub update live #}
+{# (was load-once → a closed card lingered in an open tab until manual reload — board #361). #}
+{# ~60s matches the server GH cache TTL; the active tab is restored from sessionStorage on reload, #}
+{# and we only reload when the tab is visible + the user isn't mid-interaction (no open <details>). #}
+<script>
+(function () {
+  var REFRESH_MS = 60000;
+  setInterval(function () {
+    if (document.hidden) return;                                  // don't reload a backgrounded tab
+    if (document.querySelector('details[open]')) return;          // don't yank an open card/graph
+    if (window.getSelection && String(window.getSelection())) return; // don't break a text selection
+    location.reload();
+  }, REFRESH_MS);
+}());
+</script>
+
 {# Initialize Mermaid diagrams on page load (client-side render) #}
 <script>
 (function () {
