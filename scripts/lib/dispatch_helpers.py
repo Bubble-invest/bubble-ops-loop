@@ -828,12 +828,21 @@ def materialize_due_missions_for_tick(
                 drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
             )
             # Layer fired-today signals come from today_dir markers.
+            # Read round_counter FIRST so _mat_layer_fired can mirror
+            # _layer_fired_today's fallback (.last-run OR round_counter>0).
+            # Without the fallback the materializer's l{1,2,3}_fired can diverge
+            # from select_due_missions' (via ctx _layer_fired_today) in the state
+            # where round_counter[n]>0 but .last-run is absent (external cleanup
+            # or a subagent that incremented the counter without the marker) —
+            # which breaks the highest-eligible-layer choice → silent #375-class loss.
+            _mat_counts = read_round_counter(today_dir)
             def _mat_layer_fired(n: int) -> bool:
-                return read_last_run(today_dir / str(n)) is not None
+                if read_last_run(today_dir / str(n)) is not None:
+                    return True
+                return int(_mat_counts.get(str(n), 0)) > 0
             _mat_l1_fired = _mat_layer_fired(1)
             _mat_l2_fired = _mat_layer_fired(2)
             _mat_l3_fired = _mat_layer_fired(3)
-            _mat_counts = read_round_counter(today_dir)
             # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
             _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
             _mat_signals = dict(

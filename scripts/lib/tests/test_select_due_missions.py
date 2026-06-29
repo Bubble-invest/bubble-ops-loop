@@ -2039,3 +2039,83 @@ def test_375_l4_coexists_l3_event_not_prematurely_ledgered(tmp_path: Path):
         "TICK 3 DEDUP: after dispatch at tick 2, the mission must NOT re-fire "
         "at tick 3 — the ledger stamped at tick 2 closes the re-fire loop."
     )
+
+
+def test_375_round_counter_fallback_layer_fired_parity(tmp_path: Path):
+    """REGRESSION #375 v4 — signal-parity: _mat_layer_fired must mirror
+    _layer_fired_today's round_counter fallback.
+
+    _layer_fired_today (used by select_due_missions via ctx) treats a layer as
+    fired if EITHER its .last-run marker exists OR round_counter[n] > 0. The
+    materializer's _mat_layer_fired must do the SAME, else the two disagree on
+    l{1,2,3}_fired in the state where round_counter[n] > 0 but .last-run is
+    absent (external cleanup, or a subagent that incremented the counter without
+    writing the marker) → they compute a different highest-eligible layer →
+    the materializer stamps an L3 trigger that select never dispatches → silent
+    #375-class data loss.
+
+    Scenario at 19:30 Paris: round_counter[1,2,3] > 0 but L1 .last-run ABSENT.
+    - select (round_counter fallback): l1_fired=True → L4 eligible → highest=L4.
+    - materializer WITHOUT the fallback: l1_fired=False → L4 ineligible →
+      highest=L3 → stamps the L3 trigger (WRONG).
+    With the fix, the materializer also sees l1_fired=True → highest=L4 → does
+    NOT stamp the L3 trigger. This test FAILS pre-fix, PASSES post-fix.
+    """
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event(
+        "publish_execution",
+        layer=3,
+        output_queue="queues/published/",
+        creates=["published_post"],
+    )
+    _write_dept_yaml(repo, [pub])
+
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    late_id = "approved-late-rc-fallback"
+    (decisions_dir / f"{late_id}.yaml").write_text(
+        yaml.dump({
+            "id": late_id,
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": AFTER_L4.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    today = AFTER_L4.strftime("%Y-%m-%d")
+    today_dir = repo / "outputs" / today
+
+    # round_counter > 0 for L1/L2/L3, but DELETE L1's .last-run (the divergence state).
+    for n in (1, 2, 3):
+        write_last_run(today_dir / str(n), MORNING)
+        increment_round_counter(today_dir, layer=n)
+    # Remove L1's .last-run so only the round_counter signals l1_fired.
+    l1_marker = today_dir / "1" / ".last-run"
+    if l1_marker.exists():
+        l1_marker.unlink()
+    assert not l1_marker.exists()
+
+    # select_due_missions' view: l1_fired via round_counter fallback → L4 highest.
+    ctx1 = build_dispatch_ctx(repo, now_utc=AFTER_L4)
+    ctx1["_repo_dir"] = str(repo)
+    assert ctx1["has_inbox_decisions"] is True
+    phase1 = decide_dispatch(ctx1)
+    assert phase1 == "layer_4", (
+        "precondition: with round_counter[1]>0 (even without L1 .last-run), "
+        "_layer_fired_today must report l1_fired=True so L4 is the dispatch layer"
+    )
+
+    # The materializer (run inside build_dispatch_ctx) must AGREE: L4 is highest,
+    # so the L3 trigger must NOT be stamped.
+    from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
+    ledger = _dispatched_trigger_ids(
+        today_dir, "publish_execution", before=AFTER_L4 + timedelta(hours=1),
+    )
+    assert late_id not in ledger, (
+        "REGRESSION #375 v4: with round_counter[1]>0 but no L1 .last-run, the "
+        "materializer must use the same round_counter fallback as "
+        "_layer_fired_today → compute l1_fired=True → highest eligible = L4 → "
+        "NOT stamp the L3 event trigger. A divergence here silently loses the "
+        "approved decision (same class as the original #375 bug)."
+    )
