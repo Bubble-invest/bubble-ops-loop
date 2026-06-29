@@ -96,33 +96,38 @@
           {% if gate.attachments %}
           <div class="gate-attachments" style="margin:10px 0 0;">
             {% for att in gate.attachments %}
-              {% if att.path.lower().endswith('.png') or att.path.lower().endswith('.jpg')
-                  or att.path.lower().endswith('.jpeg') or att.path.lower().endswith('.gif')
-                  or att.path.lower().endswith('.svg') or att.path.lower().endswith('.webp') %}
+              {# An attachment may be either an object {path, caption} OR a bare
+                 path string (agents emit both shapes). Normalize so a string
+                 attachment can't crash the render with 'str has no attribute path'. #}
+              {% set att_path = att if att is string else att.path %}
+              {% set att_caption = none if att is string else att.caption %}
+              {% if att_path and (att_path.lower().endswith('.png') or att_path.lower().endswith('.jpg')
+                  or att_path.lower().endswith('.jpeg') or att_path.lower().endswith('.gif')
+                  or att_path.lower().endswith('.svg') or att_path.lower().endswith('.webp')) %}
               <figure class="gate-chart" style="margin:0 0 8px;">
-                <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+                <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
                    target="_blank" rel="noopener" title="Ouvrir en grand">
                   {# Capped preview thumbnail (see gate_card.html note) — keeps a
                      tall post screenshot card-sized; click opens full size. #}
-                  <img src="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
-                       alt="{{ att.caption or att.path.split('/')[-1] }}"
+                  <img src="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
+                       alt="{{ att_caption or att_path.split('/')[-1] }}"
                        loading="lazy"
                        style="display:block; width:auto; max-width:min(100%, 360px);
                               height:auto; max-height:460px; object-fit:contain;
                               border:1px solid var(--line);
                               border-radius:3px; background: var(--paper-soft);">
                 </a>
-                {% if att.caption %}
+                {% if att_caption %}
                 <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
-                            color: var(--body-muted);">{{ att.caption }} — Cliquer pour agrandir.</figcaption>
+                            color: var(--body-muted);">{{ att_caption }} — Cliquer pour agrandir.</figcaption>
                 {% endif %}
               </figure>
-              {% else %}
+              {% elif att_path %}
               <div style="margin-bottom:6px;">
-                <a href="/gate/{{ slug }}/attachment?path={{ att.path | urlencode }}"
+                <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
                    target="_blank" rel="noopener"
                    style="font-size:13px; color: var(--ochre); text-decoration:none;">
-                  📎 {{ att.caption or att.path.split('/')[-1] }}
+                  📎 {{ att_caption or att_path.split('/')[-1] }}
                 </a>
               </div>
               {% endif %}
