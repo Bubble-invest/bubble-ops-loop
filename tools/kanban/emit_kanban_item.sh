@@ -49,6 +49,7 @@ PROJ=""
 DUE=""
 HOST=""
 LINKS=""
+BUDGET=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -181,7 +182,7 @@ _gh_emit() {
 
   # Build issue body and title via python3 (robust escaping, same approach as original)
   local tmpfile
-  tmpfile=$(mktemp /tmp/emit_kanban_body.XXXXXX)
+  tmpfile=$(mktemp "${TMPDIR:-/tmp}/emit_kanban_body.XXXXXX")
 
   TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
   OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
@@ -410,7 +411,18 @@ print(json.dumps(payload))
     -d "$PAYLOAD" 2>/dev/null)
 
   if [ "$HTTP" != "200" ]; then
-    QUEUE="${KANBAN_QUEUE:-$HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl}"
+    # Host-portable queue path: honour $KANBAN_QUEUE, else the first writable
+    # candidate dir, degrading to $TMPDIR/tmp so a read-only $HOME (e.g. a
+    # systemd-sandboxed box agent) can't swallow the card silently.
+    QUEUE="${KANBAN_QUEUE:-}"
+    if [ -z "$QUEUE" ]; then
+      for _qdir in "$HOME/claude-workspaces/Rick_RnD/monitoring" "$HOME/.bubble" "${TMPDIR:-/tmp}"; do
+        if mkdir -p "$_qdir" 2>/dev/null && [ -w "$_qdir" ]; then
+          QUEUE="$_qdir/kanban_queue.jsonl"; break
+        fi
+      done
+      QUEUE="${QUEUE:-${TMPDIR:-/tmp}/kanban_queue.jsonl}"
+    fi
     mkdir -p "$(dirname "$QUEUE")" 2>/dev/null || true
     echo "$PAYLOAD" >> "$QUEUE"
     # ── LOUD WARN: the card did NOT reach the board ───────────────────────────
