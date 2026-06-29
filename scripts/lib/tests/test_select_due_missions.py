@@ -1505,3 +1505,144 @@ def test_event_ledger_engages_without_manual_repo_dir_injection(tmp_path: Path):
     assert "publish_execution" not in [m["id"] for m in select_due_missions(ctx2, [pub])], (
         "re-fire loop must be closed in PROD ctx (no manual _repo_dir injection)"
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION #375 — event trigger silently dropped when approval arrives
+# outside the layer's eligible window (overnight path).
+# ---------------------------------------------------------------------------
+#
+# ROOT CAUSE (pre-fix): materialize_due_missions_for_tick stamped the event
+# trigger-id ledger whenever a trigger was PRESENT — regardless of whether the
+# mission's layer was eligible at that tick. An approval arriving at 00:19
+# Paris (before L3's 07:00 floor) caused the materializer to stamp
+# dispatched-items/<id> on every overnight heartbeat tick. By the time L3's
+# window opened, _dispatched_trigger_ids already contained the id →
+# _event_pending_trigger_ids returned empty → select_due_missions skipped the
+# mission permanently. The approved publish never happened (silent data loss).
+#
+# FIX: the materializer now only stamps the ledger when _time_reached returns
+# True for the mission's layer — i.e. only when the layer's time floor
+# (Paris-local minimum) has been reached.
+
+# OVERNIGHT time anchor: 00:30 UTC = 02:30 Paris (CEST, UTC+2) — BEFORE L3's 07:00
+# floor. Using UTC 00:30 on the SAME calendar day as the afternoon L3 tick (AFTER_L3
+# = 2026-06-23 14:30 UTC = 16:30 Paris). This ensures both the overnight tick and
+# the afternoon tick share the same UTC date (same `today_dir`), so the ledger
+# written at 02:30 Paris would be read at 16:30 Paris — reproducing the silent-drop.
+OVERNIGHT_375 = datetime(2026, 6, 23, 0, 30, tzinfo=timezone.utc)  # 02:30 Paris 2026-06-23
+
+
+def test_375_overnight_approval_not_ledgered_before_window(tmp_path: Path):
+    """REGRESSION #375 — part 1: an approval arriving overnight (before L3's floor)
+    must NOT be stamped into the dispatched-items ledger.
+
+    Pre-fix, the materializer would stamp the trigger id on every tick where it
+    was present, even at 00:30 Paris when L3 is ineligible. This test asserts
+    that after the fix, the ledger remains EMPTY after an overnight tick.
+
+    This test FAILS on the pre-fix code (materializer stamped unconditionally)
+    and PASSES post-fix (materializer gates on _time_reached).
+    """
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+
+    # Approval arrives at 00:19 Paris (00:30 UTC) — well before L3's 07:00 floor.
+    # (OVERNIGHT_375 = 2026-06-22 22:30 UTC = 00:30 Paris 2026-06-23)
+    approval_ts = OVERNIGHT_375
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    (decisions_dir / "approved-jade-0619.yaml").write_text(
+        yaml.dump({
+            "id": "approved-jade-0619",
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": approval_ts.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # Simulate an overnight heartbeat tick at 00:30 Paris.
+    build_dispatch_ctx(repo, now_utc=OVERNIGHT_375)  # materializer runs here
+
+    # Assert: the ledger must be EMPTY — trigger id must NOT have been stamped.
+    from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
+    today = OVERNIGHT_375.strftime("%Y-%m-%d")
+    today_dir = repo / "outputs" / today
+    ledger_after_overnight = _dispatched_trigger_ids(today_dir, "publish_execution",
+                                                     before=OVERNIGHT_375 + timedelta(hours=1))
+    assert "approved-jade-0619" not in ledger_after_overnight, (
+        "REGRESSION #375: an approval arriving overnight (before L3's time floor) "
+        "must NOT be stamped into the dispatched-items ledger — stamping it "
+        "permanently blocks dispatch after the window opens (silent data loss). "
+        "Pre-fix: materializer stamped unconditionally. "
+        "Post-fix: materializer gates on _time_reached(layer_n)."
+    )
+
+
+def test_375_approval_dispatched_once_window_opens(tmp_path: Path):
+    """REGRESSION #375 — part 2: after the overnight tick does NOT stamp the ledger,
+    the approval is correctly dispatched when L3's time floor is reached.
+
+    Full scenario:
+      tick 1 (00:30 Paris): approval arrives; materializer runs; ledger must stay EMPTY.
+      tick 2 (16:30 Paris): L3 window open; select_due_missions must return the mission.
+      tick 3 (17:00 Paris): mission still listed as pending (simulating no-archive);
+                            must NOT re-dispatch (ledger now has the id from tick 2).
+
+    This test FAILS on the pre-fix code (tick 2 finds mission silently blocked)
+    and PASSES post-fix (approval dispatched correctly at tick 2).
+    """
+    repo = _mk_repo(tmp_path)
+    pub = _mk_event("publish_execution", layer=3,
+                    output_queue="queues/published/", creates=["published_post"])
+    _write_dept_yaml(repo, [pub])
+
+    # Approval present in inbox/decisions from overnight.
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    (decisions_dir / "approved-jade-0619.yaml").write_text(
+        yaml.dump({
+            "id": "approved-jade-0619",
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": OVERNIGHT_375.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # ── TICK 1 (00:30 Paris) — overnight heartbeat. Layer ineligible.
+    build_dispatch_ctx(repo, now_utc=OVERNIGHT_375)
+
+    # ── TICK 2 (16:30 Paris = AFTER_L3). L3 window open; mission must dispatch.
+    # L1 fired today so L3 prerequisites are met (C.3 branch: time >= 07:00 AND has_decisions).
+    today = AFTER_L3.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / "1", MORNING)
+
+    ctx2 = build_dispatch_ctx(repo, now_utc=AFTER_L3)
+    ctx2["_repo_dir"] = str(repo)
+
+    assert ctx2.get("has_inbox_decisions") is True, (
+        "precondition: inbox/decisions must have the approval for tick 2"
+    )
+
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" in due2, (
+        "REGRESSION #375 part 2: after an overnight tick (pre-window), the approval "
+        "MUST be dispatched when L3's window opens — the trigger id must NOT have "
+        "been pre-emptively ledgered by the overnight materializer."
+    )
+
+    # ── TICK 3 (17:00 Paris) — item still in inbox (subagent not archived yet).
+    # The ledger now has the id from tick 2; must NOT re-dispatch.
+    tick3 = AFTER_L3 + timedelta(minutes=30)
+    ctx3 = build_dispatch_ctx(repo, now_utc=tick3)
+    ctx3["_repo_dir"] = str(repo)
+
+    due3 = [m["id"] for m in select_due_missions(ctx3, [pub])]
+    assert "publish_execution" not in due3, (
+        "REGRESSION #375 part 2 re-fire guard: after dispatch at tick 2, "
+        "the mission must NOT re-fire on tick 3 (ledger closed the loop)"
+    )

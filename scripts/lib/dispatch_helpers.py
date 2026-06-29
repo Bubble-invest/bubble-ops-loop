@@ -781,11 +781,27 @@ def materialize_due_missions_for_tick(
         # trigger item NOT yet dispatched. Once every present id is ledgered, do
         # nothing — the loop closes structurally, independent of the subagent
         # archiving the item (crash-safe). A new (different-id) item re-arms it.
+        #
+        # FIX #375 — layer eligibility gate: only stamp the ledger when the
+        # mission's layer is eligible at this tick (its Paris-local time floor
+        # is reached). Stamping the ledger on a tick where the layer is
+        # ineligible (e.g. an approval arriving overnight before L3's 10:00
+        # floor) permanently blocks the trigger from ever being dispatched —
+        # subsequent ticks see the id as already-dispatched and skip the
+        # mission even after the layer becomes eligible (silent data loss).
+        # We use _time_reached(now_paris_t, layer_n) as the eligibility gate
+        # because that is the necessary condition for any layer to dispatch:
+        # it is a time-floor (minimum), not a window. The layer's queue/
+        # prerequisite conditions (_mission_layer_eligible's full set) are
+        # evaluated later by select_due_missions on the same tick; we only
+        # need to avoid premature stamping before the window opens at all.
         if m.get("cadence") == "event":
-            pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
-            if pending:
-                _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
-                write_last_run(today_dir / "missions" / mid, when=now_utc)
+            now_paris_t = _to_paris(now_utc).time()
+            if _time_reached(now_paris_t, layer_n):
+                pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
+                if pending:
+                    _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
+                    write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
         if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
             write_last_run(today_dir / "missions" / mid, when=now_utc)
