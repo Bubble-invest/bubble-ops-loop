@@ -1865,3 +1865,177 @@ def test_375_new_different_id_rearms_after_first_ledgered(tmp_path: Path):
         "NEW ITEM DEDUP (#375 rework): 'approved-afternoon' stamped at tick 2 "
         "must not re-fire at tick 3 — dedup applies to each item independently."
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION #375 v3 — highest-eligible-layer invariant
+#
+# BUG: _layer_eligible_from_signals tells you a layer is eligible IN ISOLATION.
+# But select_due_missions dispatches only the SINGLE HIGHEST-PRIORITY eligible
+# layer (for layer in _LAYER_PRIORITY [4,3,2,1]: if eligible: break).
+#
+# Failing scenario (post-19:00, late decision):
+#   L3 already fired today; a NEW decision arrives; time >= 19:00 Paris.
+#   • L3 is eligible-in-isolation: time>=07:00 AND has_decisions=True
+#   • L4 is also eligible: time>=19:00 AND l1_fired AND l3_fired (satisfies
+#     the "l3_fired OR not has_decisions" arm) AND (l2_fired OR not has_research)
+#   The materializer (a8ed933) sees L3 eligible → stamps the L3 event trigger.
+#   BUT select_due_missions picks L4 (higher priority) → dispatches L4, NOT L3.
+#   Next tick: L3 trigger has ts<now_utc → permanently blocked → SILENT DATA LOSS.
+#
+# FIX: the materializer must stamp an event mission's ledger ONLY when its layer
+# is the HIGHEST-priority eligible layer this tick — exactly the layer
+# select_due_missions will actually dispatch.
+# ---------------------------------------------------------------------------
+
+# 19:30 Paris = 17:30 UTC (June = CEST UTC+2); reuses AFTER_L4 = 17:30 UTC.
+# _LAYER_PRIORITY = [4, 3, 2, 1]. At AFTER_L4 with L1+L2+L3 all fired and
+# has_decisions=True:
+#   L4 eligible: time>=19:00 AND l1_fired AND (l2_fired OR not has_research)
+#                AND (l3_fired OR not has_decisions) → l3_fired=True satisfies it
+#   L3 eligible-in-isolation: time>=07:00 AND has_decisions=True
+#   Highest eligible: L4 (iterated first in _LAYER_PRIORITY)
+
+def test_375_l4_coexists_l3_event_not_prematurely_ledgered(tmp_path: Path):
+    """REGRESSION #375 v3 — the highest-eligible-layer invariant.
+
+    Scenario: L3 already fired today, a new decision arrives, time is 19:30
+    Paris (>= L4 floor). BOTH L3 (eligible-in-isolation) AND L4 are eligible.
+    select_due_missions picks L4 (highest priority). The L3 event trigger must
+    NOT be stamped into the dispatched-items ledger this tick, because L4 is the
+    actual dispatch layer — stamping L3's trigger now would permanently block
+    the L3 mission on the next tick when L4 is no longer eligible (e.g. already
+    fired or next day), causing silent data loss.
+
+    Three-tick scenario:
+      tick 1 (19:30 Paris):
+        • L3 trigger present, L4 eligible (highest) → L4 dispatched, NOT L3.
+        • L3 trigger must NOT be stamped into the ledger.
+      tick 2 (next morning, 10:00 Paris, L4 no longer eligible):
+        • L4 window closed (not 19:00 yet for a new day, or L4 already fired).
+        • L3 now the HIGHEST eligible layer with its trigger still present.
+        • L3 event mission MUST still dispatch (trigger not pre-emptively lost).
+      tick 3 (10:30 Paris, same day as tick 2):
+        • Trigger dispatched and ledgered at tick 2 → must NOT re-dispatch.
+
+    This test FAILS on the a8ed933 branch (materializer stamps L3 trigger at
+    tick 1 because L3 is eligible-in-isolation) and PASSES after the fix
+    (materializer gates on the HIGHEST eligible layer, which is L4 at tick 1).
+    """
+    repo = _mk_repo(tmp_path)
+
+    # L3 event mission: publish_execution, triggered by inbox/decisions.
+    pub = _mk_event(
+        "publish_execution",
+        layer=3,
+        output_queue="queues/published/",
+        creates=["published_post"],
+    )
+    _write_dept_yaml(repo, [pub])
+
+    # New decision arrives at 19:30 Paris (same day as the L4 window).
+    # AFTER_L4 = datetime(2026, 6, 23, 17, 30, UTC) = 19:30 Paris.
+    decisions_dir = repo / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    late_decision_id = "approved-late-decision"
+    (decisions_dir / f"{late_decision_id}.yaml").write_text(
+        yaml.dump({
+            "id": late_decision_id,
+            "kind": "publish_decision",
+            "status": "approved",
+            "created_at": AFTER_L4.isoformat(),
+        }, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    today = AFTER_L4.strftime("%Y-%m-%d")
+
+    # L1, L2, L3 all fired today (prerequisites for L4).
+    # Also stamp L3 per-mission marker from a prior tick so L3's own daily
+    # is_mission_due would be False for a daily mission — but this is an EVENT
+    # mission where is_mission_due always returns True. What matters is the
+    # LAYER eligibility and the ledger state.
+    for n in (1, 2, 3):
+        write_last_run(repo / "outputs" / today / str(n), MORNING)
+        increment_round_counter(repo / "outputs" / today, layer=n)
+
+    # ── TICK 1 (19:30 Paris = AFTER_L4): L4 is the highest eligible layer. ──
+    ctx1 = build_dispatch_ctx(repo, now_utc=AFTER_L4)
+    ctx1["_repo_dir"] = str(repo)
+
+    # Verify preconditions.
+    assert ctx1["has_inbox_decisions"] is True, (
+        "precondition: decision must be detected in inbox/decisions"
+    )
+
+    # L4 is the dispatch choice, not L3.
+    phase1 = decide_dispatch(ctx1)
+    assert phase1 == "layer_4", (
+        "precondition: at 19:30 Paris with L1+L2+L3 fired + has_decisions, "
+        "decide_dispatch must return layer_4 (L4 takes priority over L3)"
+    )
+
+    # Run the materializer (this is what build_dispatch_ctx already called above,
+    # but we verify its ledger state explicitly).
+    from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
+    today_dir = repo / "outputs" / today
+    ledger_after_tick1 = _dispatched_trigger_ids(
+        today_dir, "publish_execution",
+        before=AFTER_L4 + timedelta(hours=1),
+    )
+    assert late_decision_id not in ledger_after_tick1, (
+        "REGRESSION #375 v3 TICK 1: the L3 event trigger must NOT be stamped "
+        "into the dispatched-items ledger when L4 is the highest eligible layer "
+        "this tick. The materializer must mirror select_due_missions' highest-"
+        "eligible-layer choice, not just check eligibility in isolation. "
+        "Stamping the L3 trigger here permanently blocks it once L4 is gone — "
+        "silent data loss (the class of bug #375 reintroduced in a new form)."
+    )
+
+    # ── TICK 2 (next morning, 10:00 Paris, L4 window closed): L3 is highest. ──
+    # Simulate next-day scenario: new today_dir (new UTC date), L4 not yet eligible
+    # (time < 19:00), fresh day with L1 not yet fired so L3 is eligible via C.3.
+    # Use a different date so the ledger from tick 1 doesn't carry over.
+    next_day_1000 = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)  # 10:00 Paris 2026-06-24
+    next_today = next_day_1000.strftime("%Y-%m-%d")
+
+    # Decision file still present (subagent never archived — simulating the
+    # unprocessed-decision scenario across days).
+    # The decision file was already written at AFTER_L4 and is still in the dir.
+
+    ctx2 = build_dispatch_ctx(repo, now_utc=next_day_1000)
+    ctx2["_repo_dir"] = str(repo)
+
+    assert ctx2["has_inbox_decisions"] is True, (
+        "precondition for tick 2: decision must still be in inbox/decisions"
+    )
+
+    # At 10:00 Paris on the next day, L4 is NOT eligible (time < 19:00).
+    # L3 is the highest eligible layer: time>=07:00 AND has_decisions.
+    phase2 = decide_dispatch(ctx2)
+    assert phase2 == "layer_3", (
+        "precondition: at 10:00 Paris (next day, no L4 window), decide_dispatch "
+        "must return layer_3 — L3 is now the highest eligible layer"
+    )
+
+    # The L3 event mission MUST still be dispatchable — the trigger was NOT
+    # stamped at tick 1 (L4 was higher then), so it remains pending.
+    due2 = [m["id"] for m in select_due_missions(ctx2, [pub])]
+    assert "publish_execution" in due2, (
+        "REGRESSION #375 v3 TICK 2: publish_execution MUST be dispatched at "
+        "10:00 Paris the NEXT DAY — the L3 trigger was NOT pre-emptively "
+        "ledgered at tick 1 (when L4 was higher), so it is still pending. "
+        "If the materializer stamped it at tick 1 (bug), the ledger would "
+        "have ts<now from tick 1 and the trigger would be silently lost."
+    )
+
+    # ── TICK 3 (10:30 Paris next day): after dispatch at tick 2, must not re-fire. ──
+    next_day_1030 = datetime(2026, 6, 24, 8, 30, tzinfo=timezone.utc)  # 10:30 Paris 2026-06-24
+    ctx3 = build_dispatch_ctx(repo, now_utc=next_day_1030)
+    ctx3["_repo_dir"] = str(repo)
+
+    due3 = [m["id"] for m in select_due_missions(ctx3, [pub])]
+    assert "publish_execution" not in due3, (
+        "TICK 3 DEDUP: after dispatch at tick 2, the mission must NOT re-fire "
+        "at tick 3 — the ledger stamped at tick 2 closes the re-fire loop."
+    )
