@@ -707,6 +707,8 @@ def materialize_due_missions_for_tick(
     repo_dir: Path,
     today_dir: Path,
     now_utc: datetime,
+    *,
+    fire_after_rounds: int = 1,
 ) -> list[dict]:
     """Materialize due recurring missions into queue items (idempotent).
 
@@ -719,6 +721,10 @@ def materialize_due_missions_for_tick(
     If found, skips creation — same mission is never double-queued.
 
     Layer-4 missions are NOT materialized here (they fire via C.1).
+
+    `fire_after_rounds` is threaded through to _highest_eligible_layer_from_signals
+    so L1's cycle gate uses the same threshold as build_dispatch_ctx / decide_dispatch.
+    Defaults to 1 (the system-wide default) and is passed from build_dispatch_ctx.
 
     Returns the list of items that were actually created (empty if none).
     """
@@ -781,11 +787,85 @@ def materialize_due_missions_for_tick(
         # trigger item NOT yet dispatched. Once every present id is ledgered, do
         # nothing — the loop closes structurally, independent of the subagent
         # archiving the item (crash-safe). A new (different-id) item re-arms it.
+        #
+        # FIX #375 v3 — HIGHEST-ELIGIBLE-LAYER invariant via _highest_eligible_layer_from_signals:
+        # Only stamp the ledger when the mission's layer IS the highest-priority
+        # eligible layer this tick — exactly the layer select_due_missions will
+        # actually dispatch. This closes the invariant:
+        #
+        #     materializer stamps ledger ⟺ select_due_missions would dispatch
+        #
+        # Why "highest eligible" (not just "eligible in isolation"):
+        #   _layer_eligible_from_signals(layer_n, ...) returns True for L3 whenever
+        #   time>=07:00 AND has_decisions, but select_due_missions iterates
+        #   _LAYER_PRIORITY [4,3,2,1] and picks the FIRST eligible layer. If L4 is
+        #   also eligible (time>=19:00 + prerequisites), select picks L4 — L3 is
+        #   NEVER dispatched this tick. Stamping L3's trigger here marks it as
+        #   dispatched (ts < next tick's now_utc) → permanently blocked →
+        #   SILENT DATA LOSS (bug #375 reintroduced in new form, found by adversarial
+        #   review of a8ed933).
+        #
+        # Fix: compute the highest eligible layer via _highest_eligible_layer_from_signals
+        # (which iterates _LAYER_PRIORITY exactly as select does), then stamp ONLY
+        # if layer_n == that result. Structural divergence is impossible: both paths
+        # call the same underlying predicate in the same priority order.
+        #
+        # fire_after_rounds: now threaded through from build_dispatch_ctx (was
+        # hardcoded to 1). An L1 event mission with fire_after_rounds!=1 would have
+        # diverged if the threshold ever changed. Threading it through ensures the
+        # materializer and selector always agree on the L1 cycle gate.
         if m.get("cadence") == "event":
-            pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
-            if pending:
-                _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
-                write_last_run(today_dir / "missions" / mid, when=now_utc)
+            now_paris_t = _to_paris(now_utc).time()
+            # Compute the raw eligibility signals the materializer needs.
+            # These are the same signals build_dispatch_ctx populates into ctx,
+            # computed here before ctx exists.
+            _mat_has_decisions = (
+                _queue_has_items(repo_dir / "inbox" / "decisions")
+                or _queue_has_items(repo_dir / "queues" / "inbox" / "decisions")
+            )
+            _mat_has_research = _queue_has_items(
+                repo_dir / "queues" / "research",
+                drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
+            )
+            # Layer fired-today signals come from today_dir markers.
+            # Read round_counter FIRST so _mat_layer_fired can mirror
+            # _layer_fired_today's fallback (.last-run OR round_counter>0).
+            # Without the fallback the materializer's l{1,2,3}_fired can diverge
+            # from select_due_missions' (via ctx _layer_fired_today) in the state
+            # where round_counter[n]>0 but .last-run is absent (external cleanup
+            # or a subagent that incremented the counter without the marker) —
+            # which breaks the highest-eligible-layer choice → silent #375-class loss.
+            _mat_counts = read_round_counter(today_dir)
+            def _mat_layer_fired(n: int) -> bool:
+                if read_last_run(today_dir / str(n)) is not None:
+                    return True
+                return int(_mat_counts.get(str(n), 0)) > 0
+            _mat_l1_fired = _mat_layer_fired(1)
+            _mat_l2_fired = _mat_layer_fired(2)
+            _mat_l3_fired = _mat_layer_fired(3)
+            # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
+            _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
+            _mat_signals = dict(
+                has_research=_mat_has_research,
+                has_decisions=_mat_has_decisions,
+                has_mgmt_notes=_mat_has_mgmt_notes,
+                l1_fired=_mat_l1_fired,
+                l2_fired=_mat_l2_fired,
+                l3_fired=_mat_l3_fired,
+                counts=_mat_counts,
+                baseline=read_l1_baseline(today_dir),
+                fire_after_rounds=fire_after_rounds,
+            )
+            # Compute the highest-priority eligible layer — the one select_due_missions
+            # will actually dispatch. Stamp only when this mission's layer IS that layer.
+            highest_eligible = _highest_eligible_layer_from_signals(
+                now_paris_t, **_mat_signals
+            )
+            if highest_eligible == layer_n:
+                pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
+                if pending:
+                    _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
+                    write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
         if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
             write_last_run(today_dir / "missions" / mid, when=now_utc)
@@ -1060,8 +1140,11 @@ def build_dispatch_ctx(
 
     # Materialize due recurring missions BEFORE scanning queues — newly
     # created items become visible to the queue scanners below and can
-    # trigger the appropriate layer this same tick.
-    materialize_due_missions_for_tick(repo, today_dir, now_utc)
+    # trigger the appropriate layer this same tick. Pass fire_after_rounds
+    # so the materializer's event-ledger gate uses the same L1 cycle threshold
+    # as decide_dispatch (was hardcoded to 1 in a8ed933; now threaded through).
+    materialize_due_missions_for_tick(repo, today_dir, now_utc,
+                                      fire_after_rounds=fire_after_rounds)
 
     return {
         "now_utc": now_utc,
@@ -1272,8 +1355,132 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
 _LAYER_PRIORITY = [4, 3, 2, 1]   # highest to lowest (mirrors decide_dispatch)
 
 
+def _layer_eligible_from_signals(
+    layer: int,
+    now_paris_t: "_time",
+    *,
+    has_research: bool,
+    has_decisions: bool,
+    has_mgmt_notes: bool,
+    l1_fired: bool,
+    l2_fired: bool,
+    l3_fired: bool,
+    counts: "dict[str, int]",
+    baseline: "dict[str, int]",
+    fire_after_rounds: int,
+) -> bool:
+    """Pure eligibility predicate — SINGLE SOURCE OF TRUTH for layer eligibility.
+
+    Takes explicit boolean signals rather than a ctx dict so it can be called
+    both by _mission_layer_eligible (which reads signals from ctx) AND by
+    materialize_due_missions_for_tick (which computes signals itself from disk
+    before the full ctx is assembled). This guarantees the invariant:
+
+        materializer stamps the event ledger  ⟺  select_due_missions dispatches
+
+    Without this shared predicate the materializer previously used a weaker gate
+    (_time_reached(now_paris_t, layer_n)) that diverged from the real eligibility:
+    for L3, select uses _time_reached(now_paris_t, 1) (07:00 floor) AND
+    has_decisions, while the materializer gated on 16:00 — so between 07:00 and
+    16:00 with has_decisions=True, select DISPATCHED but the materializer did NOT
+    stamp → next tick re-dispatched → double-publish loop (bug #375).
+
+    Layer semantics (mirrors decide_dispatch / _mission_layer_eligible exactly):
+      L4: time>=19:00 AND l1_fired AND (l2_fired OR not has_research)
+                       AND (l3_fired OR not has_decisions)
+      L3: time>=07:00 AND has_decisions          ← 07:00, NOT 16:00
+      L2: time>=12:00 AND has_research
+      L1: time>=07:00 AND (not l1_fired         ← daily floor
+                           OR has_mgmt_notes    ← C.mgmt
+                           OR cycle gate met)   ← C.0b
+    """
+    if layer == 4:
+        return (
+            _time_reached(now_paris_t, 4)
+            and l1_fired
+            and (l2_fired or not has_research)
+            and (l3_fired or not has_decisions)
+        )
+    if layer == 3:
+        return _time_reached(now_paris_t, 1) and has_decisions
+    if layer == 2:
+        return _time_reached(now_paris_t, 2) and has_research
+    if layer == 1:
+        if not _time_reached(now_paris_t, 1):
+            return False
+        if has_mgmt_notes:
+            return True
+        if not l1_fired:
+            return True
+        return all(
+            int(counts.get(str(lyr), 0)) - int(baseline.get(str(lyr), 0))
+            >= fire_after_rounds
+            for lyr in (2, 3, 4)
+        )
+    return False
+
+
+def _highest_eligible_layer_from_signals(
+    now_paris_t: "_time",
+    *,
+    has_research: bool,
+    has_decisions: bool,
+    has_mgmt_notes: bool,
+    l1_fired: bool,
+    l2_fired: bool,
+    l3_fired: bool,
+    counts: "dict[str, int]",
+    baseline: "dict[str, int]",
+    fire_after_rounds: int,
+) -> "int | None":
+    """Return the highest-priority eligible layer this tick, or None.
+
+    Iterates _LAYER_PRIORITY [4, 3, 2, 1] and returns the first layer for
+    which _layer_eligible_from_signals is True — EXACTLY mirroring the
+    selection logic in select_due_missions:
+
+        for layer in _LAYER_PRIORITY:
+            if _mission_layer_eligible(ctx, layer):
+                eligible_layer = layer; break
+
+    SHARED HELPER: both the materializer (materialize_due_missions_for_tick)
+    and select_due_missions use this function so they can never diverge on
+    which layer is the "highest eligible" for a given tick.
+
+    WHY this is needed (bug #375 v3): _layer_eligible_from_signals tells you
+    whether a layer is eligible IN ISOLATION. But select dispatches only the
+    SINGLE HIGHEST-PRIORITY eligible layer. If the materializer stamps an
+    event trigger for a lower-priority layer that is eligible-in-isolation
+    but NOT the highest eligible, select skips it — and the stamp means the
+    trigger is permanently blocked on the next tick (ts < now). This helper
+    enforces the invariant:
+
+        materializer stamps event ledger ⟺ select_due_missions would dispatch
+    """
+    for layer in _LAYER_PRIORITY:
+        if _layer_eligible_from_signals(
+            layer,
+            now_paris_t,
+            has_research=has_research,
+            has_decisions=has_decisions,
+            has_mgmt_notes=has_mgmt_notes,
+            l1_fired=l1_fired,
+            l2_fired=l2_fired,
+            l3_fired=l3_fired,
+            counts=counts,
+            baseline=baseline,
+            fire_after_rounds=fire_after_rounds,
+        ):
+            return layer
+    return None
+
+
 def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
     """Return True if the given layer's time gate AND prerequisites are met.
+
+    Delegates to _layer_eligible_from_signals (the single-source-of-truth
+    predicate) after extracting the signals from ctx. See that function's
+    docstring for the layer semantics.
 
     Mirrors the exact conditions decide_dispatch uses per branch, so the two
     functions always agree on which layer is eligible. Only the PRIMARY
@@ -1305,44 +1512,22 @@ def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
         replacement for it.
     """
     now_paris_t = _to_paris(ctx["now_utc"]).time()
-    has_research = bool(ctx.get("has_research_items", False))
-    has_decisions = bool(ctx.get("has_inbox_decisions", False))
-    l1_fired = _layer_fired_today(ctx, 1)
-    l2_fired = _layer_fired_today(ctx, 2)
-    l3_fired = _layer_fired_today(ctx, 3)
-
-    if layer == 4:
-        # Gate: time AND L4 prerequisites — per-mission idempotence handles
-        # whether a specific L4 mission has already fired today.
-        return (
-            _time_reached(now_paris_t, 4)
-            and l1_fired
-            and (l2_fired or not has_research)
-            and (l3_fired or not has_decisions)
-        )
-    if layer == 3:
-        return _time_reached(now_paris_t, 1) and has_decisions
-    if layer == 2:
-        return _time_reached(now_paris_t, 2) and has_research
-    if layer == 1:
-        if not _time_reached(now_paris_t, 1):
-            return False
-        # C.mgmt: unconsumed management notes (always eligible when floor reached)
-        if bool(ctx.get("has_unconsumed_mgmt_notes", False)):
-            return True
-        # C.0a: daily floor
-        if not _layer_fired_today(ctx, 1):
-            return True
-        # C.0b: cycle gate
-        counts = ctx.get("round_counter") or {}
-        baseline = ctx.get("layer_1_baseline_counter") or {}
-        fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
-        return all(
-            int(counts.get(str(lyr), 0)) - int(baseline.get(str(lyr), 0))
-            >= fire_after_rounds
-            for lyr in (2, 3, 4)
-        )
-    return False
+    counts = ctx.get("round_counter") or {}
+    baseline = ctx.get("layer_1_baseline_counter") or {}
+    fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
+    return _layer_eligible_from_signals(
+        layer,
+        now_paris_t,
+        has_research=bool(ctx.get("has_research_items", False)),
+        has_decisions=bool(ctx.get("has_inbox_decisions", False)),
+        has_mgmt_notes=bool(ctx.get("has_unconsumed_mgmt_notes", False)),
+        l1_fired=_layer_fired_today(ctx, 1),
+        l2_fired=_layer_fired_today(ctx, 2),
+        l3_fired=_layer_fired_today(ctx, 3),
+        counts=counts,
+        baseline=baseline,
+        fire_after_rounds=fire_after_rounds,
+    )
 
 
 def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
@@ -1476,12 +1661,26 @@ def select_due_missions(
     if now_utc is None or now_utc.tzinfo is None:
         return []
 
-    # Determine the highest-priority eligible layer (same logic as decide_dispatch).
-    eligible_layer: "int | None" = None
-    for layer in _LAYER_PRIORITY:
-        if _mission_layer_eligible(ctx, layer):
-            eligible_layer = layer
-            break
+    # Determine the highest-priority eligible layer.
+    # Uses _highest_eligible_layer_from_signals (the shared helper also used
+    # by the materializer) to guarantee structural identity: both paths iterate
+    # _LAYER_PRIORITY and call _layer_eligible_from_signals in the same order.
+    now_paris_t = _to_paris(now_utc).time()
+    counts = ctx.get("round_counter") or {}
+    baseline = ctx.get("layer_1_baseline_counter") or {}
+    fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
+    eligible_layer = _highest_eligible_layer_from_signals(
+        now_paris_t,
+        has_research=bool(ctx.get("has_research_items", False)),
+        has_decisions=bool(ctx.get("has_inbox_decisions", False)),
+        has_mgmt_notes=bool(ctx.get("has_unconsumed_mgmt_notes", False)),
+        l1_fired=_layer_fired_today(ctx, 1),
+        l2_fired=_layer_fired_today(ctx, 2),
+        l3_fired=_layer_fired_today(ctx, 3),
+        counts=counts,
+        baseline=baseline,
+        fire_after_rounds=fire_after_rounds,
+    )
 
     if eligible_layer is None:
         return []
