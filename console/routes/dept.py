@@ -132,6 +132,12 @@ def dept_detail(slug: str, request: Request):
     )
     if is_management:
         kanban_summary = _kanban_snapshot()
+    # Per-layer waiting queue items — titles of items currently sitting in each
+    # layer's input queue (card #376). Read-only. The left-column fragment
+    # (/dept/<slug>/inbox-fragment) re-fetches this every 5 s via htmx; we also
+    # pass it on the initial full-page render so the left column is never empty
+    # on first load.
+    layer_queues = github_reader.list_layer_queues(slug)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -155,6 +161,43 @@ def dept_detail(slug: str, request: Request):
             "backup_events": backup_events,
             "latest_backup": latest_backup,
             "loop_runtime_prompt": loop_runtime_prompt,
+            "kanban_summary": kanban_summary,
+            "layer_queues": layer_queues,
+        },
+    )
+
+
+@router.get("/dept/{slug}/inbox-fragment", response_class=HTMLResponse)
+def dept_inbox_fragment(slug: str, request: Request):
+    """HTMX fragment — left column (📥 À traiter) for the bureau desk view.
+
+    Refreshed every 5 s by the htmx trigger on the desk-pile--inbox div so
+    queue items moving across layers (auto or post-approval) update in-place
+    without a manual reload.  Read-only; does NOT touch queue files.
+    """
+    d = dept_registry.get_department(slug)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
+    dept_yaml = github_reader.load_dept_yaml(slug)
+    # Pending gates for Décisions kanban chip (count badge)
+    gates = github_reader.list_pending_gates(slug)
+    from console.services.gate_grouping import group_gates_by_kind
+    gate_groups = group_gates_by_kind(gates)
+    missions_full = github_reader.list_missions_full(slug)
+    missions_by_layer = github_reader.group_missions_by_layer(missions_full)
+    # Per-layer waiting queue items (the new #376 data)
+    layer_queues = github_reader.list_layer_queues(slug)
+    # Compact kanban chip count (mirrors the full page logic)
+    kanban_summary = None  # not needed for this fragment
+    return request.app.state.templates.TemplateResponse(
+        "partials/_inbox_fragment.html",
+        {
+            "request": request,
+            "dept": d,
+            "dept_yaml": dept_yaml,
+            "gate_groups": gate_groups,
+            "missions_by_layer": missions_by_layer,
+            "layer_queues": layer_queues,
             "kanban_summary": kanban_summary,
         },
     )

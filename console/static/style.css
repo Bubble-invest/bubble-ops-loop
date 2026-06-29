@@ -2730,6 +2730,38 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 .desk-done-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk-empty { font-size: 12px; color: var(--body-muted); font-style: italic; margin: 4px 0; }
 
+/* ─── Desk inbox — per-layer queue items (#376) ──────────────────────────── */
+/* Wraps the list of waiting items within a desk-folder layer. */
+.desk-queue-items { margin: 4px 0 6px; }
+/* One waiting item — same compact chip shape as desk-folder-item, but
+   differentiated by a slightly lighter left border (violet-soft) so it reads
+   as "input waiting" vs the mission name rows above it. */
+.desk-queue-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  font-size: 12px; color: var(--body-soft);
+  padding: 3px 8px; margin: 2px 0; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 3px;
+  border-left: 2px solid var(--ochre-soft);
+  overflow: hidden;
+}
+/* Human-approval-pending variant: ochre left accent + warm background
+   mirrors the gate card styling (--ochre / gate-autonomie). */
+.desk-queue-item--human {
+  border-left-color: var(--ochre);
+  background: #fdf6e8;       /* same warm tint as the whiteboard/mandate areas */
+}
+.desk-queue-title {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0;
+  min-width: 0;
+}
+/* The 👀 badge — small, non-intrusive, right-aligned. */
+.desk-queue-badge {
+  flex: 0 0 auto; font-size: 11px;
+  color: var(--ochre-deep); font-style: normal;
+}
+/* Empty-state inside a layer's queue section. */
+.desk-queue-empty { margin: 3px 0 6px; }
+
 /* ─── Pixel agent at his desk (#286) — center session zone ───────────────── */
 .desk-agent-stage { text-align:center; padding:6px 0 10px; }
 .pixel-agent { shape-rendering:crispEdges; }
