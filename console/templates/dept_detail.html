@@ -91,28 +91,21 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
 <section class="cabinet-section bureau" aria-label="Bureau — vue d'ensemble">
   <div class="desk-grid">
 
-    {# 📥 LEFT — à traiter (missions by layer + kanban attention) #}
+    {# 📥 LEFT — à traiter (missions by layer + live queue items, #376)
+       htmx refreshes the inner content every 5 s (same cadence as the session
+       feed) so items appearing/disappearing from queues update live.
+       hx-swap="innerHTML" keeps the outer .desk-pile wrapper stable.
+    #}
     <div class="desk-pile desk-pile--inbox">
       <div class="desk-pile-head"><span class="desk-emoji">📥</span> À traiter</div>
-      {% set _att = (kanban_summary.attention_total if kanban_summary else 0) %}
-      {% if _att %}
-        <a href="#dept-kanban-heading" class="desk-chip desk-chip--load">{{ _att }} carte{{ 's' if _att > 1 else '' }} en attente</a>
-      {% endif %}
-      {% set _ns = namespace(any=false) %}
-      {% for l in [1,2,3,4] %}
-        {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
-        {% if _ms %}{% set _ns.any = true %}
-          <div class="desk-folder">
-            <div class="desk-folder-layer">Couche {{ l }}</div>
-            {% for m in _ms %}
-              <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
-            {% endfor %}
-          </div>
-        {% endif %}
-      {% endfor %}
-      {% if not _ns.any and not _att %}
-        <p class="desk-empty">Pile vide — rien en attente.</p>
-      {% endif %}
+      <div id="dept-inbox-content"
+           hx-get="/dept/{{ dept.slug }}/inbox-fragment"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">
+        {# Rendered synchronously on first load (no flash); htmx replaces it on
+           every tick so queue items update without a full page reload. #}
+        {% include "partials/_inbox_fragment.html" %}
+      </div>
     </div>
 
     {# 🔄 CENTER — session en direct (the agent at their desk, live) #}

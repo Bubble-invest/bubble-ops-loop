@@ -1,0 +1,55 @@
+{# ─── Inbox fragment — 📥 À traiter left column (card #376) ──────────────────
+   Rendered by GET /dept/<slug>/inbox-fragment and refreshed every 5 s via htmx
+   (same cadence as the session feed).  Also rendered inline on the initial
+   full-page load from dept_detail.html so the column is never blank on first
+   load.
+
+   Receives:
+     dept              — dept object (slug, display_name, is_live, …)
+     gate_groups       — list of grouped gate objects (for the count chip)
+     missions_by_layer — dict {layer_int: [mission_dict, …]}
+     layer_queues      — dict {layer_int: [item_dict, …]}  (card #376 data)
+       item_dict = {id, kind, title, created_at, pending_human: bool}
+     kanban_summary    — optional kanban snapshot (may be None in fragment)
+#}
+
+{% set _att = (kanban_summary.attention_total if kanban_summary else 0) %}
+{% if _att %}
+  <a href="#dept-kanban-heading" class="desk-chip desk-chip--load">{{ _att }} carte{{ 's' if _att > 1 else '' }} en attente</a>
+{% endif %}
+
+{% set _ns = namespace(any=false) %}
+{% for l in [1,2,3,4] %}
+  {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
+  {% set _qi = (layer_queues.get(l, []) if layer_queues else []) %}
+  {% if _ms or _qi %}{% set _ns.any = true %}
+    <div class="desk-folder">
+      <div class="desk-folder-layer">Couche {{ l }}</div>
+
+      {# Mission names #}
+      {% for m in _ms %}
+        <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
+      {% endfor %}
+
+      {# Queue items waiting in this layer (#376) #}
+      {% if _qi %}
+        <div class="desk-queue-items">
+          {% for item in _qi %}
+            <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+              <span class="desk-queue-title">{{ item.title }}</span>
+              {% if item.pending_human %}
+                <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="desk-empty desk-queue-empty">Aucun élément en attente.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endfor %}
+
+{% if not _ns.any and not _att %}
+  <p class="desk-empty">Pile vide — rien en attente.</p>
+{% endif %}

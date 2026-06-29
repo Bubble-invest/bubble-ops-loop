@@ -1356,3 +1356,147 @@ def group_missions_by_layer(
             layer = 1
         out.setdefault(layer, []).append(m)
     return out
+
+
+# ── Queue-to-layer mapping for list_layer_queues() ────────────────────────────
+# Dispatch convention (card #376):
+#   L1 produces into queues/research/   (research items consumed by L2)
+#   L2 produces decisions/items toward  queues/management/ (management notes)
+#   L3 reads     inbox/decisions/ + queues/inbox/decisions/  (approved decisions)
+#   Cross-cutting: queues/gates/ = human-approval pending (all layers, annotated)
+# "feeds layer N" means the items are *waiting* to be consumed at that layer.
+_QUEUE_LAYER_MAP: List[tuple] = [
+    # (relative_dir_from_repo_root, layer_it_feeds, is_gate_queue)
+    ("queues/research",          1, False),
+    ("queues/management",        2, False),
+    ("inbox/decisions",          3, False),
+    ("queues/inbox/decisions",   3, False),
+    ("queues/gates",             0, True),   # layer 0 = cross-cutting gates
+]
+
+_QUEUE_TITLE_FIELDS: List[str] = [
+    "question_text", "post_body", "title", "subject", "summary",
+    "body", "description", "content", "text",
+]
+
+
+def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) -> str:
+    """Derive a human-readable title from a queue item YAML dict.
+
+    Strategy (in order):
+      1. Use `title` or any known text-content field (truncated).
+      2. Fall back to `kind` + first non-empty string value found.
+      3. Last resort: just the `kind`.
+    """
+    for field in _QUEUE_TITLE_FIELDS:
+        val = doc.get(field)
+        if val and isinstance(val, str) and val.strip():
+            excerpt = val.strip().replace("\n", " ")
+            label = kind if kind else "item"
+            full = f"{label}: {excerpt}"
+            return full[:max_len] + ("…" if len(full) > max_len else "")
+
+    # Fallback: first non-id, non-kind string value
+    skip = {"id", "kind", "created_at", "updated_at", "slug"}
+    for k, v in doc.items():
+        if k in skip:
+            continue
+        if isinstance(v, str) and v.strip():
+            excerpt = v.strip().replace("\n", " ")
+            full = f"{kind}: {excerpt}" if kind else excerpt
+            return full[:max_len] + ("…" if len(full) > max_len else "")
+
+    return kind if kind else "item"
+
+
+def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
+    """Return the currently-waiting queue items per layer for a dept.
+
+    For each configured queue directory, reads all YAML files that are NOT
+    inside a `.processed/` subdirectory (those have already been drained by
+    the dept agent). Items in queues/gates/ are cross-referenced against the
+    live pending-gates list so `pending_human=True` is set on items that still
+    need operator approval.
+
+    Queue → layer mapping (card #376):
+      - queues/research/        → L1  (items L1 produced, consumed by L2)
+      - queues/management/      → L2  (management notes produced by L2)
+      - inbox/decisions/        → L3  (approved decisions ready for L3)
+      - queues/inbox/decisions/ → L3  (same, alternate path)
+      - queues/gates/           → all layers (cross-cutting; pending_human=True)
+
+    Each item dict has:
+        id            str   — YAML `id` field or filename stem
+        kind          str   — YAML `kind` field or empty string
+        title         str   — human-readable excerpt (~60 chars, never blank)
+        created_at    str   — YAML `created_at` field or empty string
+        pending_human bool  — True for items that need human approval (gates)
+
+    Returns:
+        {layer_num: [item_dict, ...], ...}  for layers 1..4.
+        Gate items (layer 0 internally) are duplicated into ALL subscribed layers
+        so the operator sees them regardless of which layer they drill into.
+        Returns {} gracefully if the dept repo is not on disk.
+    """
+    root = repo_path(slug)
+    if root is None:
+        return {1: [], 2: [], 3: [], 4: []}
+
+    # Pre-compute the set of pending-gate ids (for cross-referencing).
+    # We call list_pending_gates() so we honour its decision-filter logic
+    # (same items that show in "Décisions qu'on attend de toi").
+    pending_gate_ids: set = {
+        g.get("id", "") for g in list_pending_gates(slug) if isinstance(g, dict)
+    }
+
+    out: Dict[int, List[Dict[str, Any]]] = {1: [], 2: [], 3: [], 4: []}
+
+    for rel_dir, layer, is_gate in _QUEUE_LAYER_MAP:
+        queue_dir = root / Path(rel_dir)
+        if not queue_dir.is_dir():
+            continue
+
+        items: List[Dict[str, Any]] = []
+        for p in sorted(queue_dir.glob("*.yaml")):
+            # Skip items that live inside a .processed/ subdirectory —
+            # those have already been handled by the dept agent.
+            if ".processed" in p.parts:
+                continue
+            try:
+                doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                _log.debug("list_layer_queues: skipping malformed %s: %s", p, exc)
+                continue
+            if not isinstance(doc, dict):
+                continue
+
+            item_id = str(doc.get("id") or p.stem)
+            kind = str(doc.get("kind") or "")
+            created_at = str(doc.get("created_at") or "")
+            title = _derive_queue_item_title(doc, kind)
+
+            # For gate queue items: pending_human=True when the item is
+            # still in list_pending_gates() (i.e. not yet decided).
+            if is_gate:
+                pending_human = item_id in pending_gate_ids
+            else:
+                pending_human = False
+
+            items.append({
+                "id": item_id,
+                "kind": kind,
+                "title": title,
+                "created_at": created_at,
+                "pending_human": pending_human,
+            })
+
+        if is_gate:
+            # Gates are cross-cutting: add them to ALL layers so they
+            # appear in the inbox regardless of which layer is shown.
+            for ln in (1, 2, 3, 4):
+                out[ln].extend(items)
+        else:
+            if layer in out:
+                out[layer].extend(items)
+
+    return out
