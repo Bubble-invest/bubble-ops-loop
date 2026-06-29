@@ -782,22 +782,60 @@ def materialize_due_missions_for_tick(
         # nothing — the loop closes structurally, independent of the subagent
         # archiving the item (crash-safe). A new (different-id) item re-arms it.
         #
-        # FIX #375 — layer eligibility gate: only stamp the ledger when the
-        # mission's layer is eligible at this tick (its Paris-local time floor
-        # is reached). Stamping the ledger on a tick where the layer is
-        # ineligible (e.g. an approval arriving overnight before L3's 16:00
-        # floor) permanently blocks the trigger from ever being dispatched —
-        # subsequent ticks see the id as already-dispatched and skip the
-        # mission even after the layer becomes eligible (silent data loss).
-        # We use _time_reached(now_paris_t, layer_n) as the eligibility gate
-        # because that is the necessary condition for any layer to dispatch:
-        # it is a time-floor (minimum), not a window. The layer's queue/
-        # prerequisite conditions (_mission_layer_eligible's full set) are
-        # evaluated later by select_due_missions on the same tick; we only
-        # need to avoid premature stamping before the window opens at all.
+        # FIX #375 (corrected) — TRUE eligibility gate via _layer_eligible_from_signals:
+        # Only stamp the ledger when the mission's layer is genuinely eligible at
+        # this tick — using the EXACT same predicate that select_due_missions uses
+        # (via _mission_layer_eligible). This closes the invariant:
+        #
+        #     materializer stamps ledger ⟺ select_due_missions would dispatch
+        #
+        # The prior attempt used _time_reached(now_paris_t, layer_n) which for L3
+        # was the 16:00 floor, but _mission_layer_eligible uses _time_reached(...,1)
+        # (07:00) AND has_decisions. Between 07:00–16:00 with has_decisions=True
+        # the selector DISPATCHED but the materializer did NOT stamp → next tick
+        # re-dispatched → double-publish loop. The gate must be identical.
+        #
+        # The materializer runs BEFORE the full ctx is assembled in build_dispatch_ctx,
+        # so it cannot call _mission_layer_eligible(ctx, layer_n). Instead it computes
+        # the SAME raw signals directly (cheap reads: queue dirs + today_dir markers)
+        # and calls _layer_eligible_from_signals — the single source of truth shared
+        # by both callers. Divergence is structurally impossible.
         if m.get("cadence") == "event":
             now_paris_t = _to_paris(now_utc).time()
-            if _time_reached(now_paris_t, layer_n):
+            # Compute the raw eligibility signals the materializer needs.
+            # These are the same signals build_dispatch_ctx populates into ctx,
+            # computed here before ctx exists.
+            _mat_has_decisions = (
+                _queue_has_items(repo_dir / "inbox" / "decisions")
+                or _queue_has_items(repo_dir / "queues" / "inbox" / "decisions")
+            )
+            _mat_has_research = _queue_has_items(
+                repo_dir / "queues" / "research",
+                drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
+            )
+            # Layer fired-today signals come from today_dir markers.
+            def _mat_layer_fired(n: int) -> bool:
+                return read_last_run(today_dir / str(n)) is not None
+            _mat_l1_fired = _mat_layer_fired(1)
+            _mat_l2_fired = _mat_layer_fired(2)
+            _mat_l3_fired = _mat_layer_fired(3)
+            _mat_counts = read_round_counter(today_dir)
+            # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
+            _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
+            layer_eligible = _layer_eligible_from_signals(
+                layer_n,
+                now_paris_t,
+                has_research=_mat_has_research,
+                has_decisions=_mat_has_decisions,
+                has_mgmt_notes=_mat_has_mgmt_notes,
+                l1_fired=_mat_l1_fired,
+                l2_fired=_mat_l2_fired,
+                l3_fired=_mat_l3_fired,
+                counts=_mat_counts,
+                baseline=read_l1_baseline(today_dir),
+                fire_after_rounds=1,
+            )
+            if layer_eligible:
                 pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
                 if pending:
                     _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
@@ -1288,8 +1326,77 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
 _LAYER_PRIORITY = [4, 3, 2, 1]   # highest to lowest (mirrors decide_dispatch)
 
 
+def _layer_eligible_from_signals(
+    layer: int,
+    now_paris_t: "_time",
+    *,
+    has_research: bool,
+    has_decisions: bool,
+    has_mgmt_notes: bool,
+    l1_fired: bool,
+    l2_fired: bool,
+    l3_fired: bool,
+    counts: "dict[str, int]",
+    baseline: "dict[str, int]",
+    fire_after_rounds: int,
+) -> bool:
+    """Pure eligibility predicate — SINGLE SOURCE OF TRUTH for layer eligibility.
+
+    Takes explicit boolean signals rather than a ctx dict so it can be called
+    both by _mission_layer_eligible (which reads signals from ctx) AND by
+    materialize_due_missions_for_tick (which computes signals itself from disk
+    before the full ctx is assembled). This guarantees the invariant:
+
+        materializer stamps the event ledger  ⟺  select_due_missions dispatches
+
+    Without this shared predicate the materializer previously used a weaker gate
+    (_time_reached(now_paris_t, layer_n)) that diverged from the real eligibility:
+    for L3, select uses _time_reached(now_paris_t, 1) (07:00 floor) AND
+    has_decisions, while the materializer gated on 16:00 — so between 07:00 and
+    16:00 with has_decisions=True, select DISPATCHED but the materializer did NOT
+    stamp → next tick re-dispatched → double-publish loop (bug #375).
+
+    Layer semantics (mirrors decide_dispatch / _mission_layer_eligible exactly):
+      L4: time>=19:00 AND l1_fired AND (l2_fired OR not has_research)
+                       AND (l3_fired OR not has_decisions)
+      L3: time>=07:00 AND has_decisions          ← 07:00, NOT 16:00
+      L2: time>=12:00 AND has_research
+      L1: time>=07:00 AND (not l1_fired         ← daily floor
+                           OR has_mgmt_notes    ← C.mgmt
+                           OR cycle gate met)   ← C.0b
+    """
+    if layer == 4:
+        return (
+            _time_reached(now_paris_t, 4)
+            and l1_fired
+            and (l2_fired or not has_research)
+            and (l3_fired or not has_decisions)
+        )
+    if layer == 3:
+        return _time_reached(now_paris_t, 1) and has_decisions
+    if layer == 2:
+        return _time_reached(now_paris_t, 2) and has_research
+    if layer == 1:
+        if not _time_reached(now_paris_t, 1):
+            return False
+        if has_mgmt_notes:
+            return True
+        if not l1_fired:
+            return True
+        return all(
+            int(counts.get(str(lyr), 0)) - int(baseline.get(str(lyr), 0))
+            >= fire_after_rounds
+            for lyr in (2, 3, 4)
+        )
+    return False
+
+
 def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
     """Return True if the given layer's time gate AND prerequisites are met.
+
+    Delegates to _layer_eligible_from_signals (the single-source-of-truth
+    predicate) after extracting the signals from ctx. See that function's
+    docstring for the layer semantics.
 
     Mirrors the exact conditions decide_dispatch uses per branch, so the two
     functions always agree on which layer is eligible. Only the PRIMARY
@@ -1321,44 +1428,22 @@ def _mission_layer_eligible(ctx: "dict[str, Any]", layer: int) -> bool:
         replacement for it.
     """
     now_paris_t = _to_paris(ctx["now_utc"]).time()
-    has_research = bool(ctx.get("has_research_items", False))
-    has_decisions = bool(ctx.get("has_inbox_decisions", False))
-    l1_fired = _layer_fired_today(ctx, 1)
-    l2_fired = _layer_fired_today(ctx, 2)
-    l3_fired = _layer_fired_today(ctx, 3)
-
-    if layer == 4:
-        # Gate: time AND L4 prerequisites — per-mission idempotence handles
-        # whether a specific L4 mission has already fired today.
-        return (
-            _time_reached(now_paris_t, 4)
-            and l1_fired
-            and (l2_fired or not has_research)
-            and (l3_fired or not has_decisions)
-        )
-    if layer == 3:
-        return _time_reached(now_paris_t, 1) and has_decisions
-    if layer == 2:
-        return _time_reached(now_paris_t, 2) and has_research
-    if layer == 1:
-        if not _time_reached(now_paris_t, 1):
-            return False
-        # C.mgmt: unconsumed management notes (always eligible when floor reached)
-        if bool(ctx.get("has_unconsumed_mgmt_notes", False)):
-            return True
-        # C.0a: daily floor
-        if not _layer_fired_today(ctx, 1):
-            return True
-        # C.0b: cycle gate
-        counts = ctx.get("round_counter") or {}
-        baseline = ctx.get("layer_1_baseline_counter") or {}
-        fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
-        return all(
-            int(counts.get(str(lyr), 0)) - int(baseline.get(str(lyr), 0))
-            >= fire_after_rounds
-            for lyr in (2, 3, 4)
-        )
-    return False
+    counts = ctx.get("round_counter") or {}
+    baseline = ctx.get("layer_1_baseline_counter") or {}
+    fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
+    return _layer_eligible_from_signals(
+        layer,
+        now_paris_t,
+        has_research=bool(ctx.get("has_research_items", False)),
+        has_decisions=bool(ctx.get("has_inbox_decisions", False)),
+        has_mgmt_notes=bool(ctx.get("has_unconsumed_mgmt_notes", False)),
+        l1_fired=_layer_fired_today(ctx, 1),
+        l2_fired=_layer_fired_today(ctx, 2),
+        l3_fired=_layer_fired_today(ctx, 3),
+        counts=counts,
+        baseline=baseline,
+        fire_after_rounds=fire_after_rounds,
+    )
 
 
 def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
