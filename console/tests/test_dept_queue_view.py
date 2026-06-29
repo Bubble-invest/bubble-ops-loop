@@ -141,6 +141,89 @@ def test_list_layer_queues_title_derived(tmp_path, monkeypatch):
     assert "Bubble" in gate["title"] or "social_post" in gate["title"]
 
 
+def test_ideas_scout_titles_are_distinct(tmp_path, monkeypatch):
+    """#391: two ideas_scout items (no kind/title, schema source+ticker_or_theme)
+    must render DISTINCT titles, not both collapse to the bare 'ideas_scout'."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    # Two scout items with the ideas_scout schema (no `kind`, no `title`).
+    (repo / "queues" / "research" / "scout-lseg.yaml").write_text(
+        yaml.safe_dump({"source": "ideas_scout", "ticker_or_theme": "LSEG",
+                        "reason": "AI-data toll-road de-rate.", "priority": "high"}),
+        encoding="utf-8",
+    )
+    (repo / "queues" / "research" / "scout-tdg.yaml").write_text(
+        yaml.safe_dump({"source": "ideas_scout", "ticker_or_theme": "TDG",
+                        "reason": "Aerospace aftermarket duopoly.", "priority": "high"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    titles = [i["title"] for i in list_layer_queues("qtest")[1]]
+
+    assert "ideas_scout: LSEG" in titles, f"expected distinct LSEG title, got {titles}"
+    assert "ideas_scout: TDG" in titles, f"expected distinct TDG title, got {titles}"
+    # And crucially they are NOT identical bare 'ideas_scout' duplicates.
+    assert titles.count("ideas_scout") == 0, "scout items must not collapse to bare label"
+
+
+def test_stale_terminal_item_filtered(tmp_path, monkeypatch):
+    """#391: an already-acted record (executed_trade) older than the stale window
+    must NOT show as pending; a fresh one (today) still shows."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "management").mkdir(parents=True, exist_ok=True)
+    (repo / "queues" / "management" / "old-trade.yaml").write_text(
+        yaml.safe_dump({"id": "old-trade", "kind": "executed_trade",
+                        "created_at": "2026-06-20T14:00:00Z",
+                        "summary": "bought 10 ACWI"}),
+        encoding="utf-8",
+    )
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    (repo / "queues" / "management" / "fresh-note.yaml").write_text(
+        yaml.safe_dump({"id": "fresh-note", "kind": "management_note",
+                        "created_at": fresh, "summary": "rebalance check today"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    l2_ids = [i["id"] for i in list_layer_queues("qtest")[2]]
+
+    assert "old-trade" not in l2_ids, "stale executed_trade must be filtered from pending"
+    assert "fresh-note" in l2_ids, "a fresh non-terminal item must still show"
+
+
+def test_fresh_terminal_item_not_filtered(tmp_path, monkeypatch):
+    """A terminal-kind item created TODAY must still show (only OLD ones drop)."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "management").mkdir(parents=True, exist_ok=True)
+    from datetime import datetime, timezone
+    (repo / "queues" / "management" / "today-trade.yaml").write_text(
+        yaml.safe_dump({"id": "today-trade", "kind": "executed_trade",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "summary": "executed today"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    l2_ids = [i["id"] for i in list_layer_queues("qtest")[2]]
+    assert "today-trade" in l2_ids, "a same-day terminal item must NOT be filtered"
+
+
 def test_list_layer_queues_empty_for_unknown_slug(tmp_path, monkeypatch):
     """list_layer_queues returns empty dicts for a slug with no repo."""
     monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))

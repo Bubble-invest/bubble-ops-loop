@@ -26,13 +26,19 @@
     <div class="desk-folder">
       <div class="desk-folder-layer">Couche {{ l }}</div>
 
-      {# Mission names #}
-      {% for m in _ms %}
-        <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
-      {% endfor %}
+      {# Recurring missions — the standing schedule for this layer, NOT pending
+         work. Labelled (when shown alongside queue items) so a mission is never
+         misread as a waiting to-do (#391). #}
+      {% if _ms %}
+        {% if _qi %}<div class="desk-section-label desk-section-label--missions">Missions récurrentes</div>{% endif %}
+        {% for m in _ms %}
+          <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
+        {% endfor %}
+      {% endif %}
 
-      {# Queue items waiting in this layer (#376) #}
+      {# Queue items actually WAITING to be treated in this layer (#376) #}
       {% if _qi %}
+        {% if _ms %}<div class="desk-section-label desk-section-label--queue">En attente de traitement</div>{% endif %}
         <div class="desk-queue-items">
           {% for item in _qi %}
             <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">

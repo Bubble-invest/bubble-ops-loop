@@ -1374,39 +1374,118 @@ _QUEUE_LAYER_MAP: List[tuple] = [
     ("queues/gates",             0, True),   # layer 0 = cross-cutting gates
 ]
 
+# Queue items of these kinds are RECORDS of work already done (a trade that
+# executed, a wrap-up already drafted/posted), not pending to-dos. Agents are
+# meant to move them to `.processed/` once acted, but when they forget, the
+# left column shows day-old records as "À traiter" (#391). As a console-side
+# guard we treat such items as drained once they're older than the window
+# below. (The durable fix is agent loop-hygiene: move acted items to
+# .processed/ — tracked separately.)
+_QUEUE_TERMINAL_KINDS: set = {
+    "executed_trade", "market_wrapup_draft", "trade_receipt",
+    "posted", "published", "completed",
+}
+_QUEUE_TERMINAL_STALE_DAYS: int = 1
+
+
+def _is_stale_terminal_item(kind: str, created_at: str, now=None) -> bool:
+    """True if an item is an already-acted RECORD older than the stale window.
+
+    Only terminal kinds (a trade that executed, a wrap-up already drafted) are
+    eligible — a normal pending item is never filtered by age. Items with an
+    unparseable/absent created_at are kept (fail-open: never hide real work).
+    """
+    if kind not in _QUEUE_TERMINAL_KINDS:
+        return False
+    if not created_at:
+        return False
+    from datetime import datetime, timezone, timedelta
+    raw = created_at.strip()
+    dt = None
+    # Try full ISO-8601 (with/without TZ), then date-only.
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(raw[:10], "%Y-%m-%d")
+        except ValueError:
+            return False  # unparseable → keep (fail-open)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    return (ref - dt) > timedelta(days=_QUEUE_TERMINAL_STALE_DAYS)
+
 _QUEUE_TITLE_FIELDS: List[str] = [
     "question_text", "post_body", "title", "subject", "summary",
     "body", "description", "content", "text",
 ]
 
+# A short "subject" field names WHICH thing an item is about (a ticker, a theme,
+# a name). When present, it makes two items of the same kind distinguishable
+# (e.g. two `ideas_scout` items → "ideas_scout: LSEG" vs "ideas_scout: TDG")
+# instead of both collapsing to the bare kind/source label (#391).
+_QUEUE_SUBJECT_FIELDS: List[str] = [
+    "ticker_or_theme", "ticker", "theme", "symbol", "name", "topic",
+]
+
+# Some queue schemas carry no `kind` field but name their producing mission in a
+# `source` field (e.g. ideas_scout items use `source: ideas_scout`). Treat that
+# as the label when `kind` is absent, so the prefix is meaningful (#391).
+_QUEUE_KIND_FALLBACK_FIELDS: List[str] = ["source", "mission", "producer"]
+
 
 def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) -> str:
-    """Derive a human-readable title from a queue item YAML dict.
+    """Derive a human-readable, DISTINCT title from a queue item YAML dict.
 
     Strategy (in order):
-      1. Use `title` or any known text-content field (truncated).
-      2. Fall back to `kind` + first non-empty string value found.
-      3. Last resort: just the `kind`.
+      1. Determine a label: `kind`, else a `source`/`mission` field, else "item".
+      2. Use `title`/any known text-content field as the excerpt (truncated).
+      3. Else use a `subject` field (ticker/theme/name) — this keeps two items of
+         the same kind distinguishable (#391: two ideas_scout → LSEG vs TDG).
+      4. Else fall back to the first non-meta string value.
+      5. Last resort: just the label.
+
+    The label always prefixes the excerpt so the operator sees "<kind>: <what>".
     """
+    # 1) Label — kind wins; else a source/mission field; else generic.
+    label = kind.strip() if kind and kind.strip() else ""
+    if not label:
+        for f in _QUEUE_KIND_FALLBACK_FIELDS:
+            v = doc.get(f)
+            if v and isinstance(v, str) and v.strip():
+                label = v.strip()
+                break
+    if not label:
+        label = "item"
+
+    def _fmt(excerpt: str) -> str:
+        excerpt = excerpt.strip().replace("\n", " ")
+        full = f"{label}: {excerpt}"
+        return full[:max_len] + ("…" if len(full) > max_len else "")
+
+    # 2) Rich text-content field.
     for field in _QUEUE_TITLE_FIELDS:
         val = doc.get(field)
         if val and isinstance(val, str) and val.strip():
-            excerpt = val.strip().replace("\n", " ")
-            label = kind if kind else "item"
-            full = f"{label}: {excerpt}"
-            return full[:max_len] + ("…" if len(full) > max_len else "")
+            return _fmt(val)
 
-    # Fallback: first non-id, non-kind string value
-    skip = {"id", "kind", "created_at", "updated_at", "slug"}
+    # 3) Subject field (ticker/theme/name) — makes same-kind items distinct.
+    for field in _QUEUE_SUBJECT_FIELDS:
+        val = doc.get(field)
+        if val and isinstance(val, str) and val.strip():
+            return _fmt(val)
+
+    # 4) Fallback: first non-meta string value (but never the label fields
+    #    themselves — otherwise the excerpt just repeats the label).
+    skip = {"id", "kind", "created_at", "updated_at", "slug"} | set(_QUEUE_KIND_FALLBACK_FIELDS)
     for k, v in doc.items():
         if k in skip:
             continue
         if isinstance(v, str) and v.strip():
-            excerpt = v.strip().replace("\n", " ")
-            full = f"{kind}: {excerpt}" if kind else excerpt
-            return full[:max_len] + ("…" if len(full) > max_len else "")
+            return _fmt(v)
 
-    return kind if kind else "item"
+    # 5) Last resort: just the label.
+    return label
 
 
 def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
@@ -1473,6 +1552,13 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
             item_id = str(doc.get("id") or p.stem)
             kind = str(doc.get("kind") or "")
             created_at = str(doc.get("created_at") or "")
+
+            # Skip already-acted records (executed trades, posted wrap-ups) that
+            # an agent forgot to move to .processed/ — they are not pending work
+            # and otherwise clutter "À traiter" with day-old artifacts (#391).
+            if _is_stale_terminal_item(kind, created_at):
+                continue
+
             title = _derive_queue_item_title(doc, kind)
 
             # For gate queue items: pending_human=True when the item is
