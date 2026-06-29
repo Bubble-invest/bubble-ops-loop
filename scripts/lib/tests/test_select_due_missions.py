@@ -1538,7 +1538,7 @@ def test_375_overnight_approval_not_ledgered_before_window(tmp_path: Path):
     must NOT be stamped into the dispatched-items ledger.
 
     Pre-fix, the materializer would stamp the trigger id on every tick where it
-    was present, even at 00:30 Paris when L3 is ineligible. This test asserts
+    was present, even at 02:30 Paris when L3 is ineligible. This test asserts
     that after the fix, the ledger remains EMPTY after an overnight tick.
 
     This test FAILS on the pre-fix code (materializer stamped unconditionally)
@@ -1550,7 +1550,7 @@ def test_375_overnight_approval_not_ledgered_before_window(tmp_path: Path):
     _write_dept_yaml(repo, [pub])
 
     # Approval arrives at 00:19 Paris (00:30 UTC) — well before L3's 07:00 floor.
-    # (OVERNIGHT_375 = 2026-06-22 22:30 UTC = 00:30 Paris 2026-06-23)
+    # (OVERNIGHT_375 = 2026-06-23 00:30 UTC = 02:30 Paris 2026-06-23)
     approval_ts = OVERNIGHT_375
     decisions_dir = repo / "inbox" / "decisions"
     decisions_dir.mkdir(parents=True, exist_ok=True)
@@ -1564,7 +1564,7 @@ def test_375_overnight_approval_not_ledgered_before_window(tmp_path: Path):
         encoding="utf-8",
     )
 
-    # Simulate an overnight heartbeat tick at 00:30 Paris.
+    # Simulate an overnight heartbeat tick at 02:30 Paris.
     build_dispatch_ctx(repo, now_utc=OVERNIGHT_375)  # materializer runs here
 
     # Assert: the ledger must be EMPTY — trigger id must NOT have been stamped.
@@ -1587,7 +1587,7 @@ def test_375_approval_dispatched_once_window_opens(tmp_path: Path):
     the approval is correctly dispatched when L3's time floor is reached.
 
     Full scenario:
-      tick 1 (00:30 Paris): approval arrives; materializer runs; ledger must stay EMPTY.
+      tick 1 (02:30 Paris): approval arrives; materializer runs; ledger must stay EMPTY.
       tick 2 (16:30 Paris): L3 window open; select_due_missions must return the mission.
       tick 3 (17:00 Paris): mission still listed as pending (simulating no-archive);
                             must NOT re-dispatch (ledger now has the id from tick 2).
@@ -1613,7 +1613,7 @@ def test_375_approval_dispatched_once_window_opens(tmp_path: Path):
         encoding="utf-8",
     )
 
-    # ── TICK 1 (00:30 Paris) — overnight heartbeat. Layer ineligible.
+    # ── TICK 1 (02:30 Paris) — overnight heartbeat. Layer ineligible.
     build_dispatch_ctx(repo, now_utc=OVERNIGHT_375)
 
     # ── TICK 2 (16:30 Paris = AFTER_L3). L3 window open; mission must dispatch.

@@ -785,7 +785,7 @@ def materialize_due_missions_for_tick(
         # FIX #375 — layer eligibility gate: only stamp the ledger when the
         # mission's layer is eligible at this tick (its Paris-local time floor
         # is reached). Stamping the ledger on a tick where the layer is
-        # ineligible (e.g. an approval arriving overnight before L3's 10:00
+        # ineligible (e.g. an approval arriving overnight before L3's 16:00
         # floor) permanently blocks the trigger from ever being dispatched —
         # subsequent ticks see the id as already-dispatched and skip the
         # mission even after the layer becomes eligible (silent data loss).
