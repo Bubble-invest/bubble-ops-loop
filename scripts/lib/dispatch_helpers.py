@@ -53,6 +53,25 @@ _WEEKDAY_NAMES = {
 
 
 # ---------------------------------------------------------------------------
+# Tolerant ISO-8601 parser
+# ---------------------------------------------------------------------------
+
+def _parse_iso(s: str) -> datetime:
+    """Parse an ISO-8601 timestamp, tolerating a trailing 'Z' (UTC) which
+    ``datetime.fromisoformat`` rejects before Python 3.11.
+
+    On Python 3.9 and 3.10, ``fromisoformat('2026-06-26T08:03:39Z')`` raises
+    ``ValueError``.  This helper normalises the 'Z' to '+00:00' before
+    parsing so agent-written timestamps are accepted on all supported Python
+    versions.  For non-'Z' input the behaviour is identical to the bare call.
+    """
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s)
+
+
+# ---------------------------------------------------------------------------
 # .last-run file I/O
 # ---------------------------------------------------------------------------
 
@@ -68,7 +87,7 @@ def read_last_run(layer_dir: Path) -> datetime | None:
     body = f.read_text(encoding="utf-8").strip()
     if not body:
         return None
-    return datetime.fromisoformat(body)
+    return _parse_iso(body)
 
 
 def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
@@ -124,7 +143,7 @@ def read_last_mgmt_scan(repo_dir: "Path | str") -> "datetime | None":
     if not body:
         return None
     try:
-        return datetime.fromisoformat(body)
+        return _parse_iso(body)
     except ValueError:
         return None
 
@@ -243,7 +262,7 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
         if raw_ts is None:
             return True  # no timestamp → treat as unconsumed
         try:
-            note_ts = datetime.fromisoformat(str(raw_ts))
+            note_ts = _parse_iso(str(raw_ts))
             if note_ts.tzinfo is None:
                 note_ts = note_ts.replace(tzinfo=timezone.utc)
             if note_ts > since:
@@ -656,7 +675,7 @@ def _dispatched_trigger_ids(today_dir: Path, mission_id: str, *, before: datetim
             out.add(p.name)
             continue
         try:
-            ts = datetime.fromisoformat(body)
+            ts = _parse_iso(body)
         except ValueError:
             out.add(p.name)
             continue
@@ -1848,7 +1867,7 @@ def dept_liveness(
         )
         if res.returncode == 0 and res.stdout.strip():
             last_commit_iso = res.stdout.strip()
-            commit_dt = datetime.fromisoformat(last_commit_iso)
+            commit_dt = _parse_iso(last_commit_iso)
             if commit_dt.tzinfo is None:
                 commit_dt = commit_dt.replace(tzinfo=timezone.utc)
             commit_age_hours = (now_utc - commit_dt).total_seconds() / 3600.0
@@ -1916,7 +1935,7 @@ def validate_layer_output(
 
         if kind == "iso_timestamp":
             try:
-                datetime.fromisoformat(body.strip())
+                _parse_iso(body.strip())
             except ValueError:
                 malformed.append((name, "not a valid ISO timestamp"))
 
