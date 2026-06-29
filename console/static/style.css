@@ -2705,6 +2705,10 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 }
 .desk-folder { margin: 0 0 8px; }
 .desk-folder-layer { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--body-muted); margin-bottom: 2px; }
+/* Sub-section labels separating recurring missions from waiting queue items
+   inside one Couche (#391) — quieter than the layer header. */
+.desk-section-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--body-muted); opacity: .75; margin: 5px 0 1px; }
+.desk-section-label--queue { margin-top: 6px; }
 .desk-folder-item {
   font-size: 12.5px; color: var(--body-soft);
   padding: 3px 8px; margin: 2px 0; background: var(--paper);
