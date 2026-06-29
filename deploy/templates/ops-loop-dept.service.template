@@ -152,6 +152,12 @@ ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG
 # this live session as if from {{OPERATOR}}) — self-heals after a plugin update. Fail-open.
 ExecStartPre=+/usr/local/bin/apply-inject-patch.sh
 
+# Guard against a stale ~/.claude/.credentials.json SHADOWING the env CLAUDE_CODE_OAUTH_TOKEN
+# (board #294 / incident 2026-06-25: the shared on-disk creds expired and 401'd all 5 depts,
+# because claude prefers the on-disk file over the env token). Moves a shadowing file aside
+# ONLY when the env token exists to fall back to. Reversible, fail-open, never echoes secrets.
+ExecStartPre=+/usr/local/bin/guard-stale-credentials.sh ${ENV_FILE}
+
 EnvironmentFile=-${ENV_FILE}
 
 # Use script(1) for pty allocation.
