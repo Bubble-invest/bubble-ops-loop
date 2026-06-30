@@ -826,6 +826,61 @@ def materialize_due_missions_for_tick(
     # _mission_layer_eligible; per-mission idempotence now applies uniformly to
     # ALL layers. Note: queue-item creation (materialize_due_missions below) still
     # skips L4 — only the per-mission .last-run stamp is extended here.
+    #
+    # FIX #432 (DEFECT B) shared signal computation: compute the highest-priority
+    # eligible layer ONCE for this tick, the same way the EVENT branch already
+    # does (and the same way select_due_missions decides) — reused by BOTH the
+    # event branch below AND the daily (non-event) pre-stamp branch, so the two
+    # branches can never diverge on what "this tick's eligible layer" means.
+    _mat_has_decisions = (
+        _queue_has_items(repo_dir / "inbox" / "decisions")
+        or _queue_has_items(repo_dir / "queues" / "inbox" / "decisions")
+    )
+    _mat_has_research = _queue_has_items(
+        repo_dir / "queues" / "research",
+        drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
+    )
+    # Layer fired-today signals come from today_dir markers. Read round_counter
+    # FIRST so _mat_layer_fired can mirror _layer_fired_today's fallback
+    # (.last-run OR round_counter>0 OR FIX #432: any per-mission marker for a
+    # layer-N mission today). Without the fallback the materializer's
+    # l{1,2,3}_fired can diverge from select_due_missions' (via ctx
+    # _layer_fired_today) in the state where round_counter[n]>0 but .last-run
+    # is absent (external cleanup or a subagent that incremented the counter
+    # without the marker), or where a layer ran entirely via its per-mission
+    # path (#261, no layer-level marker written at all) — either divergence
+    # breaks the highest-eligible-layer choice → silent #375/#432-class loss.
+    _mat_counts = read_round_counter(today_dir)
+    def _mat_layer_fired(n: int) -> bool:
+        if read_last_run(today_dir / str(n)) is not None:
+            return True
+        if int(_mat_counts.get(str(n), 0)) > 0:
+            return True
+        return _any_mission_fired_today_for_layer(repo_dir, today_dir, n, now_utc=now_utc)
+    _mat_l1_fired = _mat_layer_fired(1)
+    _mat_l2_fired = _mat_layer_fired(2)
+    _mat_l3_fired = _mat_layer_fired(3)
+    # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
+    _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
+    _mat_now_paris_t = _to_paris(now_utc).time()
+    _mat_signals = dict(
+        has_research=_mat_has_research,
+        has_decisions=_mat_has_decisions,
+        has_mgmt_notes=_mat_has_mgmt_notes,
+        l1_fired=_mat_l1_fired,
+        l2_fired=_mat_l2_fired,
+        l3_fired=_mat_l3_fired,
+        counts=_mat_counts,
+        baseline=read_l1_baseline(today_dir),
+        fire_after_rounds=fire_after_rounds,
+    )
+    # The highest-priority eligible layer this tick — the one select_due_missions
+    # will actually dispatch. Both the event branch and the #432 daily pre-stamp
+    # gate below stamp a mission's marker ONLY when its own layer IS this value.
+    highest_eligible = _highest_eligible_layer_from_signals(
+        _mat_now_paris_t, **_mat_signals
+    )
+
     for m in missions:
         layer_n = int(m.get("layer", 0))
         if layer_n not in (1, 2, 3, 4):
@@ -870,52 +925,9 @@ def materialize_due_missions_for_tick(
         # diverged if the threshold ever changed. Threading it through ensures the
         # materializer and selector always agree on the L1 cycle gate.
         if m.get("cadence") == "event":
-            now_paris_t = _to_paris(now_utc).time()
-            # Compute the raw eligibility signals the materializer needs.
-            # These are the same signals build_dispatch_ctx populates into ctx,
-            # computed here before ctx exists.
-            _mat_has_decisions = (
-                _queue_has_items(repo_dir / "inbox" / "decisions")
-                or _queue_has_items(repo_dir / "queues" / "inbox" / "decisions")
-            )
-            _mat_has_research = _queue_has_items(
-                repo_dir / "queues" / "research",
-                drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
-            )
-            # Layer fired-today signals come from today_dir markers.
-            # Read round_counter FIRST so _mat_layer_fired can mirror
-            # _layer_fired_today's fallback (.last-run OR round_counter>0).
-            # Without the fallback the materializer's l{1,2,3}_fired can diverge
-            # from select_due_missions' (via ctx _layer_fired_today) in the state
-            # where round_counter[n]>0 but .last-run is absent (external cleanup
-            # or a subagent that incremented the counter without the marker) —
-            # which breaks the highest-eligible-layer choice → silent #375-class loss.
-            _mat_counts = read_round_counter(today_dir)
-            def _mat_layer_fired(n: int) -> bool:
-                if read_last_run(today_dir / str(n)) is not None:
-                    return True
-                return int(_mat_counts.get(str(n), 0)) > 0
-            _mat_l1_fired = _mat_layer_fired(1)
-            _mat_l2_fired = _mat_layer_fired(2)
-            _mat_l3_fired = _mat_layer_fired(3)
-            # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
-            _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
-            _mat_signals = dict(
-                has_research=_mat_has_research,
-                has_decisions=_mat_has_decisions,
-                has_mgmt_notes=_mat_has_mgmt_notes,
-                l1_fired=_mat_l1_fired,
-                l2_fired=_mat_l2_fired,
-                l3_fired=_mat_l3_fired,
-                counts=_mat_counts,
-                baseline=read_l1_baseline(today_dir),
-                fire_after_rounds=fire_after_rounds,
-            )
-            # Compute the highest-priority eligible layer — the one select_due_missions
-            # will actually dispatch. Stamp only when this mission's layer IS that layer.
-            highest_eligible = _highest_eligible_layer_from_signals(
-                now_paris_t, **_mat_signals
-            )
+            # highest_eligible was computed ONCE above (shared with the daily
+            # branch below) using the exact same signal extraction. Stamp only
+            # when this mission's layer IS that layer.
             if highest_eligible == layer_n:
                 pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
                 if pending:
@@ -930,7 +942,20 @@ def materialize_due_missions_for_tick(
             # the real run would never be dispatched. Shim-resolved missions (no
             # dedicated prompt) still get the stamp — it's their only per-mission
             # idempotence source (anti-fire-spin #261/#277).
-            if not _mission_authors_own_marker(repo_dir, m):
+            #
+            # FIX #432 (DEFECT B) — ADDITIONAL gate, mirroring the EVENT branch's
+            # #375-v3 fix: only stamp when this mission's layer IS the
+            # highest-eligible layer this tick (i.e. it is actually being
+            # dispatched now). Without this gate, a daily mission that is
+            # is_mission_due=True but whose layer is NOT the highest-eligible
+            # phase this tick gets stamped-as-done WITHOUT being dispatched —
+            # silently killed for the rest of the day (LIVE evidence 2026-06-30:
+            # synthesizing_content_feedback, L4 shim, stamped at 19:33 with zero
+            # work because L1 — not L4 — was the highest-eligible layer that
+            # tick). A mission whose layer IS eligible is being dispatched now,
+            # so stamping it is the correct idempotence (anti-fire-spin
+            # #261/#277) — it must not be re-materialized next tick.
+            if not _mission_authors_own_marker(repo_dir, m) and layer_n == highest_eligible:
                 write_last_run(today_dir / "missions" / mid, when=now_utc)
 
     due = materialize_due_missions(
@@ -1047,13 +1072,24 @@ def _layer_fired_today(ctx: "dict[str, Any]", layer: int) -> bool:
     """True if layer N has fired at least once today.
 
     Uses the per-layer .last-run marker first (set the instant a layer starts),
-    falling back to round_counter (incremented when a layer completes a round).
+    falling back to round_counter (incremented when a layer completes a round),
+    falling back to FIX #432 (DEFECT A): any per-mission .last-run marker for
+    a mission belonging to this layer stamped today (`layer_N_mission_fired_today`
+    in ctx, populated by build_dispatch_ctx via _any_mission_fired_today_for_layer).
+    This third fallback covers layers that ran ENTIRELY via the per-mission
+    dispatch path (#261), which never writes the layer-level marker — without
+    it, a layer that plainly ran is reported as not-fired all day, e.g. the L4
+    debrief gate (`l1_fired AND ...`) never opens. ADDITIVE only: does not
+    change behaviour when the layer-marker or round_counter paths already
+    report True.
     """
     last = ctx.get(f"layer_{layer}_last_run_today")
     if last is not None:
         return True
     counts = ctx.get("round_counter") or {}
-    return int(counts.get(str(layer), 0)) > 0
+    if int(counts.get(str(layer), 0)) > 0:
+        return True
+    return bool(ctx.get(f"layer_{layer}_mission_fired_today", False))
 
 
 def _time_reached(now_paris_t: "Any", layer: int) -> bool:
@@ -1175,6 +1211,70 @@ def _drainable_kinds_for_queue(repo_dir: Path, queue_rel_path: str) -> "set[str]
     return kinds
 
 
+def _any_mission_fired_today_for_layer(
+    repo_dir: "Path | str", today_dir: "Path | str", layer: int,
+    *, now_utc: "datetime | None" = None,
+) -> bool:
+    """True if ANY recurring mission belonging to `layer` has a per-mission
+    `.last-run` marker stamped today (`outputs/<today>/missions/<id>/.last-run`)
+    from a PRIOR tick (strictly before `now_utc`, when given).
+
+    FIX #432 (DEFECT A): after the per-mission dispatch migration (#261), a
+    layer can run ENTIRELY via its per-mission path — e.g. content's
+    `content_daily_rotation` (a shim-resolved L1 mission, no dedicated
+    PROMPT.md) stamps `outputs/<today>/missions/content_daily_rotation/.last-run`
+    when it runs, but the LAYER-level marker `outputs/<today>/1/.last-run` is
+    only written by the loop runner / a layer's STEP 0 — which the per-mission
+    path bypasses entirely. `dispatch_helpers.py` itself never writes a
+    layer-level marker (confirmed: only `missions/<id>/.last-run` writes
+    exist), so this is a FALLBACK signal, not a duplicate of an existing write.
+
+    LIVE evidence (2026-06-30): `outputs/2026-06-30/1/.last-run` MISSING while
+    `outputs/2026-06-30/missions/content_daily_rotation/.last-run` = 16:22:35.
+    Without this fallback, `_layer_fired_today(ctx, 1)` reports False all day
+    -> the L4 gate (`l1_fired AND ...`) never opens -> L4 silently never fires.
+
+    Same-tick exclusion (mirrors `_mission_last_fired`'s tick-1-vs-tick-2
+    rule): `materialize_due_missions_for_tick` runs at the TOP of
+    `build_dispatch_ctx`, in the SAME tick as the dispatch decision. If it
+    just stamped a layer-N mission's marker at `now_utc` THIS tick, that must
+    NOT make `_layer_fired_today(ctx, N)` report True for THIS tick's own
+    decision — the layer hasn't actually run yet, it's only ABOUT to be
+    dispatched. Without this exclusion, a fresh L1 mission's same-tick stamp
+    would make `_mission_layer_eligible(ctx, 1)` see "L1 already fired" on the
+    very tick it became due, starving it permanently (self-cannibalizing
+    same-tick loop). Only markers strictly BEFORE `now_utc` (a real prior
+    tick) count as "fired today" for this fallback. When `now_utc` is not
+    given, no exclusion is applied (any marker counts) — callers that build
+    ctx via `build_dispatch_ctx` always pass `now_utc`.
+
+    Returns False if dept.yaml is absent/unreadable (fail toward the
+    pre-existing behaviour — no new fallback signal, layer-marker /
+    round_counter paths still apply).
+    """
+    dept_yaml = Path(repo_dir) / "dept.yaml"
+    if not dept_yaml.is_file():
+        return False
+    try:
+        dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    today_dir = Path(today_dir)
+    for m in dept.get("recurring_missions") or []:
+        if int(m.get("layer", 0)) != layer:
+            continue
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        stamped = read_last_run(today_dir / "missions" / mid)
+        if stamped is None:
+            continue
+        if now_utc is not None and stamped >= now_utc:
+            continue
+        return True
+    return False
+
+
 def build_dispatch_ctx(
     repo_dir: "Path | str" = ".",
     *,
@@ -1265,6 +1365,16 @@ def build_dispatch_ctx(
         "layer_2_last_run_today": read_last_run(today_dir / "2"),
         "layer_3_last_run_today": read_last_run(today_dir / "3"),
         "layer_4_last_run_today": read_last_run(today_dir / "4"),
+        # FIX #432 (DEFECT A): fallback signal for _layer_fired_today — True
+        # if ANY recurring mission belonging to layer N has a per-mission
+        # .last-run marker stamped today, even when the LAYER-level marker
+        # (outputs/<today>/N/.last-run) was never written (the per-mission
+        # dispatch path bypasses it entirely). See
+        # _any_mission_fired_today_for_layer's docstring for the live evidence.
+        "layer_1_mission_fired_today": _any_mission_fired_today_for_layer(repo, today_dir, 1, now_utc=now_utc),
+        "layer_2_mission_fired_today": _any_mission_fired_today_for_layer(repo, today_dir, 2, now_utc=now_utc),
+        "layer_3_mission_fired_today": _any_mission_fired_today_for_layer(repo, today_dir, 3, now_utc=now_utc),
+        "layer_4_mission_fired_today": _any_mission_fired_today_for_layer(repo, today_dir, 4, now_utc=now_utc),
         "round_counter": read_round_counter(today_dir),
         "layer_1_baseline_counter": read_l1_baseline(today_dir),
         "fire_after_rounds": fire_after_rounds,
