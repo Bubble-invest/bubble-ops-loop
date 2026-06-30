@@ -28,7 +28,11 @@
 #   type:<t>      — mapped from the type= arg
 #   status:triage — default routing label (approval/decision types also add needs:human instead)
 #
-# Idempotency: if an open issue already contains <!-- emit-task: <task> -->, no duplicate is created.
+# Idempotency: if an open issue already contains <!-- emit-key: <task>::<title-slug> -->,
+# no duplicate is created. The dedup key is task+title (not task alone) so a
+# multi-finding cron can surface every distinct finding while a re-emit of the
+# exact same finding still collapses to one card. The legacy <!-- emit-task: <task> -->
+# marker is still emitted (drain_kanban_queue.sh + tooling grep for it).
 #
 # Exit 0 always — emission must never fail the cron.
 
@@ -79,6 +83,37 @@ if [ -z "$TASK" ] || [ -z "$TITLE" ]; then
 fi
 
 BOARD_REPO="Bubble-invest/bubble-ops-board"
+
+# ── Dedup key derivation ──────────────────────────────────────────────────────
+# The idempotency key is task + a deterministic slug of the title, so two
+# DIFFERENT findings from the SAME task (e.g. a multi-finding audit cron) each
+# get their own card, while re-emitting the EXACT same finding still dedups.
+#
+# Slug rules (must match the marker written into the issue body):
+#   - derive from the title TRUNCATED to 200 chars (same truncation used for the
+#     issue title), so the key stays consistent with what's stored
+#   - lowercase
+#   - every run of non-[a-z0-9] characters (spaces, /, →, the ':' in CVE-2024:…,
+#     etc.) collapses to a single '-'
+#   - leading/trailing '-' trimmed
+# Output: "<task>::<slug>"
+_emit_key() {
+  TASK="$1" TITLE="$2" python3 -c "
+import os, re
+task = os.environ['TASK']
+title = os.environ['TITLE'][:200].lower()
+slug = re.sub(r'[^a-z0-9]+', '-', title).strip('-')
+print(task + '::' + slug)
+"
+}
+
+# Dry-run hook for tests: \`emit_kanban_item.sh --print-emit-key task=… title=…\`
+# prints the computed dedup key and exits, exercising the REAL slug logic above
+# without touching GitHub.
+if [ "${1:-}" = "--print-emit-key" ]; then
+  _emit_key "$TASK" "$TITLE"
+  exit 0
+fi
 
 # ── GitHub issue path ─────────────────────────────────────────────────────────
 
@@ -164,8 +199,13 @@ _gh_emit() {
     approval|decision)          routing_label="needs:human"  ;;
   esac
 
-  # Idempotency check: look for an open issue with the task marker
-  local marker="emit-task: ${TASK}"
+  # Idempotency check: look for an open issue carrying this exact task+title key.
+  # Dedup is on task+title (not task alone) so distinct findings from one
+  # multi-finding cron each surface their own card; a re-emit of the same
+  # finding still collapses to one.
+  local emit_key
+  emit_key=$(_emit_key "$TASK" "$TITLE")
+  local marker="emit-key: ${emit_key}"
   local existing
   existing=$(gh issue list \
     --repo "$BOARD_REPO" \
@@ -176,7 +216,7 @@ _gh_emit() {
     --jq '.[0].number' 2>/dev/null || true)
 
   if [ -n "$existing" ]; then
-    echo "emit_kanban_item: open issue #${existing} already exists for task=${TASK} — skipping duplicate" >&2
+    echo "emit_kanban_item: open issue #${existing} already exists for key=${emit_key} — skipping duplicate" >&2
     return 0
   fi
 
@@ -187,10 +227,12 @@ _gh_emit() {
   TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
   OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
   DIAGRAM_MERMAID="$DIAGRAM_MERMAID" VISUAL_ATTACHMENTS="$VISUAL_ATTACHMENTS" LINKS="$LINKS" \
+  EMIT_KEY="$emit_key" \
   python3 -c "
 import os
 
 task              = os.environ['TASK']
+emit_key          = os.environ['EMIT_KEY']
 title             = os.environ['TITLE'][:200]
 body              = os.environ['BODY']
 context_url       = os.environ['CONTEXT_URL']
@@ -285,7 +327,10 @@ if telegram_ref:
     lines.append('Telegram ref: ' + telegram_ref)
 
 lines.append('')
+# Legacy task marker — kept for drain_kanban_queue.sh + tooling that greps it.
 lines.append('<!-- emit-task: ' + task + ' -->')
+# Dedup key (task + title slug) — what the idempotency search now matches on.
+lines.append('<!-- emit-key: ' + emit_key + ' -->')
 
 print('\n'.join(lines))
 " > "$tmpfile"
