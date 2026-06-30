@@ -722,6 +722,42 @@ def _record_dispatched_trigger_ids(today_dir: Path, mission_id: str, ids: "set[s
         (led / safe).write_text(stamp, encoding="utf-8")
 
 
+def _mission_authors_own_marker(repo_dir: "Path | str", mission: dict) -> bool:
+    """True if this mission has a DEDICATED prompt (`missions/<id>/PROMPT.md`)
+    whose STEP 0 stamps the per-mission `.last-run` itself when it ACTUALLY runs.
+
+    WHY this gate exists (the weekly-newsletter silent-failure bug, #428):
+    The materializer used to stamp `outputs/<today>/missions/<id>/.last-run` as a
+    SIDE EFFECT of the dispatch DECISION — before the mission's subagent had run.
+    For a mission that hand-authors its real output in a subagent (every dedicated
+    `missions/<id>/PROMPT.md` — e.g. `newsletter_redaction`, `linkedin_sage_batch`,
+    the storytellers), the materializer produces NOTHING (gate cards are suppressed,
+    see the queues/gates guard below), so that premature stamp was a lie: it made
+    the idempotence guard believe the mission "already ran today / this week" → the
+    real run was NEVER dispatched. Silent failure every newsletter day (Tue/Fri) and
+    every sage day (Sun).
+
+    The fix: for missions that author their OWN marker at STEP 0, the materializer
+    must NOT pre-stamp `.last-run`. The marker is then written ONLY by the mission's
+    real run — so a missed slot (e.g. Mac asleep at 18:03) stays un-marked and the
+    mission remains DUE on the next tick (catch-up), instead of being silently
+    skipped for the week.
+
+    Missions WITHOUT a dedicated prompt (the legacy layer-shim primaries:
+    `content_daily_rotation`→L1, `research_draft`→L2, `synthesizing_content_feedback`
+    →L4) only stamp the LAYER marker at STEP 0, NOT the per-mission marker, and
+    `_mission_last_fired` does NOT fall back to the layer marker. For those, the
+    materializer MUST keep stamping the per-mission marker as the sole per-mission
+    idempotence source — removing it there would re-introduce the #261/#277
+    fire-spin. So the stamp is preserved for shim-resolved missions and removed only
+    for dedicated-prompt ones.
+    """
+    mid = mission.get("id", "")
+    if not mid:
+        return False
+    return (Path(repo_dir) / "missions" / mid / "PROMPT.md").exists()
+
+
 def materialize_due_missions_for_tick(
     repo_dir: Path,
     today_dir: Path,
@@ -887,7 +923,15 @@ def materialize_due_missions_for_tick(
                     write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
         if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
-            write_last_run(today_dir / "missions" / mid, when=now_utc)
+            # #428 — do NOT pre-stamp at DECISION time for missions that author
+            # their own per-mission marker at STEP 0 (dedicated prompt). Stamping
+            # here before the subagent runs is the weekly silent-failure bug:
+            # the idempotence guard would treat the mission as "already ran" and
+            # the real run would never be dispatched. Shim-resolved missions (no
+            # dedicated prompt) still get the stamp — it's their only per-mission
+            # idempotence source (anti-fire-spin #261/#277).
+            if not _mission_authors_own_marker(repo_dir, m):
+                write_last_run(today_dir / "missions" / mid, when=now_utc)
 
     due = materialize_due_missions(
         missions, now=now_utc, last_fired_per_mission=last_fired_per_mission
@@ -931,7 +975,10 @@ def materialize_due_missions_for_tick(
             # (heavy re-dispatch every tick → CC-core notification drop #61797).
             # See maya rick-requests: research-queue-poison-routing /
             # mission-lastrun-never-stamped (2026-06-16).
-            write_last_run(today_dir / "missions" / mid, when=now_utc)
+            # #428: skip for dedicated-prompt missions — their subagent stamps the
+            # per-mission marker at STEP 0 when it actually runs.
+            if not _mission_authors_own_marker(repo_dir, {"id": mid}):
+                write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
         # Guard (#302): never write a bare stub into queues/gates/ — gate cards
@@ -944,7 +991,13 @@ def materialize_due_missions_for_tick(
                 f"[materialize] suppressed bare gate stub for mission={mid!r}"
                 f" (output_queue={oq!r} — gates are hand-authored by agents)"
             )
-            write_last_run(today_dir / "missions" / mid, when=now_utc)
+            # #428: gate-card missions (newsletter, sage, …) hand-author their gate
+            # in a subagent and stamp the per-mission marker at STEP 0 themselves.
+            # Stamping here at decision time is the silent-failure bug — only the
+            # real run may write the marker. Shim-resolved gate missions (none on
+            # queues/gates today) would still be stamped to avoid fire-spin.
+            if not _mission_authors_own_marker(repo_dir, {"id": mid}):
+                write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
         # Create the queue item.
@@ -962,7 +1015,12 @@ def materialize_due_missions_for_tick(
             yaml.dump(queue_item, allow_unicode=True, default_flow_style=False)
         )
         # Stamp the mission .last-run so it is not re-materialized next tick.
-        write_last_run(today_dir / "missions" / mid, when=now_utc)
+        # #428: skip for dedicated-prompt missions — their subagent stamps the
+        # per-mission marker at STEP 0 when it actually runs (the created card is a
+        # stub the subagent fills). Idempotence for the materialized stub still
+        # holds via the mission_id dedup scan above.
+        if not _mission_authors_own_marker(repo_dir, {"id": mid}):
+            write_last_run(today_dir / "missions" / mid, when=now_utc)
         created.append(item)
 
     return created
@@ -1637,6 +1695,64 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     return marker
 
 
+def _due_scheduled_catchup_layer(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+) -> "int | None":
+    """Catch-up safeguard (#428, Fix 2) — anti "Mac asleep at the scheduled slot".
+
+    Returns the highest-priority layer that has a SCHEDULED producer mission whose
+    slot has already passed today and which has NOT actually run today (no real
+    per-mission STEP 0 marker), or None.
+
+    WHY: a producer mission like `newsletter_redaction` (weekly Tue/Fri 18:03) or
+    `linkedin_sage_batch` (weekly Sun 18:30) only gets dispatched when its LAYER is
+    the highest-priority eligible layer — and L2's eligibility is gated by
+    `has_research`. If the Mac was asleep at 18:03 and the research queue happens to
+    be empty when it wakes, the layer is not eligible and the scheduled slot is
+    silently lost for the WEEK. This safeguard lets a missed scheduled slot wake its
+    OWN layer so the mission becomes DUE on the next tick (catch-up).
+
+    Deliberately narrow / safe:
+      • ONLY producer missions (no `input_queue`) — consumers are correctly gated
+        by their input queue being non-empty.
+      • ONLY dedicated-prompt missions (`missions/<id>/PROMPT.md`) — these author
+        their own per-mission marker at STEP 0, so the marker is an honest "ran"
+        signal and the catch-up self-terminates once the real run stamps it. (This
+        also means it never triggers for the legacy layer-shim primaries, whose
+        behaviour is left exactly as before.)
+      • ONLY daily/weekly cadences with an explicit `time:` — `is_mission_due`
+        enforces "never before the scheduled time" and "once per day/week", so this
+        cannot fire early or double-fire.
+
+    Used by select_due_missions ONLY as a fallback when no layer is eligible the
+    normal way (an otherwise-heartbeat tick), so it can never out-rank or steal a
+    tick from a higher-priority layer that has real work.
+    """
+    now_utc: datetime = ctx.get("now_utc")
+    if now_utc is None or now_utc.tzinfo is None:
+        return None
+    repo_dir = ctx.get("_repo_dir")
+    if not repo_dir:
+        return None
+    for layer in _LAYER_PRIORITY:
+        for m in missions:
+            if int(m.get("layer", 0)) != layer:
+                continue
+            if m.get("input_queue"):
+                continue  # consumer — gated by its input queue, not catch-up
+            if m.get("cadence") not in ("daily", "weekly"):
+                continue
+            if not m.get("time"):
+                continue
+            if not _mission_authors_own_marker(repo_dir, m):
+                continue
+            last_fired = _mission_last_fired(ctx, m)
+            if is_mission_due(m, now=now_utc, last_fired=last_fired):
+                return layer
+    return None
+
+
 def select_due_missions(
     ctx: "dict[str, Any]",
     missions: "list[dict]",
@@ -1701,6 +1817,13 @@ def select_due_missions(
         fire_after_rounds=fire_after_rounds,
     )
 
+    if eligible_layer is None:
+        # Catch-up safeguard (#428, Fix 2): no layer is eligible the normal way
+        # (heartbeat tick), but a scheduled producer mission may have a slot that
+        # passed today and never ran (e.g. Mac asleep at 18:03). Let it wake its own
+        # layer so it is not silently skipped for the week. Only a fallback — it can
+        # never out-rank a higher-priority layer that has real work this tick.
+        eligible_layer = _due_scheduled_catchup_layer(ctx, missions)
     if eligible_layer is None:
         return []
 
