@@ -82,6 +82,29 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
         continue
     fi
 
+    # Clean tracked working-tree dirt before the ff-pull. This is a declared
+    # READ-ONLY mirror (the dept's authoritative copy lives on its own machine +
+    # GitHub), but the dept's runtime loop writes INTO the mirror — creating /
+    # deleting queues/gates/*.yaml + inbox/decisions/*.yaml. Those TRACKED
+    # modifications/deletions make `git pull --ff-only` abort ("local changes
+    # would be overwritten"), freezing the mirror behind origin/main. Restore the
+    # tree to HEAD with `git checkout -- .` so the ff-pull can proceed.
+    #
+    # CRITICAL: `git checkout -- .` restores only TRACKED files (deletions +
+    # modifications back to HEAD). It does NOT touch UNTRACKED files — any
+    # un-pushed dept output (?? inbox/decisions/...) is preserved, never deleted.
+    # We deliberately do NOT `git reset --hard`: that would also blow away local
+    # COMMITS, and committed divergence must still be caught by --ff-only below
+    # (logged + skipped), not silently discarded.
+    #
+    # porcelain lines NOT starting with "??" are tracked dirt (modified/deleted/
+    # staged); untracked files ("?? ...") are intentionally ignored here.
+    tracked_dirty="$(git -C "$dir" status --porcelain 2>/dev/null | grep -cv '^??' || true)"
+    if [[ "${tracked_dirty:-0}" -gt 0 ]]; then
+        git -C "$dir" checkout -- . 2>/dev/null || true
+        log "${slug}: discarded ${tracked_dirty} local tracked change(s) in read-only mirror before pull (untracked output preserved)"
+    fi
+
     # Read-only fast-forward mirror. --ff-only guarantees we NEVER create a merge
     # commit or diverge: if the local mirror somehow has its own commits the pull
     # aborts (logged + skipped) instead of silently merging.
