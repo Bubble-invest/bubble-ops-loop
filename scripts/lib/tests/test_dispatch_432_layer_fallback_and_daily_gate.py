@@ -50,6 +50,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
+    _any_mission_fired_today_for_layer,
     _layer_fired_today,
     build_dispatch_ctx,
     decide_dispatch,
@@ -125,6 +126,45 @@ def test_layer_fired_today_round_counter_path_unbroken():
         "round_counter": {"1": 2},
     }
     assert _layer_fired_today(ctx, 1) is True
+
+
+def test_any_mission_fired_excludes_same_tick_marker(tmp_path: Path):
+    """The same-tick exclusion is the RISKIEST line of the Defect-A fallback.
+
+    A per-mission marker stamped THIS tick (== now_utc — e.g. by the materializer
+    earlier in the SAME build_dispatch_ctx call) must NOT count as "layer fired
+    today", or a fresh L1 mission would report its own layer as already-fired the
+    same tick and starve dispatch (the self-cannibalization / fire-spin class,
+    #261/#277). Only a marker from a PRIOR tick (stamped < now_utc) may count.
+
+    This pins the behaviour directly in the #432 suite so it can't be silently
+    lost if the fire-spin tests in test_select_due_missions.py are refactored.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _make_dept_yaml(repo, [
+        {
+            "id": "content_daily_rotation",
+            "layer": 1,
+            "cadence": "daily",
+            "time": "07:00",
+            "output_queue": "queues/research/",
+            "creates": [],
+        }
+    ])
+    today_dir = _today_dir(repo)
+
+    # Marker stamped at EXACTLY now_utc (this tick) → must NOT count.
+    write_last_run(today_dir / "missions" / "content_daily_rotation", _DAY)
+    assert _any_mission_fired_today_for_layer(
+        repo, today_dir, 1, now_utc=_DAY
+    ) is False, "a marker stamped at exactly now_utc (this tick) must be excluded"
+
+    # Marker stamped a prior tick (strictly before now_utc) → must count.
+    write_last_run(today_dir / "missions" / "content_daily_rotation", _DAY - timedelta(minutes=5))
+    assert _any_mission_fired_today_for_layer(
+        repo, today_dir, 1, now_utc=_DAY
+    ) is True, "a marker from a prior tick (stamped < now_utc) must count as fired"
 
 
 def test_build_dispatch_ctx_injects_per_mission_fallback_for_layer(tmp_path: Path):
