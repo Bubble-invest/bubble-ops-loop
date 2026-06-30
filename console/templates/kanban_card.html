@@ -128,6 +128,19 @@
 </div>
 {% endif %}
 
+{# ── Decision actions (board #427) — only for Rick's own needs:human cards ──
+   Joris records approve/reject/defer here; it writes onto this board issue and
+   Rick reprend au prochain cycle. Dept-gate decisions stay on /gate/<slug>/… —
+   this path is exclusively for dept:rnd needs:human cards. #}
+{% if card.needs_human and card.owner == 'rnd' %}
+<div id="rnd-card-{{ card.id }}" class="gate-card" style="margin-bottom:24px;">
+  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">
+    Ta décision
+  </h3>
+  {% include "partials/rnd_card_actions.html" %}
+</div>
+{% endif %}
+
 <footer style="margin-top:24px; padding-top:12px; border-top:1px solid var(--line);">
   <a href="/kanban" class="discreet-link">← retour au kanban</a>
   {% if issue_url %}

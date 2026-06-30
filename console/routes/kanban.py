@@ -26,7 +26,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from console.services.github_reader import (
@@ -566,6 +566,123 @@ def _fetch_single_issue(number: int) -> tuple[dict | None, str | None]:
         return None, f"network error: {e}"
 
 
+# ── Board WRITE layer (card decisions — board #427) ──────────────────────────
+#
+# Joris can already approve/reject DEPT gate cards from the cockpit, but Rick's
+# own `needs:human` board cards (dept:rnd) had no action buttons — they were a
+# read-only "Décider →" link to GitHub. This write layer lets the cockpit record
+# the decision ON THE BOARD ISSUE itself (label + comment + close), reusing the
+# SAME short-lived board token + REST approach as the read path above.
+#
+# RECORD-ONLY v1: the decision is written to the issue; Rick picks it up on his
+# next loop tick. There is intentionally NO auto-trigger / dispatch here.
+#
+# Each REST verb is a tiny module-level function so the route stays readable AND
+# tests can monkeypatch the HTTP layer cleanly (no real GitHub calls in CI).
+
+# Actions the cockpit may record on an R&D decision card.
+CARD_DECISION_ACTIONS = {"approve", "reject", "defer"}
+
+# Dynamic labels we apply on a decision. Created idempotently (create-if-missing)
+# before use so the call "just works" even on a fresh board. (name, hex_color).
+_DECISION_LABELS = {
+    "decision:approved": "0e8a16",  # green
+    "decision:rejected": "d73a4a",  # red
+}
+
+
+def _board_write_headers(token: str) -> dict:
+    """Auth + content headers for a board WRITE call (same shape as the read path)."""
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "bubble-ops-console",
+        "Content-Type": "application/json",
+    }
+
+
+def _board_api(method: str, path: str, token: str, payload: dict | None = None):
+    """Issue one authenticated REST call against the board repo.
+
+    `path` is appended to https://api.github.com/repos/<BOARD_REPO>. Returns the
+    parsed JSON body (or None for empty/204). Raises urllib.error.HTTPError on a
+    non-2xx so the caller can decide whether it is fatal (the route catches it
+    and renders an error partial instead of 500-ing)."""
+    url = f"https://api.github.com/repos/{_BOARD_REPO}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url, data=data, headers=_board_write_headers(token), method=method
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def _ensure_board_label(name: str, color: str, token: str) -> None:
+    """Create a board label if it is missing (idempotent). A 422 from the create
+    means it already exists — that is success, not failure. Any other error is
+    swallowed (a missing label only matters when we then try to APPLY it, and the
+    apply call surfaces its own error to the route)."""
+    try:
+        _board_api("POST", "/labels", token,
+                   {"name": name, "color": color})
+    except urllib.error.HTTPError as exc:
+        if exc.code == 422:  # already exists
+            return
+        # Non-422: don't make label-creation fatal here; the subsequent
+        # add-label call is the real gate and will report if something's wrong.
+        return
+    except Exception:
+        return
+
+
+def _apply_card_decision(number: int, action: str, comment: str, token: str) -> None:
+    """Record `action` on board issue #number: label + comment (+ close, or
+    un-queue for defer). Reuses the board token. Raises urllib.error.HTTPError /
+    URLError on a failed REST call so the route can render an error partial.
+
+    - approve : +decision:approved, comment, close
+    - reject  : +decision:rejected, comment, close
+    - defer   : -needs:human, comment (stays OPEN — back to Rick's queue)
+    """
+    extra = (comment or "").strip()
+    suffix = ("\n\n" + extra) if extra else ""
+
+    if action == "approve":
+        _ensure_board_label("decision:approved", _DECISION_LABELS["decision:approved"], token)
+        _board_api("POST", f"/issues/{number}/labels", token,
+                   {"labels": ["decision:approved"]})
+        _board_api("POST", f"/issues/{number}/comments", token,
+                   {"body": "✅ Approved by Joris via cockpit" + suffix})
+        _board_api("PATCH", f"/issues/{number}", token, {"state": "closed"})
+    elif action == "reject":
+        _ensure_board_label("decision:rejected", _DECISION_LABELS["decision:rejected"], token)
+        _board_api("POST", f"/issues/{number}/labels", token,
+                   {"labels": ["decision:rejected"]})
+        _board_api("POST", f"/issues/{number}/comments", token,
+                   {"body": "❌ Rejected by Joris via cockpit" + suffix})
+        _board_api("PATCH", f"/issues/{number}", token, {"state": "closed"})
+    elif action == "defer":
+        # Remove the needs:human label so the card drops off Joris's queue and
+        # returns to Rick. DELETE a label that isn't present 404s — tolerate it
+        # (the desired end-state, label-absent, is already achieved).
+        try:
+            _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        _board_api("POST", f"/issues/{number}/comments", token,
+                   {"body": "⏳ Deferred by Joris — back to Rick's queue" + suffix})
+    else:  # pragma: no cover — route validates before calling
+        raise ValueError(f"unknown action: {action}")
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/kanban/attachment")
@@ -625,6 +742,81 @@ def kanban_card_detail(number: int, request: Request):
             "sections": sections,
             "comments": comments,
             "issue_url": issue.get("html_url") or issue.get("url") or "",
+        },
+    )
+
+
+def _decision_error_partial(request: Request, number: int, message: str,
+                            status_code: int):
+    """Render the decision partial in error mode (no 500 — the card stays put
+    with a readable message). Used for no-token (503) and GitHub API failures."""
+    resp = request.app.state.templates.TemplateResponse(
+        "partials/kanban_decision_ok.html",
+        {
+            "request": request,
+            "number": number,
+            "action": "",
+            "error": message,
+        },
+        status_code=status_code,
+    )
+    return resp
+
+
+@router.post("/kanban/card/{number}/decide", response_class=HTMLResponse)
+def kanban_card_decide(
+    number: int, request: Request,
+    action: str = Form(...), comment: str = Form(""),
+):
+    """Record Joris's decision on an R&D `needs:human` board card (board #427).
+
+    Mirrors the dept-gate decide pattern, but the target is the GitHub BOARD
+    issue (not a YAML file): approve/reject add a decision:<x> label + a comment
+    then close the issue; defer removes needs:human and comments (stays open,
+    back to Rick's queue). RECORD-ONLY — Rick acts on his next loop tick.
+
+    Fails SAFE: no board token (dev/CI) → 503 partial, never a crash; a GitHub
+    API error → an error partial, never a 500. The card swaps in place either way.
+    """
+    if action not in CARD_DECISION_ACTIONS:
+        raise HTTPException(400, f"Invalid action: {action}")
+
+    token = _read_board_token()
+    if not token:
+        # Dev/CI or a token-refresh gap — degrade gracefully, do not crash.
+        return _decision_error_partial(
+            request, number,
+            "Board write token unavailable — décision non enregistrée.",
+            503,
+        )
+
+    try:
+        _apply_card_decision(number, action, comment, token)
+    except urllib.error.HTTPError as exc:
+        return _decision_error_partial(
+            request, number,
+            f"Erreur GitHub ({exc.code}) — décision non enregistrée.",
+            502,
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        return _decision_error_partial(
+            request, number,
+            f"Erreur réseau — décision non enregistrée ({exc}).",
+            502,
+        )
+
+    # Invalidate the in-process board cache so the (now closed / un-queued) card
+    # disappears on the next /kanban or / load instead of lingering until TTL.
+    global _cache_ts
+    _cache_ts = 0.0
+
+    return request.app.state.templates.TemplateResponse(
+        "partials/kanban_decision_ok.html",
+        {
+            "request": request,
+            "number": number,
+            "action": action,
+            "error": "",
         },
     )
 

@@ -62,12 +62,16 @@
     </h3>
     <div class="decisions-grid">
       {% for c in rnd_decisions %}
-      <a href="/kanban/card/{{ c.id }}" class="decision-card" style="text-decoration:none; display:block;">
-        <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
-        <div class="decision-card-title">{{ c.title or c.summary or 'Décision' }}</div>
-        {% if c.summary and c.summary != c.title %}<div class="decision-card-sub" style="font-size:13px; color:var(--body-soft); margin-top:4px;">{{ c.summary }}</div>{% endif %}
-        <div class="decision-card-cta" style="margin-top:8px; font-size:12px; text-transform:uppercase; color:var(--ochre-deep); letter-spacing:0.04em;">Décider →</div>
-      </a>
+      <div id="rnd-card-{{ c.id }}" class="decision-card" style="display:block;">
+        <a href="/kanban/card/{{ c.id }}" style="text-decoration:none; display:block; color:inherit;">
+          <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
+          <div class="decision-card-title">{{ c.title or c.summary or 'Décision' }}</div>
+          {% if c.summary and c.summary != c.title %}<div class="decision-card-sub" style="font-size:13px; color:var(--body-soft); margin-top:4px;">{{ c.summary }}</div>{% endif %}
+          <div class="decision-card-cta" style="margin-top:8px; font-size:12px; text-transform:uppercase; color:var(--ochre-deep); letter-spacing:0.04em;">Décider →</div>
+        </a>
+        {# Inline decide actions (board #427) — record-only; Rick reprend au prochain cycle. #}
+        {% include "partials/rnd_card_actions.html" %}
+      </div>
       {% endfor %}
     </div>
     {% endif %}

@@ -1,0 +1,33 @@
+{# HTMX fragment after an R&D board-card decision (approve/reject/defer) —
+   board #427. Mirrors partials/gate_decision_ok.html but targets the GitHub
+   board issue. `error` (non-empty) renders the fail-safe message instead. #}
+{% if error %}
+<div class="reprendre-card" style="margin-top:14px; border-left-color: var(--danger, #c0392b);">
+  <p style="margin:0; font-weight:500; color: var(--danger, #c0392b);">
+    {{ error }}
+  </p>
+  <p style="margin:6px 0 0; font-size:13px; color: var(--body-muted);">
+    Carte #{{ number }} — réessaie dans un instant.
+  </p>
+</div>
+{% else %}
+<div class="reprendre-card" style="margin-top:14px; border-left-color: var(--sage);">
+  <p style="margin:0 0 6px; font-weight:500;
+    {% if action == 'approve' %}color: var(--sage);
+    {% elif action == 'reject' %}color: var(--danger, #c0392b);
+    {% else %}color: var(--ochre);{% endif %}">
+    {% if action == 'approve' %}
+      ✅ décidé : approuvé — Rick le reprend au prochain cycle
+    {% elif action == 'reject' %}
+      ❌ décidé : rejeté
+    {% elif action == 'defer' %}
+      ⏳ décidé : reporté — de retour dans la file de Rick
+    {% else %}
+      Décision enregistrée : {{ action }}
+    {% endif %}
+  </p>
+  <p style="margin:0; font-size:13px; color: var(--body-muted);">
+    Enregistré sur la carte #{{ number }}. Rick en prend note à sa prochaine boucle.
+  </p>
+</div>
+{% endif %}
