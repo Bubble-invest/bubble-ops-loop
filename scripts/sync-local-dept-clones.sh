@@ -105,6 +105,36 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
         log "${slug}: discarded ${tracked_dirty} local tracked change(s) in read-only mirror before pull (untracked output preserved)"
     fi
 
+    # Second blocker (the one `checkout -- .` does NOT fix): an UNTRACKED file in
+    # the mirror sitting at a path that an INCOMING commit will ADD. The dept loop
+    # writes e.g. inbox/decisions/publish-*.yaml as untracked; the SAME file later
+    # gets committed upstream from the dept's own machine. On pull git aborts with
+    # "untracked working tree files would be overwritten by merge", and the mirror
+    # freezes — even after the tracked-dirt cleanup above.
+    #
+    # Resolution for a READ-ONLY mirror: origin is authoritative, so remove ONLY
+    # the untracked files that COLLIDE with an incoming tracked path. We fetch
+    # first (no merge), diff HEAD..@{u} to learn exactly which paths the pull will
+    # write, and delete a local file at one of those paths ONLY IF it is untracked.
+    # SCOPED removal — never a blanket `git clean -df`, which would also delete
+    # non-colliding un-pushed dept output (queues/gates/.held/, other inbox/*).
+    if git -C "$dir" fetch --quiet origin 2>/dev/null; then
+        upstream="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+        if [[ -n "$upstream" ]]; then
+            collisions=0
+            while IFS= read -r path; do
+                [[ -z "$path" ]] && continue
+                # exists locally, but is NOT tracked (untracked) → it would block the pull
+                if [[ -e "${dir}/${path}" ]] && ! git -C "$dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+                    rm -f "${dir}/${path}" 2>/dev/null && collisions=$((collisions + 1))
+                fi
+            done < <(git -C "$dir" diff --name-only "HEAD..${upstream}" 2>/dev/null)
+            if [[ "$collisions" -gt 0 ]]; then
+                log "${slug}: removed ${collisions} untracked file(s) colliding with incoming tracked paths (read-only mirror; origin authoritative; non-colliding untracked output preserved)"
+            fi
+        fi
+    fi
+
     # Read-only fast-forward mirror. --ff-only guarantees we NEVER create a merge
     # commit or diverge: if the local mirror somehow has its own commits the pull
     # aborts (logged + skipped) instead of silently merging.

@@ -222,6 +222,70 @@ fi
 # The discard was logged (visible, not silent).
 want "T6f discard of tracked changes is logged" "discarded .* local tracked change" "$WORK/run-real.log"
 
+# -----------------------------------------------------------------------------
+# T7: REAL-GIT regression for #405 case (b) — an UNTRACKED file in the mirror at
+#     a path an INCOMING commit ADDS blocks the pull ("untracked working tree
+#     files would be overwritten by merge"), which `checkout -- .` does NOT fix.
+#     The fix must remove ONLY the colliding untracked path (origin authoritative
+#     for a read-only mirror) while preserving non-colliding untracked output.
+# -----------------------------------------------------------------------------
+ORIGIN2="$WORK/origin-content2.git"
+WORKTREE2="$WORK/seed-content2"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN2"
+"${real_git_env[@]}" git clone -q "$ORIGIN2" "$WORKTREE2" 2>/dev/null
+printf 'v: 1\n' > "$WORKTREE2/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE2" add -A
+"${real_git_env[@]}" git -C "$WORKTREE2" commit -qm "seed2"
+"${real_git_env[@]}" git -C "$WORKTREE2" push -q origin HEAD:main
+
+REALGIT_AGENTS2="$WORK/agents-real2"; rm -rf "$REALGIT_AGENTS2"; mkdir -p "$REALGIT_AGENTS2"
+MIRROR2="$REALGIT_AGENTS2/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN2" "$MIRROR2"
+mkdir -p "$MIRROR2/onboarding"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$MIRROR2/onboarding/STATE.yaml"
+
+# origin ADDS a new tracked file at inbox/decisions/collide.yaml (committed upstream
+# from the dept's own machine).
+mkdir -p "$WORKTREE2/inbox/decisions"
+printf 'decision: from-origin\n' > "$WORKTREE2/inbox/decisions/collide.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE2" add -A
+"${real_git_env[@]}" git -C "$WORKTREE2" commit -qm "add collide.yaml upstream"
+"${real_git_env[@]}" git -C "$WORKTREE2" push -q origin HEAD:main
+
+# The dept loop had ALREADY written that same path locally as UNTRACKED (the collision),
+# plus a NON-colliding untracked output file that MUST survive.
+mkdir -p "$MIRROR2/inbox/decisions"
+printf 'decision: local-untracked\n' > "$MIRROR2/inbox/decisions/collide.yaml"     # collides with incoming
+printf 'decision: keep-me-too\n'     > "$MIRROR2/inbox/decisions/no-collide.yaml"  # must survive
+
+before_head2="$("${real_git_env[@]}" git -C "$MIRROR2" rev-parse HEAD)"
+origin_head2="$("${real_git_env[@]}" git -C "$WORKTREE2" rev-parse HEAD)"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS2" >"$WORK/run-real2.log" 2>&1
+rc2=$?
+after_head2="$("${real_git_env[@]}" git -C "$MIRROR2" rev-parse HEAD)"
+
+chk "T7 real-git run exits 0" 0 "$rc2"
+[[ "$before_head2" != "$origin_head2" ]] && { echo "  PASS: T7 precondition: mirror started BEHIND origin"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7 precondition broken"; FAIL=$((FAIL+1)); }
+# The mirror fast-forwarded despite the untracked collision (was frozen before this fix).
+chk_eq "T7a mirror fast-forwarded past untracked collision" "$origin_head2" "$after_head2"
+# The colliding path now holds ORIGIN's version (the local untracked copy was removed, pull brought the tracked one).
+if [[ "$("${real_git_env[@]}" cat "$MIRROR2/inbox/decisions/collide.yaml" 2>/dev/null)" == "decision: from-origin" ]]; then
+  echo "  PASS: T7b colliding path now holds origin's tracked version"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T7b colliding path not resolved to origin's version"; FAIL=$((FAIL+1))
+fi
+# The NON-colliding untracked output SURVIVED (scoped removal, not a blanket clean).
+[[ -f "$MIRROR2/inbox/decisions/no-collide.yaml" ]] \
+  && { echo "  PASS: T7c non-colliding untracked output preserved (scoped removal)"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7c non-colliding untracked output DESTROYED (blanket clean regression!)"; FAIL=$((FAIL+1)); }
+[[ -f "$MIRROR2/onboarding/STATE.yaml" ]] \
+  && { echo "  PASS: T7d untracked STATE.yaml preserved"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7d untracked STATE.yaml destroyed"; FAIL=$((FAIL+1)); }
+# The scoped removal was logged (visible, not silent).
+want "T7e untracked-collision removal is logged" "removed .* untracked file.* colliding" "$WORK/run-real2.log"
+
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1
