@@ -1,0 +1,32 @@
+{# Inline approve/reject/defer actions for an R&D `needs:human` board card
+   (board #427). Record-only: posts to /kanban/card/<id>/decide which writes the
+   decision onto the GitHub board issue; Rick picks it up on his next loop tick.
+
+   Reused by:
+     - home.html landing cards (context var `c`)
+     - kanban_card.html detail page (context var `card`)
+   `rc` normalizes across both so the form id/target are stable.
+
+   Matches the gate-card button styling (btn-ochre / btn-ghost, --sage/--danger/
+   --ochre). The form swaps itself (and its card on home) with the decision
+   confirmation partial via HTMX. #}
+{% set rc = c if c is defined else card %}
+<form class="rnd-card-decide-form"
+      hx-post="/kanban/card/{{ rc.id }}/decide"
+      hx-target="#rnd-card-{{ rc.id }}"
+      hx-swap="outerHTML"
+      style="margin:10px 0 0; display:flex; flex-direction:column; gap:8px;">
+  <input type="text" name="comment" placeholder="commentaire (facultatif)…"
+         style="width:100%; background: var(--paper); color: var(--ink);
+                border:1px solid var(--line); border-radius:3px;
+                padding:7px 10px; font-family: var(--font-body); font-size:13px;">
+  <div class="gate-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
+    <button type="submit" name="action" value="approve" class="btn-ochre"
+            style="background: var(--sage); border-color: var(--sage);">approve</button>
+    <button type="submit" name="action" value="reject" class="btn-ghost"
+            style="color: var(--danger, #c0392b); border-color: var(--danger, #c0392b);">reject</button>
+    <button type="submit" name="action" value="defer" class="btn-ghost"
+            style="color: var(--ochre);">defer</button>
+  </div>
+  <div class="rnd-decide-result"></div>
+</form>
