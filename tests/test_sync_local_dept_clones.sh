@@ -20,6 +20,11 @@
 #       script still exits 0 (a transient mirror miss must not flap a timer).
 #   T4  no host:local depts at all -> clean no-op exit 0.
 #   T5  the fixture agents-root is a throwaway, NOT the live /home/claude/agents.
+#   T6  REAL-GIT regression (#405): a host:local mirror whose working tree the
+#       dept runtime dirtied (a TRACKED deletion) is cleaned before the ff-pull,
+#       so the pull fast-forwards to origin/main — while UNTRACKED un-pushed dept
+#       output SURVIVES. Run against a real local origin+clone (NOT the git stub)
+#       so the cleanup + ff-pull are exercised for real, never mocked.
 # =============================================================================
 set -uo pipefail
 
@@ -142,6 +147,144 @@ case "$AGENTS" in
   /home/claude/agents) echo "  FAIL: fixture pointed at LIVE agents root!"; FAIL=$((FAIL+1));;
   *) echo "  PASS: T5 agents-root is a throwaway fixture ($AGENTS)"; PASS=$((PASS+1));;
 esac
+
+# -----------------------------------------------------------------------------
+# T6: REAL-GIT regression for #405 — clean tracked dirt in a read-only mirror
+#     before the ff-pull, preserve untracked output, and prove the pull actually
+#     fast-forwards. This section uses the REAL git binary (the PATH stub above
+#     is bypassed) against throwaway local repos — no network, no remotes.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS="$WORK/agents-real"; rm -rf "$REALGIT_AGENTS"; mkdir -p "$REALGIT_AGENTS"
+# Run with the stub REMOVED from PATH and a clean git identity so commits work in CI.
+real_git_env=( env "PATH=${PATH#${STUBS}:}" \
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null )
+
+ORIGIN="$WORK/origin-content.git"
+WORKTREE="$WORK/seed-content"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN"
+"${real_git_env[@]}" git clone -q "$ORIGIN" "$WORKTREE" 2>/dev/null  # empty-repo clone warning is expected
+mkdir -p "$WORKTREE/queues/gates"
+printf 'id: draft-1\n'   > "$WORKTREE/queues/gates/draft-1.yaml"   # tracked file the dept loop later "deletes"
+printf 'v: 1\n'          > "$WORKTREE/framework.txt"               # tracked framework file that origin will advance
+"${real_git_env[@]}" git -C "$WORKTREE" add -A
+"${real_git_env[@]}" git -C "$WORKTREE" commit -qm "seed"
+"${real_git_env[@]}" git -C "$WORKTREE" push -q origin HEAD:main
+
+# The VPS read-only mirror = a clone of origin at the seed commit.
+MIRROR="$REALGIT_AGENTS/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN" "$MIRROR"
+mkdir -p "$MIRROR/onboarding"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$MIRROR/onboarding/STATE.yaml"
+
+# origin advances one commit (fresh framework code the mirror must fast-forward to).
+printf 'v: 2\n' > "$WORKTREE/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE" commit -qam "advance framework"
+"${real_git_env[@]}" git -C "$WORKTREE" push -q origin HEAD:main
+
+# Simulate the dept runtime dirtying its supposedly-read-only mirror:
+#   (a) a TRACKED deletion (the bug's trigger) — must be restored before pull.
+rm -f "$MIRROR/queues/gates/draft-1.yaml"
+#   (b) an UNTRACKED un-pushed output file — must SURVIVE the cleanup.
+mkdir -p "$MIRROR/inbox/decisions"
+printf 'decision: keep-me\n' > "$MIRROR/inbox/decisions/unpushed.yaml"
+
+# onboarding/STATE.yaml is also untracked here (origin never had it) — it too must survive.
+before_head="$("${real_git_env[@]}" git -C "$MIRROR" rev-parse HEAD)"
+origin_head="$("${real_git_env[@]}" git -C "$WORKTREE" rev-parse HEAD)"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS" >"$WORK/run-real.log" 2>&1
+rc=$?
+after_head="$("${real_git_env[@]}" git -C "$MIRROR" rev-parse HEAD)"
+
+chk "T6 real-git run exits 0" 0 "$rc"
+# The mirror must have fast-forwarded to origin's new commit (was frozen before the fix).
+chk_eq "T6a mirror fast-forwarded to origin/main after cleanup" "$origin_head" "$after_head"
+[[ "$before_head" != "$origin_head" ]] && echo "  PASS: T6 precondition: mirror started BEHIND origin" && PASS=$((PASS+1)) \
+  || { echo "  FAIL: T6 precondition broken (mirror not behind origin)"; FAIL=$((FAIL+1)); }
+# Fresh framework code actually arrived.
+if [[ "$("${real_git_env[@]}" cat "$MIRROR/framework.txt" 2>/dev/null | tr -d '[:space:]')" == "v:2" ]]; then
+  echo "  PASS: T6b fresh framework code pulled into mirror"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T6b mirror did not receive fresh framework code"; FAIL=$((FAIL+1))
+fi
+# The tracked deletion was restored (file is back).
+[[ -f "$MIRROR/queues/gates/draft-1.yaml" ]] \
+  && { echo "  PASS: T6c tracked deletion restored before pull"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T6c tracked deletion NOT restored (pull would have aborted)"; FAIL=$((FAIL+1)); }
+# The UNTRACKED un-pushed output SURVIVED the cleanup (the core guarantee).
+[[ -f "$MIRROR/inbox/decisions/unpushed.yaml" ]] \
+  && { echo "  PASS: T6d untracked un-pushed dept output preserved"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T6d untracked dept output was DESTROYED (regression!)"; FAIL=$((FAIL+1)); }
+[[ -f "$MIRROR/onboarding/STATE.yaml" ]] \
+  && { echo "  PASS: T6e untracked STATE.yaml preserved"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T6e untracked STATE.yaml destroyed"; FAIL=$((FAIL+1)); }
+# The discard was logged (visible, not silent).
+want "T6f discard of tracked changes is logged" "discarded .* local tracked change" "$WORK/run-real.log"
+
+# -----------------------------------------------------------------------------
+# T7: REAL-GIT regression for #405 case (b) — an UNTRACKED file in the mirror at
+#     a path an INCOMING commit ADDS blocks the pull ("untracked working tree
+#     files would be overwritten by merge"), which `checkout -- .` does NOT fix.
+#     The fix must remove ONLY the colliding untracked path (origin authoritative
+#     for a read-only mirror) while preserving non-colliding untracked output.
+# -----------------------------------------------------------------------------
+ORIGIN2="$WORK/origin-content2.git"
+WORKTREE2="$WORK/seed-content2"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN2"
+"${real_git_env[@]}" git clone -q "$ORIGIN2" "$WORKTREE2" 2>/dev/null
+printf 'v: 1\n' > "$WORKTREE2/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE2" add -A
+"${real_git_env[@]}" git -C "$WORKTREE2" commit -qm "seed2"
+"${real_git_env[@]}" git -C "$WORKTREE2" push -q origin HEAD:main
+
+REALGIT_AGENTS2="$WORK/agents-real2"; rm -rf "$REALGIT_AGENTS2"; mkdir -p "$REALGIT_AGENTS2"
+MIRROR2="$REALGIT_AGENTS2/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN2" "$MIRROR2"
+mkdir -p "$MIRROR2/onboarding"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$MIRROR2/onboarding/STATE.yaml"
+
+# origin ADDS a new tracked file at inbox/decisions/collide.yaml (committed upstream
+# from the dept's own machine).
+mkdir -p "$WORKTREE2/inbox/decisions"
+printf 'decision: from-origin\n' > "$WORKTREE2/inbox/decisions/collide.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE2" add -A
+"${real_git_env[@]}" git -C "$WORKTREE2" commit -qm "add collide.yaml upstream"
+"${real_git_env[@]}" git -C "$WORKTREE2" push -q origin HEAD:main
+
+# The dept loop had ALREADY written that same path locally as UNTRACKED (the collision),
+# plus a NON-colliding untracked output file that MUST survive.
+mkdir -p "$MIRROR2/inbox/decisions"
+printf 'decision: local-untracked\n' > "$MIRROR2/inbox/decisions/collide.yaml"     # collides with incoming
+printf 'decision: keep-me-too\n'     > "$MIRROR2/inbox/decisions/no-collide.yaml"  # must survive
+
+before_head2="$("${real_git_env[@]}" git -C "$MIRROR2" rev-parse HEAD)"
+origin_head2="$("${real_git_env[@]}" git -C "$WORKTREE2" rev-parse HEAD)"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS2" >"$WORK/run-real2.log" 2>&1
+rc2=$?
+after_head2="$("${real_git_env[@]}" git -C "$MIRROR2" rev-parse HEAD)"
+
+chk "T7 real-git run exits 0" 0 "$rc2"
+[[ "$before_head2" != "$origin_head2" ]] && { echo "  PASS: T7 precondition: mirror started BEHIND origin"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7 precondition broken"; FAIL=$((FAIL+1)); }
+# The mirror fast-forwarded despite the untracked collision (was frozen before this fix).
+chk_eq "T7a mirror fast-forwarded past untracked collision" "$origin_head2" "$after_head2"
+# The colliding path now holds ORIGIN's version (the local untracked copy was removed, pull brought the tracked one).
+if [[ "$("${real_git_env[@]}" cat "$MIRROR2/inbox/decisions/collide.yaml" 2>/dev/null)" == "decision: from-origin" ]]; then
+  echo "  PASS: T7b colliding path now holds origin's tracked version"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T7b colliding path not resolved to origin's version"; FAIL=$((FAIL+1))
+fi
+# The NON-colliding untracked output SURVIVED (scoped removal, not a blanket clean).
+[[ -f "$MIRROR2/inbox/decisions/no-collide.yaml" ]] \
+  && { echo "  PASS: T7c non-colliding untracked output preserved (scoped removal)"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7c non-colliding untracked output DESTROYED (blanket clean regression!)"; FAIL=$((FAIL+1)); }
+[[ -f "$MIRROR2/onboarding/STATE.yaml" ]] \
+  && { echo "  PASS: T7d untracked STATE.yaml preserved"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T7d untracked STATE.yaml destroyed"; FAIL=$((FAIL+1)); }
+# The scoped removal was logged (visible, not silent).
+want "T7e untracked-collision removal is logged" "removed .* untracked file.* colliding" "$WORK/run-real2.log"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"

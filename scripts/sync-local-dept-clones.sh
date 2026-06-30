@@ -82,6 +82,59 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
         continue
     fi
 
+    # Clean tracked working-tree dirt before the ff-pull. This is a declared
+    # READ-ONLY mirror (the dept's authoritative copy lives on its own machine +
+    # GitHub), but the dept's runtime loop writes INTO the mirror — creating /
+    # deleting queues/gates/*.yaml + inbox/decisions/*.yaml. Those TRACKED
+    # modifications/deletions make `git pull --ff-only` abort ("local changes
+    # would be overwritten"), freezing the mirror behind origin/main. Restore the
+    # tree to HEAD with `git checkout -- .` so the ff-pull can proceed.
+    #
+    # CRITICAL: `git checkout -- .` restores only TRACKED files (deletions +
+    # modifications back to HEAD). It does NOT touch UNTRACKED files — any
+    # un-pushed dept output (?? inbox/decisions/...) is preserved, never deleted.
+    # We deliberately do NOT `git reset --hard`: that would also blow away local
+    # COMMITS, and committed divergence must still be caught by --ff-only below
+    # (logged + skipped), not silently discarded.
+    #
+    # porcelain lines NOT starting with "??" are tracked dirt (modified/deleted/
+    # staged); untracked files ("?? ...") are intentionally ignored here.
+    tracked_dirty="$(git -C "$dir" status --porcelain 2>/dev/null | grep -cv '^??' || true)"
+    if [[ "${tracked_dirty:-0}" -gt 0 ]]; then
+        git -C "$dir" checkout -- . 2>/dev/null || true
+        log "${slug}: discarded ${tracked_dirty} local tracked change(s) in read-only mirror before pull (untracked output preserved)"
+    fi
+
+    # Second blocker (the one `checkout -- .` does NOT fix): an UNTRACKED file in
+    # the mirror sitting at a path that an INCOMING commit will ADD. The dept loop
+    # writes e.g. inbox/decisions/publish-*.yaml as untracked; the SAME file later
+    # gets committed upstream from the dept's own machine. On pull git aborts with
+    # "untracked working tree files would be overwritten by merge", and the mirror
+    # freezes — even after the tracked-dirt cleanup above.
+    #
+    # Resolution for a READ-ONLY mirror: origin is authoritative, so remove ONLY
+    # the untracked files that COLLIDE with an incoming tracked path. We fetch
+    # first (no merge), diff HEAD..@{u} to learn exactly which paths the pull will
+    # write, and delete a local file at one of those paths ONLY IF it is untracked.
+    # SCOPED removal — never a blanket `git clean -df`, which would also delete
+    # non-colliding un-pushed dept output (queues/gates/.held/, other inbox/*).
+    if git -C "$dir" fetch --quiet origin 2>/dev/null; then
+        upstream="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+        if [[ -n "$upstream" ]]; then
+            collisions=0
+            while IFS= read -r path; do
+                [[ -z "$path" ]] && continue
+                # exists locally, but is NOT tracked (untracked) → it would block the pull
+                if [[ -e "${dir}/${path}" ]] && ! git -C "$dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+                    rm -f "${dir}/${path}" 2>/dev/null && collisions=$((collisions + 1))
+                fi
+            done < <(git -C "$dir" diff --name-only "HEAD..${upstream}" 2>/dev/null)
+            if [[ "$collisions" -gt 0 ]]; then
+                log "${slug}: removed ${collisions} untracked file(s) colliding with incoming tracked paths (read-only mirror; origin authoritative; non-colliding untracked output preserved)"
+            fi
+        fi
+    fi
+
     # Read-only fast-forward mirror. --ff-only guarantees we NEVER create a merge
     # commit or diverge: if the local mirror somehow has its own commits the pull
     # aborts (logged + skipped) instead of silently merging.
