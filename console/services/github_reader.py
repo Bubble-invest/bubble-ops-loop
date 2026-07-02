@@ -5,9 +5,11 @@ Two modes:
   - disk mode (READ_FROM_DISK set)  : direct filesystem reads from fixture root
   - github mode (default)           : `gh api repos/<org>/<repo>/contents/...`
 
-Per the brief: gh calls are cached 60s in memory. For v1 we ship the disk-mode
-reader (tests + local dev). The gh subprocess wrapper is a thin stub; UX-5 will
-flesh it out when wiring to live Morty.
+gh api calls are NOT cached here — each read hits disk (disk mode) or shells
+out to `gh` (github mode) fresh. (The kanban route has its own short-TTL cache
+around its snapshot; that lives in routes/dept.py, not here.) For v1 we ship
+the disk-mode reader (tests + local dev). The gh subprocess wrapper is a thin
+stub; UX-5 will flesh it out when wiring to live Morty.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ import logging
 import base64
 import os
 import subprocess
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -225,6 +228,26 @@ def load_layer_prompt_md(slug: str, layer_num: int) -> Optional[str]:
         return None
 
 
+def _parse_gate_files(gates_dir: Path) -> List[tuple]:
+    """Glob + parse every queues/gates/*.yaml once. Returns a list of
+    (path, doc_or_None, yaml_error_or_None) tuples — doc is the parsed dict
+    (or None if the parse failed / wasn't a mapping). Shared by
+    list_pending_gates and list_layer_queues so a request only walks/parses
+    this directory a single time instead of twice."""
+    out: List[tuple] = []
+    for p in sorted(gates_dir.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except yaml.YAMLError as e:
+            out.append((p, None, e))
+            continue
+        if isinstance(doc, dict):
+            out.append((p, doc, None))
+        else:
+            out.append((p, None, None))  # parsed but not a mapping
+    return out
+
+
 def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     """Return all gate YAMLs in queues/gates/ for the dept.
 
@@ -243,6 +266,14 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     gates_dir = root / "queues" / "gates"
     if not gates_dir.exists():
         return []
+    return _filter_pending_gates(slug, root, _parse_gate_files(gates_dir))
+
+
+def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> List[Dict[str, Any]]:
+    """Apply the decision-filter logic (terminal decisions hidden, `modify`
+    stays visible + flagged) to an already-parsed gate_files list. Split out
+    of list_pending_gates so list_layer_queues can reuse a single parse of
+    queues/gates/ without re-globbing/re-parsing it (board #450)."""
     # Pre-compute the set of gate ids that already have a decision recorded in
     # inbox/decisions/.  The approval path (write_gate_decision) writes the
     # decision file there immediately when {{OPERATOR}} clicks Approve/Reject in the
@@ -275,50 +306,49 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
                 decided_map[dp.stem] = {}
 
     out: List[Dict[str, Any]] = []
-    for p in sorted(gates_dir.glob("*.yaml")):
-        try:
-            doc = yaml.safe_load(p.read_text(encoding="utf-8"))
-            if isinstance(doc, dict):
-                # Skip gates that have been decided — they are no longer "pending."
-                # Gate resolution writes `resolved: true` + `decided_by` (not
-                # `approved_by`, which nothing ever sets), so the old single-field
-                # check was dead: a decided-but-not-yet-archived gate kept showing
-                # in the dept UI as a still-open choice. Honour all the fields the
-                # resolution actually writes. ({{OPERATOR}} 2026-06-19: approved trades
-                # still appeared as pending in each agent's cockpit dept page.)
-                if doc.get("approved_by") or doc.get("resolved") or doc.get("decided_by"):
-                    continue
-                # Also skip if a decision file already exists in inbox/decisions/
-                # for this gate — the operator has acted but the agent hasn't
-                # processed the inbox yet (see decided_map computation above).
-                # Use doc.get('id') so that a gate whose YAML id field differs
-                # from its filename is still correctly matched against the
-                # decision file written by write_gate_decision (which keys on
-                # the gate's logical id, not the stem).  Fallback to p.stem
-                # only when the YAML has no id field, for safety.
-                gate_id = doc.get("id", p.stem)
-                if gate_id in decided_map:
-                    ddoc = decided_map[gate_id]
-                    if ddoc.get("action") == "modify":
-                        # modify is NOT terminal: keep the gate visible so {{OPERATOR}}
-                        # can re-review after the agent redrafts it. Flag it so
-                        # the UI can show the "En révision" banner.
-                        doc["_revision_requested"] = True
-                        doc["_revision_comment"] = ddoc.get("comment", "")
-                        out.append(doc)
-                    # approve / reject / defer → hide (terminal decisions)
-                    continue
-                out.append(doc)
-            else:
-                # Parsed but not a mapping → surface a synthetic error card so a
-                # malformed gate is VISIBLE in the cockpit, never silently dropped.
-                out.append(_malformed_gate_card(slug, p, "not a YAML mapping"))
-        except yaml.YAMLError as e:
+    for p, doc, err in gate_files:
+        if err is not None:
             # A malformed gate card used to vanish here (silent `continue`) — that
             # is exactly how a TLT trade gate disappeared from the UI on
             # 2026-06-06 (unquoted colon in `instrument:`), so {{OPERATOR}} never saw it
             # to approve it. Surface it as an error card instead of swallowing it.
-            out.append(_malformed_gate_card(slug, p, str(e).splitlines()[0]))
+            out.append(_malformed_gate_card(slug, p, str(err).splitlines()[0]))
+            continue
+        if doc is None:
+            # Parsed but not a mapping → surface a synthetic error card so a
+            # malformed gate is VISIBLE in the cockpit, never silently dropped.
+            out.append(_malformed_gate_card(slug, p, "not a YAML mapping"))
+            continue
+        # Skip gates that have been decided — they are no longer "pending."
+        # Gate resolution writes `resolved: true` + `decided_by` (not
+        # `approved_by`, which nothing ever sets), so the old single-field
+        # check was dead: a decided-but-not-yet-archived gate kept showing
+        # in the dept UI as a still-open choice. Honour all the fields the
+        # resolution actually writes. ({{OPERATOR}} 2026-06-19: approved trades
+        # still appeared as pending in each agent's cockpit dept page.)
+        if doc.get("approved_by") or doc.get("resolved") or doc.get("decided_by"):
+            continue
+        # Also skip if a decision file already exists in inbox/decisions/
+        # for this gate — the operator has acted but the agent hasn't
+        # processed the inbox yet (see decided_map computation above).
+        # Use doc.get('id') so that a gate whose YAML id field differs
+        # from its filename is still correctly matched against the
+        # decision file written by write_gate_decision (which keys on
+        # the gate's logical id, not the stem).  Fallback to p.stem
+        # only when the YAML has no id field, for safety.
+        gate_id = doc.get("id", p.stem)
+        if gate_id in decided_map:
+            ddoc = decided_map[gate_id]
+            if ddoc.get("action") == "modify":
+                # modify is NOT terminal: keep the gate visible so {{OPERATOR}}
+                # can re-review after the agent redrafts it. Flag it so
+                # the UI can show the "En révision" banner.
+                doc["_revision_requested"] = True
+                doc["_revision_comment"] = ddoc.get("comment", "")
+                out.append(doc)
+            # approve / reject / defer → hide (terminal decisions)
+            continue
+        out.append(doc)
     return out
 
 
@@ -890,16 +920,33 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
             _write_local_hide_marker(slug, gate_id, decision)
         return out
 
-    # host=vps — write to the on-disk repo (unchanged).
+    # host=vps — write to the on-disk repo. Atomic: write to a temp file in the
+    # same dir + os.replace, so a reader (the dept's loop, or another cockpit
+    # request) never observes a partially-written decision file.
     root = repo_path(slug)
     if root is None:
         return None
     decisions_dir = root / "inbox" / "decisions"
     decisions_dir.mkdir(parents=True, exist_ok=True)
     out = decisions_dir / f"{gate_id}.yaml"
-    out.write_text(yaml.safe_dump(decision, sort_keys=False, allow_unicode=True),
-                   encoding="utf-8")
+    _atomic_write_text(out, yaml.safe_dump(decision, sort_keys=False, allow_unicode=True))
     return out
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically: temp file in the same dir, then
+    os.replace. Avoids a reader ever seeing a truncated/partial file."""
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _write_local_hide_marker(slug: str, gate_id: str, decision: Dict[str, Any]
@@ -992,11 +1039,15 @@ def _gh_contents_sha(contents_api: str, env: Dict[str, str]) -> Optional[str]:
                            timeout=30)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()
+        logging.getLogger(__name__).warning(
+            "gh contents sha lookup failed for %s (rc=%s): %s",
+            contents_api, r.returncode, (r.stderr or r.stdout or "")[:200])
     except subprocess.TimeoutExpired as exc:
         logging.getLogger(__name__).warning(
             "gate decision gh api sha lookup timed out: %s", exc)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "gh contents sha lookup raised for %s: %s", contents_api, exc)
     return None
 
 
@@ -1080,7 +1131,10 @@ def _load_child_entry(slug: str, child_root: Path) -> Dict[str, Any]:
         if kpis_path.exists():
             try:
                 risk_kpis = yaml.safe_load(kpis_path.read_text(encoding="utf-8"))
-            except yaml.YAMLError:
+            except yaml.YAMLError as e:
+                # A broken risk-KPI file otherwise silently blanks this child in
+                # the management rollup with no trace — log it.
+                _log.warning("_load_child_entry: malformed %s: %s", kpis_path, e)
                 risk_kpis = None
 
         if brief_path.exists():
@@ -1089,7 +1143,8 @@ def _load_child_entry(slug: str, child_root: Path) -> Dict[str, Any]:
         if export_path.exists():
             try:
                 management_export = yaml.safe_load(export_path.read_text(encoding="utf-8"))
-            except yaml.YAMLError:
+            except yaml.YAMLError as e:
+                _log.warning("_load_child_entry: malformed %s: %s", export_path, e)
                 management_export = None
 
     # Pending gates
@@ -1345,8 +1400,8 @@ def list_recent_decisions(slugs: List[str], limit: int = 10) -> List[Dict[str, A
                         "comment": str(comment) if comment else "",
                         "processed": processed,
                     })
-                except Exception:  # noqa: BLE001 — skip malformed files silently
-                    _log.debug("list_recent_decisions: skipping malformed %s", dp)
+                except Exception as exc:  # noqa: BLE001 — skip malformed files, but log it
+                    _log.warning("list_recent_decisions: skipping malformed %s: %s", dp, exc)
 
     # Sort by decided_at descending (ISO strings sort lexicographically correctly).
     results.sort(key=lambda d: d["decided_at"], reverse=True)
@@ -1602,11 +1657,21 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
     if root is None:
         return {1: [], 2: [], 3: [], 4: []}
 
-    # Pre-compute the set of pending-gate ids (for cross-referencing).
-    # We call list_pending_gates() so we honour its decision-filter logic
-    # (same items that show in "Décisions qu'on attend de toi").
+    # Parse queues/gates/ ONCE and reuse for both the pending-gate-ids
+    # cross-reference below AND the queues/gates branch of the main loop —
+    # this dir used to be globbed+parsed twice per request (list_pending_gates
+    # internally, then again here).
+    gates_dir = root / "queues" / "gates"
+    gate_files = _parse_gate_files(gates_dir) if gates_dir.is_dir() else []
+
+    # Pre-compute the set of pending-gate ids (for cross-referencing). Uses
+    # _filter_pending_gates (the same decision-filter logic list_pending_gates
+    # applies — same items that show in "Décisions qu'on attend de toi"),
+    # called directly on the gate_files we already parsed above, rather than
+    # through the public list_pending_gates(slug) (kept single-arg so it stays
+    # freely monkeypatchable/callable by other routes/tests).
     pending_gate_ids: set = {
-        g.get("id", "") for g in list_pending_gates(slug) if isinstance(g, dict)
+        g.get("id", "") for g in _filter_pending_gates(slug, root, gate_files) if isinstance(g, dict)
     }
 
     out: Dict[int, List[Dict[str, Any]]] = {1: [], 2: [], 3: [], 4: []}
@@ -1616,17 +1681,30 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
         if not queue_dir.is_dir():
             continue
 
+        if is_gate:
+            # Already parsed above — reuse instead of re-globbing/re-parsing.
+            file_entries = []
+            for p, doc, err in gate_files:
+                if err is not None:
+                    _log.warning("list_layer_queues: skipping malformed %s: %s", p, err)
+                    continue
+                file_entries.append((p, doc))
+        else:
+            file_entries = []
+            for p in sorted(queue_dir.glob("*.yaml")):
+                # Skip items that live inside a .processed/ subdirectory —
+                # those have already been handled by the dept agent.
+                if ".processed" in p.parts:
+                    continue
+                try:
+                    doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+                except yaml.YAMLError as exc:
+                    _log.warning("list_layer_queues: skipping malformed %s: %s", p, exc)
+                    continue
+                file_entries.append((p, doc))
+
         items: List[Dict[str, Any]] = []
-        for p in sorted(queue_dir.glob("*.yaml")):
-            # Skip items that live inside a .processed/ subdirectory —
-            # those have already been handled by the dept agent.
-            if ".processed" in p.parts:
-                continue
-            try:
-                doc = yaml.safe_load(p.read_text(encoding="utf-8"))
-            except yaml.YAMLError as exc:
-                _log.debug("list_layer_queues: skipping malformed %s: %s", p, exc)
-                continue
+        for p, doc in file_entries:
             if not isinstance(doc, dict):
                 continue
 

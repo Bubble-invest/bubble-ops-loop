@@ -496,3 +496,111 @@ class TestManagementViewRoute:
         assert "stale" in body or "retard" in body or "jour" in body or "mini-maya" in body, (
             f"management-view should mention staleness for mini-maya: {resp.text[:500]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _load_child_entry: malformed YAML must be logged, not silently swallowed
+# (board #450 — a broken risk-KPI file used to silently blank a child in the
+# management rollup with zero trace).
+# ---------------------------------------------------------------------------
+
+class TestLoadChildEntryLogsMalformedYaml:
+
+    def test_malformed_risk_kpis_logs_warning(self, tmp_path: Path, caplog):
+        from console.services.github_reader import _load_child_entry
+        import logging
+
+        today = date.today().isoformat()
+        child_root = tmp_path / "bubble-ops-broken-child"
+        layer4 = child_root / "outputs" / today / "4"
+        layer4.mkdir(parents=True)
+        # Unquoted colon-in-value is a classic YAML parse trap (same class of
+        # bug as the 2026-06-06 gate-card incident referenced elsewhere here).
+        (layer4 / "risk-kpis.yaml").write_text("nav: 100k: broken\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="console.github_reader"):
+            entry = _load_child_entry("broken-child", child_root)
+
+        assert entry["risk_kpis"] is None
+        assert any(
+            "risk-kpis.yaml" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        ), f"Expected a WARNING log naming risk-kpis.yaml, got: {[r.message for r in caplog.records]}"
+
+    def test_malformed_management_export_logs_warning(self, tmp_path: Path, caplog):
+        from console.services.github_reader import _load_child_entry
+        import logging
+
+        today = date.today().isoformat()
+        child_root = tmp_path / "bubble-ops-broken-child2"
+        layer4 = child_root / "outputs" / today / "4"
+        layer4.mkdir(parents=True)
+        (child_root / "outputs" / today / "management-export.yaml").write_text(
+            "summary: [unterminated\n", encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="console.github_reader"):
+            entry = _load_child_entry("broken-child2", child_root)
+
+        assert entry["management_export"] is None
+        assert any(
+            "management-export.yaml" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        ), f"Expected a WARNING log naming management-export.yaml, got: {[r.message for r in caplog.records]}"
+
+
+# ---------------------------------------------------------------------------
+# _kanban_snapshot: cached + logs on failure (board #450). This used to do a
+# blocking urlopen (up to 4s) on EVERY management-page load with zero log
+# on failure — an unreachable dashboard silently vanished from the page.
+# ---------------------------------------------------------------------------
+
+class TestKanbanSnapshotCacheAndLogging:
+
+    def test_unreachable_dashboard_logs_warning_and_returns_none(self, monkeypatch, caplog):
+        import logging
+        from console.routes import dept as dept_route
+
+        dept_route._kanban_snapshot_cache.clear()
+
+        def fake_urlopen(*a, **k):
+            raise OSError("connection refused")
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with caplog.at_level(logging.WARNING):
+            result = dept_route._kanban_snapshot()
+
+        assert result is None
+        assert any(rec.levelno == logging.WARNING for rec in caplog.records), (
+            f"expected a WARNING log on dashboard-unreachable, got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_kanban_snapshot_cached_within_ttl(self, monkeypatch):
+        from console.routes import dept as dept_route
+
+        dept_route._kanban_snapshot_cache.clear()
+        calls = {"n": 0}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"columns": {"needs_attention": []}, "counts": {}, "generated_at": "t1"}'
+
+        def fake_urlopen(*a, **k):
+            calls["n"] += 1
+            return _Resp()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        first = dept_route._kanban_snapshot()
+        second = dept_route._kanban_snapshot()
+        assert first == second
+        assert calls["n"] == 1, f"expected exactly 1 urlopen call (cached), got {calls['n']}"

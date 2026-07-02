@@ -98,3 +98,73 @@ def test_totals_sum_agents(fake_projects):
         rep["agents"]["tony"]["week"]["cost"] + rep["agents"]["maya"]["week"]["cost"], abs=0.01
     )
     assert rep["totals"]["week"]["runs"] == 2
+
+
+# ─── Report-level TTL cache (board #450) ───────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _reset_report_cache():
+    """The report TTL cache is module-level state shared across tests —
+    reset it before/after each test so tests don't leak into each other."""
+    cost_tracker._report_cache["report"] = None
+    cost_tracker._report_cache["built_at"] = 0.0
+    yield
+    cost_tracker._report_cache["report"] = None
+    cost_tracker._report_cache["built_at"] = 0.0
+
+
+def test_report_ttl_cache_serves_cached_report_within_window(fake_projects, monkeypatch):
+    _session(fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+             model="claude-sonnet-4-6",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+    first = cost_tracker.build_report(refresh=True)  # populates the TTL cache too
+    assert "ben" in first["agents"]
+
+    # Add a NEW agent's session after the first build. A plain build_report()
+    # (refresh=False) within the TTL window must NOT see it — it should serve
+    # the cached report rather than re-walking the tree.
+    _session(fake_projects / "-home-claude-agents-bubble-ops-maya" / "s1.jsonl",
+             model="claude-haiku-4-5",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+    cached = cost_tracker.build_report(refresh=False)
+    assert cached is first  # same object — served straight from the cache
+    assert "maya" not in cached["agents"]
+
+
+def test_report_ttl_cache_expires_after_window(fake_projects, monkeypatch):
+    _session(fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+             model="claude-sonnet-4-6",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+    cost_tracker.build_report(refresh=True)
+
+    _session(fake_projects / "-home-claude-agents-bubble-ops-maya" / "s1.jsonl",
+             model="claude-haiku-4-5",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+
+    # Simulate the TTL having elapsed by rewinding the cached built_at.
+    cost_tracker._report_cache["built_at"] -= (cost_tracker._REPORT_TTL_SECONDS + 1)
+
+    rep = cost_tracker.build_report(refresh=False)
+    assert "maya" in rep["agents"]  # rebuilt — TTL had expired
+
+
+def test_report_refresh_true_always_bypasses_ttl_cache(fake_projects):
+    _session(fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+             model="claude-sonnet-4-6",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+    cost_tracker.build_report(refresh=True)
+
+    _session(fake_projects / "-home-claude-agents-bubble-ops-maya" / "s1.jsonl",
+             model="claude-haiku-4-5",
+             turns=[{"input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+
+    # refresh=True must see the new session even though the TTL window is
+    # still open — the explicit-refresh escape hatch must keep working.
+    rep = cost_tracker.build_report(refresh=True)
+    assert "maya" in rep["agents"]
