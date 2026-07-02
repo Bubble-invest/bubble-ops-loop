@@ -22,7 +22,27 @@ TMPDIR_T=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_T"' EXIT
 QUEUE="$TMPDIR_T/kanban_queue.jsonl"
 
+# _resolve_gh_token() now has a host:local (Mac) fallback that shells out to
+# `ssh claude@joris-cx33` (board #463). On a dev Mac with real Tailscale access
+# to the VPS, GH_TOKEN=bad_token_force_fail alone is no longer enough to force
+# the dashboard-fallback path — the SSH step would succeed for real and this
+# test would silently file a live card on the board. Shadow `ssh` (and `sudo`,
+# used by the 2b minter fallback) with a no-op stub ahead of PATH so every
+# host-specific auth path fails deterministically and this test stays hermetic.
+STUBBIN="$TMPDIR_T/stubbin"
+mkdir -p "$STUBBIN"
+cat > "$STUBBIN/ssh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat > "$STUBBIN/sudo" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$STUBBIN/ssh" "$STUBBIN/sudo"
+
 stderr_output=$(
+  PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
   KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE" \
@@ -61,6 +81,7 @@ pass "card title present in kanban_queue.jsonl"
 
 QUEUE2="$TMPDIR_T/kanban_queue2.jsonl"
 exit2=$(
+  PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
   KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE2" \
