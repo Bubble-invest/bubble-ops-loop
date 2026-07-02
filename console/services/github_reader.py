@@ -1624,6 +1624,65 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
     return label
 
 
+# Sentinel `kind` for the one synthetic "N notes traitées" summary item
+# `_mgmt_queue_items()` appends to the L2 list (#459). The template checks
+# for this kind to render the collapsed muted line instead of a normal row.
+MGMT_CONSUMED_SUMMARY_KIND = "_mgmt_consumed_summary"
+
+
+def _mgmt_queue_items(root: Path) -> List[Dict[str, Any]]:
+    """Build the L2 (`queues/management/`) item list using consumption-aware
+    filtering (#459) instead of the generic "every non-.processed *.yaml
+    file" rule the other queue dirs use.
+
+    Delegates to `mgmt_note_state.scan_mgmt_inbox()` — the single source of
+    truth for per-note PENDING derivation (mirrors
+    scripts/lib/dispatch_helpers.py's `_scan_mgmt_notes` semantics exactly;
+    see that module's docstring). Converts its dataclasses into the same
+    plain-dict item shape the rest of `list_layer_queues()` returns, plus one
+    extra synthetic item (kind=`MGMT_CONSUMED_SUMMARY_KIND`) carrying the
+    consumed count, so callers/templates keep working with a single flat
+    list per layer.
+
+    Also passes `_is_stale_terminal_item` as `scan_mgmt_inbox`'s
+    `extra_stale_check` — the generic #391 terminal-kind staleness guard
+    (an `executed_trade`/wrap-up record an agent forgot to move to
+    `.processed/`) applies to `queues/management/` exactly like it does to
+    every other queue dir; #459's consumption-awareness is additive, not a
+    replacement for it.
+    """
+    from console.services.mgmt_note_state import scan_mgmt_inbox
+
+    state = scan_mgmt_inbox(root, extra_stale_check=_is_stale_terminal_item)
+    items: List[Dict[str, Any]] = []
+    for row in state.pending_rows:
+        # A single-item row keeps that note's own id/kind (so id-based
+        # lookups elsewhere still resolve to the real note); a grouped row
+        # (>1 pending notes sharing a mission_id) gets a synthetic group id
+        # — there is no single underlying note it could stand in for.
+        solo = row.items[0] if row.count == 1 else None
+        items.append({
+            "id": solo.id if solo else f"{row.mission_id}-group",
+            "kind": solo.kind if solo else "management_note",
+            "title": row.label,
+            "created_at": row.latest_created_at,
+            "pending_human": False,
+            "group_count": row.count,
+        })
+    if state.consumed_count:
+        items.append({
+            "id": "_mgmt_consumed_summary",
+            "kind": MGMT_CONSUMED_SUMMARY_KIND,
+            "title": f"{state.consumed_count} note"
+                     f"{'s' if state.consumed_count > 1 else ''} traitée"
+                     f"{'s' if state.consumed_count > 1 else ''}",
+            "created_at": "",
+            "pending_human": False,
+            "group_count": state.consumed_count,
+        })
+    return items
+
+
 def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
     """Return the currently-waiting queue items per layer for a dept.
 
@@ -1639,6 +1698,18 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
       - inbox/decisions/        → L3  (approved decisions ready for L3)
       - queues/inbox/decisions/ → L3  (same, alternate path)
       - queues/gates/           → all layers (cross-cutting; pending_human=True)
+
+    `queues/management/` is special-cased (#459): unlike the other queue
+    dirs, the mgmt-note protocol never moves/mutates note files once acted
+    on — consumption state lives in `.consumed.json` + `.last-mgmt-scan`
+    (see scripts/lib/dispatch_helpers.py). Listing every non-`.processed`
+    *.yaml file there (the generic rule below) shows every note EVER
+    produced, including ones consumed weeks ago. So for L2 we instead call
+    `mgmt_note_state.scan_mgmt_inbox()`, which mirrors the dispatcher's
+    consumed-first / fail-open semantics per-note and groups same-mission_id
+    notes into one row. Its consumed count is exposed as a synthetic item
+    (`kind: "_mgmt_consumed_summary"`) so `out[2]` stays a single flat list
+    the template can render without a second parameter.
 
     Each item dict has:
         id            str   — YAML `id` field or filename stem
@@ -1681,8 +1752,15 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
         if not queue_dir.is_dir():
             continue
 
+        if rel_dir == "queues/management":
+            # #459 — consumption-aware path, see docstring above. Handled
+            # before the generic parse below so mgmt notes never hit the
+            # "every non-.processed *.yaml" rule.
+            out[layer].extend(_mgmt_queue_items(root))
+            continue
+
         if is_gate:
-            # Already parsed above — reuse instead of re-globbing/re-parsing.
+            # Already parsed above (#450) — reuse instead of re-globbing/re-parsing.
             file_entries = []
             for p, doc, err in gate_files:
                 if err is not None:

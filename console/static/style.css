@@ -2742,6 +2742,14 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
 /* Empty-state inside a layer's queue section. */
 .desk-queue-empty { margin: 3px 0 6px; }
 
+/* Consumed-notes summary row (#459) — "N notes traitées". Muted, no left
+   accent (it's not waiting for anything), so it reads as background info
+   rather than a to-do sitting alongside genuinely pending rows. */
+.desk-queue-item--consumed-summary {
+  border-left-color: transparent; opacity: 0.65;
+}
+.desk-queue-title--muted { font-style: italic; color: var(--body-muted); }
+
 /* ─── Pixel agent at his desk (#286) — center session zone ───────────────── */
 .desk-agent-stage { text-align:center; padding:6px 0 10px; }
 .pixel-agent { shape-rendering:crispEdges; }
