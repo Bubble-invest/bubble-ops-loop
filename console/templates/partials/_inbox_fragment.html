@@ -10,6 +10,13 @@
      missions_by_layer — dict {layer_int: [mission_dict, …]}
      layer_queues      — dict {layer_int: [item_dict, …]}  (card #376 data)
        item_dict = {id, kind, title, created_at, pending_human: bool}
+       For queues/management/ (L2) specifically (#459): items are already
+       filtered to genuinely-PENDING notes (.consumed.json / .last-mgmt-scan
+       aware — see console/services/mgmt_note_state.py) and grouped by
+       mission_id (title becomes "<mission_id> ×N (latest date)" when >1
+       share it). A synthetic trailing item with
+       kind == "_mgmt_consumed_summary" carries the "N notes traitées"
+       collapsed line and is rendered as a muted, non-actionable row.
      kanban_summary    — optional kanban snapshot (may be None in fragment)
 #}
 
@@ -41,12 +48,23 @@
         {% if _ms %}<div class="desk-section-label desk-section-label--queue">En attente de traitement</div>{% endif %}
         <div class="desk-queue-items">
           {% for item in _qi %}
-            <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
-              <span class="desk-queue-title">{{ item.title }}</span>
-              {% if item.pending_human %}
-                <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
-              {% endif %}
-            </div>
+            {# #459 — the mgmt-note consumed-count summary is a single
+               collapsed muted line, not a pending "À traiter" row: it
+               represents notes already acted on (id/timestamp checked
+               against .consumed.json / .last-mgmt-scan), kept visible only
+               so the operator knows the queue isn't silently empty. #}
+            {% if item.kind == "_mgmt_consumed_summary" %}
+              <div class="desk-queue-item desk-queue-item--consumed-summary">
+                <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
+              </div>
+            {% else %}
+              <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+                <span class="desk-queue-title">{{ item.title }}</span>
+                {% if item.pending_human %}
+                  <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
+                {% endif %}
+              </div>
+            {% endif %}
           {% endfor %}
         </div>
       {% else %}
