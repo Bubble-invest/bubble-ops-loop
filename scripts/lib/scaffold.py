@@ -115,6 +115,13 @@ CLAUDE_SETTINGS_MINIMAL = {
     # .claude/queued-prompts/initial.md on first boot. CLAUDE.md then
     # tells the agent to read that file and send its content to {{OPERATOR}}
     # on Telegram in the very first turn.
+    #
+    # Host-portable (card #471): the naive `python3 -m skill_lib.auto_drive`
+    # assumes the VPS PYTHONPATH is already set globally. On a host:local dept
+    # (e.g. the M5) that import fails. Inline the PYTHONPATH with both the
+    # local-Mac clone layout and the VPS layout as candidates, and `|| true`
+    # so a missing skill never turns SessionStart into a hard failure — it's
+    # advisory (queues the initial prompt), not a gate.
     "hooks": {
         "SessionStart": [
             {
@@ -122,9 +129,14 @@ CLAUDE_SETTINGS_MINIMAL = {
                     {
                         "type": "command",
                         "command": (
+                            'PYTHONPATH="${PYTHONPATH:-}:'
+                            '$HOME/claude-workspaces/bubble-ops-loop/skills/'
+                            'department-onboarding-guide:'
+                            '/home/claude/bubble-ops-loop/skills/'
+                            'department-onboarding-guide" '
                             "python3 -m skill_lib.auto_drive "
                             "announce_current_step "
-                            "onboarding/STATE.yaml"
+                            "onboarding/STATE.yaml || true"
                         ),
                     }
                 ]
@@ -134,14 +146,36 @@ CLAUDE_SETTINGS_MINIMAL = {
         # agent from Edit/Write/git-staging its own mission files (the same
         # STRUCTURAL_PATH_GLOBS the push-time credential-helper lock enforces),
         # with a deny-reason that routes it to propose a PR instead. The guard
-        # script is root-owned at /opt so the agent can't tamper with it.
+        # script is root-owned (VPS: /opt; host:local: $HOME/.scripts) so the
+        # agent can't tamper with it.
+        #
+        # Host-portable (card #471): a bare `python3 /opt/bubble-mission-guard/
+        # mission-file-guard.py` hard-denies every Edit/Write/Bash/NotebookEdit
+        # on any host where /opt doesn't exist (python3 exits 2 on ModuleNotFound
+        # / missing file, and PreToolUse treats exit 2 as a deny) — hit live on
+        # Geraldine's first hours on the M5. Candidate-path resolution: try the
+        # user-level guard first, fall back to the VPS root-owned path, and only
+        # fail OPEN (exit 0) when the guard file is genuinely absent from both —
+        # so the guard still runs (and its deny verdicts are preserved via `exec`)
+        # wherever it's actually installed. Verified pattern, ported from the
+        # fix already shipped + verified on Geraldine's live workspace
+        # (bubble-ops-accountant commit 77d7e2a): benign Bash -> allow rc=0;
+        # structural edit (layers/1/PROMPT.md) -> proper deny JSON.
         "PreToolUse": [
             {
                 "matcher": "Edit|Write|Bash|NotebookEdit",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "python3 /opt/bubble-mission-guard/mission-file-guard.py",
+                        "command": (
+                            'f="$HOME/.scripts/mission-file-guard.py"; '
+                            '[ -f "$f" ] || f=/opt/bubble-mission-guard/mission-file-guard.py; '
+                            'if [ -f "$f" ]; then '
+                            'export BUBBLE_BROKER_POLICY_PY="${BUBBLE_BROKER_POLICY_PY:-'
+                            '$HOME/.scripts/bubble-broker-policy.py}"; '
+                            'exec python3 "$f"; '
+                            'else exit 0; fi'
+                        ),
                         "timeout": 10000,
                     }
                 ],
