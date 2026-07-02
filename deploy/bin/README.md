@@ -135,3 +135,44 @@ claude prefers the on-disk credentials file over the env token).
 - **Install:** `/usr/local/bin/guard-stale-credentials.sh`, root-owned `0755`.
 - **Called by:** `ExecStartPre=+/usr/local/bin/guard-stale-credentials.sh ${ENV_FILE}`
   in `ops-loop-dept.service.template` (runs as root, before `EnvironmentFile`).
+
+## bubble-rotate-dept-secret
+
+Safely ROTATES an existing key in a per-dept SOPS dotenv file
+(`/etc/bubble/secrets-<dept>.sops.env`), so no agent ever hand-rolls the sops
+invocation again (board #457, closing the exact traps that corrupted a dept's
+secrets file in incident #451 — see `shared/systems/sops-dotenv-reencryption-trap.md`).
+Complements `morty-sops-add-key`, which is ADD-only and refuses to overwrite an
+existing key by design: rotation is the deliberate, separate, verified path
+this script provides.
+
+- **Usage:** `printf '%s' "$VALUE" | bubble-rotate-dept-secret <dept> <KEY_NAME> [--probe telegram-bot|none] [--restart] [--file PATH]`
+  — the new value is read from **stdin only**, never a CLI arg (argv leaks via
+  `ps`/shell history/logs).
+- **What it does, in order:** reads stdin into a shred-trapped `/dev/shm`
+  work dir → refuses if the target file is already JSON-corrupted (first byte
+  `{`) → discovers the age recipient via `grep -oE 'age1[0-9a-z]{50,}'` (NOT
+  `sops --extract`, which returns empty on these files) → decrypts the current
+  file to a tmpfs baseline (records key count) → builds the new plaintext,
+  encrypts with explicit `--input-type dotenv --output-type dotenv` → refuses
+  to install if the freshly-encrypted output is JSON → backs up the current
+  file to `$F.bak-rotate-<epoch>` (mode `0400`) → installs the new file
+  (`root:root 0600`) → decrypts the INSTALLED file to a tmpfs FILE (never
+  stdout — the sops-guard Layer-2 wrapper blocks interactive decrypt-to-stdout)
+  and asserts the key is present and the key-count did not decrease →
+  optionally live-probes the new value (`--probe telegram-bot` → Telegram
+  `getMe`) → on ANY verify/probe failure, automatically rolls back from the
+  backup and exits nonzero. Never prints the secret value on stdout or stderr.
+- **`--restart`:** also runs `systemctl restart ops-loop-<dept>` and greps the
+  journal for `sops`/`401` errors; without it, prints the exact manual restart
+  + verification steps instead.
+- **Install:** `/usr/local/bin/bubble-rotate-dept-secret`, root-owned `0755`
+  (writes to `/etc/bubble/secrets-<dept>.sops.env`, requires root).
+- **Env overrides (tests only):** `SOPS_BIN`, `TMPFS_DIR`, `SYSTEMCTL_BIN`,
+  `CURL_BIN`, `INSTALL_OWNER`, `INSTALL_GROUP`.
+- **Tests:** `tests/bubble-rotate-dept-secret/test_bubble_rotate_dept_secret.sh`
+  — runs unprivileged against fake `sops`/`curl`/`systemctl` stubs; exercises
+  corrupt-JSON refusal, missing-recipient refusal, post-encrypt JSON refusal +
+  rollback, missing-key/key-count-drop verify failures + rollback, the
+  telegram-bot probe (401 rollback / ok success), and confirms the secret
+  value never appears in any captured output.
