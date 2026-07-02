@@ -1,0 +1,16 @@
+[Unit]
+Description=Run kanban dead-letter drain every 15 minutes (#440)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+# 15 min: a parked card should surface fast (the whole point of #440), but
+# this is a cheap oneshot (empty-queue exit is near-instant) so a short
+# interval costs nothing when there's nothing to drain.
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=60
+Unit=kanban-queue-drain.service
+
+[Install]
+WantedBy=timers.target
