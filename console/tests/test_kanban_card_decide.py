@@ -102,6 +102,134 @@ def test_defer_removes_needs_human_and_does_not_close(client, captured_board):
         "defer must not close the issue"
 
 
+def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_board):
+    """clarify (board #483) → DELETE needs:human, post the EXACT «🔍 Pas clair»
+    marker comment, NO close, and NO other label change (unlike approve/reject).
+    Same board mechanics as defer but a distinct, byte-exact marker."""
+    from console.routes import kanban as _kanban
+
+    r = client.post("/kanban/card/700/decide", data={"action": "clarify"})
+    assert r.status_code == 200
+    methods_paths = [(m, p) for (m, p, _payload) in captured_board]
+
+    # needs:human removed
+    assert ("DELETE", "/issues/700/labels/needs:human") in methods_paths
+    # The marker comment is posted EXACTLY (loop-detection contract)
+    comment_calls = [pl for (m, p, pl) in captured_board
+                     if p == "/issues/700/comments"]
+    assert comment_calls, "no marker comment posted on clarify"
+    assert comment_calls[0]["body"] == _kanban._CLARIFY_MARKER
+    # Byte-exact prefix Rick's loop keys on
+    assert comment_calls[0]["body"].startswith("🔍 Pas clair")
+    # WITHOUT a note → EXACTLY one comment (no empty "note" comment)
+    assert len(comment_calls) == 1, "clarify with no note must post exactly 1 comment"
+    # MUST NOT close, and MUST NOT add/apply any label (no decision:* / labels POST)
+    assert not any(m == "PATCH" for (m, p, _pl) in captured_board), \
+        "clarify must not close the issue"
+    assert not any(p == "/issues/700/labels" for (m, p, _pl) in captured_board), \
+        "clarify must not apply any label"
+    assert not any(p == "/labels" for (m, p, _pl) in captured_board), \
+        "clarify must not create any label"
+
+
+def test_clarify_with_note_posts_marker_then_note_in_order(client, captured_board):
+    """clarify WITH a typed note → EXACTLY two comments, in order: the byte-exact
+    marker FIRST, then the note verbatim behind a «📝 Note de Joris : » prefix
+    (board #483 fix-pass — the note IS the clarify instruction; the marker stays
+    first + byte-exact so the loop-detection prefix is untouched)."""
+    from console.routes import kanban as _kanban
+
+    note = "Le point 3 sur les frais n'est pas clair — chiffre-le stp."
+    r = client.post("/kanban/card/700/decide",
+                    data={"action": "clarify", "comment": note})
+    assert r.status_code == 200
+
+    comment_bodies = [pl["body"] for (m, p, pl) in captured_board
+                      if p == "/issues/700/comments"]
+    assert len(comment_bodies) == 2, \
+        "clarify+note must post exactly 2 comments (marker, then note)"
+    # Order + byte-exactness
+    assert comment_bodies[0] == _kanban._CLARIFY_MARKER
+    assert comment_bodies[1] == "📝 Note de Joris : " + note
+    # The note comment carries the operator's words verbatim
+    assert note in comment_bodies[1]
+    # Still no close / no label change
+    assert not any(m == "PATCH" for (m, p, _pl) in captured_board)
+    assert not any(p == "/issues/700/labels" for (m, p, _pl) in captured_board)
+
+
+def test_clarify_whitespace_note_no_second_comment(client, captured_board):
+    """A whitespace-only note → no second comment (only the marker)."""
+    r = client.post("/kanban/card/700/decide",
+                    data={"action": "clarify", "comment": "   \n  "})
+    assert r.status_code == 200
+    comment_bodies = [pl["body"] for (m, p, pl) in captured_board
+                      if p == "/issues/700/comments"]
+    assert len(comment_bodies) == 1, "whitespace note must not post a 2nd comment"
+
+
+def test_decide_from_detail_with_return_to_sends_hx_redirect(client, captured_board):
+    """A decide carrying an allowlisted return_to (the detail-page case) → the
+    decision is still applied AND the response carries HX-Redirect back to that
+    path, with no inline partial body (board #483 follow-up)."""
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "approve", "return_to": "/kanban"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/kanban"
+    assert r.text == ""  # HX-Redirect, not the inline confirmation partial
+    # The decision was still applied (label + comment + close)
+    methods_paths = [(m, p) for (m, p, _payload) in captured_board]
+    assert ("POST", "/issues/427/labels") in methods_paths
+    assert ("PATCH", "/issues/427") in methods_paths
+
+
+def test_decide_return_to_root_allowed(client, captured_board):
+    """`/` is on the allowlist → HX-Redirect to /."""
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "defer", "return_to": "/"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/"
+
+
+def test_decide_garbage_return_to_no_redirect_inline_partial(client, captured_board):
+    """A return_to NOT on the allowlist (open-redirect attempt / arbitrary path)
+    is treated as absent → NO HX-Redirect, the normal inline partial is returned
+    and the decision is still applied."""
+    for bad in ("https://evil.example/phish", "/settings", "//evil.example",
+                "/kanban/card/427", "javascript:alert(1)"):
+        captured_board.clear()
+        r = client.post("/kanban/card/427/decide",
+                        data={"action": "approve", "return_to": bad})
+        assert r.status_code == 200, bad
+        assert "HX-Redirect" not in r.headers, bad
+        # Inline confirmation partial rendered instead
+        assert "Rick" in r.text, bad
+        # Decision still applied
+        assert any(p == "/issues/427/labels"
+                   for (m, p, _pl) in captured_board), bad
+
+
+def test_decide_from_surface_no_return_to_unchanged_inline(client, captured_board):
+    """A decide from the home/kanban card surface sends NO return_to → unchanged
+    behavior: no HX-Redirect, the inline confirmation partial swaps as before."""
+    r = client.post("/kanban/card/427/decide", data={"action": "approve"})
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
+    assert "Rick" in r.text  # inline partial
+
+
+def test_decide_failed_with_return_to_still_error_partial_no_redirect(client, monkeypatch):
+    """Even with a valid return_to, a FAILED decide must surface the error partial
+    (no HX-Redirect) — the redirect only fires on success."""
+    _kanban = _kanban_module()
+    monkeypatch.setattr(_kanban, "_read_board_token", lambda: None)  # 503 path
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "approve", "return_to": "/kanban"})
+    assert r.status_code == 503
+    assert "HX-Redirect" not in r.headers
+    assert "non enregistrée" in r.text
+
+
 def test_bad_action_returns_400(client, captured_board):
     """An action outside {approve,reject,defer} → 400, no board writes."""
     r = client.post("/kanban/card/427/decide", data={"action": "nuke"})

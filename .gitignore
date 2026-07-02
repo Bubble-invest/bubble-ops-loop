@@ -24,3 +24,4 @@ __pycache__/
 *.lock
 # loop-backup runtime event log (cockpit reads it; per-box, not versioned)
 state/
+.venv/

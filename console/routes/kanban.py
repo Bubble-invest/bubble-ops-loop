@@ -22,6 +22,7 @@ import threading
 from datetime import date as _dt_date
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -605,7 +606,16 @@ def _fetch_single_issue(number: int) -> tuple[dict | None, str | None]:
 # tests can monkeypatch the HTTP layer cleanly (no real GitHub calls in CI).
 
 # Actions the cockpit may record on an R&D decision card.
-CARD_DECISION_ACTIONS = {"approve", "reject", "defer"}
+CARD_DECISION_ACTIONS = {"approve", "reject", "defer", "clarify"}
+
+# The EXACT marker comment `clarify` posts (board #483). Its «🔍 Pas clair»
+# prefix is a loop-detection contract: Rick's loop distinguishes clarify
+# (actively re-research + re-explain + re-surface) from defer (just parked) by
+# matching this prefix — do NOT change the wording without updating that loop.
+_CLARIFY_MARKER = (
+    "🔍 Pas clair pour Joris — creuser davantage et réexpliquer "
+    "(recherche + reco améliorées), puis re-surfacer."
+)
 
 # Dynamic labels we apply on a decision. Created idempotently (create-if-missing)
 # before use so the call "just works" even on a fresh board. (name, hex_color).
@@ -671,9 +681,11 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
     un-queue for defer). Reuses the board token. Raises urllib.error.HTTPError /
     URLError on a failed REST call so the route can render an error partial.
 
-    - approve : +decision:approved, comment, close
-    - reject  : +decision:rejected, comment, close
-    - defer   : -needs:human, comment (stays OPEN — back to Rick's queue)
+    - approve : +decision:approved, comment (note folded in), close
+    - reject  : +decision:rejected, comment (note folded in), close
+    - defer   : -needs:human, comment (note folded in; stays OPEN — Rick's queue)
+    - clarify : -needs:human, byte-exact marker comment, THEN the note (if any) as
+                a second «📝 Note de Joris : …» comment (stays OPEN — Rick re-works)
     """
     extra = (comment or "").strip()
     suffix = ("\n\n" + extra) if extra else ""
@@ -703,8 +715,65 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
                 raise
         _board_api("POST", f"/issues/{number}/comments", token,
                    {"body": "⏳ Deferred by Joris — back to Rick's queue" + suffix})
+    elif action == "clarify":
+        # Same board mechanics as defer (needs:human off, stays OPEN, no other
+        # label change, no close) but a DISTINCT marker comment. Rick's loop keys
+        # on the «🔍 Pas clair» prefix to re-research + re-explain + re-surface,
+        # vs defer which is just "parked".
+        try:
+            _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        # The marker is posted FIRST and byte-exact (loop-detection contract,
+        # board #483) — the note is NOT appended to it, so the prefix stays clean.
+        _board_api("POST", f"/issues/{number}/comments", token,
+                   {"body": _CLARIFY_MARKER})
+        # If Joris typed a note, it IS the clarify instruction — preserve it as a
+        # SECOND comment right after the marker (approve/reject/defer already fold
+        # their note into their single comment via `suffix`; clarify can't without
+        # breaking the byte-exact marker, so it gets its own).
+        if extra:
+            _board_api("POST", f"/issues/{number}/comments", token,
+                       {"body": "📝 Note de Joris : " + extra})
     else:  # pragma: no cover — route validates before calling
         raise ValueError(f"unknown action: {action}")
+
+
+# ── Return-to allowlist (board #483 follow-up) ───────────────────────────────
+#
+# After a DECISION on the card DETAIL page, Joris is bounced back to the page he
+# came from (kanban or cockpit home) via an HX-Redirect header. We NEVER echo an
+# arbitrary Referer — an attacker-controlled redirect target is an open-redirect.
+# Only these exact same-origin paths are honoured; anything else → default.
+_RETURN_TO_ALLOWLIST = {"/", "/kanban"}
+_RETURN_TO_DEFAULT = "/kanban"
+
+
+def _sanitize_return_to(value: str | None) -> str | None:
+    """Return `value` iff it is one of the allowlisted same-origin paths, else
+    None. Used both to seed the detail page's hidden field (from the Referer)
+    and to validate the field on the decide POST — a single source of truth."""
+    if value and value in _RETURN_TO_ALLOWLIST:
+        return value
+    return None
+
+
+def _return_to_from_referer(request: Request) -> str | None:
+    """Derive an allowlisted return_to from the request's Referer path. Parses
+    out the path only (drops scheme/host/query) so a cross-origin or query-laden
+    Referer can't smuggle a target; then runs it through the allowlist."""
+    referer = request.headers.get("referer") or request.headers.get("referrer")
+    if not referer:
+        return None
+    try:
+        path = urllib.parse.urlparse(referer).path or ""
+    except ValueError:
+        return None
+    # Normalise a trailing slash on /kanban/ → /kanban (but keep root "/").
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return _sanitize_return_to(path)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -758,6 +827,11 @@ def kanban_card_detail(number: int, request: Request):
     body_text = issue.get("body") or ""
     sections = _parse_body_sections(body_text)
 
+    # Where to bounce Joris after a decision made from THIS page — the page he
+    # arrived from (kanban or home), allowlisted (board #483 follow-up). Empty
+    # string (not None) so the template's hidden field is inert when absent.
+    return_to = _return_to_from_referer(request) or ""
+
     return request.app.state.templates.TemplateResponse(
         "kanban_card.html",
         {
@@ -766,6 +840,7 @@ def kanban_card_detail(number: int, request: Request):
             "sections": sections,
             "comments": comments,
             "issue_url": issue.get("html_url") or issue.get("url") or "",
+            "return_to": return_to,
         },
     )
 
@@ -791,6 +866,7 @@ def _decision_error_partial(request: Request, number: int, message: str,
 def kanban_card_decide(
     number: int, request: Request,
     action: str = Form(...), comment: str = Form(""),
+    return_to: str = Form(""),
 ):
     """Record Joris's decision on an R&D `needs:human` board card (board #427).
 
@@ -801,6 +877,12 @@ def kanban_card_decide(
 
     Fails SAFE: no board token (dev/CI) → 503 partial, never a crash; a GitHub
     API error → an error partial, never a 500. The card swaps in place either way.
+
+    return_to (board #483 follow-up): when the decision comes from the card DETAIL
+    page it carries an allowlisted return path; on SUCCESS we send HX-Redirect so
+    htmx navigates Joris back to the kanban/home he came from. Decisions from the
+    home/kanban card surfaces send no return_to → unchanged inline swap. A garbage
+    return_to is treated as absent (open-redirect guard).
     """
     if action not in CARD_DECISION_ACTIONS:
         raise HTTPException(400, f"Invalid action: {action}")
@@ -834,6 +916,14 @@ def kanban_card_decide(
     global _cache_ts
     _cache_ts = 0.0
 
+    # If the decision came from the card DETAIL page (return_to carries a valid
+    # allowlisted path), bounce Joris back to where he was via HX-Redirect —
+    # htmx follows the header and does a client-side navigation. Absent/garbage
+    # return_to → the unchanged inline swap (home/kanban card surfaces).
+    dest = _sanitize_return_to(return_to)
+    if dest:
+        return HTMLResponse(content="", headers={"HX-Redirect": dest})
+
     return request.app.state.templates.TemplateResponse(
         "partials/kanban_decision_ok.html",
         {
@@ -843,6 +933,106 @@ def kanban_card_decide(
             "error": "",
         },
     )
+
+
+# Longest comment body GitHub accepts (65536); reject before the API call so the
+# operator gets a clear French message rather than an opaque 422 (board #482).
+_MAX_COMMENT_CHARS = 65000
+
+
+def _render_comments_block(
+    request: Request, card: dict, comments: list, error: str, status_code: int,
+):
+    """Render the comments-thread + reply-form partial (the htmx swap target for
+    the «Répondre» form). `error` (non-empty) shows a French message above the
+    form while preserving the passed-in comments."""
+    return request.app.state.templates.TemplateResponse(
+        "partials/kanban_comments_block.html",
+        {
+            "request": request,
+            "card": card,
+            "comments": comments,
+            "comment_error": error,
+        },
+        status_code=status_code,
+    )
+
+
+@router.post("/kanban/card/{number}/comment", response_class=HTMLResponse)
+def kanban_card_comment(
+    number: int, request: Request, body: str = Form(""),
+):
+    """Post Joris's reply as a GitHub issue comment on board card #number (#482).
+
+    This is THE mechanism that ANSWERS a needs:human card from the cockpit: the
+    operator's words are posted verbatim (no prefix — GitHub attribution shows
+    the board bot, same as decide comments), then the comment thread is
+    re-rendered inline (htmx) with the new comment. Rick's loop detects the reply
+    and advances the card.
+
+    Fails SAFE, mirroring kanban_card_decide:
+      - empty/whitespace body  → 400 + visible French message (no board write)
+      - body > 65k chars        → 400 + visible French message (no board write)
+      - no board token (dev/CI) → 503 partial, never a crash
+      - GitHub API error        → 502 partial, never a 500
+    Every path re-renders THIS block so the form swaps in place.
+    """
+    # A minimal card dict is enough for the partial (it only needs the id) — but
+    # keep the interface identical to the detail page by carrying the number.
+    card = {"id": str(number)}
+
+    text = (body or "").strip()
+    if not text:
+        return _render_comments_block(
+            request, card, [],
+            "Le commentaire est vide — écris une réponse avant d'envoyer.", 400,
+        )
+    if len(text) > _MAX_COMMENT_CHARS:
+        return _render_comments_block(
+            request, card, [],
+            f"Commentaire trop long ({len(text)} caractères, max {_MAX_COMMENT_CHARS}).",
+            400,
+        )
+
+    token = _read_board_token()
+    if not token:
+        return _render_comments_block(
+            request, card, [],
+            "Board write token unavailable — commentaire non enregistré.", 503,
+        )
+
+    try:
+        _board_api("POST", f"/issues/{number}/comments", token, {"body": text})
+    except urllib.error.HTTPError as exc:
+        return _render_comments_block(
+            request, card, [],
+            f"Erreur GitHub ({exc.code}) — commentaire non enregistré.", 502,
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        return _render_comments_block(
+            request, card, [],
+            f"Erreur réseau — commentaire non enregistré ({exc}).", 502,
+        )
+
+    # Invalidate the in-process board cache so any board-derived view reflects the
+    # freshly-touched issue on its next load (mirrors kanban_card_decide).
+    global _cache_ts
+    _cache_ts = 0.0
+
+    # Re-fetch the issue's comments so the re-rendered thread includes the new
+    # one. If the re-fetch fails (network blip after a successful POST), fall back
+    # to showing the just-posted comment so the operator still sees their reply.
+    issue, err = _fetch_single_issue(number)
+    if issue is not None and not err:
+        comments = issue.get("comments_list") or []
+    else:
+        comments = [{
+            "user": {"login": "bubble-board-bot"},
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "body": text,
+        }]
+
+    return _render_comments_block(request, card, comments, "", 200)
 
 
 import datetime as _dt
