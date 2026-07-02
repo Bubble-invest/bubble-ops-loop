@@ -908,13 +908,19 @@ def sort_by_date_added(cards: list) -> list:
 
 
 @router.get("/kanban", response_class=HTMLResponse)
-async def kanban_board(request: Request):
+def kanban_board(request: Request):
     """Full kanban board — all open issues from the GitHub board repo.
 
     Passes three groupings to the template:
       - by_status       dict[status_name -> list[card]]  (4 status columns)
       - by_department   dict[dept -> list[card]]
       - by_project      dict[project_name -> list[card]]
+
+    Sync `def` (not `async def`) so FastAPI runs this in its threadpool —
+    `_fetch_issues()` does blocking urllib I/O (up to 5 sequential GitHub
+    API pages, timeout=20 each) and must never run on the event loop
+    (issue #447: a hung GitHub call would otherwise stall every other
+    request on this single-worker console for up to ~100s).
     """
     columns: dict = {}
     generated_at = ""

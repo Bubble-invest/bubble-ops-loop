@@ -944,7 +944,8 @@ def _write_gate_decision_github(slug: str, gate_id: str, decision: Dict[str, Any
 
     def _gh(args: list) -> "subprocess.CompletedProcess":
         return subprocess.run(["gh", "api", *args],
-                              capture_output=True, text=True, check=False, env=env)
+                              capture_output=True, text=True, check=False, env=env,
+                              timeout=30)
 
     def _put(extra: list) -> "subprocess.CompletedProcess":
         # PUT repos/<org>/<repo>/contents/<path> creates OR updates a file in one
@@ -987,9 +988,13 @@ def _gh_contents_sha(contents_api: str, env: Dict[str, str]) -> Optional[str]:
     import json
     try:
         r = subprocess.run(["gh", "api", contents_api, "--jq", ".sha"],
-                           capture_output=True, text=True, check=False, env=env)
+                           capture_output=True, text=True, check=False, env=env,
+                           timeout=30)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "gate decision gh api sha lookup timed out: %s", exc)
     except Exception:  # noqa: BLE001
         pass
     return None
