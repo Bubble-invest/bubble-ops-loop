@@ -340,7 +340,7 @@
     {% set ext = att_path.lower().split('.')[-1] if '.' in att_path else '' %}
     {% if ext in ('png', 'jpg', 'jpeg', 'gif', 'svg', 'webp') %}
     <figure class="gate-chart" style="margin:6px 0 0;">
-      <img src="/kanban/attachment?repo=Bubble-invest/bubble-ops-board&path={{ att_path | urlencode }}"
+      <img src="/kanban/attachment?repo={{ item.visual_attachments_repo }}&path={{ att_path | urlencode }}"
            alt="Pièce jointe — {{ att_path.split('/')[-1] }}"
            loading="lazy"
            style="display:block; max-height:200px; width:auto; object-fit:contain;

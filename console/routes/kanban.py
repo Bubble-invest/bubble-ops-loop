@@ -289,6 +289,27 @@ def parse_card_links(sections: dict) -> dict:
     return out
 
 
+def _repo_for_dept(dept_val: str | None) -> str:
+    """Map a card's raw dept:<x> label value to the org/repo its attachments
+    live in (board #429): a dept:content card's `visual_attachments` paths are
+    dept-repo-relative (outputs/<date>/attachments/... INSIDE bubble-ops-content),
+    not board-repo-relative — so the attachment route must resolve against the
+    OWNING dept's checkout, not always the board repo.
+
+    Uses the raw label value directly (dept:content -> bubble-ops-content), NOT
+    the display-alias-canonicalized owner (_canon_dept would map some depts to a
+    different display name than their on-disk repo slug) — the on-disk dept repo
+    is always `bubble-ops-<raw dept: label value>`.
+
+    No dept: label (board-native cards, e.g. dept:rnd's own board attachments,
+    or a card with no dept at all) → falls back to the board repo itself, which
+    is the previous (and still correct for those cards) hardcoded behaviour.
+    """
+    if not dept_val:
+        return _BOARD_REPO
+    return f"Bubble-invest/bubble-ops-{dept_val}"
+
+
 def issue_to_card(issue: dict) -> dict:
     """Map one GitHub Issue dict → the card dict the three views consume.
 
@@ -400,6 +421,9 @@ def issue_to_card(issue: dict) -> dict:
         # Visual planning fields (B1 — ROUND2)
         "mermaid_src":          mermaid_src,
         "visual_attachments":   visual_attachments,
+        # org/repo the visual_attachments paths above resolve against (board #429
+        # fix) — the OWNING dept's repo, not always the board repo.
+        "visual_attachments_repo": _repo_for_dept(dept_val),
     }
     return card
 
