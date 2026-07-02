@@ -207,6 +207,25 @@ class TestListRecentDecisions:
         # malformed skipped, good one survives
         assert any(d["gate_id"] == "good-gate" for d in result)
 
+    def test_skips_malformed_yaml_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """board #450: malformed decision files used to be skipped at debug
+        level (invisible by default) — now logged as a warning."""
+        import logging
+        from console.services import github_reader
+        repo = _make_dept_repo(tmp_path, "alpha")
+        d = repo / "inbox" / "decisions"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "bad.yaml").write_text("key: [unclosed", encoding="utf-8")
+        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo if slug == "alpha" else None)
+
+        with caplog.at_level(logging.WARNING, logger="console.github_reader"):
+            github_reader.list_recent_decisions(["alpha"])
+
+        assert any(
+            "bad.yaml" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        ), f"expected a WARNING log naming bad.yaml, got: {[r.message for r in caplog.records]}"
+
     def test_skips_missing_dept(self, tmp_path, monkeypatch):
         """A slug whose repo_path returns None must not crash."""
         from console.services import github_reader

@@ -7,7 +7,11 @@ Documentation=https://github.com/Bubble-invest/bubble-ops-loop
 [Service]
 Type=oneshot
 User=root
-ExecStart=/usr/bin/python3 /home/claude/bubble-ops-loop/scripts/notion_kanban_sync.py
+# Revival wiring (board #426 Defect B): the script reads NOTION_KANBAN_DB_ID,
+# BUBBLE_MAC_SSH_TARGET, BUBBLE_MAC_KANBAN_PATH + the Notion token from env.
+# Provision them via a SOPS-rendered env file, then uncomment the next line:
+# EnvironmentFile=/home/claude/.config/bubble/notion-kanban-sync.env
+ExecStart=/usr/bin/python3 /home/claude/bubble-ops-loop/deploy/templates/notion_kanban_sync.py
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=notion-kanban-sync

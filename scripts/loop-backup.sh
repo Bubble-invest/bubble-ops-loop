@@ -778,7 +778,15 @@ from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx, _LAYER_MIN_TIME, _to_paris, _layer_fired_today,
 )
 workdir, layer, offset_h = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
-ctx = build_dispatch_ctx(workdir, now_utc=datetime.now(timezone.utc))
+# #454 FIX: this is a READ-ONLY eligibility probe (decides whether to wake
+# the live session) — it must NOT materialize/pre-stamp mission markers as a
+# side effect. materialize=True (the old default) pre-stamped shim-resolved
+# missions' (e.g. Ben's data_update) per-mission .last-run here, ~9s before
+# inject_live_loop woke the real session; the real session's own
+# build_dispatch_ctx call then saw that stamp as a PRIOR-tick marker and
+# silently vetoed the real dispatch (l1_fired=True -> heartbeat). See
+# board #454 and the docstring on build_dispatch_ctx's `materialize` kwarg.
+ctx = build_dispatch_ctx(workdir, now_utc=datetime.now(timezone.utc), materialize=False)
 now_paris = _to_paris(ctx["now_utc"])
 # min-time + backup offset, as a Paris-local datetime today
 mt = _LAYER_MIN_TIME[layer]

@@ -58,60 +58,90 @@ def test_kanban_board_handler_is_not_async(client):
     )
 
 
-def test_kanban_board_hung_fetch_does_not_block_concurrent_request(
-    client, monkeypatch
-):
-    """Simulate a hung `_fetch_issues()` (e.g. a stalled GitHub call) and
-    verify a second, unrelated concurrent request is served immediately
-    instead of queueing behind it — proving the handler runs off the event
-    loop (board #447 acceptance criterion: 'a simulated hung fetch no
-    longer blocks a second concurrent request')."""
+# NOTE (board #458): the former
+# `test_kanban_board_hung_fetch_does_not_block_concurrent_request` test was
+# DELETED here — it was FALSE SECURITY. It drove a hung `_fetch_issues()` through
+# Starlette's TestClient and asserted a concurrent `/health` request stayed fast;
+# but the TestClient runs the app via anyio's BlockingPortal, which serves the
+# second request on a *different* portal thread regardless of whether the handler
+# is sync or async. The test therefore PASSED even when `kanban_board` was mutated
+# back to `async def` (verified by the PR #184 independent reviewer) — so it
+# fenced nothing. `test_kanban_board_handler_is_not_async` above is the real
+# regression fence for issue #447 (it fails the moment the handler becomes async).
+# A faithful event-loop-blocking test would need a real `uvicorn.Server`; the
+# static async-def guard is a simpler, reliable equivalent, so we don't add one.
+
+
+# ── 2. single-flight cache: N concurrent stale-cache requests → 1 fetch ───────
+
+def test_fetch_issues_single_flight_one_fetch_under_concurrency():
+    """board #458: `kanban_board` is threadpooled (issue #447), so N concurrent
+    requests arriving on a stale cache would each pass the TTL check and fire a
+    duplicate 5-page GitHub fetch. The single-flight lock must collapse them to
+    exactly ONE fetch: the winner refreshes the cache, the rest wait on the lock
+    and reuse it.
+
+    Drives `_fetch_issues` directly from N threads (not via TestClient, whose
+    BlockingPortal would serialise the calls and mask the race). A barrier makes
+    all threads hit the stale-cache check together; a counting stub for the
+    HTTP-fetch body proves it ran once."""
     _kanban = _kanban_module()
 
-    release = threading.Event()
-    entered = threading.Event()
+    # Start from a stale (empty) cache so every thread takes the slow path.
+    _kanban._cache_data = []
+    _kanban._cache_ts = 0.0
 
-    def hung_fetch():
-        entered.set()
-        release.wait(timeout=5)
-        return [], None
+    N = 12
+    fetch_calls = 0
+    fetch_lock = threading.Lock()
+    barrier = threading.Barrier(N)
 
-    monkeypatch.setattr(_kanban, "_fetch_issues", hung_fetch)
+    def counting_locked_fetch():
+        # Stands in for the real GitHub fetch body (called under _fetch_lock).
+        nonlocal fetch_calls
+        with fetch_lock:
+            fetch_calls += 1
+        time.sleep(0.05)  # widen the window a duplicate fetch could sneak into
+        issues = [{"number": 1, "title": "x", "labels": [],
+                   "url": "", "updatedAt": "", "createdAt": "", "state": "open"}]
+        _kanban._cache_data = issues
+        _kanban._cache_ts = time.monotonic()
+        return issues, None
 
-    results: dict[str, float] = {}
+    # Patch the fetch body, not _fetch_issues itself, so the REAL lock +
+    # double-checked cache logic under test is exercised.
+    orig = _kanban._fetch_issues_locked
+    _kanban._fetch_issues_locked = counting_locked_fetch
+    try:
+        results: list = []
+        results_lock = threading.Lock()
 
-    def call_kanban():
-        start = time.monotonic()
-        r = client.get("/kanban")
-        results["kanban_status"] = r.status_code
-        results["kanban_elapsed"] = time.monotonic() - start
+        def worker():
+            barrier.wait()  # release all threads onto the stale cache at once
+            data, err = _kanban._fetch_issues()
+            with results_lock:
+                results.append((len(data), err))
 
-    t = threading.Thread(target=call_kanban)
-    t.start()
+        threads = [threading.Thread(target=worker) for _ in range(N)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+    finally:
+        _kanban._fetch_issues_locked = orig
+        _kanban._cache_data = []
+        _kanban._cache_ts = 0.0
 
-    # Wait until the kanban request is actually inside the hung fetch.
-    assert entered.wait(timeout=5), "kanban request never reached _fetch_issues"
-
-    # A concurrent, unrelated request must be served promptly — it must not
-    # queue behind the stuck /kanban request on a single worker thread.
-    # /health is used (not /) because home() also reads the shared
-    # _fetch_issues() cache (see home.py:_kanban_queue_counts) and would
-    # legitimately hang too — /health never touches the board cache.
-    start = time.monotonic()
-    r2 = client.get("/health")
-    elapsed = time.monotonic() - start
-    assert r2.status_code == 200
-    assert elapsed < 2.0, (
-        f"concurrent request took {elapsed:.2f}s — kanban_board appears to "
-        "be blocking the event loop / worker (board #447 regression)"
+    assert fetch_calls == 1, (
+        f"expected exactly 1 GitHub fetch under {N} concurrent stale-cache "
+        f"requests (single-flight), got {fetch_calls}"
     )
+    # Every caller got the same successful, non-empty result.
+    assert len(results) == N
+    assert all(err is None and n == 1 for n, err in results), results
 
-    release.set()
-    t.join(timeout=5)
-    assert results.get("kanban_status") == 200
 
-
-# ── 2. gh subprocess calls must carry a timeout and fail safe ────────────────
+# ── 3. gh subprocess calls must carry a timeout and fail safe ────────────────
 
 def test_gh_contents_sha_timeout_returns_none_with_warning(monkeypatch, caplog):
     """A TimeoutExpired from the `gh api ... --jq .sha` subprocess call must

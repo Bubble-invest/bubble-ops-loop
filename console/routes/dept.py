@@ -3,7 +3,9 @@ GET /dept/<slug>/management-view — CEO aggregation view (management depts only
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -31,28 +33,48 @@ _KANBAN_COL_LABELS = {
 }
 
 
+_KANBAN_SNAPSHOT_TTL_SECONDS = 30
+_kanban_snapshot_cache: dict = {}  # limit -> (value, monotonic_checked_at)
+
+
 def _kanban_snapshot(limit: int = 6) -> "dict | None":
     """Compact cross-dept kanban view for the management cockpit: per-column
     counts + the first few `needs_attention` items. Returns None if the
-    dashboard is unreachable (the page must still render)."""
+    dashboard is unreachable (the page must still render).
+
+    This used to do a blocking urlopen (up to 4s) on EVERY management-page
+    load with no log on failure. Cached for a short TTL; failures are logged
+    (still returns None so the page renders)."""
+    cached = _kanban_snapshot_cache.get(limit)
+    if cached is not None:
+        value, checked_at = cached
+        if (time.monotonic() - checked_at) < _KANBAN_SNAPSHOT_TTL_SECONDS:
+            return value
+
     import json
     import urllib.request
 
     try:
         with urllib.request.urlopen(f"{_DASHBOARD}/api/inbox", timeout=4) as r:
             data = json.loads(r.read())
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "_kanban_snapshot: dashboard unreachable at %s: %s", _DASHBOARD, exc)
+        _kanban_snapshot_cache[limit] = (None, time.monotonic())
         return None
+
     cols = data.get("columns", {}) or {}
     counts = data.get("counts", {}) or {}
     attention = (cols.get("needs_attention") or [])[:limit]
-    return {
+    result = {
         "counts": {k: counts.get(k, 0) for k in _KANBAN_COL_LABELS},
         "labels": _KANBAN_COL_LABELS,
         "attention": attention,
         "attention_total": len(cols.get("needs_attention") or []),
         "generated_at": data.get("generated_at", ""),
     }
+    _kanban_snapshot_cache[limit] = (result, time.monotonic())
+    return result
 
 
 @router.get("/dept/{slug}", response_class=HTMLResponse)

@@ -7,7 +7,13 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import backup_history, concierge_reader, dept_registry, github_reader
+from console.services import (
+    backup_history,
+    concierge_reader,
+    dept_registry,
+    github_reader,
+    merge_ready_reader,
+)
 from console.services.gate_grouping import group_gates_by_kind
 
 router = APIRouter()
@@ -108,6 +114,9 @@ def home(request: Request):
     # Kanban queue counts — reuse kanban.py's in-process cache (no added latency).
     kanban_counts = _kanban_queue_counts()
     rnd_decisions = _board_decision_cards()  # needs:human cards (board #358)
+    # Merge-ready PRs — reviewed + waiting for Joris to merge (board #469).
+    # Read-only surface; fails safe to [] on token-missing/API error.
+    merge_ready = merge_ready_reader.list_merge_ready()
     # Recent decisions tray — last ~10 decisions across all live depts, newest first.
     all_slugs = [col["dept"].slug for col in columns]
     recent_decisions = github_reader.list_recent_decisions(all_slugs, limit=10)
@@ -119,6 +128,7 @@ def home(request: Request):
             "total_gates": total_gates,
             "rnd_decisions": rnd_decisions,
             "rnd_decision_count": len(rnd_decisions),
+            "merge_ready": merge_ready,
             "live_count": len([c for c in columns if c["dept"].is_live]),
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
             "backup_rollup": backup_rollup,

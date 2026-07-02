@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -190,11 +191,27 @@ def _newest_session(name: str) -> Optional[str]:
     return max(files, key=lambda p: os.path.getmtime(p))
 
 
+_SERVICE_STATUS_TTL_SECONDS = 30
+_service_status_cache: dict = {}  # name -> (value, monotonic_checked_at)
+
+
 def service_status(name: str) -> str:
     """Return systemd ActiveState for the concierge's claude-agent unit.
 
     One of "active" / "inactive" / "failed" / "unknown". Read-only, no
-    sudo needed (`systemctl is-active` works for any user). Never raises."""
+    sudo needed (`systemctl is-active` works for any user). Never raises.
+
+    Shells out to `systemctl` per call, which used to happen once per
+    concierge on EVERY `/` and `/agents` page load. Cached for a short TTL
+    so repeat page loads within the window skip the subprocess."""
+    import time as _time
+
+    cached = _service_status_cache.get(name)
+    if cached is not None:
+        value, checked_at = cached
+        if (_time.monotonic() - checked_at) < _SERVICE_STATUS_TTL_SECONDS:
+            return value
+
     import subprocess
     try:
         r = subprocess.run(
@@ -202,9 +219,14 @@ def service_status(name: str) -> str:
             capture_output=True, text=True, timeout=5,
         )
         out = (r.stdout or "").strip()
-        return out or "unknown"
-    except (subprocess.SubprocessError, OSError):
-        return "unknown"
+        value = out or "unknown"
+    except (subprocess.SubprocessError, OSError) as exc:
+        logging.getLogger(__name__).warning(
+            "service_status: systemctl probe failed for claude-agent-%s: %s", name, exc)
+        value = "unknown"
+
+    _service_status_cache[name] = (value, _time.monotonic())
+    return value
 
 
 def _summary(name: str, ws: str) -> ConciergeSummary:

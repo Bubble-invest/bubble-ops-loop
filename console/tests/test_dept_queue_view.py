@@ -238,6 +238,66 @@ def test_list_layer_queues_empty_for_unknown_slug(tmp_path, monkeypatch):
     assert result == {1: [], 2: [], 3: [], 4: []}
 
 
+def test_list_layer_queues_parses_gates_dir_once(tmp_path, monkeypatch):
+    """queues/gates/ used to be globbed+parsed twice per request
+    (list_pending_gates internally, then again in list_layer_queues' own
+    loop) — board #450. Spy on Path.read_text to confirm gate-1.yaml is
+    read exactly once."""
+    import sys
+    from pathlib import Path as _Path
+
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    _make_queue_repo(tmp_path)
+    from console.services.github_reader import list_layer_queues
+
+    reads = []
+    orig_read_text = _Path.read_text
+
+    def spy_read_text(self, *a, **k):
+        if self.name == "gate-1.yaml":
+            reads.append(self)
+        return orig_read_text(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_text", spy_read_text)
+    result = list_layer_queues("qtest")
+
+    assert any(i["id"] == "gate-1" for i in result[1]), "sanity: gate still present"
+    assert len(reads) == 1, f"expected gate-1.yaml to be read exactly once, got {len(reads)} reads"
+
+
+def test_list_layer_queues_malformed_item_logs_warning(tmp_path, monkeypatch, caplog):
+    """A malformed YAML in a non-gate queue dir used to be swallowed at
+    debug level (invisible by default) — board #450 raises it to warning."""
+    import logging
+    import sys
+
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "broken.yaml").write_text(
+        "id: broken\nquestion_text: [unterminated\n", encoding="utf-8"
+    )
+
+    from console.services.github_reader import list_layer_queues
+
+    with caplog.at_level(logging.WARNING, logger="console.github_reader"):
+        result = list_layer_queues("qtest")
+
+    l1_ids = [i["id"] for i in result[1]]
+    assert "broken" not in l1_ids, "malformed item must still be excluded from results"
+    assert any(
+        "broken.yaml" in rec.message and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    ), f"expected a WARNING log naming broken.yaml, got: {[r.message for r in caplog.records]}"
+
+
 # ─── Integration tests for the HTTP endpoints ────────────────────────────────
 
 
