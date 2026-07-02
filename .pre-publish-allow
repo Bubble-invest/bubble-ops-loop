@@ -30,3 +30,22 @@ git@github\.com|@github\.com
 msg [0-9]{3,4}/20[0-9]{2}-[0-9]{2}-[0-9]{2}
 # why: synthetic ghs_FAKE… token fixtures embedded mid-string (digits trip phone/siret regex).
 ghs_FAKE
+
+# why (#372): deploy/bin/bubble-broker-mint-settings-root.sh MINT_DRY diagnostic
+#      branch echoes the hardcoded placeholder "ghs_DRYRUN_<timestamp>" to prove
+#      arg-resolution WITHOUT touching the real broker/GitHub — no real token is
+#      ever assigned to this string. Matches ghs_ only via the literal "DRYRUN"
+#      text. Verified: the ONLY secret-prefix hit in that file (tree + history).
+ghs_DRYRUN_
+
+# why (#372): deploy/bin/bubble-broker-mint-settings-root.sh's inst_id_for_dept()
+#      map + doc comment contain GitHub App INSTALLATION IDs 135214360
+#      (Bubble-invest org install: maya/tony/cgp/ben) and 134075326 (vdk888
+#      install: fixture repo) — 9-digit numbers that coincidentally match the
+#      pii-siret-siren digit-pattern regex. NOT French SIRET/SIREN identifiers.
+#      Installation IDs are non-secret constants (documented in the file's own
+#      header, same class as GITHUB_APP_ID=3782718) visible in the GitHub App
+#      installation URL/UI. Verified: the ONLY pii-siret-siren hits in that file
+#      (tree + history).
+135214360
+134075326

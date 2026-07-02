@@ -7,3 +7,28 @@
 #      on-box scripts reference /home/claude/agents/<agent>/...), not operator
 #      PII. The path scheme is public by design — mirrors the root allow file.
 /home/claude/agents/
+
+# why (#372): bubble-broker-mint-settings-root.sh MINT_DRY diagnostic branch
+#      echoes a hardcoded placeholder string "ghs_DRYRUN_<timestamp>" to prove
+#      the wrapper resolved its args WITHOUT touching the real broker/GitHub.
+#      It only ever matches the scanner's ghs_ (GitHub App installation token)
+#      prefix because of the literal "DRYRUN" text, not a minted credential —
+#      no real token is ever assigned to this string. Verified: this is the
+#      ONLY secret-prefix hit in the file (working tree + both git-history
+#      revisions); independently re-checked against the raw source line.
+ghs_DRYRUN_
+
+# why (#372): bubble-broker-mint-settings-root.sh's inst_id_for_dept() map and
+#      its doc comment contain the GitHub App INSTALLATION IDs 135214360
+#      (Bubble-invest org install, covers maya/tony/cgp/ben) and 134075326
+#      (vdk888 install, covers the fixture repo). These are 9-digit numbers
+#      that coincidentally match the pii-siret-siren digit-pattern regex —
+#      they are NOT French SIRET/SIREN company identifiers. GitHub App
+#      installation IDs are non-secret constants documented as such in the
+#      file's own header (same class as GITHUB_APP_ID=3782718, per the
+#      cred-helper sudoers pattern) and are visible in the GitHub App
+#      installation URL/UI to anyone with org access. Verified: these are the
+#      ONLY pii-siret-siren hits in the file (working tree + both git-history
+#      revisions); independently re-checked against the raw source lines.
+135214360
+134075326
