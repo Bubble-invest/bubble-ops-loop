@@ -126,6 +126,27 @@ gh issue list --repo Bubble-invest/bubble-ops-board --search "<your title>"
 Or open the cockpit `/kanban`. If you can't see it on the board, it did NOT land — do not
 assume success from exit 0.
 
+## If your card's work ends in a PR — the cockpit «Prêt à merger» conventions
+
+The cockpit home page surfaces **merge-ready PRs** to the operator with a plain-French
+explanation, evidence chips and a direct GitHub link (the «🟢 Prêt à merger» panel). For your
+PR to appear there **correctly and legibly**, follow BOTH conventions:
+
+1. **`RÉSUMÉ:` line — first line of every PR body.** One clear French sentence a non-developer
+   reads cold: what this PR changes for the firm, not how. It becomes the card's headline on
+   the cockpit (fallback = your technical title with its `feat(scope):`-style prefix stripped —
+   always worse). Example: `RÉSUMÉ: Le cockpit affiche les PRs validées prêtes à merger, avec
+   explication claire et lien direct.`
+2. **The merge-ready marker — only in a genuine final verdict.** A PR is shown as merge-ready
+   iff its **latest** review-verdict comment contains the exact phrase `Merge-ready for Joris`
+   at the start of a line (the console matcher is literal, hardened against the phrase being
+   *quoted* inside a FAIL/request-changes comment — quoting it is safe). Never write it as a
+   verdict unless an **independent reviewer (maker≠checker) actually PASSED** the diff; include
+   the evidence in the same comment (tests passed, mutation checks, scope).
+
+Coverage: `bubble-ops-loop` PRs today; dept repos follow automatically once the board App's
+grant widens (board #470) — same conventions, zero further change on your side.
+
 ## Example — a finding spotted mid-tick (don't derail, don't lose it)
 
 ```bash
