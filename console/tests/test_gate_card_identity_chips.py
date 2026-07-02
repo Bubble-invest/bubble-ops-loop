@@ -59,13 +59,34 @@ def fixture_repo(fixture_root: Path) -> Path:
 class TestIdentityChips:
 
     def test_type_chip_renders_humanized_kind(self, client, fixture_repo):
-        """The type pill shows the human label, not the raw kind slug."""
+        """The type pill shows the human label (from the existing _HUMAN_KIND
+        map), not the raw kind slug."""
         _write_gate(fixture_repo, "chip-type-1", _base_gate(
-            "chip-type-1", kind="investment_case"))
+            "chip-type-1", kind="social_post"))
         r = client.get("/gate/fixture/chip-type-1")
         assert r.status_code == 200, r.text
         assert "gate-chip--type" in r.text
-        assert "Investment Case" in r.text
+        assert "publication sociale" in r.text
+
+    def test_type_chip_falls_back_gracefully_for_unmapped_kind(self, client, fixture_repo):
+        """A kind with no _HUMAN_KIND entry (e.g. a content-type slug like
+        investment_case/essay/newsletter that has no confirmed enum anywhere
+        in this codebase — #433 scout check) must still render readable
+        prose via humanize_kind's snake_case fallback, never a raw enum leak
+        and never an invented label for an unconfirmed slug."""
+        _write_gate(fixture_repo, "chip-type-2", _base_gate(
+            "chip-type-2", kind="investment_case"))
+        r = client.get("/gate/fixture/chip-type-2")
+        assert r.status_code == 200, r.text
+        assert "gate-chip--type" in r.text
+        assert "investment case" in r.text
+        # The raw slug does legitimately appear elsewhere on the page (the
+        # collapsible raw-YAML debug block) — scope the no-leak check to the
+        # chip itself, not the whole page.
+        chip_start = r.text.find("gate-chip--type")
+        chip_end = r.text.find("</span>", chip_start)
+        chip_html = r.text[chip_start:chip_end]
+        assert "investment_case" not in chip_html
 
     def test_channel_chip_renders_from_explicit_channel(self, client, fixture_repo):
         _write_gate(fixture_repo, "chip-chan-1", _base_gate(
@@ -90,7 +111,7 @@ class TestIdentityChips:
         """Source pill shows only the basename of approval_bridge.item_ref —
         the full repo-relative path is noise on a phone-sized card."""
         _write_gate(fixture_repo, "chip-src-1", _base_gate(
-            "chip-src-1", kind="essay",
+            "chip-src-1", kind="content_publish",
             approval_bridge={"item_ref":
                 "drafts/2026-07-01/publish-linkedin-plaide-contre-sa-conviction.md"}))
         r = client.get("/gate/fixture/chip-src-1")
@@ -109,7 +130,9 @@ class TestIdentityChips:
         r = client.get("/gate/fixture/chip-panw-1")
         assert r.status_code == 200, r.text
         assert "gate-identity-chips" in r.text
-        assert "gate-chip--type" in r.text and "essai" in r.text
+        # "essay" has no confirmed kind: enum in the codebase — humanize_kind's
+        # snake_case fallback renders it as-is (no underscores), still legible.
+        assert "gate-chip--type" in r.text and "essay" in r.text
         assert "gate-chip--channel" in r.text and "SUBSTACK" in r.text
         assert "gate-chip--source" in r.text and "panw-essay-2026-06-30.md" in r.text
 
