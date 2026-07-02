@@ -101,6 +101,37 @@ def test_launch_rejects_invalid_token(tmp_path: Path):
         eclosure_launcher.launch(slug="maya", telegram_bot_token="garbage")
 
 
+def test_try_install_github_app_targets_settings_org(monkeypatch):
+    """try_install_github_app must build the repo path from settings.GITHUB_ORG,
+    not a hardcoded org — a hardcoded org 404s during éclosure for any org other
+    than the one baked in, silently failing to grant the App repo access
+    (board #448)."""
+    from console.services import eclosure_launcher
+
+    monkeypatch.setattr(eclosure_launcher.settings, "GITHUB_ORG", "Bubble-invest-custom")
+
+    captured_cmds = []
+
+    def fake_run(cmd, *a, **kw):
+        captured_cmds.append(cmd)
+
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(eclosure_launcher.subprocess, "run", fake_run)
+
+    eclosure_launcher.try_install_github_app("maya")
+
+    assert captured_cmds, "expected at least one gh api call"
+    joined = " ".join(" ".join(cmd) for cmd in captured_cmds)
+    assert "repos/Bubble-invest-custom/bubble-ops-maya" in joined, joined
+    assert "vdk888" not in joined
+
+
 def test_launch_swallows_github_app_failure_but_reports_it(monkeypatch):
     """If the GitHub App install fails (403, etc.), launch() must still
     return ok=True for the local éclosure, and surface a github_app.error
