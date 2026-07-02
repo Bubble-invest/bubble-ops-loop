@@ -78,6 +78,43 @@
   {% endif %}
 </section>
 
+{# ─── Section 1a — Prêt à merger (board #469) ─────────────────────
+   PRs Rick's independent-reviewer has approved, waiting only for Joris to
+   merge on GitHub. Read-only surface — merging stays on GitHub. Hidden
+   entirely when there is nothing waiting (no noise). #}
+{% if merge_ready %}
+<section class="cabinet-section" aria-labelledby="merge-ready-heading">
+  <h2 id="merge-ready-heading" class="section-heading">
+    <span class="section-heading-number">1a.</span>
+    🟢 Prêt à merger
+  </h2>
+  <div class="decisions-grid">
+    {% for pr in merge_ready %}
+    <div class="decision-card" style="display:block;">
+      <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">
+        {{ pr.repo }}·#{{ pr.number }}{% if pr.age %} · {{ pr.age }}{% endif %}
+      </div>
+      <div class="decision-card-title">{{ pr.explanation or pr.title }}</div>
+      {% if pr.chips %}
+      <div class="decision-card-sub" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">
+        {% for chip in pr.chips %}
+        <span style="font-size:11px; padding:2px 8px; border:1px solid var(--line);
+                     border-radius:2px; color:var(--body-soft); background:var(--paper-soft);">{{ chip }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <a href="{{ pr.html_url }}" target="_blank" rel="noopener"
+         class="decision-card-cta"
+         style="display:inline-block; margin-top:10px; font-size:12px; text-transform:uppercase;
+                color:var(--ochre-deep); letter-spacing:0.04em; text-decoration:none;">
+        Ouvrir sur GitHub →
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {# ─── Section 1b — Décidé récemment ──────────────────────────── #}
 {% if recent_decisions %}
 <section class="cabinet-section" aria-labelledby="recentes-heading">
