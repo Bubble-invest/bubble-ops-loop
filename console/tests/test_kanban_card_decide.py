@@ -130,6 +130,68 @@ def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_bo
         "clarify must not create any label"
 
 
+def test_decide_from_detail_with_return_to_sends_hx_redirect(client, captured_board):
+    """A decide carrying an allowlisted return_to (the detail-page case) → the
+    decision is still applied AND the response carries HX-Redirect back to that
+    path, with no inline partial body (board #483 follow-up)."""
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "approve", "return_to": "/kanban"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/kanban"
+    assert r.text == ""  # HX-Redirect, not the inline confirmation partial
+    # The decision was still applied (label + comment + close)
+    methods_paths = [(m, p) for (m, p, _payload) in captured_board]
+    assert ("POST", "/issues/427/labels") in methods_paths
+    assert ("PATCH", "/issues/427") in methods_paths
+
+
+def test_decide_return_to_root_allowed(client, captured_board):
+    """`/` is on the allowlist → HX-Redirect to /."""
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "defer", "return_to": "/"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/"
+
+
+def test_decide_garbage_return_to_no_redirect_inline_partial(client, captured_board):
+    """A return_to NOT on the allowlist (open-redirect attempt / arbitrary path)
+    is treated as absent → NO HX-Redirect, the normal inline partial is returned
+    and the decision is still applied."""
+    for bad in ("https://evil.example/phish", "/settings", "//evil.example",
+                "/kanban/card/427", "javascript:alert(1)"):
+        captured_board.clear()
+        r = client.post("/kanban/card/427/decide",
+                        data={"action": "approve", "return_to": bad})
+        assert r.status_code == 200, bad
+        assert "HX-Redirect" not in r.headers, bad
+        # Inline confirmation partial rendered instead
+        assert "Rick" in r.text, bad
+        # Decision still applied
+        assert any(p == "/issues/427/labels"
+                   for (m, p, _pl) in captured_board), bad
+
+
+def test_decide_from_surface_no_return_to_unchanged_inline(client, captured_board):
+    """A decide from the home/kanban card surface sends NO return_to → unchanged
+    behavior: no HX-Redirect, the inline confirmation partial swaps as before."""
+    r = client.post("/kanban/card/427/decide", data={"action": "approve"})
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
+    assert "Rick" in r.text  # inline partial
+
+
+def test_decide_failed_with_return_to_still_error_partial_no_redirect(client, monkeypatch):
+    """Even with a valid return_to, a FAILED decide must surface the error partial
+    (no HX-Redirect) — the redirect only fires on success."""
+    _kanban = _kanban_module()
+    monkeypatch.setattr(_kanban, "_read_board_token", lambda: None)  # 503 path
+    r = client.post("/kanban/card/427/decide",
+                    data={"action": "approve", "return_to": "/kanban"})
+    assert r.status_code == 503
+    assert "HX-Redirect" not in r.headers
+    assert "non enregistrée" in r.text
+
+
 def test_bad_action_returns_400(client, captured_board):
     """An action outside {approve,reject,defer} → 400, no board writes."""
     r = client.post("/kanban/card/427/decide", data={"action": "nuke"})

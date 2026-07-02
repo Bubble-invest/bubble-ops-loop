@@ -22,6 +22,7 @@ import threading
 from datetime import date as _dt_date
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -730,6 +731,42 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
         raise ValueError(f"unknown action: {action}")
 
 
+# ── Return-to allowlist (board #483 follow-up) ───────────────────────────────
+#
+# After a DECISION on the card DETAIL page, Joris is bounced back to the page he
+# came from (kanban or cockpit home) via an HX-Redirect header. We NEVER echo an
+# arbitrary Referer — an attacker-controlled redirect target is an open-redirect.
+# Only these exact same-origin paths are honoured; anything else → default.
+_RETURN_TO_ALLOWLIST = {"/", "/kanban"}
+_RETURN_TO_DEFAULT = "/kanban"
+
+
+def _sanitize_return_to(value: str | None) -> str | None:
+    """Return `value` iff it is one of the allowlisted same-origin paths, else
+    None. Used both to seed the detail page's hidden field (from the Referer)
+    and to validate the field on the decide POST — a single source of truth."""
+    if value and value in _RETURN_TO_ALLOWLIST:
+        return value
+    return None
+
+
+def _return_to_from_referer(request: Request) -> str | None:
+    """Derive an allowlisted return_to from the request's Referer path. Parses
+    out the path only (drops scheme/host/query) so a cross-origin or query-laden
+    Referer can't smuggle a target; then runs it through the allowlist."""
+    referer = request.headers.get("referer") or request.headers.get("referrer")
+    if not referer:
+        return None
+    try:
+        path = urllib.parse.urlparse(referer).path or ""
+    except ValueError:
+        return None
+    # Normalise a trailing slash on /kanban/ → /kanban (but keep root "/").
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return _sanitize_return_to(path)
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/kanban/attachment")
@@ -781,6 +818,11 @@ def kanban_card_detail(number: int, request: Request):
     body_text = issue.get("body") or ""
     sections = _parse_body_sections(body_text)
 
+    # Where to bounce Joris after a decision made from THIS page — the page he
+    # arrived from (kanban or home), allowlisted (board #483 follow-up). Empty
+    # string (not None) so the template's hidden field is inert when absent.
+    return_to = _return_to_from_referer(request) or ""
+
     return request.app.state.templates.TemplateResponse(
         "kanban_card.html",
         {
@@ -789,6 +831,7 @@ def kanban_card_detail(number: int, request: Request):
             "sections": sections,
             "comments": comments,
             "issue_url": issue.get("html_url") or issue.get("url") or "",
+            "return_to": return_to,
         },
     )
 
@@ -814,6 +857,7 @@ def _decision_error_partial(request: Request, number: int, message: str,
 def kanban_card_decide(
     number: int, request: Request,
     action: str = Form(...), comment: str = Form(""),
+    return_to: str = Form(""),
 ):
     """Record Joris's decision on an R&D `needs:human` board card (board #427).
 
@@ -824,6 +868,12 @@ def kanban_card_decide(
 
     Fails SAFE: no board token (dev/CI) → 503 partial, never a crash; a GitHub
     API error → an error partial, never a 500. The card swaps in place either way.
+
+    return_to (board #483 follow-up): when the decision comes from the card DETAIL
+    page it carries an allowlisted return path; on SUCCESS we send HX-Redirect so
+    htmx navigates Joris back to the kanban/home he came from. Decisions from the
+    home/kanban card surfaces send no return_to → unchanged inline swap. A garbage
+    return_to is treated as absent (open-redirect guard).
     """
     if action not in CARD_DECISION_ACTIONS:
         raise HTTPException(400, f"Invalid action: {action}")
@@ -856,6 +906,14 @@ def kanban_card_decide(
     # disappears on the next /kanban or / load instead of lingering until TTL.
     global _cache_ts
     _cache_ts = 0.0
+
+    # If the decision came from the card DETAIL page (return_to carries a valid
+    # allowlisted path), bounce Joris back to where he was via HX-Redirect —
+    # htmx follows the header and does a client-side navigation. Absent/garbage
+    # return_to → the unchanged inline swap (home/kanban card surfaces).
+    dest = _sanitize_return_to(return_to)
+    if dest:
+        return HTMLResponse(content="", headers={"HX-Redirect": dest})
 
     return request.app.state.templates.TemplateResponse(
         "partials/kanban_decision_ok.html",

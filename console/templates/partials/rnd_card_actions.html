@@ -16,6 +16,13 @@
       hx-target="#rnd-card-{{ rc.id }}"
       hx-swap="outerHTML"
       style="margin:10px 0 0; display:flex; flex-direction:column; gap:8px;">
+  {# return_to (board #483 follow-up): present ONLY on the detail page, seeded
+     server-side from the (allowlisted) Referer. On a successful decide the route
+     sends HX-Redirect back there. Home/kanban card surfaces don't set it → no
+     hidden field → unchanged inline swap. #}
+  {% if return_to is defined and return_to %}
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  {% endif %}
   <textarea name="comment" rows="2" placeholder="commentaire (facultatif) — Rick le lira à son prochain tick…"
          style="width:100%; box-sizing:border-box; background: var(--paper); color: var(--ink);
                 border:1px solid var(--line); border-radius:3px; resize:vertical;

@@ -172,6 +172,35 @@ def test_comment_body_is_escaped_on_detail_and_reply(client, captured_comment,
     assert "&lt;img" in r_post.text
 
 
+def test_comment_never_redirects(client, captured_comment):
+    """The «Répondre» comment POST must stay on the page — never HX-Redirect,
+    even though the detail page's decide forms do (board #483 follow-up). Joris
+    may want to comment then decide."""
+    r = client.post("/kanban/card/482/comment",
+                    data={"body": "juste une remarque"})
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
+
+
+def test_detail_return_to_hidden_field_from_allowlisted_referer(client, monkeypatch):
+    """The detail page seeds a hidden return_to from an allowlisted Referer path,
+    and omits it (no open-redirect echo) for a non-allowlisted one."""
+    _kanban = _kanban_module()
+    monkeypatch.setattr(
+        _kanban, "_fetch_single_issue",
+        lambda n: (_issue(n, needs_human=True), None),
+    )
+    # Allowlisted Referer → hidden field present with that path.
+    r_ok = client.get("/kanban/card/482",
+                      headers={"Referer": "https://cockpit.example/kanban"})
+    assert 'name="return_to"' in r_ok.text
+    assert 'value="/kanban"' in r_ok.text
+    # Non-allowlisted Referer → NO hidden field (never echo an arbitrary target).
+    r_bad = client.get("/kanban/card/482",
+                       headers={"Referer": "https://cockpit.example/settings"})
+    assert 'name="return_to"' not in r_bad.text
+
+
 def test_comment_empty_body_returns_400(client, captured_comment):
     """Empty body → 400, a visible French message, and NO board write."""
     r = client.post("/kanban/card/482/comment", data={"body": "   "})
