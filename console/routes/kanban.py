@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from datetime import date as _dt_date
 import time
 import urllib.error
@@ -45,6 +46,11 @@ router = APIRouter()
 # Avoids hitting the GitHub API on every /kanban page load.
 _cache_data: list = []      # last fetched raw issue list
 _cache_ts: float = 0.0      # epoch-seconds when cache was populated
+# Single-flight lock: kanban_board is threadpooled (issue #447), so N concurrent
+# requests on a stale cache would each pass the TTL check and fire duplicate
+# 5-page GitHub fetches (issue #458). This lock serialises the fetch; the first
+# thread in refreshes the cache, the rest re-check under the lock and reuse it.
+_fetch_lock = threading.Lock()
 
 
 # The board API token is minted by a root timer (bubble-board-token-refresh)
@@ -78,10 +84,28 @@ def _fetch_issues() -> tuple[list, str | None]:
     """
     global _cache_data, _cache_ts
 
-    now = time.monotonic()
     ttl = settings.GH_CACHE_TTL_SECONDS
-    if now - _cache_ts < ttl and _cache_data:
+    # Fast path: a fresh, non-empty cache is served without taking the lock
+    # (an unsynchronised read of a still-valid cache is safe — GIL-atomic).
+    if time.monotonic() - _cache_ts < ttl and _cache_data:
         return _cache_data, None
+
+    # Slow path: cache is stale/empty. Serialise so N concurrent threads produce
+    # exactly ONE GitHub fetch. Double-checked: whoever loses the race to the
+    # lock re-tests the cache under it and reuses the fetch the winner just did.
+    with _fetch_lock:
+        if time.monotonic() - _cache_ts < ttl and _cache_data:
+            return _cache_data, None
+
+        return _fetch_issues_locked()
+
+
+def _fetch_issues_locked() -> tuple[list, str | None]:
+    """Perform the actual GitHub fetch + cache write. Callers MUST hold
+    `_fetch_lock` (this is the single-flight body of `_fetch_issues`)."""
+    global _cache_data, _cache_ts
+
+    now = time.monotonic()
 
     token = _read_board_token()
     if not token:
