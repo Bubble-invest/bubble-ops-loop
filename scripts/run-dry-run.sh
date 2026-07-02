@@ -70,7 +70,12 @@ done
 # Delegate to Python — the simulator lives in the skill_lib.
 SKILL_LIB="$PROJECT_ROOT/skills/department-onboarding-guide"
 
-exec python3 - <<PYEOF
+# Use the calling environment's interpreter (honors $PYTHON, e.g. set by a
+# Python caller to sys.executable), falling back to whatever `python3` PATH
+# resolves to. On the VPS this stays "python3" (system interpreter, which
+# already has the deps) — only dev/CI callers that export PYTHON change
+# behavior.
+exec "${PYTHON:-python3}" - <<PYEOF
 import json, sys, yaml
 from pathlib import Path
 sys.path.insert(0, "$SKILL_LIB")

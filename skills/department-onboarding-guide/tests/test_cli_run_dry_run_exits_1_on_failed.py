@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,10 @@ def test_cli_exits_1_on_failed(tmp_dept_repo):
         # intentionally missing priority + created_at + payload
     }
     fake_qi_path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+    # Tell run-dry-run.sh to use THIS interpreter (dev venv or CI
+    # runner) instead of whatever bare `python3` PATH resolves to.
     env = os.environ.copy()
+    env["PYTHON"] = sys.executable
     proc = subprocess.run(
         [
             "bash", str(SCRIPT),
@@ -66,7 +70,10 @@ def test_cli_exits_1_on_warning_without_override(tmp_dept_repo, stub_agent_conte
     fake_qi_path = tmp_dept_repo / "fake-qi.yaml"
     fake_qi_path.write_text(yaml.safe_dump(ctx["fake_queue_item"]), encoding="utf-8")
 
+    # Tell run-dry-run.sh to use THIS interpreter (dev venv or CI
+    # runner) instead of whatever bare `python3` PATH resolves to.
     env = os.environ.copy()
+    env["PYTHON"] = sys.executable
     proc = subprocess.run(
         [
             "bash", str(SCRIPT),

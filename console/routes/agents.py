@@ -433,9 +433,15 @@ def activate_dept(
     if not confirm:
         cmd.append("--dry-run")
 
+    # Propagate this process's own interpreter down to activate-dept.sh's
+    # `exec "${PYTHON:-python3}"` so the dry-run gate's in-process import
+    # (skill_lib.dry_run) runs under the SAME deps as this console process
+    # (dev venv or VPS system python) instead of whatever bare `python3`
+    # resolves to on PATH.
+    env = {**os.environ, "PYTHON": sys.executable}
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False,
+            cmd, capture_output=True, text=True, check=False, env=env,
         )
     except FileNotFoundError as exc:
         raise HTTPException(500, f"activate-dept.sh not found: {exc}")
