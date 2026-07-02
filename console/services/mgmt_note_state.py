@@ -44,8 +44,8 @@ Per-note PENDING rule (mirrors `_scan_mgmt_notes`'s per-note loop body,
 including the #198 consumed-first fix and its fail-open behaviour):
 
   1. Not a dotfile, not inside a subdirectory (e.g. `.processed/`).
-  2. `id` (top-level `id` field ONLY — no `directive_id` fallback; see
-     `_note_id()` below for why) NOT IN `.consumed.json` — checked FIRST,
+  2. `id` (top-level `id` field, else `directive_id` — fix #468; see
+     `_note_id()` below) NOT IN `.consumed.json` — checked FIRST,
      unconditionally, regardless of `created_at`. A consumed note is never
      pending no matter how its timestamp looks.
   3. Unreadable/malformed YAML → fail-open (treat as pending; we would
@@ -122,21 +122,17 @@ def _note_id(data: Dict[str, Any], fallback: str) -> str:
     """A note's identity for `.consumed.json` lookup.
 
     MUST match `scripts/lib/dispatch_helpers.py:_scan_mgmt_notes` byte for
-    byte: that function resolves the consumed-check key as `data.get("id")`
-    ONLY — no `directive_id` fallback, even though directive-shaped notes
-    (`scripts/dispatch_directives.py`) carry `directive_id` and never a
-    top-level `id`. This is a known asymmetry in the dispatcher itself
-    (tracked separately as a framework card — NOT fixed here), but this
-    module's entire job is to mirror the dispatcher's actual behaviour, not
-    to "improve" on it. If we added a `directive_id` fallback here, a
-    consumed directive note would show as hidden/consumed in the console
-    while the dispatcher — which has no such fallback — keeps failing open
-    on it and re-triggers L1 forever. That's the exact failure mode (UI
-    silently disagrees with what the dispatcher acts on) card #459 exists
-    to eliminate. See test_directive_id_not_used_as_consumption_key_mirrors_dispatcher.
+    byte: that function resolves the consumed-check key as
+    `data.get("id") or data.get("directive_id")` (fix #468) — directive-shaped
+    notes (`scripts/dispatch_directives.py`) carry `directive_id` and never a
+    top-level `id`, so without the fallback a consumed directive note could
+    never match `.consumed.json` and would fail open on its timestamp,
+    re-triggering L1 forever (suspected root cause of #235). This module's
+    entire job is to mirror the dispatcher's actual behaviour — see
+    test_directive_id_used_as_consumption_key_fallback_mirrors_dispatcher.
     Falls back to the filename stem, same as the dispatcher effectively does
-    (no `id` → `note_id` is falsy → treated as unconsumed)."""
-    v = data.get("id")
+    (no `id`/`directive_id` → `note_id` is falsy → treated as unconsumed)."""
+    v = data.get("id") or data.get("directive_id")
     if v:
         return str(v)
     return fallback

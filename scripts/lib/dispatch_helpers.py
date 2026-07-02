@@ -203,12 +203,14 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
       - Exclude dotfiles (`.last-mgmt-scan`, `.consumed.json`, `.gitkeep`, …)
       - Exclude subdirectories (e.g. `.processed/`)
       - For each remaining file:
-          1. Check `.consumed.json` FIRST — if the note's `id` is already in
-             the consumed set, skip it regardless of its timestamp. This is the
-             fix for issue #198: a note with a bad/missing `created_at` that
-             hits the fail-open path would previously re-trigger L1 every tick
-             until removed. Now an already-consumed note is silently skipped
-             no matter what its timestamp looks like.
+          1. Check `.consumed.json` FIRST — if the note's `id` (or, absent
+             that, its `directive_id` — fix #468, directive-shaped notes never
+             carry a top-level `id`) is already in the consumed set, skip it
+             regardless of its timestamp. This is the fix for issue #198: a
+             note with a bad/missing `created_at` that hits the fail-open path
+             would previously re-trigger L1 every tick until removed. Now an
+             already-consumed note is silently skipped no matter what its
+             timestamp looks like.
           2. If `since` is None → treat as unconsumed.
           3. Parse `created_at`; if `created_at > since` → unconsumed.
           4. Files still unparseable or missing `created_at` after the consumed
@@ -249,7 +251,15 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
         # If the note's id appears in .consumed.json, L1 has already acted on
         # it. Skip it unconditionally — a bad/missing created_at on a consumed
         # note must not cause an infinite re-trigger.
-        note_id = data.get("id")
+        #
+        # Fix #468 — directive-shaped notes (scripts/dispatch_directives.py)
+        # carry `directive_id` and NEVER a top-level `id`. Without this
+        # fallback such a note can never match `.consumed.json`, so an
+        # already-consumed directive keeps failing open on its timestamp and
+        # re-fires L1 forever (root cause suspected for #235). Mirror this
+        # exactly in console/services/mgmt_note_state.py:_note_id() — the two
+        # must never drift (see that module's docstring / PR #189 note).
+        note_id = data.get("id") or data.get("directive_id")
         if note_id and str(note_id) in consumed_ids:
             continue  # already consumed → not unconsumed, skip this note
 
