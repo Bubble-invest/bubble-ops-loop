@@ -22,6 +22,18 @@ _HUMAN_KIND: dict[str, str] = {
     "research_decision":  "décision de recherche",
     "echo_action":        "action d'écho",
     "social_post":        "publication sociale",
+    # These three are already used elsewhere in gate_card.html/gate_batch.html
+    # as confirmed content-dept kinds (part of the `content_kinds` tuple) but
+    # were missing from this map, so they fell back to the raw snake_case
+    # form. Everything else content-related (investment_case, essay,
+    # newsletter, note, ...) has NO confirmed kind: enum anywhere in the
+    # codebase (#433 scout check) — left unmapped on purpose so they use the
+    # existing graceful fallback (snake_case → space-separated prose, e.g.
+    # "essay" → "essay", "investment_case" → "investment case") rather than
+    # guessing labels for slugs that may not exist.
+    "news_post":          "post",
+    "news_post_task":     "post",
+    "followup_draft":     "relance",
 }
 
 
