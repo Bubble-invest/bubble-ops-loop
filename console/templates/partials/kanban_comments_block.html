@@ -1,0 +1,56 @@
+{# Comments thread + inline «Répondre» form for a kanban card detail page
+   (board #482). This single block is the htmx swap target (outerHTML) for the
+   reply form: it is rendered on the initial detail page AND re-rendered after a
+   POST /kanban/card/<n>/comment — on success the new comment appears in the
+   thread; on failure `comment_error` (a French message) shows above the form and
+   the existing comments are preserved. Markdown is rendered client-side by the
+   .md-render script on kanban_card.html (re-run via htmx:afterSwap there). #}
+<div id="kanban-comments-{{ card.id }}">
+  {% if comments %}
+  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 12px;">
+    Commentaires ({{ comments | length }})
+  </h3>
+  {% for c in comments %}
+  <div style="margin-bottom:12px; padding:10px 12px; background:var(--paper-soft); border:1px solid var(--line); border-radius:3px;">
+    <div style="font-size:12px; color:var(--body-muted); margin-bottom:4px;">
+      <strong>{{ c.user.login if c.user else 'inconnu' }}</strong>
+      · {{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}
+    </div>
+    <div class="md-render" data-md="1">{{ c.body[:6000] }}</div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="font-size:13px; color:var(--body-muted); margin:0 0 12px;">
+    Aucun commentaire pour l'instant.
+  </p>
+  {% endif %}
+
+  {# ── Inline «Répondre» form ──────────────────────────────────────────────
+     Posts the operator's words verbatim as a GitHub issue comment via the
+     board token, then re-renders this whole block (outerHTML) with the new
+     comment. Failures (empty body 400, no-token 503, GitHub error 502) come
+     back as this same block with `comment_error` set. #}
+  {% if comment_error %}
+  <div class="htmx-inline-error" role="alert" style="margin:0 0 10px;">
+    {{ comment_error }}
+  </div>
+  {% endif %}
+  <form class="kanban-comment-form"
+        hx-post="/kanban/card/{{ card.id }}/comment"
+        hx-target="#kanban-comments-{{ card.id }}"
+        hx-swap="outerHTML"
+        style="margin:8px 0 0; display:flex; flex-direction:column; gap:8px;">
+    <label for="kanban-comment-body-{{ card.id }}"
+           style="font-size:13px; font-weight:600; color:var(--ink);">
+      Répondre
+    </label>
+    <textarea id="kanban-comment-body-{{ card.id }}" name="body" rows="3"
+              placeholder="Écris ta réponse… (Rick la reprend à son prochain cycle)"
+              style="width:100%; box-sizing:border-box; background: var(--paper); color: var(--ink);
+                     border:1px solid var(--line); border-radius:3px; resize:vertical;
+                     padding:7px 10px; font-family: var(--font-body); font-size:13px;"></textarea>
+    <div style="display:flex; gap:8px;">
+      <button type="submit" class="btn-ochre" hx-disabled-elt="this">Répondre</button>
+    </div>
+  </form>
+</div>

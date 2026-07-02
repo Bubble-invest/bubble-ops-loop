@@ -110,29 +110,13 @@
 </div>
 {% endif %}
 
-{# ── Comment thread (markdown-rendered, #300) ─────────────────────────── #}
-{% if comments %}
-<div class="gate-card" style="margin-bottom:24px;">
-  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 12px;">
-    Commentaires ({{ comments | length }})
-  </h3>
-  {% for c in comments %}
-  <div style="margin-bottom:12px; padding:10px 12px; background:var(--paper-soft); border:1px solid var(--line); border-radius:3px;">
-    <div style="font-size:12px; color:var(--body-muted); margin-bottom:4px;">
-      <strong>{{ c.user.login if c.user else 'inconnu' }}</strong>
-      · {{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}
-    </div>
-    <div class="md-render" data-md="1">{{ c.body[:6000] }}</div>
-  </div>
-  {% endfor %}
-</div>
-{% endif %}
-
-{# ── Decision actions (board #427) — only for Rick's own needs:human cards ──
+{# ── Decision actions (board #427/#482) — any needs:human card ─────────────
    Joris records approve/reject/defer here; it writes onto this board issue and
-   Rick reprend au prochain cycle. Dept-gate decisions stay on /gate/<slug>/… —
-   this path is exclusively for dept:rnd needs:human cards. #}
-{% if card.needs_human and card.owner == 'rnd' %}
+   Rick reprend au prochain cycle. Placed prominently, right under the card body
+   and above the comment thread, so answering a "Question for Joris" needs no
+   trip to GitHub. Dept-gate decisions still live on /gate/<slug>/… — this path
+   is for board needs:human cards. #}
+{% if card.needs_human %}
 <div id="rnd-card-{{ card.id }}" class="gate-card" style="margin-bottom:24px;">
   <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">
     Ta décision
@@ -140,6 +124,14 @@
   {% include "partials/rnd_card_actions.html" %}
 </div>
 {% endif %}
+
+{# ── Comment thread + inline «Répondre» form (board #482) ──────────────────
+   The comment box is THE mechanism that answers a needs:human card: the reply
+   lands as a GitHub issue comment and Rick's loop picks it up. Always shown, so
+   any card can be answered from the cockpit. #}
+<div class="gate-card" style="margin-bottom:24px;">
+  {% include "partials/kanban_comments_block.html" %}
+</div>
 
 <footer style="margin-top:24px; padding-top:12px; border-top:1px solid var(--line);">
   <a href="/kanban" class="discreet-link">← retour au kanban</a>
@@ -149,9 +141,12 @@
   {% endif %}
 </footer>
 
-{# Render markdown (+ extract fenced mermaid) then init Mermaid (#300) #}
+{# Render markdown (+ extract fenced mermaid) then init Mermaid (#300).
+   Wrapped in a re-runnable function so htmx swaps (the #482 comment box
+   re-renders the comment thread) get their fresh .md-render blocks rendered
+   too — not only the ones present at first page load. #}
 <script>
-(function () {
+function renderKanbanMarkdown() {
   var hasMarked = (typeof marked !== 'undefined');
   var hasPurify = (typeof DOMPurify !== 'undefined');
 
@@ -188,7 +183,12 @@
     try { mermaid.run({ querySelector: '.mermaid' }); }
     catch (e) { if (mermaid.init) { try { mermaid.init(undefined, '.mermaid'); } catch (e2) {} } }
   }
-}());
+}
+renderKanbanMarkdown();
+// Re-render markdown in freshly-swapped fragments (e.g. the #482 comment thread
+// after «Répondre»). Already-rendered blocks have had data-md removed, so this
+// only touches new content.
+document.body.addEventListener('htmx:afterSwap', function () { renderKanbanMarkdown(); });
 </script>
 
 {% endblock %}

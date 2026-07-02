@@ -845,6 +845,106 @@ def kanban_card_decide(
     )
 
 
+# Longest comment body GitHub accepts (65536); reject before the API call so the
+# operator gets a clear French message rather than an opaque 422 (board #482).
+_MAX_COMMENT_CHARS = 65000
+
+
+def _render_comments_block(
+    request: Request, card: dict, comments: list, error: str, status_code: int,
+):
+    """Render the comments-thread + reply-form partial (the htmx swap target for
+    the «Répondre» form). `error` (non-empty) shows a French message above the
+    form while preserving the passed-in comments."""
+    return request.app.state.templates.TemplateResponse(
+        "partials/kanban_comments_block.html",
+        {
+            "request": request,
+            "card": card,
+            "comments": comments,
+            "comment_error": error,
+        },
+        status_code=status_code,
+    )
+
+
+@router.post("/kanban/card/{number}/comment", response_class=HTMLResponse)
+def kanban_card_comment(
+    number: int, request: Request, body: str = Form(""),
+):
+    """Post Joris's reply as a GitHub issue comment on board card #number (#482).
+
+    This is THE mechanism that ANSWERS a needs:human card from the cockpit: the
+    operator's words are posted verbatim (no prefix — GitHub attribution shows
+    the board bot, same as decide comments), then the comment thread is
+    re-rendered inline (htmx) with the new comment. Rick's loop detects the reply
+    and advances the card.
+
+    Fails SAFE, mirroring kanban_card_decide:
+      - empty/whitespace body  → 400 + visible French message (no board write)
+      - body > 65k chars        → 400 + visible French message (no board write)
+      - no board token (dev/CI) → 503 partial, never a crash
+      - GitHub API error        → 502 partial, never a 500
+    Every path re-renders THIS block so the form swaps in place.
+    """
+    # A minimal card dict is enough for the partial (it only needs the id) — but
+    # keep the interface identical to the detail page by carrying the number.
+    card = {"id": str(number)}
+
+    text = (body or "").strip()
+    if not text:
+        return _render_comments_block(
+            request, card, [],
+            "Le commentaire est vide — écris une réponse avant d'envoyer.", 400,
+        )
+    if len(text) > _MAX_COMMENT_CHARS:
+        return _render_comments_block(
+            request, card, [],
+            f"Commentaire trop long ({len(text)} caractères, max {_MAX_COMMENT_CHARS}).",
+            400,
+        )
+
+    token = _read_board_token()
+    if not token:
+        return _render_comments_block(
+            request, card, [],
+            "Board write token unavailable — commentaire non enregistré.", 503,
+        )
+
+    try:
+        _board_api("POST", f"/issues/{number}/comments", token, {"body": text})
+    except urllib.error.HTTPError as exc:
+        return _render_comments_block(
+            request, card, [],
+            f"Erreur GitHub ({exc.code}) — commentaire non enregistré.", 502,
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        return _render_comments_block(
+            request, card, [],
+            f"Erreur réseau — commentaire non enregistré ({exc}).", 502,
+        )
+
+    # Invalidate the in-process board cache so any board-derived view reflects the
+    # freshly-touched issue on its next load (mirrors kanban_card_decide).
+    global _cache_ts
+    _cache_ts = 0.0
+
+    # Re-fetch the issue's comments so the re-rendered thread includes the new
+    # one. If the re-fetch fails (network blip after a successful POST), fall back
+    # to showing the just-posted comment so the operator still sees their reply.
+    issue, err = _fetch_single_issue(number)
+    if issue is not None and not err:
+        comments = issue.get("comments_list") or []
+    else:
+        comments = [{
+            "user": {"login": "bubble-board-bot"},
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "body": text,
+        }]
+
+    return _render_comments_block(request, card, comments, "", 200)
+
+
 import datetime as _dt
 
 
