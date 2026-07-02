@@ -128,6 +128,48 @@ def test_comment_posts_verbatim_and_renders(client, captured_comment):
     assert all(p == "/issues/482/comments" for (m, p, _pl) in captured_comment)
 
 
+# A comment body carrying an XSS payload. The template renders comment bodies as
+# TEXT (Jinja autoescape) for a later client-side markdown pass — the raw tags
+# must never reach the response HTML, or a `| safe` slip would ship stored XSS.
+_XSS_PAYLOAD = "<script>alert(1)</script><img src=x onerror=alert(1)>"
+
+
+def test_comment_body_is_escaped_on_detail_and_reply(client, captured_comment,
+                                                      monkeypatch):
+    """XSS regression fence (card #482): a malicious comment body is HTML-escaped
+    on BOTH the GET detail page and the POST /comment re-render — raw <script> /
+    onerror tags absent, escaped `&lt;script&gt;` present."""
+    _kanban = _kanban_module()
+
+    # 1. GET detail page — a stored comment carrying the payload.
+    monkeypatch.setattr(
+        _kanban, "_fetch_single_issue",
+        lambda n: (_issue(n, needs_human=True, comments=[
+            {"user": {"login": "attacker"},
+             "created_at": "2026-07-02T11:00:00Z", "body": _XSS_PAYLOAD},
+        ]), None),
+    )
+    r_get = client.get("/kanban/card/482")
+    assert r_get.status_code == 200
+    # No LIVE tags: the raw <script> and the <img …> opener must not survive as
+    # HTML (the escaped `&lt;img …&gt;` inert form is fine — its delimiters are
+    # neutralised, so an onerror attribute inside it can never fire).
+    assert "<script>alert(1)</script>" not in r_get.text
+    assert "<img src=x onerror=alert(1)>" not in r_get.text
+    assert "&lt;script&gt;" in r_get.text
+    assert "&lt;img" in r_get.text
+
+    # 2. POST /comment — the operator's own reply is echoed back escaped in the
+    #    re-rendered thread (captured_comment stubs the write + re-fetch).
+    r_post = client.post("/kanban/card/482/comment",
+                         data={"body": _XSS_PAYLOAD})
+    assert r_post.status_code == 200
+    assert "<script>alert(1)</script>" not in r_post.text
+    assert "<img src=x onerror=alert(1)>" not in r_post.text
+    assert "&lt;script&gt;" in r_post.text
+    assert "&lt;img" in r_post.text
+
+
 def test_comment_empty_body_returns_400(client, captured_comment):
     """Empty body → 400, a visible French message, and NO board write."""
     r = client.post("/kanban/card/482/comment", data={"body": "   "})
