@@ -2312,6 +2312,88 @@ def _is_vendored_nonpushable(path: str) -> bool:
     return False
 
 
+# ─── Sandbox-aware git helpers (#453, 2026-07-02) ──────────────────────────
+#
+# WHY: the agent OS-sandbox (bwrap fs-jail, see
+# deploy/templates/managed-settings.sandbox.json) can leave specific tracked
+# paths unreadable/unwritable to the sandboxed subprocess even though the OS
+# user owns them fine outside the jail — `.gitmodules` (and any path under a
+# submodule dir) is the recurring offender because submodule content sits
+# outside the sandbox's narrow `allowWrite` allowlist. `sudo -n` is a second,
+# independent failure axis: no controlling tty / no cached credential inside
+# the sandbox → `sudo: a password is required`, rc!=0, no `password=` line.
+#
+# Both used to be treated as fatal by force_commit_and_push/safe_pull: one
+# unreadable path in a batched `git add`/`git stash push` poisons the WHOLE
+# operation (git aborts the entire index update, not just that path), and an
+# un-degraded sudo call surfaces a cryptic mint failure. Depts worked around
+# this by pushing manually, unsandboxed, every tick — defeating the point of
+# the sandboxed sync. These helpers detect the condition and let callers
+# degrade gracefully (skip ONLY the unreachable path/substep, WARN loudly,
+# keep going) instead of aborting the tick.
+#
+# Never removes the never-lose-work guarantee: we only ever restore an
+# unreadable TRACKED file from the index (a sandbox-fs artifact, not agent
+# work — an agent cannot have made an in-sandbox edit to a file it cannot
+# read) — never touch untracked/new files this way, and never silently drop
+# a stash.
+
+def _is_sudo_available() -> bool:
+    """True if `sudo -n true` succeeds (a cached credential / no-password
+    NOPASSWD rule is usable right now) — False under a sandbox with no tty
+    and no cached credential. Cheap, side-effect-free probe."""
+    import subprocess
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return probe.returncode == 0
+    except Exception:
+        return False
+
+
+def _find_unreadable_tracked_paths(repo_dir, status_stdout: str) -> "list[str]":
+    """From `git status --porcelain` output, return tracked paths that are
+    modified-per-git but actually unreadable on disk right now (the sandbox
+    fs-jail signature: git sees a stat/content mismatch it can't explain
+    because it can't open() the file). Untracked ('??') entries are never
+    returned here — those are real new content, not a jail artifact."""
+    import os
+    unreadable = []
+    for line in status_stdout.splitlines():
+        if not line.strip():
+            continue
+        code = line[:2]
+        if "?" in code:
+            continue  # untracked — not a "tracked file the jail hid" case
+        path = line[3:].strip().strip('"')
+        path = path.split(" -> ")[-1] if " -> " in path else path
+        full = Path(repo_dir) / path
+        if full.exists() and not os.access(full, os.R_OK):
+            unreadable.append(path)
+    return unreadable
+
+
+def _restore_unreadable_tracked_paths(repo_dir, paths: "list[str]") -> "list[str]":
+    """`git checkout -- <path>` each unreadable tracked path (restores the
+    committed content from the index, discarding the working-tree copy the
+    sandbox can't read). Safe: these are pre-existing TRACKED files an agent
+    cannot have edited in-sandbox if the sandbox can't even read them — the
+    "modification" git reports is a jail fs-visibility artifact, not lost
+    work. Returns the subset actually restored (rc==0)."""
+    import subprocess
+    restored = []
+    for p in paths:
+        co = subprocess.run(
+            ["git", "-C", str(repo_dir), "checkout", "--", p],
+            capture_output=True, text=True,
+        )
+        if co.returncode == 0:
+            restored.append(p)
+    return restored
+
+
 def force_commit_and_push(
     repo_dir: Path,
     message: str,
@@ -2433,8 +2515,30 @@ def force_commit_and_push(
     if not runtime_paths:
         # Only structural changes pending — nothing for the runtime push to do.
         return True, None
+
+    # 2a. Sandbox-aware: a single unreadable TRACKED path (e.g. `.gitmodules`
+    # hidden by the bwrap fs-jail — #453) poisons the WHOLE `git add` batch
+    # (git aborts the entire operation, not just that path). Filter such
+    # paths out of the batch and restore them from the index instead — they
+    # are a jail artifact, not real work (an agent can't have edited a file
+    # it cannot read). WARN, don't abort.
+    unreadable = _find_unreadable_tracked_paths(repo_dir, status.stdout)
+    addable_paths = [p for p in runtime_paths if p not in unreadable]
+    skipped_unreadable = [p for p in runtime_paths if p in unreadable]
+    if skipped_unreadable:
+        restored = _restore_unreadable_tracked_paths(repo_dir, skipped_unreadable)
+        print(
+            "[force_commit_and_push] WARN sandbox-unreadable tracked path(s) "
+            "excluded from runtime add + restored from index (not staged, "
+            "not lost — a jail-fs artifact, not agent work): "
+            + ", ".join(sorted(set(skipped_unreadable)))
+            + (f" (restored: {', '.join(sorted(set(restored)))})" if restored else "")
+        )
+    if not addable_paths:
+        # Everything pending was structural/vendored/unreadable-jail-artifact.
+        return True, None
     add = subprocess.run(
-        ["git", "-C", str(repo_dir), "add", "--"] + runtime_paths,
+        ["git", "-C", str(repo_dir), "add", "--"] + addable_paths,
         capture_output=True, text=True,
     )
     if add.returncode != 0:
@@ -2470,6 +2574,20 @@ def force_commit_and_push(
         # Generic fallback: mint a short-lived GitHub App token via the
         # credential helper and push repo_dir's OWN remote. credential.helper=""
         # disables the helper chain so the inline URL auth is used directly.
+        #
+        # Sandbox-aware (#453): probe sudo availability FIRST — under the
+        # bwrap jail (no tty, no cached credential) `sudo -n ...` fails with
+        # "a password is required" and no `password=` line, which used to
+        # surface as an opaque "failed to mint GitHub App token" error. Fail
+        # fast with an unambiguous WARN instead; caller (safe_pull) already
+        # treats this branch's failure as non-fatal (a note, not an abort).
+        if not _is_sudo_available():
+            return False, (
+                "sudo unavailable in this environment (no cached credential/"
+                "tty — expected under the agent sandbox); skipped GitHub App "
+                f"token mint for {repo_name} (WARN, non-fatal — caller "
+                "continues without the runtime push)"
+            )
         cred = subprocess.run(
             ["sudo", "-n", "/usr/local/bin/bubble-gh-credential-helper.sh", "get"],
             input=(
@@ -2570,6 +2688,33 @@ def safe_pull(
             # stash in step 2 still clears the tree so the pull can run.
             notes.append(f"runtime push skipped/failed: {err}")
 
+    # 1a. Sandbox-aware (#453): restore any TRACKED path the sandbox fs-jail
+    # hides from read (`.gitmodules` is the recurring offender — submodule
+    # content sits outside the sandbox's narrow allowWrite allowlist). git
+    # CANNOT stash a path it cannot open() — `git stash push` aborts the
+    # ENTIRE stash (not just that path) the moment it hits one, which is what
+    # made every tick abort for Ben/Tony/Accountant. Restoring the tracked
+    # content from the index is safe: an agent cannot have made an in-sandbox
+    # edit to a file it cannot read, so this is a jail-fs artifact, never
+    # real work — never touches untracked/new content.
+    status = _git("status", "--porcelain")
+    if status.returncode == 0 and status.stdout.strip():
+        unreadable = _find_unreadable_tracked_paths(repo_dir, status.stdout)
+        if unreadable:
+            restored = _restore_unreadable_tracked_paths(repo_dir, unreadable)
+            if restored:
+                notes.append(
+                    "WARN sandbox-unreadable tracked path(s) restored from "
+                    "index (submodule/.gitmodules substep skipped this tick, "
+                    "not lost): " + ", ".join(sorted(set(restored)))
+                )
+            still_unreadable = [p for p in unreadable if p not in restored]
+            if still_unreadable:
+                notes.append(
+                    "WARN could not restore unreadable path(s) (left as-is, "
+                    "pull may still fail): " + ", ".join(sorted(set(still_unreadable)))
+                )
+
     # 2. Stash anything still dirty (leftover structural edits + untracked), so
     #    the rebase has a clean tree. -u includes untracked; keep-index off.
     stashed = False
@@ -2580,6 +2725,17 @@ def safe_pull(
         if st.returncode == 0 and "No local changes" not in (st.stdout + st.stderr):
             stashed = True
             notes.append("stashed leftovers")
+        elif st.returncode != 0:
+            # Stash itself failed (e.g. another unreadable path we couldn't
+            # restore, or an unrelated git error) — surface it as a WARN in
+            # the summary rather than silently losing the note; step 4's
+            # pull will fail loudly on its own if the tree is still dirty,
+            # and that failure path already restores the stash/aborts the
+            # rebase safely (never a silent data loss).
+            notes.append(
+                f"WARN stash failed, continuing: "
+                f"{(st.stderr or st.stdout).strip()[:200]}"
+            )
 
     # 3. Snapshot the current HEAD before the pull so we can detect and
     #    recover any runtime files the pull deletes (Maya data-loss bug,
