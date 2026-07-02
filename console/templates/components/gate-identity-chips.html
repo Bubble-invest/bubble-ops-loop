@@ -1,0 +1,46 @@
+{# components/gate-identity-chips.html — scannable type/channel/source header (#433).
+   Expects `gate` in context (full YAML doc) and `humanize_kind` in scope.
+
+   Jade's direct feedback (board #433): the card stacks ~7 metadata rows
+   (moment d'origine/cible/risque + 3 autonomy lines) above the content, so a
+   reviewer can't tell at a glance what the artifact IS (Investment Case? long
+   article? post? newsletter?) or where it came from. This partial renders a
+   single de-stacked row of pills right after the <h1>, BEFORE any of that
+   metadata, so the answer is the first thing read:
+     - type      : humanize_kind(gate.kind) — reuses the same mapping already
+                   shown in the subtitle prose, just promoted to a pill.
+     - channel   : gate.channel (falls back to the same linkedin-kind inference
+                   used by the content-proposal block below, so Maya's posts
+                   that don't set channel explicitly still show LINKEDIN).
+     - source    : approval_bridge.item_ref, basename only (the full repo path
+                   is noise on a phone) — the draft's provenance.
+   Every pill is independently optional; a gate with none of these fields
+   renders nothing (no empty container, no layout shift). flex-wrap lets this
+   restack on mobile without ever needing display:none (mobile CSS contract,
+   test_mobile_responsive_css.py). #}
+{% set _chip_channel = gate.channel or ('linkedin' if gate.kind in
+     ('news_post', 'news_post_task', 'prospect_dm', 'followup_draft') else None) %}
+{% set _chip_source = none %}
+{% if gate.approval_bridge and gate.approval_bridge.item_ref %}
+  {% set _chip_source = gate.approval_bridge.item_ref | string | replace('\\', '/') %}
+  {% set _chip_source = _chip_source.split('/')[-1] %}
+{% endif %}
+{% if gate.kind or _chip_channel or _chip_source %}
+<div class="gate-identity-chips">
+  {% if gate.kind %}
+  <span class="gate-chip gate-chip--type" title="Type d'artefact">
+    {{ humanize_kind(gate.kind) }}
+  </span>
+  {% endif %}
+  {% if _chip_channel %}
+  <span class="gate-chip gate-chip--channel" title="Canal de diffusion">
+    {{ _chip_channel | upper }}
+  </span>
+  {% endif %}
+  {% if _chip_source %}
+  <span class="gate-chip gate-chip--source" title="Source — {{ gate.approval_bridge.item_ref }}">
+    📄 {{ _chip_source }}
+  </span>
+  {% endif %}
+</div>
+{% endif %}

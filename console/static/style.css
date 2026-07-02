@@ -1088,6 +1088,53 @@ code, .code {
 
 /* ─── Gate (operator decision page — kept restrained) ────────── */
 
+/* Identity chips — type / channel / source header (#433).
+   Jade: "I cannot understand properly what this essay is: is it an IC?
+   a long article? a post? what's the source?" — the card stacked 7 rows
+   of metadata before answering that. This row sits ABOVE the gate-card,
+   right under the H1, so the artifact's identity is the first thing read.
+   flex-wrap restacks on narrow screens without display:none (mobile
+   contract, test_mobile_responsive_css.py). */
+.gate-identity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.gate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.gate-chip--type {
+  background: var(--ochre);
+  color: #fff;
+  text-transform: capitalize;
+}
+.gate-chip--channel {
+  background: #0077B5; /* LinkedIn blue — matches the existing content-proposal channel badge */
+  color: #fff;
+  text-transform: uppercase;
+}
+.gate-chip--source {
+  background: var(--paper-soft);
+  color: var(--body-muted);
+  border: 1px solid var(--line);
+  font-weight: 500;
+  text-transform: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .gate-card {
   background: var(--paper);
   border: 1px solid var(--line-soft);

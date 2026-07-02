@@ -22,6 +22,22 @@ _HUMAN_KIND: dict[str, str] = {
     "research_decision":  "décision de recherche",
     "echo_action":        "action d'écho",
     "social_post":        "publication sociale",
+    # Content-type labels (#433 — Jade couldn't tell IC vs essay vs post
+    # vs newsletter from the card). Content dept kinds carry the artifact
+    # type directly; map every plausible slug so the header chip never
+    # falls back to a raw snake_case kind for these.
+    "investment_case":    "Investment Case",
+    "ic":                 "Investment Case",
+    "essay":              "essai",
+    "long_article":       "essai",
+    "article":            "essai",
+    "post":                "post",
+    "news_post":          "post",
+    "news_post_task":     "post",
+    "followup_draft":     "relance",
+    "note":               "note",
+    "newsletter":         "newsletter",
+    "draft_task":         "brouillon",
 }
 
 
