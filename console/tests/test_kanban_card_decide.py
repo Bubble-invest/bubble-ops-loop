@@ -121,6 +121,8 @@ def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_bo
     assert comment_calls[0]["body"] == _kanban._CLARIFY_MARKER
     # Byte-exact prefix Rick's loop keys on
     assert comment_calls[0]["body"].startswith("🔍 Pas clair")
+    # WITHOUT a note → EXACTLY one comment (no empty "note" comment)
+    assert len(comment_calls) == 1, "clarify with no note must post exactly 1 comment"
     # MUST NOT close, and MUST NOT add/apply any label (no decision:* / labels POST)
     assert not any(m == "PATCH" for (m, p, _pl) in captured_board), \
         "clarify must not close the issue"
@@ -128,6 +130,42 @@ def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_bo
         "clarify must not apply any label"
     assert not any(p == "/labels" for (m, p, _pl) in captured_board), \
         "clarify must not create any label"
+
+
+def test_clarify_with_note_posts_marker_then_note_in_order(client, captured_board):
+    """clarify WITH a typed note → EXACTLY two comments, in order: the byte-exact
+    marker FIRST, then the note verbatim behind a «📝 Note de Joris : » prefix
+    (board #483 fix-pass — the note IS the clarify instruction; the marker stays
+    first + byte-exact so the loop-detection prefix is untouched)."""
+    from console.routes import kanban as _kanban
+
+    note = "Le point 3 sur les frais n'est pas clair — chiffre-le stp."
+    r = client.post("/kanban/card/700/decide",
+                    data={"action": "clarify", "comment": note})
+    assert r.status_code == 200
+
+    comment_bodies = [pl["body"] for (m, p, pl) in captured_board
+                      if p == "/issues/700/comments"]
+    assert len(comment_bodies) == 2, \
+        "clarify+note must post exactly 2 comments (marker, then note)"
+    # Order + byte-exactness
+    assert comment_bodies[0] == _kanban._CLARIFY_MARKER
+    assert comment_bodies[1] == "📝 Note de Joris : " + note
+    # The note comment carries the operator's words verbatim
+    assert note in comment_bodies[1]
+    # Still no close / no label change
+    assert not any(m == "PATCH" for (m, p, _pl) in captured_board)
+    assert not any(p == "/issues/700/labels" for (m, p, _pl) in captured_board)
+
+
+def test_clarify_whitespace_note_no_second_comment(client, captured_board):
+    """A whitespace-only note → no second comment (only the marker)."""
+    r = client.post("/kanban/card/700/decide",
+                    data={"action": "clarify", "comment": "   \n  "})
+    assert r.status_code == 200
+    comment_bodies = [pl["body"] for (m, p, pl) in captured_board
+                      if p == "/issues/700/comments"]
+    assert len(comment_bodies) == 1, "whitespace note must not post a 2nd comment"
 
 
 def test_decide_from_detail_with_return_to_sends_hx_redirect(client, captured_board):

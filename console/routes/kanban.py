@@ -681,9 +681,11 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
     un-queue for defer). Reuses the board token. Raises urllib.error.HTTPError /
     URLError on a failed REST call so the route can render an error partial.
 
-    - approve : +decision:approved, comment, close
-    - reject  : +decision:rejected, comment, close
-    - defer   : -needs:human, comment (stays OPEN — back to Rick's queue)
+    - approve : +decision:approved, comment (note folded in), close
+    - reject  : +decision:rejected, comment (note folded in), close
+    - defer   : -needs:human, comment (note folded in; stays OPEN — Rick's queue)
+    - clarify : -needs:human, byte-exact marker comment, THEN the note (if any) as
+                a second «📝 Note de Joris : …» comment (stays OPEN — Rick re-works)
     """
     extra = (comment or "").strip()
     suffix = ("\n\n" + extra) if extra else ""
@@ -717,16 +719,23 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
         # Same board mechanics as defer (needs:human off, stays OPEN, no other
         # label change, no close) but a DISTINCT marker comment. Rick's loop keys
         # on the «🔍 Pas clair» prefix to re-research + re-explain + re-surface,
-        # vs defer which is just "parked". The comment is posted EXACTLY as the
-        # marker (byte-exact — loop-detection contract, board #483); the operator
-        # note is intentionally NOT appended so the marker stays verbatim.
+        # vs defer which is just "parked".
         try:
             _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
+        # The marker is posted FIRST and byte-exact (loop-detection contract,
+        # board #483) — the note is NOT appended to it, so the prefix stays clean.
         _board_api("POST", f"/issues/{number}/comments", token,
                    {"body": _CLARIFY_MARKER})
+        # If Joris typed a note, it IS the clarify instruction — preserve it as a
+        # SECOND comment right after the marker (approve/reject/defer already fold
+        # their note into their single comment via `suffix`; clarify can't without
+        # breaking the byte-exact marker, so it gets its own).
+        if extra:
+            _board_api("POST", f"/issues/{number}/comments", token,
+                       {"body": "📝 Note de Joris : " + extra})
     else:  # pragma: no cover — route validates before calling
         raise ValueError(f"unknown action: {action}")
 
