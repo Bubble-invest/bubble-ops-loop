@@ -513,6 +513,21 @@ _resolve_gh_token() {
       return 0
     fi
   fi
+  # 2c. host:local (Mac) fallback — fetch the short-lived board token minted on
+  #     the VPS (bubble-board-token-refresh.timer -> /run/bubble-board/token,
+  #     ~45min, issues:write only) over Tailscale. Only attempted when all local
+  #     paths above failed AND we're actually on a Mac (Darwin) — on the VPS
+  #     itself /run/bubble-board/token is already local (step 2a), so this never
+  #     fires there and we never add a needless SSH hop to ourselves. Requires
+  #     this Mac's key in claude@joris-cx33 authorized_keys. Verified live on
+  #     Geraldine's M5 during the 2026-07-02 VPS→M5 migration (board #463).
+  if command -v gh &>/dev/null && [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    local vtok
+    vtok=$(ssh -o BatchMode=yes -o ConnectTimeout=6 claude@joris-cx33 'cat /run/bubble-board/token' 2>/dev/null || true)
+    case "$vtok" in
+      ghs_*) export GH_TOKEN="$vtok"; return 0 ;;
+    esac
+  fi
   return 1  # no usable GitHub auth
 }
 
