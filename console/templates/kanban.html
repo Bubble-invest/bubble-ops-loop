@@ -252,14 +252,17 @@
 
 {# ── Jinja macros ─────────────────────────────────────────────────── #}
 
-{# Priority chip helper — called with a card dict #}
+{# Priority chip helper — called with a card dict.
+   item.severity dropped (#449): no route/service ever sets it on a kanban
+   item (routes/kanban.py only ever sets "priority" — grep-verified), so
+   the branch was permanently dead. #}
 {% macro prio_chip(item) %}
-  {% set prio = (item.priority or item.severity or '') | lower %}
+  {% set prio = (item.priority or '') | lower %}
   {% if prio %}
     <span class="vp-chip
       {%- if 'high' in prio or 'urgent' in prio or 'critical' in prio %} vp-chip--high
       {%- elif 'medium' in prio or 'warn' in prio %} vp-chip--medium
-      {%- else %} vp-chip--low{%- endif %}">{{ item.priority or item.severity }}</span>
+      {%- else %} vp-chip--low{%- endif %}">{{ item.priority }}</span>
   {% endif %}
 {% endmacro %}
 
@@ -500,15 +503,27 @@
 {# (was load-once → a closed card lingered in an open tab until manual reload — board #361). #}
 {# ~60s matches the server GH cache TTL; the active tab is restored from sessionStorage on reload, #}
 {# and we only reload when the tab is visible + the user isn't mid-interaction (no open <details>). #}
+{# Scroll position is persisted to sessionStorage right before the reload and restored on load
+   (#449) — a full location.reload() used to jump back to the top mid-read every 60s. #}
 <script>
 (function () {
   var REFRESH_MS = 60000;
+  var SCROLL_KEY = 'kanban-scrollY';
+
   setInterval(function () {
     if (document.hidden) return;                                  // don't reload a backgrounded tab
     if (document.querySelector('details[open]')) return;          // don't yank an open card/graph
     if (window.getSelection && String(window.getSelection())) return; // don't break a text selection
+    try { sessionStorage.setItem(SCROLL_KEY, String(window.scrollY)); } catch (_) {}
     location.reload();
   }, REFRESH_MS);
+
+  var savedScroll;
+  try { savedScroll = sessionStorage.getItem(SCROLL_KEY); } catch (_) {}
+  if (savedScroll !== null && savedScroll !== undefined) {
+    window.scrollTo(0, parseInt(savedScroll, 10) || 0);
+    try { sessionStorage.removeItem(SCROLL_KEY); } catch (_) {}
+  }
 }());
 </script>
 

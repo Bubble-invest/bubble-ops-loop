@@ -112,15 +112,14 @@
                   <img src="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
                        alt="{{ att_caption or att_path.split('/')[-1] }}"
                        loading="lazy"
+                       onerror="this.closest('figure').classList.add('gate-attachment-broken')"
                        style="display:block; width:auto; max-width:min(100%, 360px);
                               height:auto; max-height:460px; object-fit:contain;
                               border:1px solid var(--line);
                               border-radius:3px; background: var(--paper-soft);">
                 </a>
-                {% if att_caption %}
-                <figcaption class="muted-italic" style="font-size:12px; margin-top:4px;
-                            color: var(--body-muted);">{{ att_caption }} — Cliquer pour agrandir.</figcaption>
-                {% endif %}
+                <figcaption class="muted-italic gate-attachment-caption" style="font-size:12px; margin-top:4px;
+                            color: var(--body-muted);">{% if att_caption %}{{ att_caption }} — {% endif %}<span class="gate-attachment-caption-ok">Cliquer pour agrandir.</span><span class="gate-attachment-caption-broken">aperçu indisponible.</span></figcaption>
               </figure>
               {% elif att_path %}
               <div style="margin-bottom:6px;">
@@ -302,10 +301,10 @@
                         color: var(--ink); border-radius:2px;">
         </div>
         <div class="gate-actions">
-          <button type="submit" name="action" value="approve" class="btn-ochre">approve</button>
-          <button type="submit" name="action" value="reject" class="btn-ghost">reject</button>
-          <button type="submit" name="action" value="modify" class="btn-ghost">modify</button>
-          <button type="submit" name="action" value="defer" class="btn-ghost">defer</button>
+          <button type="submit" name="action" value="approve" class="btn-ochre" hx-disabled-elt="this">approve</button>
+          <button type="submit" name="action" value="reject" class="btn-ghost" hx-disabled-elt="this">reject</button>
+          <button type="submit" name="action" value="modify" class="btn-ghost" hx-disabled-elt="this">modify</button>
+          <button type="submit" name="action" value="defer" class="btn-ghost" hx-disabled-elt="this">defer</button>
         </div>
       </form>
     </div>

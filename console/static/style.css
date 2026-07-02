@@ -110,65 +110,6 @@ code, .code {
   letter-spacing: -0.01em;
 }
 
-/* ─── Top bar (cabinet) ───────────────────────────────────── */
-
-.topbar {
-  background: var(--paper);
-  border-bottom: 1px solid var(--line);
-  padding: 20px 0;
-}
-.topbar-inner {
-  max-width: var(--maxw);
-  margin: 0 auto;
-  padding: 0 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-}
-
-.brand {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-}
-.brand-name {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 28px;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-  text-decoration: none;
-}
-.brand-sub {
-  font-family: var(--font-body);
-  font-weight: 400;
-  font-size: 13px;
-  color: var(--body-muted);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.topnav {
-  display: flex;
-  gap: 28px;
-  font-family: var(--font-body);
-  font-size: 14px;
-}
-.topnav a {
-  color: var(--body-muted);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-  padding-bottom: 2px;
-  letter-spacing: 0.01em;
-  transition: color 0.2s ease, border-color 0.2s ease;
-}
-.topnav a:hover,
-.topnav a.is-active {
-  color: var(--ink);
-  border-bottom-color: var(--ochre);
-}
-
 /* ─── Layout ────────────────────────────────────────────────── */
 
 /* ─── App shell: sidebar + content ─────────────────────────────── */
@@ -1104,6 +1045,47 @@ code, .code {
 }
 .cabinet-footer a:hover { color: var(--ochre-deep); border-color: var(--ochre); }
 
+/* ─── Global htmx error feedback (#449) ─────────────────────────
+   Inline banner rendered into a request's own hx-target on 4xx/5xx
+   (base.html htmx:responseError handler); toast is the fallback when
+   the target is gone or the request had none (e.g. htmx:sendError). */
+.htmx-inline-error {
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: var(--paper-soft);
+  border: 1px solid var(--danger, #c0392b);
+  border-left: 4px solid var(--danger, #c0392b);
+  border-radius: 2px;
+  color: var(--danger, #c0392b);
+  font-size: 13px;
+  font-weight: 500;
+}
+.htmx-error-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 200;
+  background: var(--ink);
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.htmx-error-toast[hidden] { display: none; }
+
+/* ─── Attachment image fallback (#449) ───────────────────────────
+   onerror on the attachment <img> (gate_card.html / gate_batch.html)
+   adds .gate-attachment-broken to the enclosing <figure> instead of
+   leaving the browser's broken-image glyph. Hide the broken <img>
+   and swap the caption to "aperçu indisponible". #}
+.gate-attachment-broken img { display: none; }
+.gate-attachment-caption-broken { display: none; }
+.gate-attachment-broken .gate-attachment-caption-ok { display: none; }
+.gate-attachment-broken .gate-attachment-caption-broken { display: inline; }
+
 /* ─── Gate (operator decision page — kept restrained) ────────── */
 
 .gate-card {
@@ -1282,8 +1264,6 @@ code, .code {
   .sidebar-toggle-input:checked ~ .sidebar-overlay {
     opacity: 1; pointer-events: auto;
   }
-
-  .topbar { display: none; }
 }
 
 @media (max-width: 720px) {
@@ -1296,22 +1276,6 @@ code, .code {
     line-height: 1.18;
   }
   .page-hero-lede { font-size: 15.5px; }
-
-  /* Top bar — let "Carnet de bord" wrap instead of clipping */
-  .topbar { padding: 14px 0; }
-  .topbar-inner {
-    gap: 12px;
-    flex-wrap: wrap;
-    padding: 0 22px;
-  }
-  .brand-name { font-size: 24px; }
-  .brand-sub { font-size: 11px; }
-  .topnav {
-    gap: 16px;
-    flex-wrap: wrap;
-    font-size: 13px;
-    width: 100%;
-  }
 
   /* Collègue rows — stack avatar/body/CTA vertically so the role +
      state get full width and the CTA doesn't truncate */

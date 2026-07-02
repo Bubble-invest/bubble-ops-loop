@@ -21,11 +21,11 @@
                 border:1px solid var(--line); border-radius:3px; resize:vertical;
                 padding:7px 10px; font-family: var(--font-body); font-size:13px;"></textarea>
   <div class="gate-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
-    <button type="submit" name="action" value="approve" class="btn-ochre"
+    <button type="submit" name="action" value="approve" class="btn-ochre" hx-disabled-elt="this"
             style="background: var(--sage); border-color: var(--sage);">approve</button>
-    <button type="submit" name="action" value="reject" class="btn-ghost"
+    <button type="submit" name="action" value="reject" class="btn-ghost" hx-disabled-elt="this"
             style="color: var(--danger, #c0392b); border-color: var(--danger, #c0392b);">reject</button>
-    <button type="submit" name="action" value="defer" class="btn-ghost"
+    <button type="submit" name="action" value="defer" class="btn-ghost" hx-disabled-elt="this"
             style="color: var(--ochre);">defer</button>
   </div>
   <div class="rnd-decide-result"></div>
