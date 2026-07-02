@@ -44,9 +44,10 @@ Per-note PENDING rule (mirrors `_scan_mgmt_notes`'s per-note loop body,
 including the #198 consumed-first fix and its fail-open behaviour):
 
   1. Not a dotfile, not inside a subdirectory (e.g. `.processed/`).
-  2. `id` (or `directive_id`, the directive-note alias) NOT IN `.consumed.json`
-     — checked FIRST, unconditionally, regardless of `created_at`. A
-     consumed note is never pending no matter how its timestamp looks.
+  2. `id` (top-level `id` field ONLY — no `directive_id` fallback; see
+     `_note_id()` below for why) NOT IN `.consumed.json` — checked FIRST,
+     unconditionally, regardless of `created_at`. A consumed note is never
+     pending no matter how its timestamp looks.
   3. Unreadable/malformed YAML → fail-open (treat as pending; we would
      rather over-show than silently swallow real work).
   4. Missing/unparseable `created_at` → fail-open (treat as pending).
@@ -83,8 +84,6 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402  (see sys.path setup ab
     read_last_mgmt_scan,
 )
 
-_MGMT_DOTFILES_SKIP_SUFFIXES = (".consumed.json",)  # (kept for readability at call sites)
-
 
 @dataclass
 class MgmtNoteItem:
@@ -120,13 +119,26 @@ def _mgmt_dir(root: Path) -> Path:
 
 
 def _note_id(data: Dict[str, Any], fallback: str) -> str:
-    """A note's identity for `.consumed.json` lookup: `id`, else the
-    directive alias `directive_id` (STEP 0-ter: "tracked by directive_id or
-    id field"), else the filename stem."""
-    for f in ("id", "directive_id"):
-        v = data.get(f)
-        if v:
-            return str(v)
+    """A note's identity for `.consumed.json` lookup.
+
+    MUST match `scripts/lib/dispatch_helpers.py:_scan_mgmt_notes` byte for
+    byte: that function resolves the consumed-check key as `data.get("id")`
+    ONLY — no `directive_id` fallback, even though directive-shaped notes
+    (`scripts/dispatch_directives.py`) carry `directive_id` and never a
+    top-level `id`. This is a known asymmetry in the dispatcher itself
+    (tracked separately as a framework card — NOT fixed here), but this
+    module's entire job is to mirror the dispatcher's actual behaviour, not
+    to "improve" on it. If we added a `directive_id` fallback here, a
+    consumed directive note would show as hidden/consumed in the console
+    while the dispatcher — which has no such fallback — keeps failing open
+    on it and re-triggers L1 forever. That's the exact failure mode (UI
+    silently disagrees with what the dispatcher acts on) card #459 exists
+    to eliminate. See test_directive_id_not_used_as_consumption_key_mirrors_dispatcher.
+    Falls back to the filename stem, same as the dispatcher effectively does
+    (no `id` → `note_id` is falsy → treated as unconsumed)."""
+    v = data.get("id")
+    if v:
+        return str(v)
     return fallback
 
 
@@ -188,9 +200,13 @@ def scan_mgmt_inbox(
             continue
         if not p.is_file():
             continue
-        if mgmt_dir not in p.parent.parents and p.parent != mgmt_dir:
+        if p.parent != mgmt_dir:
             # Defensive; glob("*.yaml") never descends, but keep the check
-            # explicit so a future glob("**/*.yaml") edit fails loudly.
+            # explicit so a future glob("**/*.yaml") edit fails loudly. (Note:
+            # this alone is the real guard — a `parent in mgmt_dir.parents`-
+            # style check was previously ANDed in here but was vacuous, since
+            # `p.parent == mgmt_dir` is exactly the depth-1 case this `!=`
+            # already excludes; drop it rather than carry dead logic.)
             continue
 
         try:

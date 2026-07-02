@@ -17,6 +17,10 @@ Covers:
   - Fixture from the card's own evaluation bar: 30 consumed + 2 pending →
     2 pending rows + 1 collapsed "N notes traitées" line.
   - Inbox-fragment HTTP rendering of the collapsed line + grouped label.
+  - Independent-review finding (PR #189): `_note_id()` must resolve
+    `.consumed.json` identity the same way dispatch_helpers._scan_mgmt_notes
+    does (`id` only, no `directive_id` fallback) — see
+    test_directive_id_not_used_as_consumption_key_mirrors_dispatcher.
 """
 from __future__ import annotations
 
@@ -192,6 +196,71 @@ def test_dotfiles_and_processed_subdir_excluded():
         ids = [i.id for row in state.pending_rows for i in row.items]
         assert "processed-note" not in ids
         assert "fresh-note" in ids
+
+
+def test_directive_id_not_used_as_consumption_key_mirrors_dispatcher():
+    """Independent-review finding on PR #189 (card #459): the console's
+    `_note_id()` must resolve `.consumed.json` identity EXACTLY the way
+    `scripts/lib/dispatch_helpers.py:_scan_mgmt_notes` does — `data.get("id")`
+    ONLY, no `directive_id` fallback.
+
+    Real directive notes (`scripts/dispatch_directives.py`) carry
+    `directive_id` but never a top-level `id`. If the console used a
+    `directive_id` fallback while the dispatcher did not, a consumed
+    directive note would show 0 pending rows in the console while the
+    dispatcher (unable to find `id`, so it never reaches the consumed-check)
+    fails open on the timestamp and keeps re-triggering L1 forever — the
+    exact dispatcher-fires/UI-silent drift card #459 exists to prevent.
+
+    This fixture is directive-shaped: `directive_id` present, no `id`,
+    `directive_id` value present in `.consumed.json`, `created_at` AFTER the
+    watermark. Since the dispatcher can't find `id` on this note, it treats
+    it as unconsumed and fails open to pending — so the console MUST also
+    list it as pending to mirror that behaviour, even though a naive
+    "is this directive done?" reading of `.consumed.json` would say no.
+
+    NOTE for the linked framework card (dispatcher-side `directive_id` /
+    `id` asymmetry, filed separately, NOT fixed in this PR): the dispatcher
+    itself is arguably buggy here (a real consumed directive note re-fires
+    L1 forever) — this test intentionally locks in mirroring that bug, not
+    fixing it, because fixing it belongs in `dispatch_helpers.py` /
+    `dispatch_directives.py`, out of scope for this console-only PR.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        mgmt = _mgmt_dir(root)
+        (mgmt / ".last-mgmt-scan").write_text("2026-01-01T00:00:00+00:00", encoding="utf-8")
+        # .consumed.json keyed by directive_id — as if something (incorrectly)
+        # believed directive_id was a valid consumption key.
+        (mgmt / ".consumed.json").write_text(
+            json.dumps({"directive-abc123": {}}), encoding="utf-8"
+        )
+        # Directive-shaped note: directive_id only, no top-level id, matching
+        # scripts/dispatch_directives.py's actual output shape. Filename is
+        # deliberately DIFFERENT from directive_id so the `_note_id()`
+        # filename-stem fallback (used when there's no `id` field at all)
+        # can't coincidentally reproduce a match against .consumed.json —
+        # this isolates the directive_id-fallback behaviour under test.
+        _write_note(
+            mgmt, "note-file-001",
+            directive_id="directive-abc123",
+            target_dept="qtest459",
+            kind="directive",
+            mission_id="directive-abc123",
+            title="Directive from L3",
+            created_at="2026-06-15T09:00:00+00:00",  # after watermark
+        )
+
+        from console.services.mgmt_note_state import scan_mgmt_inbox
+        state = scan_mgmt_inbox(root)
+        ids = [i.id for row in state.pending_rows for i in row.items]
+        assert "note-file-001" in ids, (
+            "directive-shaped note (directive_id only, no id) must be listed "
+            "PENDING, mirroring _scan_mgmt_notes — a directive_id fallback "
+            "here would silently hide what the dispatcher keeps acting on"
+        )
+        assert state.consumed_count == 0
 
 
 def test_no_mgmt_dir_returns_empty_state():
