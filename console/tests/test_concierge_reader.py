@@ -146,6 +146,53 @@ def test_service_status_returns_string(tmp_path, monkeypatch):
     assert isinstance(s, str) and s
 
 
+# ─── TTL cache on service_status (board #450) ──────────────────────────
+
+def test_service_status_cached_within_ttl(monkeypatch):
+    """Repeat calls within the TTL window must NOT re-shell out to systemctl —
+    this used to run `systemctl is-active` on every concierge on every page load."""
+    from console.services import concierge_reader
+
+    concierge_reader._service_status_cache.clear()
+    calls = {"n": 0}
+
+    class R:
+        stdout = "active\n"
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        return R()
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+
+    first = concierge_reader.service_status("morty-ttl-test")
+    second = concierge_reader.service_status("morty-ttl-test")
+    assert first == second == "active"
+    assert calls["n"] == 1, f"expected exactly 1 systemctl call, got {calls['n']}"
+
+
+def test_service_status_logs_warning_on_probe_failure(monkeypatch, caplog):
+    import logging
+    from console.services import concierge_reader
+
+    concierge_reader._service_status_cache.clear()
+
+    def fake_run(*a, **k):
+        raise OSError("systemctl not found")
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+
+    with caplog.at_level(logging.WARNING):
+        result = concierge_reader.service_status("nope-ttl-test")
+
+    assert result == "unknown"
+    assert any(rec.levelno == logging.WARNING for rec in caplog.records), (
+        f"expected a WARNING log on probe failure, got: {[r.message for r in caplog.records]}"
+    )
+
+
 # ─── UX v2: richer turn classification ─────────────────────────────
 
 def test_turn_has_kind_message_for_text(tmp_path, monkeypatch):

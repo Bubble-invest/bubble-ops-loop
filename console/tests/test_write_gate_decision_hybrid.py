@@ -182,3 +182,98 @@ def test_local_reapproval_existing_path_422_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
     out = github_reader.write_gate_decision("content", "gate-existing", {"decision": "approve"})
     assert out is None, "a 422 (file exists, no sha) must return None, not a fake success"
+
+
+# ─── Atomic writes (board #450) ────────────────────────────────────────
+# write_gate_decision (host=vps, disk write) must never leave a reader able
+# to observe a partially-written decision file — temp file in the same dir +
+# os.replace, not a direct truncating write_text.
+
+def test_vps_write_is_atomic_no_partial_file_visible(tmp_path, monkeypatch):
+    """A reader polling the decisions dir mid-write must see EITHER nothing
+    yet, or the complete final file — never a truncated/partial one."""
+    repo = tmp_path / "bubble-ops-ben"
+    repo.mkdir()
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+    monkeypatch.setattr("console.services.dept_registry.get_department",
+                        lambda slug: _fake_dept("ben", "vps"))
+
+    decisions_dir = repo / "inbox" / "decisions"
+    out = github_reader.write_gate_decision("ben", "gate-atomic", {"decision": "approve", "comment": "ok"})
+
+    assert out is not None
+    # No leftover temp file from the write (mkstemp prefix used by _atomic_write_text).
+    leftovers = list(decisions_dir.glob(".gate-atomic.yaml.*.tmp"))
+    assert leftovers == [], f"atomic write left a temp file behind: {leftovers}"
+    # The final file is complete/parseable.
+    import yaml as _yaml
+    doc = _yaml.safe_load(out.read_text(encoding="utf-8"))
+    assert doc == {"decision": "approve", "comment": "ok"}
+
+
+def test_vps_write_uses_os_replace_not_direct_write(tmp_path, monkeypatch):
+    """Verify the atomic-write mechanism itself: os.replace is invoked (temp
+    file swapped into place), rather than a direct Path.write_text on the
+    target — the change this card requires."""
+    repo = tmp_path / "bubble-ops-ben"
+    repo.mkdir()
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+    monkeypatch.setattr("console.services.dept_registry.get_department",
+                        lambda slug: _fake_dept("ben", "vps"))
+
+    calls = []
+    real_replace = github_reader.os.replace
+
+    def spy_replace(src, dst):
+        calls.append((src, dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(github_reader.os, "replace", spy_replace)
+    out = github_reader.write_gate_decision("ben", "gate-spy", {"decision": "reject"})
+
+    assert out is not None
+    assert len(calls) == 1, f"expected exactly one os.replace call, got {calls}"
+    src, dst = calls[0]
+    assert str(dst) == str(out)
+    assert src != str(out)  # temp file path must differ from the final path
+
+
+# ─── _gh_contents_sha: bare except:pass → logged (board #450) ─────────────
+
+def test_gh_contents_sha_logs_warning_on_exception(monkeypatch, caplog):
+    """_gh_contents_sha used to bare `except: pass` on any failure — now logs
+    at warning while still returning None (caller behavior unchanged)."""
+    import logging
+
+    def fake_run(*a, **k):
+        raise OSError("gh binary not found")
+
+    monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
+
+    with caplog.at_level(logging.WARNING, logger="console.github_reader"):
+        result = github_reader._gh_contents_sha("repos/org/repo/contents/x.yaml", {})
+
+    assert result is None
+    assert any(rec.levelno == logging.WARNING for rec in caplog.records), (
+        f"expected a WARNING log, got: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_gh_contents_sha_logs_warning_on_nonzero_exit(monkeypatch, caplog):
+    """A non-zero gh exit (not an exception) must also be logged."""
+    import logging
+
+    def fake_run(*a, **k):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "404 Not Found"
+        return R()
+
+    monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
+
+    with caplog.at_level(logging.WARNING):
+        result = github_reader._gh_contents_sha("repos/org/repo/contents/x.yaml", {})
+
+    assert result is None
+    assert any(rec.levelno == logging.WARNING for rec in caplog.records)

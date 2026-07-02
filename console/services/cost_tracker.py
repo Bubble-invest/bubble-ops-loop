@@ -13,7 +13,9 @@ dept-loop sessions, so every agent is covered (only the $ field total_cost_usd i
 -p-only, which is why we price from tokens here, not from that field).
 
 Output JSON (see build_report): per-agent + per-job totals, today / 7d, per-model
-breakdown, est. USD. Cached by file mtime so re-scans are cheap.
+breakdown, est. USD. Per-session parses are cached by file mtime, and the
+assembled report itself is held for a short TTL (see _REPORT_TTL_SECONDS) so
+repeat /costs hits within the window skip the directory walk entirely.
 
 Usage:
     python3 cost_tracker.py            # scan + print JSON
@@ -231,7 +233,42 @@ def _save_cache(cache: dict) -> None:
         pass
 
 
+# ── Report-level TTL cache. `build_report` still walks every project dir + stats
+# every JSONL to check mtimes even when the per-session parse is cache-hit (the
+# walk itself is the cost on large trees) — so on top of the mtime cache, keep
+# the assembled report around for a short window. `refresh=True` always bypasses
+# this (and the mtime cache below), so the explicit-refresh escape hatch still
+# forces a full rescan.
+_REPORT_TTL_SECONDS = 45
+_report_cache: dict = {"report": None, "built_at": 0.0}
+
+
+def _cached_report() -> Optional[dict]:
+    report = _report_cache["report"]
+    if report is None:
+        return None
+    if (time.monotonic() - _report_cache["built_at"]) >= _REPORT_TTL_SECONDS:
+        return None
+    return report
+
+
+def _store_report(report: dict) -> None:
+    _report_cache["report"] = report
+    _report_cache["built_at"] = time.monotonic()
+
+
 def build_report(refresh: bool = False) -> dict:
+    if not refresh:
+        cached = _cached_report()
+        if cached is not None:
+            return cached
+
+    report = _build_report_uncached(refresh=refresh)
+    _store_report(report)
+    return report
+
+
+def _build_report_uncached(refresh: bool = False) -> dict:
     pricing = _load_pricing()
     cache = {} if refresh else _load_cache()
     new_cache: dict = {}
