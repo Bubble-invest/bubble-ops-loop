@@ -50,6 +50,12 @@ crons:
 
 `prompt_ref` starting with `file:` is read relative to the dept dir (keeps
 long prompts out of the manifest); anything else is the literal prompt text.
+The resolved path is CONTAINED to the dept dir (`scripts/lib/crons_manifest.py::
+CronEntry.resolve_prompt`) — a `file:../../...` ref that escapes the dept dir
+raises `CronsManifestError` rather than being read. `crons.yaml` is dept-owned
+and git-tracked, but its content feeds straight into a live `CronCreate`
+prompt, so a traversal in a careless or compromised edit must not be able to
+read another dept's files.
 
 ## How it gets re-armed
 

@@ -127,6 +127,32 @@ def test_resolve_prompt_file_ref(tmp_path: Path) -> None:
     assert entry.resolve_prompt(tmp_path) == "Full mail-brief prompt text.\n"
 
 
+def test_resolve_prompt_file_ref_rejects_path_traversal(tmp_path: Path) -> None:
+    """crons.yaml is dept-owned but its content feeds straight into a live
+    CronCreate prompt — a file: ref must not escape the dept dir (e.g. to
+    read another dept's secrets via ../../).
+    """
+    dept_dir = tmp_path / "some-dept"
+    dept_dir.mkdir()
+    secret = tmp_path / "SECRET_OUTSIDE_DEPT.txt"
+    secret.write_text("top secret, not this dept's to read\n", encoding="utf-8")
+
+    entry = CronEntry(name="evil", schedule="0 8 * * *", prompt_ref="file:../SECRET_OUTSIDE_DEPT.txt")
+    with pytest.raises(CronsManifestError, match="outside the dept dir"):
+        entry.resolve_prompt(dept_dir)
+
+
+def test_resolve_prompt_file_ref_rejects_deeper_traversal(tmp_path: Path) -> None:
+    nested_dept_dir = tmp_path / "agents" / "some-dept"
+    nested_dept_dir.mkdir(parents=True)
+    secret = tmp_path / "SECRET_OUTSIDE_DEPT.txt"
+    secret.write_text("still not this dept's to read\n", encoding="utf-8")
+
+    entry = CronEntry(name="evil", schedule="0 8 * * *", prompt_ref="file:../../SECRET_OUTSIDE_DEPT.txt")
+    with pytest.raises(CronsManifestError, match="outside the dept dir"):
+        entry.resolve_prompt(nested_dept_dir)
+
+
 # ── diff_manifest_against_live — the #461 evaluation criteria ───────────────
 
 def _two_cron_manifest() -> CronsManifest:

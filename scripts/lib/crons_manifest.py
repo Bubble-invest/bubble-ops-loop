@@ -63,10 +63,24 @@ class CronEntry:
         `file:<relpath>` is read relative to the dept dir (so long prompts
         live in their own file instead of bloating crons.yaml); anything
         else is treated as the literal prompt text.
+
+        CONTAINMENT: the resolved path MUST stay under dept_dir. crons.yaml
+        is dept-owned/git-tracked, but its content is fed straight into a
+        live CronCreate prompt — a `file:../../...` ref must not be able to
+        read anything outside the dept dir (e.g. another dept's secrets, or
+        a path traversal smuggled in via a compromised/careless edit).
         """
         if self.prompt_ref.startswith("file:"):
             rel = self.prompt_ref[len("file:"):]
+            dept_root = dept_dir.resolve()
             target = (dept_dir / rel).resolve()
+            try:
+                target.relative_to(dept_root)
+            except ValueError:
+                raise CronsManifestError(
+                    f"prompt_ref 'file:{rel}' on cron '{self.name}' resolves outside "
+                    f"the dept dir ({target} not under {dept_root}) — refusing to read it"
+                )
             return target.read_text(encoding="utf-8")
         return self.prompt_ref
 
@@ -151,6 +165,14 @@ def diff_manifest_against_live(manifest: Optional[CronsManifest], live_names: li
     the names, keeping this function decoupled from the tool's exact
     response shape). Idempotent: calling this again after a successful
     re-arm (so the missing entries are now live) yields an empty `missing`.
+
+    NOTE — match is by NAME only: this is re-arm-if-missing, not reconcile.
+    If an operator edits a live cron's `schedule`/`prompt_ref` in the
+    manifest under an UNCHANGED name, the already-live entry is reported
+    `present` and left alone — it will NOT pick up the edit until it is
+    independently deleted/re-created (e.g. via CronDelete + a restart, or
+    renaming it so the old one shows up as `missing`). Drift-detection /
+    reconcile-on-change is out of scope for #461; flagged as a follow-up.
     """
     if manifest is None or not manifest.crons:
         return ManifestDiff(present=(), missing=(), missing_critical=())
