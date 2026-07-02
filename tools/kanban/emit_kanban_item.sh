@@ -490,6 +490,20 @@ _resolve_gh_token() {
   if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     return 0  # gh already authed — _gh_emit uses ambient auth
   fi
+  # 2a. Preferred VPS path: a root-owned systemd timer (bubble-board-token-refresh)
+  #     keeps a fresh short-lived board token at /run/bubble-board/token
+  #     (root:claude 0640, ~45min refresh). Reading it needs NO sudo, so it works
+  #     even under NoNewPrivileges (where the sudo-minter path below is blocked).
+  local tokfile=/run/bubble-board/token
+  if command -v gh &>/dev/null && [ -r "$tokfile" ]; then
+    local ftok
+    ftok=$(cat "$tokfile" 2>/dev/null || true)
+    case "$ftok" in
+      ghs_*) export GH_TOKEN="$ftok"; return 0 ;;
+    esac
+  fi
+  # 2b. Fallback: mint on demand via the root-owned minter through a sudoers
+  #     NOPASSWD rule (works only where NoNewPrivileges is NOT set).
   local minter=/usr/local/bin/bubble-board-token.sh
   if command -v gh &>/dev/null && [ -x "$minter" ]; then
     local tok
