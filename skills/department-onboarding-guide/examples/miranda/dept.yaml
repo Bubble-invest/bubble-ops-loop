@@ -10,6 +10,8 @@ department:
   status: onboarding
   mandate: "Produire, planifier et auditer du contenu social pour Bubble Invest."
   owner: operator
+  model: "opus"                            # Mac agent (host: local) — live process pins --model opus (no [1m])
+  runtime: "claude"
   forbidden:
     - publier informations confidentielles
     - donner conseil financier personnalise

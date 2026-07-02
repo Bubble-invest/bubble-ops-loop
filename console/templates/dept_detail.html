@@ -82,6 +82,34 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       Collègue en éclosion — encore en train d'apprendre son métier.
     {% endif %}
   </p>
+  {# ─── Agent deployment info strip ────────────────────────────────
+     Which model/runtime this dept's agent process actually launches
+     with — a declared, version-controlled fact from dept.yaml
+     (department.model), not something the console can introspect live
+     (it can't SSH each host). Falls back to the platform default label
+     when undeclared — never blank, never a crash. Card 2026-07-02. #}
+  <div class="dept-agent-meta" aria-label="Informations de déploiement de l'agent">
+    <span class="pill pill-mute" title="Modèle du process agent (department.model dans dept.yaml)">
+      Modèle : <span class="slug-ref">{{ agent_model_info.model }}</span>
+    </span>
+    <span class="pill pill-mute" title="Runtime (Claude Code vs autre backend)">
+      Runtime : {{ agent_model_info.runtime }}
+    </span>
+    {% if agent_model_info.hierarchy_level %}
+      <span class="pill pill-mute">Niveau : {{ agent_model_info.hierarchy_level }}</span>
+    {% endif %}
+    {% if agent_model_info.layers %}
+      <span class="pill pill-mute">Couches : {{ agent_model_info.layers|join(', ') }}</span>
+    {% endif %}
+    {% if agent_model_info.host %}
+      <span class="pill pill-mute">Hôte : {{ agent_model_info.host }}</span>
+    {% endif %}
+    {% if not agent_model_info.model_declared %}
+      <span class="pill pill-stale" title="Aucun department.model déclaré dans dept.yaml — valeur par défaut de la plateforme">
+        non déclaré · valeur par défaut
+      </span>
+    {% endif %}
+  </div>
 </header>
 
 {# ─── BUREAU (desk view, #286) — at-a-glance 3-zone desk: 📥 à traiter →

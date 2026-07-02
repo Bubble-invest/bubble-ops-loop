@@ -138,12 +138,20 @@ def dept_detail(slug: str, request: Request):
     # pass it on the initial full-page render so the left column is never empty
     # on first load.
     layer_queues = github_reader.list_layer_queues(slug)
+    # Agent deployment facts (model/runtime/hierarchy/layers) — which Claude
+    # (or non-Claude) model this dept's agent process actually launches
+    # with. Read from dept.yaml::department.model (the same field
+    # isolation_scaffold already uses to pin `.claude/settings.json`), with
+    # a graceful platform-default fallback when undeclared. Card: surface
+    # agent deployment metadata on /dept/<slug> (2026-07-02).
+    agent_model_info = github_reader.load_agent_model_info(dept_yaml)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
             "request": request,
             "dept": d,
             "dept_yaml": dept_yaml,
+            "agent_model_info": agent_model_info,
             "gates": gates,
             "gate_groups": gate_groups,
             "missions": missions,

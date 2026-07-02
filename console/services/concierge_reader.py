@@ -30,6 +30,31 @@ from typing import Any, List, Optional
 # since concierge dirs are unprefixed and would be ambiguous to auto-detect.
 CONCIERGES = ("morty", "claudette")
 
+# Concierges have no dept.yaml (no layers, no onboarding — see module
+# docstring), so there is nowhere to declare a per-dept `model:` field the
+# way /dept/<slug> reads it from github_reader.load_agent_model_info(). This
+# is a small, explicit, hardcoded map of the ACTUAL deployment fact per
+# concierge (ground truth as of 2026-07-02, mapped by Rick):
+#   - claudette: claude-agent-claudette.service ExecStart has NO --model
+#     flag. Falls back to opus[1m] (its own settings.json + agent.md both
+#     pin opus[1m]).
+#   - morty: claude-agent-morty.service ExecStart runs run-deepseek-morty.sh
+#     via a DeepSeek proxy — morty is NOT a Claude process at all.
+# Update this map if a concierge's actual --model / backend changes.
+_CONCIERGE_MODEL_INFO: dict = {
+    "claudette": {"model": "opus[1m]", "runtime": "claude", "model_declared": False},
+    "morty": {"model": "deepseek-v4-pro", "runtime": "deepseek", "model_declared": True},
+}
+_DEFAULT_CONCIERGE_MODEL_INFO = {
+    "model": "opus[1m]", "runtime": "claude", "model_declared": False,
+}
+
+
+def concierge_model_info(name: str) -> dict:
+    """Return {"model": str, "runtime": str, "model_declared": bool} for a
+    concierge. Unknown names get the platform default — never raises."""
+    return dict(_CONCIERGE_MODEL_INFO.get(name, _DEFAULT_CONCIERGE_MODEL_INFO))
+
 
 @dataclass
 class SessionTurn:

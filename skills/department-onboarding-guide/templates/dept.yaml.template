@@ -24,14 +24,39 @@ department:
 {% if model is defined and model %}
   model: "{{ model }}"                     # per-dept model pin (see below)
 {% else %}
-  # model: "sonnet"                    # OPTIONAL per-dept model pin (fleet
-                                           # cost-optimization, 2026-06-19). When
-                                           # absent, isolation_scaffold falls back
-                                           # to DEFAULT_MODEL (Opus). Cheap-
-                                           # orchestrator depts set "sonnet"
-                                           # and spawn Opus subagents for heavy
-                                           # planning / mission execution; depts
-                                           # that must stay Opus set "opus[1m]".
+  model: "opus[1m]"                  # The Claude/DeepSeek model this dept's
+                                           # agent process is launched with.
+                                           # Update if you change --model on the
+                                           # systemd ExecStart. Also the value
+                                           # isolation_scaffold writes into
+                                           # .claude/settings.json `model`, AND
+                                           # what /dept/<slug> shows in its
+                                           # agent-info panel. Accepts a CLI
+                                           # alias or the `<alias>[1m]` 1M-
+                                           # context form, e.g. "opus[1m]",
+                                           # "sonnet[1m]", or a full id like
+                                           # "claude-opus-4-8[1m]". OPTIONAL —
+                                           # when absent, isolation_scaffold AND
+                                           # the console both fall back to the
+                                           # platform default ("opus[1m]").
+                                           # Cheap-orchestrator depts pin
+                                           # "sonnet[1m]" and spawn Opus
+                                           # subagents for heavy planning /
+                                           # mission execution; depts that must
+                                           # stay Opus pin "opus[1m]".
+{% endif %}
+{% if runtime is defined and runtime %}
+  runtime: "{{ runtime }}"                 # per-dept runtime (see below)
+{% else %}
+  # runtime: "claude"                  # OPTIONAL. Which backend actually runs
+                                           # this dept's agent process — "claude"
+                                           # (Claude Code, the platform default)
+                                           # or a non-Claude backend (e.g.
+                                           # "deepseek" for a DeepSeek-proxied
+                                           # concierge). Only set this when the
+                                           # dept's agent is NOT a Claude Code
+                                           # process — everything else can leave
+                                           # it unset (defaults to "claude").
 {% endif %}
 {% if forbidden %}
   forbidden:

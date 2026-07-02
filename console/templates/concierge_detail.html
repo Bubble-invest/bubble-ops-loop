@@ -20,6 +20,17 @@
     Concierge — assistant réactif (il répond quand on le sollicite, il ne
     tourne pas en boucle comme un département).
   </p>
+  {# ─── Agent deployment info strip — mirrors /dept/<slug>'s panel.
+     Concierges have no dept.yaml, so this is a small hardcoded map in
+     concierge_reader.py rather than a YAML-declared field. #}
+  <div class="dept-agent-meta" aria-label="Informations de déploiement de l'agent">
+    <span class="pill pill-mute" title="Modèle du process agent">
+      Modèle : <span class="slug-ref">{{ agent_model_info.model }}</span>
+    </span>
+    <span class="pill pill-mute" title="Runtime (Claude Code vs autre backend)">
+      Runtime : {{ agent_model_info.runtime }}
+    </span>
+  </div>
 </header>
 
 {# ─── Status strip ───────────────────────────────────────────────── #}
