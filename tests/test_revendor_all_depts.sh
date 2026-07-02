@@ -112,10 +112,10 @@ chk_contains "T2 names the stale file" "dispatch_helpers.py" "$out2"
 chk_contains "T2 log line marked dry-run" "dry-run" "$out2"
 
 # =============================================================================
-# T3: a broken/missing dept dir is skipped, not fatal — sweep still exits 0
-#     and still processes the OTHER good dept.
+# T3: a dept dir with no scripts/lib (missing dest dir) is a fail-open no-op,
+#     not fatal — sweep still exits 0 and still processes the OTHER good dept.
 # =============================================================================
-echo "== T3: missing dept dir is skipped, not fatal =="
+echo "== T3: missing dest dir (no scripts/lib) is a fail-open no-op =="
 FW3="$FIX/t3/framework"; make_framework "$FW3"
 AGENTS3="$FIX/t3/agents"
 make_dept "$AGENTS3/bubble-ops-good"
@@ -123,7 +123,7 @@ make_dept "$AGENTS3/bubble-ops-good"
 # must not abort the sweep or crash on the good dept.
 mkdir -p "$AGENTS3/bubble-ops-bad-empty"
 
-out3="$("$SCRIPT_UNDER_TEST" --framework "$FW3" --agents-root "$AGENTS3" 2>&1)"
+"$SCRIPT_UNDER_TEST" --framework "$FW3" --agents-root "$AGENTS3" >/dev/null 2>&1
 rc3=$?
 chk "T3 exits 0 despite a broken dept dir" 0 "$rc3"
 GOT_GOOD="$(cat "$AGENTS3/bubble-ops-good/scripts/lib/dispatch_helpers.py")"
