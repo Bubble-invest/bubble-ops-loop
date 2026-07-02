@@ -1280,6 +1280,7 @@ def build_dispatch_ctx(
     *,
     now_utc: "datetime | None" = None,
     fire_after_rounds: int = 1,
+    materialize: bool = True,
 ) -> "dict[str, Any]":
     """Build the ctx dict that `decide_dispatch` consumes, by SCANNING the
     repo's queues + today's runtime markers.
@@ -1308,6 +1309,35 @@ def build_dispatch_ctx(
     even after L1 had already run that morning. Tony observed this live (VPS
     session ebb03972) and had to override to "heartbeat" by hand every tick. Both
     keys are now scanned from disk so the daily floor and the cycle gate work.
+
+    `materialize` (#454 FIX): when True (the default — used by the REAL
+    dispatch decision, e.g. scaffold.py's documented
+    `ctx = build_dispatch_ctx('.')` call in the live /loop), the usual
+    `materialize_due_missions_for_tick()` side effect runs first, exactly as
+    before (#428/#432 behaviour unchanged). Set `materialize=False` for any
+    caller that only needs READ-ONLY ctx signals — e.g. a pre-flight
+    eligibility GATE CHECK (loop-backup.sh's FORCE_LAYER "is this layer due
+    yet" probe) that decides whether to wake the live session but does NOT
+    itself dispatch. `build_dispatch_ctx` is a context BUILDER; only the
+    mission's real run may write its `.last-run` marker (the #428/#375
+    invariant) — a read-only gate check must not stamp it as a side effect.
+
+    THE #454 BUG (found live on Ben, 2026-07-01/02): `loop-backup.sh`'s
+    FORCE_LAYER gate calls `build_dispatch_ctx(...)` purely to read
+    `_layer_fired_today` signals, ~9s BEFORE waking the live session via
+    `inject_live_loop`. With `materialize` unconditionally True, that
+    read-only probe pre-stamped `data_update`'s per-mission marker
+    (`outputs/<today>/missions/data_update/.last-run`) as a side effect. The
+    same-tick exclusion in `_mission_last_fired` /
+    `_any_mission_fired_today_for_layer` only protects a marker from
+    cannibalizing the SAME `build_dispatch_ctx` call that wrote it — it does
+    NOT protect against a marker written by an EARLIER, separate call. So
+    when the live session started 9s later and called `build_dispatch_ctx`
+    for the real decision, the marker was already a prior-tick stamp →
+    `layer_1_mission_fired_today`=True → `l1_fired`=True → `decide_dispatch`
+    fell through to "heartbeat" — L1/data_update silently vetoed every tick.
+    Ben was hand-archiving the marker to un-stick it. Fix: gate/probe call
+    sites now pass `materialize=False`.
     """
     repo = Path(repo_dir)
     if now_utc is None:
@@ -1320,8 +1350,15 @@ def build_dispatch_ctx(
     # trigger the appropriate layer this same tick. Pass fire_after_rounds
     # so the materializer's event-ledger gate uses the same L1 cycle threshold
     # as decide_dispatch (was hardcoded to 1 in a8ed933; now threaded through).
-    materialize_due_missions_for_tick(repo, today_dir, now_utc,
-                                      fire_after_rounds=fire_after_rounds)
+    #
+    # #454 FIX: this is the ONLY mutating step in build_dispatch_ctx (it
+    # writes queue items + per-mission .last-run markers). Skip it entirely
+    # when materialize=False (read-only gate/probe callers) so build_dispatch_ctx
+    # never stamps a run-marker as a side effect of a call that isn't the real
+    # dispatch decision — see the #454 docstring section above.
+    if materialize:
+        materialize_due_missions_for_tick(repo, today_dir, now_utc,
+                                          fire_after_rounds=fire_after_rounds)
 
     return {
         "now_utc": now_utc,
