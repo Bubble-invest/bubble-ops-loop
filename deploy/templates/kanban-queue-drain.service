@@ -1,0 +1,30 @@
+[Unit]
+Description=Bubble kanban dead-letter drain — replay stranded kanban_queue.jsonl cards to the board (#440)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+WorkingDirectory=/home/claude/bubble-ops-loop
+# Same queue-path default as emit_kanban_item.sh's fallback resolution
+# ($HOME/claude-workspaces/Rick_RnD/monitoring on the Mac; on the VPS the
+# per-dept $HOME/.bubble is the first writable candidate). KANBAN_QUEUE can
+# be overridden per-dept by a drop-in if a box needs a non-default path.
+ExecStart=/home/claude/bubble-ops-loop/tools/kanban/drain_kanban_queue.sh
+# The drainer's own auth resolution (ambient gh auth, or the
+# bubble-board-token.sh minter via sudoers) — no extra caps needed here.
+TimeoutStartSec=120
+# drain_kanban_queue.sh exits 2 on "some lines still failed" (left for next
+# run — expected/non-fatal) and 1 only when no GitHub auth is available at
+# all. Neither should flip this unit to systemd `failed` and spam alerts;
+# the script's own stderr WARN + the loud [WARN] at emit-time are the signal.
+SuccessExitStatus=0 1 2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kanban-queue-drain
+
+[Install]
+WantedBy=multi-user.target
