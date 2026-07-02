@@ -100,8 +100,12 @@ if [[ -z "$REPO_URL" ]]; then
   REPO_URL="https://github.com/vdk888/bubble-ops-$SLUG"
 fi
 
-# Delegate to Python worker.
-exec python3 "$SCRIPT_DIR/lib/activate_runner.py" \
+# Delegate to Python worker. Use the calling environment's interpreter
+# (honors $PYTHON, e.g. set by a Python caller to sys.executable) so
+# activate_runner.py's in-process dry-run import sees the same deps as the
+# caller. On the VPS this stays "python3" (system interpreter already has
+# the deps) — only dev/CI callers that export PYTHON change behavior.
+exec "${PYTHON:-python3}" "$SCRIPT_DIR/lib/activate_runner.py" \
   --slug="$SLUG" \
   --repo-dir="$REPO_DIR" \
   --base-branch="$BASE_BRANCH" \
