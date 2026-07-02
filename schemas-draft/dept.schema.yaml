@@ -100,6 +100,19 @@ properties:
           `claude-opus-4-8[1m]`. OPTIONAL and back-compat: when absent,
           isolation_scaffold falls back to its DEFAULT_MODEL (the platform Opus
           pin), so existing depts are unchanged until they explicitly set it.
+      runtime:
+        type: string
+        minLength: 1
+        description: |
+          OPTIONAL. Which backend actually runs this dept's agent process:
+          "claude" (Claude Code — the platform default) or a non-Claude
+          backend, e.g. "deepseek" for a DeepSeek-proxied concierge. Added
+          2026-07-02 alongside the /dept/<slug> agent-info panel so a dept
+          whose `model` field names a non-Claude model id (e.g.
+          "deepseek-v4-pro") can be distinguished from "no model pinned,
+          using the Claude platform default". Back-compat: when absent,
+          consumers (the console, isolation_scaffold) treat the dept as
+          "claude" — the only runtime that existed before this field.
       owner:
         type: string
         minLength: 1

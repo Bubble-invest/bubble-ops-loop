@@ -805,6 +805,18 @@ code, .code {
   margin: 0;
 }
 
+/* Agent deployment info strip (model/runtime/hierarchy/layers/host) —
+   compact pill row under the dept subtitle. Card 2026-07-02. */
+.dept-agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.dept-agent-meta .slug-ref {
+  font-family: var(--font-mono);
+}
+
 .prose-block {
   font-size: 16px;
   color: var(--body);

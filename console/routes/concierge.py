@@ -25,6 +25,10 @@ def concierge_detail(name: str, request: Request):
     # Working projects from <workspace>/workspace/projects/*/STATUS.md
     # ({{OPERATOR}} msg 1193 — show what the concierge is building).
     projects = concierge_reader.list_projects(name)
+    # Deployment fact: which model/runtime this concierge's agent process
+    # actually runs (hardcoded — concierges have no dept.yaml to read it
+    # from). Card 2026-07-02.
+    agent_model_info = concierge_reader.concierge_model_info(name)
     return request.app.state.templates.TemplateResponse(
         "concierge_detail.html",
         {
@@ -33,6 +37,7 @@ def concierge_detail(name: str, request: Request):
             "turns": turns,
             "projects": projects,
             "status": c.metadata.get("service_status", "unknown"),
+            "agent_model_info": agent_model_info,
         },
     )
 

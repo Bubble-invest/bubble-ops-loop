@@ -10,6 +10,8 @@ department:
   status: live
   mandate: "Prospection, suivi prospects, preparation de messages et maintien CRM."
   owner: operator
+  model: "opus[1m]"                        # ops-loop-maya.service ExecStart pins --model "opus[1m]"
+  runtime: "claude"
   forbidden:
     - envoyer un DM sans validation humaine en v1
     - referencer client nominativement sans accord ecrit

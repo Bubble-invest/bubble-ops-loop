@@ -9,6 +9,8 @@ department:
   status: live
   mandate: "Gerer le family office: decisions investissement, ordres, ledger, exceptions."
   owner: operator
+  model: "opus[1m]"                        # ops-loop-ben.service ExecStart pins --model "opus[1m]"
+  runtime: "claude"
   forbidden:
     - executer un ordre sans gate humain en v1
     - liquider une position sans risk brief Layer 4 sign-off

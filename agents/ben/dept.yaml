@@ -13,10 +13,19 @@ department:
     the human execution gate — proposals-only until the mandate is signed and
     secrets are armed.
   owner: principal
-  # model: "sonnet"                         # OPTIONAL per-dept model pin. A cheap
-                                            # orchestrator dept sets "sonnet" and
-                                            # spawns Opus subagents for heavy
-                                            # planning / mission execution.
+  model: "opus[1m]"                        # The Claude/DeepSeek model this dept's
+                                            # agent process is launched with. Update
+                                            # if you change --model on the systemd
+                                            # ExecStart. OPTIONAL — when absent,
+                                            # isolation_scaffold AND the console both
+                                            # fall back to the platform default
+                                            # ("opus[1m]"). A cheap-orchestrator dept
+                                            # can pin "sonnet[1m]" instead and spawn
+                                            # Opus subagents for heavy planning /
+                                            # mission execution.
+  runtime: "claude"                        # OPTIONAL. Which backend runs the agent
+                                            # process: "claude" (default) or a non-
+                                            # Claude backend, e.g. "deepseek".
   forbidden:
   - Submit any broker order without completing the 4-step execution gate (propose -> surface -> human-decide -> execute)
   - Arm allow_live execution while the mandate is unsigned or broker secrets are absent (proposals-only mode)

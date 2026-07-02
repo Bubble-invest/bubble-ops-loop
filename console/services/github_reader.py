@@ -64,6 +64,82 @@ def load_dept_yaml(slug: str) -> Optional[dict]:
     return None
 
 
+# Platform default model — mirrors isolation_scaffold.DEFAULT_MODEL (the
+# fallback isolation_scaffold writes into .claude/settings.json when a dept
+# doesn't pin its own `department.model`). Kept as a plain string constant
+# here (not imported from the onboarding-guide skill) to avoid a cross-
+# package import from console -> skills for a single literal.
+DEFAULT_AGENT_MODEL = "opus[1m]"
+DEFAULT_AGENT_RUNTIME = "claude"
+
+
+def load_agent_model_info(dept_yaml: Optional[dict]) -> Dict[str, Any]:
+    """Return the per-dept agent deployment facts surfaced on /dept/<slug>:
+    which model the dept's agent process is launched with, its runtime
+    (claude vs a non-Claude backend like deepseek), hierarchy level, and
+    subscribed layers.
+
+    `department.model` already exists in dept.schema.yaml as "the value
+    written into .claude/settings.json `model` by isolation_scaffold" — the
+    ground-truth deployment fact for a dept's orchestrator process. This
+    function reads the SAME field (no new parallel field for the model
+    itself) and adds a `runtime` field (new, defaults to "claude") so a
+    dept whose agent isn't a Claude process at all can declare that
+    distinctly from "no model pinned, using the platform default".
+
+    Never raises: a missing/malformed dept_yaml degrades to the platform
+    defaults, never a KeyError.
+    """
+    dept = {}
+    if isinstance(dept_yaml, dict):
+        dept = dept_yaml.get("department") or {}
+        if not isinstance(dept, dict):
+            dept = {}
+
+    model = dept.get("model")
+    if not (isinstance(model, str) and model.strip()):
+        model = DEFAULT_AGENT_MODEL
+        model_declared = False
+    else:
+        model = model.strip()
+        model_declared = True
+
+    runtime = dept.get("runtime")
+    if not (isinstance(runtime, str) and runtime.strip()):
+        runtime = DEFAULT_AGENT_RUNTIME
+    else:
+        runtime = runtime.strip()
+
+    hierarchy = {}
+    layers = None
+    host = None
+    if isinstance(dept_yaml, dict):
+        h = dept_yaml.get("hierarchy")
+        if isinstance(h, dict):
+            hierarchy = h
+        l = dept_yaml.get("layers")
+        if isinstance(l, dict):
+            subscribed = l.get("subscribed")
+            if isinstance(subscribed, list):
+                layers = subscribed
+        host = dept_yaml.get("host")
+
+    hierarchy_level = hierarchy.get("level") if isinstance(hierarchy, dict) else None
+    if not hierarchy_level:
+        # Back-compat: some fixtures only set department.level, not the
+        # hierarchy.level mirror (schema says the two MUST agree).
+        hierarchy_level = dept.get("level")
+
+    return {
+        "model": model,
+        "model_declared": model_declared,
+        "runtime": runtime,
+        "hierarchy_level": hierarchy_level,
+        "layers": layers,
+        "host": host,
+    }
+
+
 def load_dept_yaml_raw(slug: str) -> Optional[str]:
     """Return the raw text of dept.yaml(.draft) for verbatim rendering."""
     root = repo_path(slug)
