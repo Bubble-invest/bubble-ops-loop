@@ -28,6 +28,8 @@ import logging
 from pathlib import Path
 from typing import Callable, Dict, Optional, Any, List
 
+from console import settings
+
 logger = logging.getLogger(__name__)
 
 # ─── Paths / constants ────────────────────────────────────────────────────
@@ -166,7 +168,7 @@ def try_install_github_app(slug: str) -> Dict[str, Any]:
     The PUT endpoint requires a user-to-server token with the
     'administration:write' scope on the App owner; if that scope is
     missing we get 403 and fall back to a manual UI instruction."""
-    repo = f"vdk888/bubble-ops-{slug}"
+    repo = f"{settings.GITHUB_ORG}/bubble-ops-{slug}"
     try:
         # First: do we already see an installation for this repo (App
         # configured "all repositories" or owner clicked "add" already)?
@@ -183,7 +185,7 @@ def try_install_github_app(slug: str) -> Dict[str, Any]:
         # Otherwise: try PUT user/installations/{id}/repositories/{repo_id}
         # using the existing user PAT. Will 403 unless the PAT has the
         # right scope — that's the expected fallback.
-        # First get the App installation ID for vdk888 — known from fixture's env.
+        # First get the App installation ID for settings.GITHUB_ORG — known from fixture's env.
         installation_id = os.environ.get(
             "GITHUB_APP_INSTALLATION_ID_BUBBLE_OPS_FIXTURE", ""
         )
