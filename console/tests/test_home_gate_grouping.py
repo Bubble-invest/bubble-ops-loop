@@ -107,8 +107,11 @@ def test_two_gates_same_dept_same_kind_render_as_single_card(monkeypatch, tmp_pa
     assert "gate-roundtrip-test-001" not in body
     # The CTA must offer to view all N
     assert "Voir les 2" in body, "expected CTA 'Voir les 2 →'"
-    # The CTA must link to the dept page
-    assert 'href="/dept/fixture"' in body, "grouped card must link to /dept/fixture"
+    # The CTA must deep-link straight to the batch triage view for this
+    # group, matching the dept page's own group-card link (#449) — not the
+    # dept page, which would make the operator re-find the decisions.
+    assert 'href="/gate/fixture/kind/research_decision"' in body, \
+        "grouped card must deep-link to /gate/<slug>/kind/<kind>"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -188,9 +191,19 @@ def test_group_card_uses_humanized_french_kind_label(monkeypatch, tmp_path):
     # The humanized French label for 'prospect_dm' is 'DM à approuver'
     assert "DM à approuver" in body, \
         "humanized French label 'DM à approuver' missing for prospect_dm"
-    # The raw enum slug must NOT appear in the visible group card body
-    # (the slug may appear elsewhere, e.g. settings, but the home card
-    # is operator-prose — no enum slugs).
-    # We check the snippet around the group card.
-    assert "prospect_dm" not in body, \
-        "raw enum 'prospect_dm' must NOT appear in humanized home card"
+    # The raw enum slug must NOT appear in the group card's VISIBLE prose
+    # (title/body text) — the home card is operator-prose, no enum slugs.
+    # It legitimately appears inside the card's href now (#449: deep-links
+    # to /gate/<slug>/kind/<kind> instead of /dept/<slug>), so we isolate
+    # the title+body text rather than grepping the whole page body.
+    import re
+    title_match = re.search(
+        r'<h3 class="decision-card-title">(.*?)</h3>', body, re.DOTALL,
+    )
+    body_match = re.search(
+        r'<p class="decision-card-body">(.*?)</p>', body, re.DOTALL,
+    )
+    assert title_match and body_match, "group card title/body not found in response"
+    visible_prose = title_match.group(1) + body_match.group(1)
+    assert "prospect_dm" not in visible_prose, \
+        "raw enum 'prospect_dm' must NOT appear in the card's visible prose"

@@ -2,9 +2,12 @@
    a single décision-card. Context:
      col   — column dict (dept + gates + gate_groups)
      grp   — one group dict: {kind, kind_label, gates: [...], count: N}
-   Used only when count >= 2. For count == 1 see partials/kanban_card.html. #}
+   Used only when count >= 2. For count == 1 see partials/kanban_card.html.
+   Links straight to the BATCH triage view (mirrors dept_detail.html:416)
+   so the operator lands on the decisions themselves, not the dept page
+   he'd then have to re-search from (#449). #}
 <a class="decision-card"
-   href="/dept/{{ col.dept.slug }}">
+   href="/gate/{{ col.dept.slug }}/kind/{{ grp.kind }}">
   <div class="decision-card-count">{{ grp.count }}</div>
   <h3 class="decision-card-title">
     {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre — {{ col.dept.display_name }}

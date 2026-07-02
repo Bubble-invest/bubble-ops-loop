@@ -126,22 +126,25 @@ def test_collegue_row_restacks_on_mobile() -> None:
     )
 
 
-def test_topbar_wraps_on_mobile() -> None:
-    """`.topbar-inner` must wrap/flex-wrap so 'Carnet de bord' doesn't
-    clip on narrow viewports."""
+def test_nav_restacks_on_mobile() -> None:
+    """The nav (CSS-only hamburger sidebar — `.topbar`/`.topnav` were
+    removed as dead CSS in #449, confirmed zero references in base.html,
+    which uses `.sidebar`/`.app-shell` instead) must restyle so it doesn't
+    clip on narrow viewports: the toggle becomes visible and the sidebar
+    itself goes off-canvas, both keyed off the same breakpoint family."""
     css = _read_css()
     pat = re.compile(
-        r"@media\s*\(max-width:\s*720px\)\s*\{(?P<body>(?:[^{}]|\{[^}]*\})*)\}",
+        r"@media\s*\(max-width:\s*768px\)\s*\{(?P<body>(?:[^{}]|\{[^}]*\})*)\}",
         re.MULTILINE,
     )
     m = pat.search(css)
-    assert m, "720px mobile block missing"
+    assert m, "768px mobile sidebar block missing"
     body = m.group("body")
-    assert ".topbar-inner" in body or ".topnav" in body, (
-        "topbar/topnav must be restyled at 720px so nav items don't clip"
+    assert ".sidebar-toggle-label" in body, (
+        "sidebar hamburger toggle must be shown at the mobile breakpoint"
     )
-    assert "flex-wrap" in body, (
-        "topbar must allow flex-wrap so nav items can wrap, not clip"
+    assert "transform" in body, (
+        "sidebar must go off-canvas (transform) on mobile so it doesn't clip content"
     )
 
 
