@@ -262,6 +262,23 @@ def test_issue_to_card_dept_label():
     assert card["id"] == "1"
 
 
+def test_issue_to_card_dept_attachment_repo_resolves_to_dept_repo():
+    """Board #429: a dept:content card's visual_attachments_repo must point at
+    the CONTENT dept's own repo (bubble-ops-content), not the board repo — its
+    attachment paths are relative to that dept's checkout, not the board's."""
+    issue = _make_issue(11, "Content task", labels=["dept:content"])
+    card = issue_to_card(issue)
+    assert card["visual_attachments_repo"] == "Bubble-invest/bubble-ops-content"
+
+
+def test_issue_to_card_no_dept_attachment_repo_falls_back_to_board():
+    """A card with no dept: label (board-native) resolves its attachments
+    against the board repo itself — unchanged prior behaviour."""
+    issue = _make_issue(12, "Board-native task")
+    card = issue_to_card(issue)
+    assert card["visual_attachments_repo"] == "Bubble-invest/bubble-ops-board"
+
+
 def test_issue_to_card_status_triage():
     """status:triage → column "needs_attention"."""
     issue = _make_issue(2, "Triage task", labels=["status:triage"])
