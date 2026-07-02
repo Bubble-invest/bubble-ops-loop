@@ -289,6 +289,34 @@ def parse_card_links(sections: dict) -> dict:
     return out
 
 
+
+# Board #491 — override map for dept: label values that do NOT have a
+# `bubble-ops-<x>` repo on disk, so `f"bubble-ops-{dept_val}"` would build a
+# nonexistent repo string and 404 on any inline attachment:
+#   - rnd: Rick's own output repo IS this repo (bubble-ops-loop) — console,
+#     agents/, tools/, skills/ all live here. There is no separate
+#     bubble-ops-rnd; dept:rnd card visuals (if any) are board-repo-relative
+#     like any board-native card.
+#   - security: Eliot has no dedicated dept repo (no bubble-ops-security).
+#     Findings reference records/logs living in OTHER repos (e.g. this loop
+#     repo's own — now-removed — .claude/security-log.md) with no single
+#     consistent home to route attachments to. Board fallback is correct.
+#   - claudette, morty: concierges, not ops-loop depts (see
+#     console/routes/concierge.py + console/services/dept_registry.py ::
+#     KNOWN_CONCIERGE_SLUGS) — always-on reactive assistants with no
+#     dept-layer output repo of their own. Morty is literally the VPS host;
+#     Claudette is Jade's personal assistant. Neither emits card visuals via
+#     a bubble-ops-<x> checkout.
+# All four map to the board repo itself — same behaviour as "no dept: label",
+# which was already correct (no crash, just no image) before #429/#202.
+_DEPT_REPO_OVERRIDE: dict[str, str] = {
+    "rnd": _BOARD_REPO,
+    "security": _BOARD_REPO,
+    "claudette": _BOARD_REPO,
+    "morty": _BOARD_REPO,
+}
+
+
 def _repo_for_dept(dept_val: str | None) -> str:
     """Map a card's raw dept:<x> label value to the org/repo its attachments
     live in (board #429): a dept:content card's `visual_attachments` paths are
@@ -301,12 +329,19 @@ def _repo_for_dept(dept_val: str | None) -> str:
     different display name than their on-disk repo slug) — the on-disk dept repo
     is always `bubble-ops-<raw dept: label value>`.
 
+    Board #491: 4 live dept: values (rnd, security, claudette, morty) have no
+    bubble-ops-<x> repo on disk — see _DEPT_REPO_OVERRIDE above for why each
+    one routes to the board repo instead of a 404ing nonexistent repo string.
+
     No dept: label (board-native cards, e.g. dept:rnd's own board attachments,
     or a card with no dept at all) → falls back to the board repo itself, which
     is the previous (and still correct for those cards) hardcoded behaviour.
     """
     if not dept_val:
         return _BOARD_REPO
+    override = _DEPT_REPO_OVERRIDE.get(dept_val)
+    if override is not None:
+        return override
     return f"Bubble-invest/bubble-ops-{dept_val}"
 
 
