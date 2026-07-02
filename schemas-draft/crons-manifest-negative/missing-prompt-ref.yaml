@@ -1,0 +1,8 @@
+# NEGATIVE CASE — must be REJECTED by crons-manifest.schema.yaml
+# Rule broken: every cron entry REQUIRES `prompt_ref` (the re-arm step has
+# nothing to pass CronCreate without it). This entry omits it.
+version: 1
+crons:
+  - name: broken_entry
+    schedule: "0 8 * * *"
+    description: Missing prompt_ref on purpose.

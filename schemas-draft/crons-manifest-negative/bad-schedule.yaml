@@ -1,0 +1,10 @@
+# NEGATIVE CASE — must be REJECTED by crons-manifest.schema.yaml
+# Rule broken: `schedule` must be a 5-field cron expression. "daily" is a
+# dept.yaml::recurring_missions cadence keyword, not a valid crons.yaml
+# schedule — the two manifests are deliberately NOT interchangeable.
+version: 1
+crons:
+  - name: bad_schedule_entry
+    schedule: "daily"
+    description: Uses a recurring_missions-style cadence keyword instead of cron syntax.
+    prompt_ref: "Do the thing."

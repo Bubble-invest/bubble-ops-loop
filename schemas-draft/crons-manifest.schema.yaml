@@ -1,0 +1,81 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://bubble.invest/schemas/v1/crons-manifest.json"
+title: Dept durable-cron manifest (config/crons.yaml)
+description: |
+  Shape of a dept's declarative durable-cron manifest, per board card #461
+  (child of #456: "durable: true" CronCreate is session-only on headless CLI
+  — a systemd/launchd restart is a brand-new process and never re-arms it).
+
+  This is a DIFFERENT concept from `dept.yaml::recurring_missions`:
+    - recurring_missions   = Layer 1-4 OODA pipeline work (materializes queue
+                              items; consumed by dispatch_helpers.py).
+    - config/crons.yaml     = session-level CronCreate wakes the agent must
+                              hold for itself to function at all — the /loop
+                              self-pacing cadence, a fixed-time daily brief,
+                              etc. These have no queue/layer semantics; they
+                              are just "the agent must be woken at time X with
+                              prompt Y", and today live ONLY in the running
+                              process's CronCreate state, which a restart
+                              wipes.
+
+  The boot-rearm turn (deploy/telegram-plugin's inject-file write, see
+  ops-loop-dept.service.template ExecStartPost) reads this file (if present),
+  runs CronList, and re-creates any manifest entry missing from the live
+  cron table — the same self-heal pattern already proven for `/loop` itself.
+
+  Lives at: <dept-dir>/config/crons.yaml (dept-owned, git-tracked, sits next
+  to dept.yaml). A dept with no such file is a no-op (nothing to re-arm
+  beyond its own /loop cadence, which boot-rearm already handles
+  unconditionally).
+type: object
+required: [crons]
+additionalProperties: false
+properties:
+  crons:
+    type: array
+    items:
+      type: object
+      required: [name, schedule, prompt_ref]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-z0-9_-]*$"
+          description: |
+            snake_case or kebab-case unique identifier within the dept's
+            manifest. Used as the CronCreate task name AND as the diff key
+            against CronList — MUST be stable across restarts (do not
+            regenerate it per-run) so the diff can tell "already armed" from
+            "missing".
+        schedule:
+          type: string
+          description: |
+            5-field cron expression (UTC, matching CronCreate's own
+            convention), e.g. "32 6 * * *" for 08:32 Paris (winter) mail-brief.
+          pattern: "^(\\S+\\s+){4}\\S+$"
+        prompt_ref:
+          type: string
+          minLength: 1
+          description: |
+            Pointer to the FULL prompt text CronCreate should fire with —
+            either a literal short prompt (<=200 chars, inline) or, for
+            anything longer/richer, a `file:<path-relative-to-dept-dir>`
+            reference (e.g. "file:config/crons/mail_brief.md") so long
+            prompts don't bloat this manifest. The boot-rearm re-arm step
+            resolves `file:` refs before calling CronCreate.
+        description:
+          type: string
+          minLength: 1
+          description: One-sentence human description of what this wake does.
+        critical:
+          type: boolean
+          default: true
+          description: |
+            When true (default), a missing cron at session-start also fires
+            the (c) loud Telegram alert (per #456 option c), not just a
+            silent re-arm. Set false for best-effort/non-critical wakes.
+  version:
+    type: integer
+    minimum: 1
+    default: 1
+    description: Manifest schema version, for future migrations.
