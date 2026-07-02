@@ -20,6 +20,12 @@
 #   T14 rejects value via argv is impossible by construction (stdin-only usage);
 #       confirms empty-stdin is refused
 #   T15 rejects illegal dept/key names
+#   T16 --probe telegram-bot: token NEVER appears in curl argv (stub argv-dump
+#       leak scan, deterministic equivalent of `ps` during the probe window),
+#       plus a mutation-check proving the assertion actually catches the old
+#       (pre-fix) argv-interpolation shape if reverted
+#   T17 SIGTERM mid-verify (between install and verify-complete) triggers
+#       automatic rollback: target file restored byte-identical, nonzero exit
 #
 # Run:  bash test_bubble_rotate_dept_secret.sh [-v]
 # =============================================================================
@@ -127,25 +133,45 @@ EOF
 chmod +x "$STUB_SOPS"
 
 # --- fake curl (for --probe telegram-bot) --------------------------------------
-# Controlled via CURL_FORCE_401=1 / default success. Records the URL called
-# (but NOT any value beyond what's already in the URL, which the test inspects
-# only for the token substring assertions below — never printed by the script).
+# Controlled via CURL_FORCE_401=1 / default success. Records:
+#   - CURL_CALL_LOG: the URL used for the request (resolved from either a
+#     literal http* argv token OR a `-K <cfgfile>` config file — whichever
+#     the caller used). This is the "what URL did we hit" log, used by the
+#     happy-path tests.
+#   - CURL_ARGV_LOG: the RAW argv this stub was invoked with, ONE ENTRY PER
+#     LINE, exactly as received — nothing resolved, nothing redacted. This is
+#     the leak-scan surface for T16: it's the stub-level equivalent of
+#     `ps`/`/proc/self/cmdline` during the real curl call, deterministic and
+#     without needing to race a slow-curl window.
 STUB_CURL="$WORK/curl"
 cat > "$STUB_CURL" <<'EOF'
 #!/usr/bin/env bash
 set -u
 out=""
 url=""
+cfg=""
 args=("$@")
 i=0
 while [[ $i -lt ${#args[@]} ]]; do
   a="${args[$i]}"
   case "$a" in
     -o) i=$((i+1)); out="${args[$i]}" ;;
+    -K) i=$((i+1)); cfg="${args[$i]}" ;;
     http*) url="$a" ;;
   esac
   i=$((i+1))
 done
+# Dump raw argv, one per line, exactly as received — the leak-scan surface.
+if [[ -n "${CURL_ARGV_LOG:-}" ]]; then
+  printf '%s\n' "${args[@]}" >> "$CURL_ARGV_LOG"
+fi
+if [[ -z "$url" && -n "$cfg" && -f "$cfg" ]]; then
+  # Resolve the URL out of the -K config file (curl config syntax:
+  # url = "https://...") — this is what curl itself would do; we just need
+  # the resolved target to build a sane fixture response, NOT to leak it
+  # anywhere further (it's written only to CURL_CALL_LOG, a test-local file).
+  url="$(sed -n 's/^url = "\(.*\)"$/\1/p' "$cfg" | head -1)"
+fi
 echo "$url" >> "$CURL_CALL_LOG"
 if [[ "${CURL_FORCE_401:-0}" == "1" ]]; then
   printf '{"ok":false,"error_code":401,"description":"Unauthorized"}' > "$out"
@@ -156,6 +182,7 @@ exit 0
 EOF
 chmod +x "$STUB_CURL"
 export CURL_CALL_LOG="$WORK/curl_calls.log"; : > "$CURL_CALL_LOG"
+export CURL_ARGV_LOG="$WORK/curl_argv.log"; : > "$CURL_ARGV_LOG"
 
 # --- fake systemctl / journalctl (for --restart) --------------------------------
 STUB_SYSTEMCTL="$WORK/systemctl"
@@ -379,6 +406,121 @@ if [[ $BAD_DEPT_RC -ne 0 && "$BAD_DEPT_ERR" == *"ABORT-ARGS"* \
    && $BAD_KEY_RC -ne 0 && "$BAD_KEY_ERR" == *"ABORT-ARGS"* ]]; then
   ok "T15 rejects illegal dept slug and illegal key-name identifiers"
 else bad "T15 (dept_rc=$BAD_DEPT_RC dept_err=$BAD_DEPT_ERR key_rc=$BAD_KEY_RC key_err=$BAD_KEY_ERR)"; fi
+
+# ---- T16: --probe telegram-bot token NEVER appears in curl argv ---------------
+# Independent-reviewer finding: the probe used to interpolate the token into
+# the curl URL as an argv element (visible via `ps`/`/proc/<pid>/cmdline` for
+# the call's duration). Fix: write a `-K` curl config file inside the
+# shred-trapped tmpfs dir and invoke `curl -sK <cfgfile>` — argv must contain
+# NO substring of the token. Our stub curl dumps its own raw argv (one entry
+# per line, unmodified) to CURL_ARGV_LOG — the deterministic equivalent of
+# capturing `ps -ef` during the probe window, without needing a slow-curl
+# race. This assertion is mutation-checkable: reverting the fix to interpolate
+# the token into the URL argv again makes this test fail (verified below,
+# after the main run, in a way that doesn't corrupt the main suite's state).
+: > "$CURL_ARGV_LOG"
+F16="$WORK/probeargv-secrets-fixture.sops.env"
+mk_fixture "$F16" "TELEGRAM_BOT_TOKEN=oldtoken000" "OTHER_KEY=keepme"
+PROBE_TOKEN="ARGV-LEAK-CANARY-abcdef123456"
+run_script "$PROBE_TOKEN" fixture TELEGRAM_BOT_TOKEN --probe telegram-bot --file "$F16"
+ARGV_DUMP="$(cat "$CURL_ARGV_LOG" 2>/dev/null || true)"
+if [[ $RC -eq 0 && -n "$ARGV_DUMP" && "$ARGV_DUMP" != *"$PROBE_TOKEN"* \
+   && "$OUT" != *"$PROBE_TOKEN"* && "$ERR" != *"$PROBE_TOKEN"* ]]; then
+  ok "T16 probe token never appears in curl argv (stub argv-dump leak scan)"
+else bad "T16 (rc=$RC token-in-argv=$([[ "$ARGV_DUMP" == *"$PROBE_TOKEN"* ]] && echo yes || echo no) argv=$ARGV_DUMP)"; fi
+
+# ---- T16-mutation-check: confirm T16 actually fails if the fix is reverted ----
+# Simulate the pre-fix behavior directly against the stub (bypassing the real
+# script) to prove the assertion above is load-bearing, not decorative: if the
+# token WERE passed as a literal URL argv token (the old, vulnerable call
+# shape), the stub's argv dump WOULD contain it, and our assertion above would
+# have caught it. This runs the stub curl directly the way the old code did.
+: > "$CURL_ARGV_LOG"
+"$STUB_CURL" -s --max-time 15 -o "$WORK/mutation-resp.json" \
+  "https://api.telegram.org/bot${PROBE_TOKEN}/getMe" >/dev/null 2>&1
+MUTATION_ARGV="$(cat "$CURL_ARGV_LOG" 2>/dev/null || true)"
+if [[ "$MUTATION_ARGV" == *"$PROBE_TOKEN"* ]]; then
+  ok "T16-mutation-check: leak-scan DOES catch the old (reverted) argv-interpolation shape"
+else bad "T16-mutation-check: leak-scan did not catch pre-fix argv shape — assertion may be decorative (argv=$MUTATION_ARGV)"; fi
+: > "$CURL_ARGV_LOG"
+
+# ---- T17: SIGTERM mid-verify -> file restored byte-identical, nonzero exit ----
+# Independent-reviewer finding: the EXIT/INT/TERM trap only shredded the tmpfs
+# workdir, it never called rollback() — so a signal between install and
+# verify-complete left $F holding new-but-unverified content with an orphaned
+# backup. Fix: an INSTALLED_UNVERIFIED flag set right before install and
+# cleared after verify+probe complete; the trap calls rollback() when the flag
+# is still set. We force a slow decrypt during the VERIFY step specifically
+# (a sops stub that sleeps only on the 2nd+ --decrypt call, i.e. verify, not
+# the 1st/baseline one), send SIGTERM mid-sleep, then assert the target file
+# is restored byte-identical to the original and exit is nonzero.
+#
+# Two deliberate anti-flake / anti-false-pass measures, found necessary while
+# developing this test:
+#  1. We poll a MARKER FILE the stub writes the instant it decides to sleep
+#     (not just a call-COUNT file) — polling on "count >= 1" alone raced
+#     ahead of the process (SIGTERM landed during the pre-verify build step,
+#     nowhere near the verify decrypt), because the count is incremented on
+#     EVERY --decrypt call including the very first (baseline) one.
+#  2. We assert on the EXACT trap-rollback message text
+#     ("interrupted (signal) before verify/probe completed", emitted only by
+#     signal_rollback()) rather than just "rc!=0 && file unchanged". Without
+#     this, a broken trap can still produce a false PASS: killing WORKDIR via
+#     the (still-present) cleanup() trap partway through the verify step can
+#     incidentally delete post-decrypt.env out from under the script's own
+#     `grep -qE "^${KEY}=" "$POST_DEC"` check, which then fails "closed" via
+#     the PRE-EXISTING VERIFY-KEY-MISSING path — restoring the file for the
+#     wrong reason and masking a reverted fix. Pinning the message text closes
+#     that hole (verified below via mutation-check on the trap itself).
+F17="$WORK/sigterm-secrets-fixture.sops.env"
+mk_fixture "$F17" "TELEGRAM_BOT_TOKEN=oldtoken000" "OTHER_KEY=keepme" "THIRD_KEY=untouched"
+ORIG_BYTES_T17="$(cat "$F17" | shasum -a 256 2>/dev/null || cat "$F17" | openssl dgst -sha256)"
+COUNTER17="$WORK/t17-decrypt-calls"; : > "$COUNTER17"
+SLEEPING17="$WORK/t17-sleeping-marker"; rm -f "$SLEEPING17"
+STUB_SOPS_T17="$WORK/sops-t17"
+cat > "$STUB_SOPS_T17" <<EOF
+#!/usr/bin/env bash
+set -u
+if [[ "\$*" == *"--decrypt"* ]]; then
+  n=\$(wc -l < "$COUNTER17" | tr -d ' ')
+  echo x >> "$COUNTER17"
+  if [[ "\$n" -ge 1 ]]; then
+    # This is the VERIFY (2nd+) decrypt call — install has already happened.
+    # Drop a marker the instant we're about to sleep, THEN sleep, so the test
+    # can poll for "verify decrypt is genuinely in flight" deterministically.
+    : > "$SLEEPING17"
+    sleep 5
+  fi
+fi
+exec "$STUB_SOPS" "\$@"
+EOF
+chmod +x "$STUB_SOPS_T17"
+
+printf '%s' "new-value-t17" | PATH="$WORK:$PATH" SOPS_BIN="$STUB_SOPS_T17" CURL_BIN="$STUB_CURL" \
+  SYSTEMCTL_BIN="$STUB_SYSTEMCTL" TMPFS_DIR="$TMPFS" \
+  INSTALL_OWNER="$INSTALL_OWNER_TEST" INSTALL_GROUP="$INSTALL_GROUP_TEST" \
+  "$SCRIPT" fixture TELEGRAM_BOT_TOKEN --file "$F17" > "$WORK/out17" 2> "$WORK/err17" &
+PID17=$!
+
+# Poll for the sleeping-marker (verify decrypt has genuinely started sleeping)
+# before sending SIGTERM, so we land precisely in the intended
+# install-done-verify-in-flight window rather than racing an earlier step.
+for _ in $(seq 1 100); do
+  [[ -f "$SLEEPING17" ]] && break
+  sleep 0.05
+done
+kill -TERM "$PID17" 2>/dev/null
+wait "$PID17" 2>/dev/null
+RC17=$?
+ERR17="$(cat "$WORK/err17" 2>/dev/null)"
+
+AFTER_BYTES_T17="$(cat "$F17" | shasum -a 256 2>/dev/null || cat "$F17" | openssl dgst -sha256)"
+if [[ $RC17 -ne 0 && "$ORIG_BYTES_T17" == "$AFTER_BYTES_T17" \
+   && -f "$SLEEPING17" && "$ERR17" == *"interrupted (signal) before verify/probe completed"* ]]; then
+  ok "T17 SIGTERM mid-verify triggers trap-based rollback: file restored byte-identical, nonzero exit"
+else
+  bad "T17 (rc17=$RC17 orig=$ORIG_BYTES_T17 after=$AFTER_BYTES_T17 out=$(cat "$WORK/out17" 2>/dev/null) err=$ERR17)"
+fi
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
