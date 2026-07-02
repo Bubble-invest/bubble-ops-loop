@@ -2332,11 +2332,22 @@ def _is_vendored_nonpushable(path: str) -> bool:
 # degrade gracefully (skip ONLY the unreachable path/substep, WARN loudly,
 # keep going) instead of aborting the tick.
 #
-# Never removes the never-lose-work guarantee: we only ever restore an
-# unreadable TRACKED file from the index (a sandbox-fs artifact, not agent
-# work — an agent cannot have made an in-sandbox edit to a file it cannot
-# read) — never touch untracked/new files this way, and never silently drop
-# a stash.
+# Never removes the never-lose-work guarantee. Restore-from-index
+# (`git checkout -- <path>`) is DESTRUCTIVE — it discards whatever is on
+# disk in favor of the committed version — so it is only ever safe for a
+# path we can positively identify as sandbox-owned jail-fs content, never
+# for "any tracked path that happens to be unreadable right now" (an
+# earlier, unsandboxed step — e.g. a human/root drop-in between ticks —
+# could have legitimately modified an ordinary tracked file that then
+# becomes unreadable to *this* sandboxed subprocess specifically; restoring
+# it would silently destroy that real edit). Restore is therefore SCOPED to
+# a known-safe allowlist (`.gitmodules` + submodule directory paths — see
+# `_is_restore_allowlisted`). Any OTHER unreadable-but-modified tracked path
+# is never restored: it is EXCLUDED from the add/stash batch instead (so the
+# batch still succeeds) and a WARN is emitted — excluding preserves the
+# file untouched, restoring can destroy it, and the prime directive is
+# never-lose-work. Untracked/new files are never touched by either path,
+# and a stash is never silently dropped.
 
 def _is_sudo_available() -> bool:
     """True if `sudo -n true` succeeds (a cached credential / no-password
@@ -2375,23 +2386,115 @@ def _find_unreadable_tracked_paths(repo_dir, status_stdout: str) -> "list[str]":
     return unreadable
 
 
-def _restore_unreadable_tracked_paths(repo_dir, paths: "list[str]") -> "list[str]":
-    """`git checkout -- <path>` each unreadable tracked path (restores the
-    committed content from the index, discarding the working-tree copy the
-    sandbox can't read). Safe: these are pre-existing TRACKED files an agent
-    cannot have edited in-sandbox if the sandbox can't even read them — the
-    "modification" git reports is a jail fs-visibility artifact, not lost
-    work. Returns the subset actually restored (rc==0)."""
+def _submodule_paths(repo_dir) -> "set[str]":
+    """Return the set of submodule directory paths for repo_dir, derived
+    from `.gitmodules` (preferred — pure text parse, no subprocess needed)
+    or `git submodule status` if `.gitmodules` itself is unreadable. Best
+    effort: returns an empty set (never raises) if neither source is
+    available, so callers fall back to the static `.gitmodules`-only
+    allowlist rather than crashing."""
+    import configparser
+    import os
+    import subprocess
+
+    repo_dir = Path(repo_dir)
+    gitmodules = repo_dir / ".gitmodules"
+    if gitmodules.exists():
+        try:
+            if os.access(gitmodules, os.R_OK):
+                parser = configparser.ConfigParser()
+                # git's .gitmodules uses `submodule "name"` sections, which
+                # configparser can read as-is (it's git-config-format, a
+                # superset configparser tolerates for our purposes: we only
+                # need the `path = ...` values).
+                parser.read(str(gitmodules))
+                paths = set()
+                for section in parser.sections():
+                    if parser.has_option(section, "path"):
+                        paths.add(parser.get(section, "path").strip())
+                if paths:
+                    return paths
+        except Exception:
+            pass  # fall through to `git submodule status`
+
+    # `.gitmodules` unreadable or unparsable — ask git directly (works even
+    # when the file itself is jailed, since this reads git's own index/config
+    # state rather than the working-tree file).
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(repo_dir), "submodule", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if status.returncode == 0:
+            paths = set()
+            for line in status.stdout.splitlines():
+                # Format: " <sha> <path> (<describe>)" (leading space/+/- flag).
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    paths.add(parts[1])
+            if paths:
+                return paths
+    except Exception:
+        pass
+    return set()
+
+
+def _is_restore_allowlisted(repo_dir, path: str) -> bool:
+    """True if `path` is safe to restore-from-index: `.gitmodules` itself,
+    or any path under a submodule directory. This is the ONLY class of
+    tracked path this module will ever `git checkout --` on the sandbox's
+    behalf — see the module docstring for why the allowlist exists (an
+    unreadable path outside it might be a real, unsandboxed edit, and
+    restoring it would silently discard that work)."""
+    if path == ".gitmodules":
+        return True
+    for sm in _submodule_paths(repo_dir):
+        sm = sm.rstrip("/")
+        if path == sm or path.startswith(sm + "/"):
+            return True
+    return False
+
+
+def _restore_unreadable_tracked_paths(repo_dir, paths: "list[str]") -> "tuple[list[str], list[str]]":
+    """`git checkout -- <path>` each unreadable tracked path that is on the
+    known-safe allowlist (`.gitmodules` + submodule dirs — see
+    `_is_restore_allowlisted`): this restores the committed content from the
+    index, discarding the working-tree copy the sandbox can't read. Safe
+    ONLY for allowlisted paths, because those are sandbox-jailed submodule
+    plumbing an agent cannot have edited in-sandbox — the "modification" git
+    reports is a jail fs-visibility artifact, not lost work.
+
+    Any unreadable path NOT on the allowlist is never touched here — it is
+    returned in `excluded` instead, so the caller can drop it from the
+    add/stash batch (never restore, never discard real work).
+
+    Returns (restored, excluded): `restored` is the allowlisted subset
+    actually restored (rc==0); `excluded` is every path that was not
+    restored (either not allowlisted, or the checkout itself failed —
+    directory-level sandbox denial can make `git checkout --` fail with
+    rc!=0 even for an allowlisted path, e.g. an unwritable parent dir; that
+    path is safely excluded from the batch too, never left half-restored)."""
     import subprocess
     restored = []
+    excluded = []
     for p in paths:
+        if not _is_restore_allowlisted(repo_dir, p):
+            excluded.append(p)
+            continue
         co = subprocess.run(
             ["git", "-C", str(repo_dir), "checkout", "--", p],
             capture_output=True, text=True,
         )
         if co.returncode == 0:
             restored.append(p)
-    return restored
+        else:
+            # Allowlisted but checkout itself failed (e.g. the containing
+            # directory — not just the file — is unwritable under the
+            # sandbox: unlink/recreate needs directory write, not just file
+            # read/write). Exclude from the batch rather than crash or
+            # silently drop; the path is left exactly as-is on disk.
+            excluded.append(p)
+    return restored, excluded
 
 
 def force_commit_and_push(
@@ -2518,21 +2621,26 @@ def force_commit_and_push(
 
     # 2a. Sandbox-aware: a single unreadable TRACKED path (e.g. `.gitmodules`
     # hidden by the bwrap fs-jail — #453) poisons the WHOLE `git add` batch
-    # (git aborts the entire operation, not just that path). Filter such
-    # paths out of the batch and restore them from the index instead — they
-    # are a jail artifact, not real work (an agent can't have edited a file
-    # it cannot read). WARN, don't abort.
+    # (git aborts the entire operation, not just that path). ALWAYS exclude
+    # such paths from the batch (never stage a path we can't even read) so
+    # the rest of the batch still succeeds. Only the ALLOWLISTED subset
+    # (`.gitmodules` + submodule dirs — see `_is_restore_allowlisted`) is
+    # ALSO restored from the index, because only that subset is provably
+    # sandbox-jail plumbing rather than a possible real edit from an
+    # earlier, unsandboxed step. Everything else unreadable is excluded but
+    # left exactly as-is on disk (never restored, never lost). WARN either
+    # way; never abort.
     unreadable = _find_unreadable_tracked_paths(repo_dir, status.stdout)
     addable_paths = [p for p in runtime_paths if p not in unreadable]
     skipped_unreadable = [p for p in runtime_paths if p in unreadable]
     if skipped_unreadable:
-        restored = _restore_unreadable_tracked_paths(repo_dir, skipped_unreadable)
+        restored, excluded_only = _restore_unreadable_tracked_paths(repo_dir, skipped_unreadable)
         print(
             "[force_commit_and_push] WARN sandbox-unreadable tracked path(s) "
-            "excluded from runtime add + restored from index (not staged, "
-            "not lost — a jail-fs artifact, not agent work): "
+            "excluded from runtime add (not staged): "
             + ", ".join(sorted(set(skipped_unreadable)))
-            + (f" (restored: {', '.join(sorted(set(restored)))})" if restored else "")
+            + (f" (restored from index — allowlisted jail-fs artifact: {', '.join(sorted(set(restored)))})" if restored else "")
+            + (f" (left untouched on disk — not allowlisted, may be real unsandboxed work, NOT restored: {', '.join(sorted(set(excluded_only)))})" if excluded_only else "")
         )
     if not addable_paths:
         # Everything pending was structural/vendored/unreadable-jail-artifact.
@@ -2688,40 +2796,59 @@ def safe_pull(
             # stash in step 2 still clears the tree so the pull can run.
             notes.append(f"runtime push skipped/failed: {err}")
 
-    # 1a. Sandbox-aware (#453): restore any TRACKED path the sandbox fs-jail
+    # 1a. Sandbox-aware (#453): handle any TRACKED path the sandbox fs-jail
     # hides from read (`.gitmodules` is the recurring offender — submodule
     # content sits outside the sandbox's narrow allowWrite allowlist). git
     # CANNOT stash a path it cannot open() — `git stash push` aborts the
     # ENTIRE stash (not just that path) the moment it hits one, which is what
-    # made every tick abort for Ben/Tony/Accountant. Restoring the tracked
-    # content from the index is safe: an agent cannot have made an in-sandbox
-    # edit to a file it cannot read, so this is a jail-fs artifact, never
-    # real work — never touches untracked/new content.
+    # made every tick abort for Ben/Tony/Accountant.
+    #
+    # Only the ALLOWLISTED subset (`.gitmodules` + submodule dirs — see
+    # `_is_restore_allowlisted`) is restored from the index here: that
+    # subset is provably sandbox-jail plumbing an agent cannot have edited
+    # in-sandbox, so the "modification" git reports is a jail-fs artifact,
+    # never real work. Any OTHER unreadable path is left untouched on disk
+    # (never restored — it could be a real edit from an earlier, unsandboxed
+    # step) and instead excluded from step 2's stash pathspec below, so the
+    # stash still succeeds without ever discarding it.
+    unreadable_excluded: "list[str]" = []
     status = _git("status", "--porcelain")
     if status.returncode == 0 and status.stdout.strip():
         unreadable = _find_unreadable_tracked_paths(repo_dir, status.stdout)
         if unreadable:
-            restored = _restore_unreadable_tracked_paths(repo_dir, unreadable)
+            restored, excluded_only = _restore_unreadable_tracked_paths(repo_dir, unreadable)
             if restored:
                 notes.append(
                     "WARN sandbox-unreadable tracked path(s) restored from "
-                    "index (submodule/.gitmodules substep skipped this tick, "
-                    "not lost): " + ", ".join(sorted(set(restored)))
+                    "index (allowlisted jail-fs artifact — submodule/"
+                    ".gitmodules substep skipped this tick, not lost): "
+                    + ", ".join(sorted(set(restored)))
                 )
-            still_unreadable = [p for p in unreadable if p not in restored]
-            if still_unreadable:
+            if excluded_only:
+                unreadable_excluded = sorted(set(excluded_only))
                 notes.append(
-                    "WARN could not restore unreadable path(s) (left as-is, "
-                    "pull may still fail): " + ", ".join(sorted(set(still_unreadable)))
+                    "WARN unreadable tracked path(s) not on the restore "
+                    "allowlist — left untouched on disk (may be real "
+                    "unsandboxed work, NOT restored) and excluded from this "
+                    "tick's stash: " + ", ".join(unreadable_excluded)
                 )
 
     # 2. Stash anything still dirty (leftover structural edits + untracked), so
     #    the rebase has a clean tree. -u includes untracked; keep-index off.
+    #    Any still-unreadable, non-allowlisted path from 1a is EXCLUDED via
+    #    pathspec magic (`:(exclude)<path>`) rather than restored — this is
+    #    what keeps the batch from being poisoned without ever touching a
+    #    path we can't prove is safe to discard.
     stashed = False
     status = _git("status", "--porcelain")
     if status.returncode == 0 and status.stdout.strip():
-        st = _git("stash", "push", "--include-untracked",
-                  "-m", "safe_pull: pre-rebase autostash")
+        stash_args = ["stash", "push", "--include-untracked",
+                      "-m", "safe_pull: pre-rebase autostash"]
+        if unreadable_excluded:
+            stash_args += ["--"] + ["."] + [
+                f":(exclude){p}" for p in unreadable_excluded
+            ]
+        st = _git(*stash_args)
         if st.returncode == 0 and "No local changes" not in (st.stdout + st.stderr):
             stashed = True
             notes.append("stashed leftovers")
