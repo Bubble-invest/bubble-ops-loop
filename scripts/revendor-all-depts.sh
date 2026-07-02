@@ -174,15 +174,9 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
   # Real sweep: delegate to vendor-dept-libs.sh — same script the boot-time
   # self-heal uses, so behaviour (copy set, skip-worktree, fail-open, chown)
   # is identical whether triggered by a restart or by this proactive sweep.
+  # vendor-dept-libs.sh is itself fail-open (always exits 0) — a missing dest
+  # dir (e.g. no scripts/lib) is a per-file no-op there, not a sweep failure.
   out="$(BUBBLE_FRAMEWORK_ROOT="$FRAMEWORK" "$VENDOR_SCRIPT" "$dir" 2>&1)"
-  rc=$?
-  # vendor-dept-libs.sh is itself fail-open (always exits 0), but guard anyway:
-  # one dept's unexpected failure must never abort the sweep.
-  if [[ "$rc" -ne 0 ]]; then
-    log "WARN ${slug}: vendor-dept-libs.sh exited ${rc} — skipping (sweep continues)"
-    SKIPPED=$((SKIPPED + 1))
-    continue
-  fi
   while IFS= read -r line; do echo "  [${slug}] ${line}"; done <<< "$out"
   SWEPT=$((SWEPT + 1))
 done
