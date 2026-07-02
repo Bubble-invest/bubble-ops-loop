@@ -69,7 +69,7 @@ def load_dept_yaml(slug: str) -> Optional[dict]:
 # doesn't pin its own `department.model`). Kept as a plain string constant
 # here (not imported from the onboarding-guide skill) to avoid a cross-
 # package import from console -> skills for a single literal.
-DEFAULT_AGENT_MODEL = "opus[1m]"
+DEFAULT_AGENT_MODEL = "claude-opus-4-8[1m]"  # canonical Opus id (verified via claude-api docs) + fleet 1M-context modifier; matches isolation_scaffold.DEFAULT_MODEL
 DEFAULT_AGENT_RUNTIME = "claude"
 
 
