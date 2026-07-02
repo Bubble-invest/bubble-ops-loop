@@ -141,8 +141,13 @@ if [ "$SCAN_HISTORY" -eq 1 ] && [ -d .git ]; then
   note "── git history (all blobs) ──"
   for p in "${PATTERNS[@]}"; do
     IFS='|' read -r label sev regex <<< "$p"
-    # search all history text; print commit+path only, value redacted
+    # search all history text; print commit+path only, value redacted.
+    # Apply the SAME per-repo/PII allowlist filter as the working-tree scan
+    # (_allow_filter, built above from .pre-publish-allow + BUBBLE_PII_ALLOW)
+    # so a documented working-tree false positive is not re-flagged here —
+    # identical patterns/match logic, never a looser filter than the tree scan.
     h=$(git -C . grep -nIE "$regex" $(git rev-list --all 2>/dev/null | head -500) -- 2>/dev/null \
+        | _allow_filter \
         | sed -E 's/(:[0-9]+:).*/\1 «match redacted»/' | sort -u | head -20)
     if [ -n "$h" ]; then
       note "▶ $label ($sev) — IN HISTORY (needs git-filter-repo, not just a working-tree fix):"
