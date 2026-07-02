@@ -49,3 +49,21 @@ If `install-boot-rearm.sh` exits 3 ("patch does NOT apply"), the plugin's
 ## Tests
 
     bash tests/test_boot_rearm_install.sh
+
+## Note — the LIVE boot-rearm path is the inject file, not this MCP notification
+
+The `bootRearmNotification`/`server.ts.boot-rearm.patch` mechanism documented
+above fires too early (during session init) to reliably land, per the comment
+at `deploy/templates/ops-loop-dept.service.template` (search "MCP notification
+in onStart fires too early"). The mechanism actually in production is a second
+`ExecStartPost` in that same template: it sleeps 8s (letting the poller start
+watching the inject file) then appends the boot turn to
+`${TELEGRAM_STATE_DIR}/inject`. Both files are kept in the repo — this one as
+the documented source-of-truth for the plugin-side wiring, the template's
+`ExecStartPost` as the thing that actually fires in production — but treat the
+inject-file text in the template as authoritative when the two ever disagree.
+
+Board card #461 (child of #456) extended that SAME inject-file boot turn to
+also re-arm any durable dept cron declared in `config/crons.yaml`, not just
+`/loop` itself — see `docs/durable-cron-manifest.md` +
+`schemas-draft/crons-manifest.schema.yaml`.

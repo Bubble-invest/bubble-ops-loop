@@ -141,7 +141,16 @@ def validate_file(
         return False
 
 
-EXPECTED_SCHEMA_COUNT = 7
+# 8th schema (board #461): crons-manifest.schema.yaml — a deliberately
+# SEPARATE manifest concept from the v3 dept.yaml family this harness
+# otherwise governs (session-level durable CronCreate wakes, not
+# Layer 1-4 recurring_missions). It is NOT wired into PREFIX_TO_SCHEMA /
+# examples/ / tests/negative/ above — it has its own examples/negative dirs
+# and its own validator (schemas-draft/tests/validate_crons_manifest.py) so
+# it can evolve independently of the v3 dept.schema.yaml contract. This
+# count only asserts load_schemas() still finds exactly the schemas we
+# expect to exist in this directory.
+EXPECTED_SCHEMA_COUNT = 8
 
 
 def main() -> int:

@@ -10,10 +10,19 @@ future `bubble-ops-<dept>` repo. **v3** supersedes v1 (backed up at
 
 The v3 release introduced 6 of the schemas listed below; **v3.1 added a
 7th** (`state.schema.yaml`, for `onboarding/STATE.yaml`). The current
-**7 schemas** total are inventoried in [File inventory](#file-inventory)
+**8 schemas** total are inventoried in [File inventory](#file-inventory)
 and enforced by `tests/validate_all.py::EXPECTED_SCHEMA_COUNT`. The
 filesystem ↔ README count is guarded by
 `tests/test_readme_count_in_sync.py`.
+
+The 8th, `crons-manifest.schema.yaml` (board #461), is deliberately OUTSIDE
+the v3 dept.yaml family described below — it governs a dept's
+`config/crons.yaml` durable-cron manifest (session-level `CronCreate`
+wakes), not `recurring_missions:` (Layer 1-4 pipeline work). It has its own
+examples/negative dirs (`crons-manifest-examples/`, `crons-manifest-negative/`)
+and its own validator (`tests/validate_crons_manifest.py`) rather than being
+wired into the PREFIX_TO_SCHEMA table below — see
+`../docs/durable-cron-manifest.md`.
 
 1. **`department:` wrapper** — `dept.yaml` root now requires a
    `department: { slug, level, mandate }` block. Replaces v1's flat
@@ -52,9 +61,13 @@ schemas-draft/
 ├── gate-item.schema.yaml                 v3 — enriched: 5-mode autonomy + domain-kind extensibility
 ├── management-export.schema.yaml         v3 — optional `autonomy_readiness:` field
 ├── directive.schema.yaml                 v2 — unchanged
+├── crons-manifest.schema.yaml            board #461 — SEPARATE from the v3 family (see above)
 ├── examples/                             12 positive examples
+├── crons-manifest-examples/              2 positive examples (own dir, own validator)
+├── crons-manifest-negative/              2 negative examples (own dir, own validator)
 └── tests/
-    ├── validate_all.py                   harness; expects 7 schemas
+    ├── validate_all.py                   harness; expects 8 schemas on disk (v3 family governs 6 of them)
+    ├── validate_crons_manifest.py        separate harness for crons-manifest.schema.yaml
     ├── test_readme_count_in_sync.py      asserts README count == fs count
     └── negative/                         8 negative examples (one per rule)
 ```

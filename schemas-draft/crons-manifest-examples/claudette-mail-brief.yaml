@@ -1,0 +1,10 @@
+# Positive example: Claudette's config/crons.yaml — the pilot manifest entry
+# per board card #461 (the mail-brief that keeps silently vanishing on
+# session restart, per #456's failure-timeline evidence, session daf5bf7b).
+version: 1
+crons:
+  - name: mail_brief_0832
+    schedule: "32 6 * * *"   # 08:32 Paris (UTC+2, summer) — adjust with DST
+    description: Jade's morning mail brief — summarizes overnight inbox + calendar.
+    prompt_ref: "file:config/crons/mail_brief.md"
+    critical: true

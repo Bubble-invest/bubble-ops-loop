@@ -1,0 +1,15 @@
+# Positive example: Miranda's M1 pattern (content dept), second manifest
+# entry named in board card #461. Two crons, exercising the "2 crons ->
+# both re-created" test case.
+version: 1
+crons:
+  - name: m1_content_scan
+    schedule: "0 6 * * *"     # 08:00 Paris (UTC+2, summer)
+    description: Daily content-mission scan (M1) — refreshes the publish queue.
+    prompt_ref: "file:config/crons/m1_content_scan.md"
+    critical: true
+  - name: loop_self_pace
+    schedule: "0 */2 * * *"
+    description: Fallback /loop self-pacing wake (belt-and-suspenders alongside boot-rearm).
+    prompt_ref: "Resume your OODA loop per CLAUDE.md STEP A-F."
+    critical: false
