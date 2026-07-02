@@ -102,6 +102,34 @@ def test_defer_removes_needs_human_and_does_not_close(client, captured_board):
         "defer must not close the issue"
 
 
+def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_board):
+    """clarify (board #483) → DELETE needs:human, post the EXACT «🔍 Pas clair»
+    marker comment, NO close, and NO other label change (unlike approve/reject).
+    Same board mechanics as defer but a distinct, byte-exact marker."""
+    from console.routes import kanban as _kanban
+
+    r = client.post("/kanban/card/700/decide", data={"action": "clarify"})
+    assert r.status_code == 200
+    methods_paths = [(m, p) for (m, p, _payload) in captured_board]
+
+    # needs:human removed
+    assert ("DELETE", "/issues/700/labels/needs:human") in methods_paths
+    # The marker comment is posted EXACTLY (loop-detection contract)
+    comment_calls = [pl for (m, p, pl) in captured_board
+                     if p == "/issues/700/comments"]
+    assert comment_calls, "no marker comment posted on clarify"
+    assert comment_calls[0]["body"] == _kanban._CLARIFY_MARKER
+    # Byte-exact prefix Rick's loop keys on
+    assert comment_calls[0]["body"].startswith("🔍 Pas clair")
+    # MUST NOT close, and MUST NOT add/apply any label (no decision:* / labels POST)
+    assert not any(m == "PATCH" for (m, p, _pl) in captured_board), \
+        "clarify must not close the issue"
+    assert not any(p == "/issues/700/labels" for (m, p, _pl) in captured_board), \
+        "clarify must not apply any label"
+    assert not any(p == "/labels" for (m, p, _pl) in captured_board), \
+        "clarify must not create any label"
+
+
 def test_bad_action_returns_400(client, captured_board):
     """An action outside {approve,reject,defer} → 400, no board writes."""
     r = client.post("/kanban/card/427/decide", data={"action": "nuke"})

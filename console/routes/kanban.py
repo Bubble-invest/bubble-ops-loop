@@ -605,7 +605,16 @@ def _fetch_single_issue(number: int) -> tuple[dict | None, str | None]:
 # tests can monkeypatch the HTTP layer cleanly (no real GitHub calls in CI).
 
 # Actions the cockpit may record on an R&D decision card.
-CARD_DECISION_ACTIONS = {"approve", "reject", "defer"}
+CARD_DECISION_ACTIONS = {"approve", "reject", "defer", "clarify"}
+
+# The EXACT marker comment `clarify` posts (board #483). Its «🔍 Pas clair»
+# prefix is a loop-detection contract: Rick's loop distinguishes clarify
+# (actively re-research + re-explain + re-surface) from defer (just parked) by
+# matching this prefix — do NOT change the wording without updating that loop.
+_CLARIFY_MARKER = (
+    "🔍 Pas clair pour Joris — creuser davantage et réexpliquer "
+    "(recherche + reco améliorées), puis re-surfacer."
+)
 
 # Dynamic labels we apply on a decision. Created idempotently (create-if-missing)
 # before use so the call "just works" even on a fresh board. (name, hex_color).
@@ -703,6 +712,20 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
                 raise
         _board_api("POST", f"/issues/{number}/comments", token,
                    {"body": "⏳ Deferred by Joris — back to Rick's queue" + suffix})
+    elif action == "clarify":
+        # Same board mechanics as defer (needs:human off, stays OPEN, no other
+        # label change, no close) but a DISTINCT marker comment. Rick's loop keys
+        # on the «🔍 Pas clair» prefix to re-research + re-explain + re-surface,
+        # vs defer which is just "parked". The comment is posted EXACTLY as the
+        # marker (byte-exact — loop-detection contract, board #483); the operator
+        # note is intentionally NOT appended so the marker stays verbatim.
+        try:
+            _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        _board_api("POST", f"/issues/{number}/comments", token,
+                   {"body": _CLARIFY_MARKER})
     else:  # pragma: no cover — route validates before calling
         raise ValueError(f"unknown action: {action}")
 

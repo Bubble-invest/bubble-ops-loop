@@ -15,6 +15,7 @@
   <p style="margin:0 0 6px; font-weight:500;
     {% if action == 'approve' %}color: var(--sage);
     {% elif action == 'reject' %}color: var(--danger, #c0392b);
+    {% elif action == 'clarify' %}color: var(--body-soft);
     {% else %}color: var(--ochre);{% endif %}">
     {% if action == 'approve' %}
       ✅ décidé : approuvé — Rick le reprend au prochain cycle
@@ -22,6 +23,8 @@
       ❌ décidé : rejeté
     {% elif action == 'defer' %}
       ⏳ décidé : reporté — de retour dans la file de Rick
+    {% elif action == 'clarify' %}
+      🔍 pas clair — Rick va creuser et réexpliquer, puis re-surfacer
     {% else %}
       Décision enregistrée : {{ action }}
     {% endif %}

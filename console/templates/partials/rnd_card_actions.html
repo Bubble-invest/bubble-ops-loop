@@ -27,6 +27,10 @@
             style="color: var(--danger, #c0392b); border-color: var(--danger, #c0392b);">reject</button>
     <button type="submit" name="action" value="defer" class="btn-ghost" hx-disabled-elt="this"
             style="color: var(--ochre);">defer</button>
+    {# clarify (board #483): back to Rick with "creuser + réexpliquer", NOT parked
+       like defer. Neutral/outline style to read distinct from the decision three. #}
+    <button type="submit" name="action" value="clarify" class="btn-ghost" hx-disabled-elt="this"
+            style="color: var(--body-soft); border-color: var(--line);">🔍 Pas clair — creuser</button>
   </div>
   <div class="rnd-decide-result"></div>
 </form>

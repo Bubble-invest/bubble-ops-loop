@@ -56,10 +56,12 @@ def test_detail_needs_human_shows_buttons_and_form(client, monkeypatch):
     )
     r = client.get("/kanban/card/482")
     assert r.status_code == 200
-    # Decision affordance
+    # Decision affordance — all FOUR actions (clarify added board #483)
     assert 'value="approve"' in r.text
     assert 'value="reject"' in r.text
     assert 'value="defer"' in r.text
+    assert 'value="clarify"' in r.text
+    assert "Pas clair" in r.text  # the clarify button's French label
     assert "/kanban/card/482/decide" in r.text
     # Reply form
     assert "/kanban/card/482/comment" in r.text
