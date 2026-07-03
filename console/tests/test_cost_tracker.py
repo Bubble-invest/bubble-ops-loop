@@ -44,13 +44,16 @@ def test_prices_by_model_haiku_cheaper_than_opus():
     opus = cost_tracker._cost_of({"claude-opus-4-8": usage}, pr)
     assert haiku < opus
     assert haiku == pytest.approx(1.0, abs=0.01)   # $1/1M input haiku
-    assert opus == pytest.approx(15.0, abs=0.01)   # $15/1M input opus
+    assert opus == pytest.approx(5.0, abs=0.01)    # $5/1M input opus (Opus-4, current)
 
 
-def test_unknown_model_priced_not_zero():
+def test_unknown_model_priced_zero():
+    """Unknown / non-Anthropic models (deepseek etc.) price at $0 rather than
+    being silently over-billed at an Anthropic rate — we'd rather under-count an
+    unpriced model than attribute phantom Anthropic dollars to it."""
     pr = cost_tracker._load_pricing()
     c = cost_tracker._cost_of({"some-future-model": {"input": 1_000_000, "output": 0, "cache_read": 0, "cache_create": 0}}, pr)
-    assert c > 0  # never silently free
+    assert c == 0.0
 
 
 def test_attributes_vps_dept_by_dir(fake_projects):
