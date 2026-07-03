@@ -156,6 +156,69 @@ def test_classify_mac_unknown_workspace_still_none():
     ) is None
 
 
+# ─── Convention-driven attribution (board #500, follows #211) ──────────
+# The durable fix: derive the label from the `bubble-ops-<slug>` naming
+# convention (same one dept_registry.list_departments() uses), so a NEW or
+# RENAMED dept is attributed automatically instead of silently dropping to
+# None. Plus a logged warning when a real _mac workspace can't be attributed,
+# so a future drop is visible, not invisible.
+
+def test_classify_mac_convention_content_is_miranda():
+    # convention core: bubble-ops-content resolves via the alias table → miranda
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-content"
+    ) == "miranda (jade-mac)"
+
+
+def test_classify_mac_convention_accountant_is_slug():
+    # convention core: no alias → the slug itself (accountant), not mis-caught
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-accountant"
+    ) == "accountant"
+
+
+def test_classify_mac_convention_future_rename_auto_resolves():
+    # THE WHOLE POINT: a future bubble-ops-ben rename auto-resolves to "ben".
+    # This FAILS on the pre-#500 code (bubble-ops-ben was not in the #211 list,
+    # so classify() returned None and ben's sessions would silently drop).
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-ben"
+    ) == "ben"
+
+
+def test_classify_vps_ben_convention_unchanged():
+    # regression: the VPS-live -home-claude-agents-bubble-ops-* branch is untouched
+    assert cost_tracker.classify("-home-claude-agents-bubble-ops-ben") == "ben"
+
+
+def test_classify_mac_genuinely_unknown_workspace_is_none():
+    # a genuinely-unknown workspace (matches neither convention nor legacy map)
+    # is still dropped (None) — we do not start counting random dirs.
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-totally-unknown-xyz"
+    ) is None
+
+
+def test_classify_mac_unattributed_real_workspace_warns(caplog):
+    # a real agent workspace (contains claude-workspaces) that can't be
+    # attributed must emit a WARNING so the drop is VISIBLE, not silent.
+    with caplog.at_level("WARNING", logger="console.services.cost_tracker"):
+        assert cost_tracker.classify(
+            "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-totally-unknown-xyz"
+        ) is None
+    assert any(
+        rec.levelname == "WARNING" and "unattributed" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_classify_mac_noise_dir_does_not_warn(caplog):
+    # a noise / sub-path dir WITHOUT claude-workspaces must NOT warn (no spam).
+    with caplog.at_level("WARNING", logger="console.services.cost_tracker"):
+        assert cost_tracker.classify("_mac-jade/some-random-noise-dir") is None
+    assert not any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
 # ─── Report-level TTL cache (board #450) ───────────────────────────────
 
 @pytest.fixture(autouse=True)
