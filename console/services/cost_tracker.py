@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 HOME = Path(os.environ.get("HOME", "/home/claude"))
 PROJECTS_DIR = HOME / ".claude" / "projects"
@@ -133,31 +136,62 @@ def classify(dir_name: str) -> Optional[str]:
         whose = prefix[len("_mac-"):] or "operator"
         # the workspace part after the cache prefix + '/'
         ws = d.split("/", 1)[1] if "/" in d else ""
-        # friendly name from the workspace dir tail (…-workspaces-Rick-RnD → rick)
+        wsl = ws.lower()
         name = None
-        for key, label in (
-            ("rick-rnd", "rick"),
-            ("tony-ceo", "tony (local)"),
-            # current Jade-Mac dept/concierge workspaces (renamed from the
-            # legacy *-socials/*-fund names). Without these keys their sessions
-            # were silently dropped from the cost report.
-            ("bubble-ops-content", "miranda"),
-            ("miranda-socials", "miranda"),        # legacy workspace → still miranda
-            ("bubble-ops-accountant", "accountant"),
-            ("ellie", "ellie"),
-            ("ben-fund", "ben (mac-legacy)"),
-            ("maya-sales", "maya (mac-legacy)"),
-            ("eliot-security", "eliot (mac-legacy)"),
-        ):
-            if key in ws.lower():
-                name = label
-                break
+
+        # 1) bubble-ops-<slug> convention (the robust core). Any dept whose Mac
+        #    workspace follows the same `bubble-ops-<slug>` convention that
+        #    dept_registry.list_departments() uses is attributed automatically —
+        #    so a NEW or RENAMED dept never silently drops off /costs. Take the
+        #    substring after the LAST 'bubble-ops-'; the workspace tail is a
+        #    single dir name so what follows IS the slug. Defensive split on '/'
+        #    in case a trailing path segment ever sneaks in.
+        marker = "bubble-ops-"
+        if marker in wsl:
+            slug = wsl.rsplit(marker, 1)[1].split("/", 1)[0]
+            if slug:
+                # ALIAS only where the friendly agent name differs from the slug.
+                # Everything else resolves to the slug itself (accountant→
+                # accountant, and a future bubble-ops-ben/-maya/-eliot →
+                # ben/maya/eliot — the whole point of the convention).
+                _MAC_SLUG_ALIAS = {
+                    "content": "miranda",  # workspace is bubble-ops-content, agent is Miranda
+                }
+                name = _MAC_SLUG_ALIAS.get(slug, slug)
+
+        # 2) Explicit non-bubble-ops workspaces (legacy / differently-named),
+        #    only consulted when the convention above didn't match.
         if name is None:
-            return None  # skip legacy/sub-workspace noise we don't track
-        # disambiguate Miranda across the two Macs
+            for key, label in (
+                ("rick-rnd", "rick"),
+                ("tony-ceo", "tony (local)"),
+                ("miranda-socials", "miranda"),        # legacy workspace → still miranda
+                ("ellie", "ellie"),                    # concierge, not bubble-ops-prefixed
+                ("ben-fund", "ben (mac-legacy)"),
+                ("maya-sales", "maya (mac-legacy)"),
+                ("eliot-security", "eliot (mac-legacy)"),
+            ):
+                if key in wsl:
+                    name = label
+                    break
+
+        # 3) disambiguate Miranda across the two Macs
         if name == "miranda":
             return f"miranda ({whose}-mac)"
-        return name
+        if name is not None:
+            return name
+
+        # 4) Unattributed. Still drop it (None) — we don't count random dirs —
+        #    but make a real agent-workspace drop VISIBLE instead of silent, so
+        #    a future rename that escapes both the convention and the legacy map
+        #    surfaces a warning rather than quietly vanishing from /costs. Gate
+        #    on 'claude-workspaces' so sub-path / noise dirs don't spam the log.
+        if "claude-workspaces" in wsl:
+            _log.warning(
+                "cost_tracker: unattributed _mac workspace %s — sessions not counted on /costs",
+                ws,
+            )
+        return None
     return None
 
 
