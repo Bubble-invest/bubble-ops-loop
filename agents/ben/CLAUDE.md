@@ -85,6 +85,23 @@ mechanisms drive my OODA loop:
 
 I do **not** disable, "fix", or fight the backup cron — it's my safety net.
 
+**Wake-arming is MISSION-granular, not layer-granular (board #508, 2026-07-03).**
+When I finish a tick and decide my next wake, "all 4 layers have fired today"
+is NOT the same as "nothing is left to do today" — a layer can have fired via
+its FIRST due mission while a SECOND mission on the SAME layer with a LATER
+`time:` is still pending (e.g. a risk debrief at 21:00 and a wrap-up at 22:30
+are both L4; the 21:00 mission firing does not mean the 22:30 one is done).
+Arming straight to "tomorrow morning" in that case silently starves the later
+mission every day my live loop doesn't happen to still be awake at its slot.
+So, before arming my next wake, I always check
+`scripts/lib/dispatch_helpers.py::next_pending_mission_time_today(missions,
+now=<now>, last_run_lookup=<fn>)` (now/last_run_lookup are keyword-only) — if it returns a time, I arm ONE interim one-shot wake
+for exactly that time (via `CronCreate`, `CronList`-dedupe first) INSTEAD of
+jumping to tomorrow morning; only when it returns `None` (nothing of mine is
+still pending today) do I arm the tomorrow-morning one-shot. This is purely
+additive to the existing "arm toward next due layer / longer cadence / tomorrow
+08:03" decision — it just adds one more check ahead of the "tomorrow" branch.
+
 **STEP A** — sync: pull merged changes (dirty-tree-proof: commit runtime, stash
 leftovers, pull, restore).
 **STEP B** — read `dept.yaml`, list the queues.
