@@ -5,12 +5,18 @@
 # (e.g. on every deploy / fresh box bring-up).
 #
 # WHAT IT INSTALLS (the floor):
-#   EXACTLY 4 cron units, one per OODA layer, forever:
-#     loop-layer1.timer → L1 (Observe)  07:00 Europe/Paris
-#     loop-layer2.timer → L2 (Orient)   12:00 Europe/Paris
-#     loop-layer3.timer → L3 (Decide)   16:00 Europe/Paris
-#     loop-layer4.timer → L4 (Act)      19:00 Europe/Paris
-#   All four share ONE template service `loop-layer@.service`
+#   5 cron units — 4 one-per-OODA-layer, PLUS a late L4 extension:
+#     loop-layer1.timer      → L1 (Observe)      07:00 Europe/Paris
+#     loop-layer2.timer      → L2 (Orient)       12:00 Europe/Paris
+#     loop-layer3.timer      → L3 (Decide)       16:00 Europe/Paris
+#     loop-layer4.timer      → L4 (Act)          19:00 Europe/Paris
+#     loop-layer4-late.timer → L4 (Act) LATE ext. 23:00 Europe/Paris
+#   (board #508, 2026-07-03: the original 4-timer ladder topped out at 21:00
+#   Paris — before same-layer missions with a later `time:`, e.g. a daily
+#   22:30 mission, ever got a second floor chance. loop-layer4-late.timer is
+#   a pure floor EXTENSION, not a new mechanism: same template service, same
+#   staleness/prereq gates in loop-backup.sh.)
+#   All five share ONE template service `loop-layer@.service`
 #   (ExecStart=…/loop-backup.sh --layer %i). Each fires its layer for EVERY
 #   eligible dept, discovered at RUNTIME (glob /home/claude/agents/bubble-ops-*).
 #   A NEW dept being born adds ZERO new units — it's picked up automatically.
@@ -43,8 +49,9 @@ SYSTEMD_DIR="/etc/systemd/system"
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
 
-# The 4 layer timers + the one template service that backs them.
-LAYER_TIMERS=(loop-layer1.timer loop-layer2.timer loop-layer3.timer loop-layer4.timer)
+# The 5 layer timers (4 base + 1 late-L4 extension, #508) + the one template
+# service that backs them all.
+LAYER_TIMERS=(loop-layer1.timer loop-layer2.timer loop-layer3.timer loop-layer4.timer loop-layer4-late.timer)
 TEMPLATE_SERVICE="loop-layer@.service"
 
 say() { echo "[install-loop-backup] $*"; }

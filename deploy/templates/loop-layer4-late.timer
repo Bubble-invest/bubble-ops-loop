@@ -1,0 +1,29 @@
+[Unit]
+Description=Fire ops-loop Layer 4 (Act) LATE floor daily at 23:00 Europe/Paris
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+# Board #508 (2026-07-03): the original 4-timer floor topped out at 21:00
+# Paris (loop-layer4.timer = L4 min-time 19:00 + the standard +2h backup
+# offset). That is BEFORE a same-layer mission with a later `time:` (e.g.
+# Ben's `market_wrapup` daily@22:30, also L4) — so a STALE loop missed its
+# 21:00 floor tick had NO safety net left for the rest of the day; the
+# 22:30 mission was starved on any day the live /loop wasn't still awake.
+# This 5th timer is a FLOOR EXTENSION, not a replacement for loop-layer4.timer:
+# same template service (loop-layer@4.service), same "only if STALE" +
+# "L1/L2/L3 must have fired" gates in loop-backup.sh, same flock mutex — it
+# just gives the floor one more chance to catch a still-pending L4 mission
+# later in the evening. 23:00 Europe/Paris sits comfortably after 22:30 (the
+# latest currently-configured fleet mission time) while staying same-day.
+# NOTE: if a dept ever configures a mission later than ~22:30 Paris, this
+# fixed time will need bumping (or replaced by a dept.yaml-driven floor —
+# see board #508 "long arc" note) — it is a floor, not a generic solution.
+Unit=loop-layer@4.service
+OnCalendar=*-*-* 23:00:00 Europe/Paris
+# If the box was off/asleep at fire time, run as soon as it's back.
+Persistent=true
+# Small deterministic jitter so it doesn't collide with other top-of-hour jobs.
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

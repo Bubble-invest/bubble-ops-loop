@@ -551,6 +551,103 @@ def is_mission_due(mission: dict, *, now: datetime,
 
 
 # ---------------------------------------------------------------------------
+# Mission-granular "pending later today" (board #508, 2026-07-03)
+# ---------------------------------------------------------------------------
+
+def next_pending_mission_time_today(
+    missions: "list[dict]",
+    *,
+    now: datetime,
+    last_run_lookup,
+) -> "datetime | None":
+    """Return the earliest Paris-local `time:` slot still ahead of `now` TODAY
+    for any daily/weekly mission that has NOT yet fired for its current
+    period, or None if nothing is pending later today.
+
+    WHY this exists (#508): the live /loop's wake-arming is LAYER-granular —
+    it arms "tomorrow morning" once every LAYER has fired at least once today.
+    A mission sharing that layer but with a LATER `time:` (e.g. Ben's L4
+    `market_wrapup`@22:30 vs `risk_control`@21:00, both L4) is then never
+    re-checked: the layer already looks "done" so the loop sleeps until
+    tomorrow and the later mission is silently starved every day the live
+    loop doesn't happen to still be awake at its slot.
+
+    FIX: before arming the next-morning one-shot, the loop calls this helper.
+    If it returns a datetime, the loop arms an INTERIM one-shot wake for that
+    time instead of jumping straight to tomorrow morning — so the mission
+    gets its own re-check at its own slot, independent of its layer's state.
+
+    Args:
+      missions        — the dept's `recurring_missions` list from dept.yaml
+                         (or any subset — callers may pre-filter by layer).
+      now             — tz-aware UTC "now".
+      last_run_lookup — callable(mission_id) -> datetime | None, the
+                         mission's own last-fired timestamp (tz-aware UTC),
+                         e.g. a thin wrapper around `_mission_last_fired`/
+                         `read_last_run` for the caller's ctx. Kept as an
+                         injected callable (not `ctx`) so this helper stays a
+                         pure function of its inputs, independent of the
+                         on-disk `.last-run` layout.
+
+    Scope — ONLY `daily` and `time:`-bearing `weekly` cadences are considered.
+    These are exactly the cadences starved by the layer-granular bug (a fixed
+    time-of-day slot that can fall later than its layer's other missions).
+    `hourly`/`every_Nh`/`every_Nm`/`event`/`cron:` missions have no single
+    "later today" slot to arm an interim wake for — they are intentionally
+    excluded, not a gap: an hourly mission is picked up again within the hour
+    regardless of layer state, and event missions are trigger-gated.
+
+    A mission whose slot has ALREADY PASSED today and has NOT fired is NOT
+    "pending later today" — it is overdue NOW. That case belongs to the
+    existing live-tick / `_due_scheduled_catchup_layer` path, not to interim-
+    wake arming (arming a wake for a time already in the past would be a
+    no-op). This helper only ever returns a time STRICTLY AFTER `now`.
+    """
+    now_paris = _to_paris(now)
+    candidates: "list[datetime]" = []
+
+    for m in missions:
+        cadence = m.get("cadence")
+        if cadence not in ("daily", "weekly"):
+            continue
+        t_str = m.get("time")
+        if not t_str:
+            continue
+        try:
+            target_t = _parse_hhmm(t_str)
+        except (ValueError, AttributeError):
+            continue
+
+        if cadence == "weekly":
+            raw_day = m.get("day", "")
+            if isinstance(raw_day, list):
+                day_names = {d.lower() for d in raw_day if isinstance(d, str)}
+            else:
+                day_names = {raw_day.lower()} if raw_day else set()
+            valid_days = {d for d in day_names if d in _WEEKDAY_NAMES}
+            if not valid_days:
+                continue
+            if now_paris.weekday() not in {_WEEKDAY_NAMES[d] for d in valid_days}:
+                continue  # not today's weekday — no slot today at all
+
+        # The candidate slot is TODAY at target_t (Paris-local).
+        slot_paris = now_paris.replace(
+            hour=target_t.hour, minute=target_t.minute, second=0, microsecond=0
+        )
+        if slot_paris <= now_paris:
+            continue  # already passed (or exactly now) — overdue, not "later today"
+
+        mid = m.get("id", "")
+        last_fired = last_run_lookup(mid) if mid else None
+        if is_mission_due(m, now=slot_paris.astimezone(timezone.utc), last_fired=last_fired):
+            candidates.append(slot_paris)
+
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+# ---------------------------------------------------------------------------
 # Materialization helper
 # ---------------------------------------------------------------------------
 
