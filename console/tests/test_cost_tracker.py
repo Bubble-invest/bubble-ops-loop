@@ -103,6 +103,59 @@ def test_totals_sum_agents(fake_projects):
     assert rep["totals"]["week"]["runs"] == 2
 
 
+# ─── Mac-workspace attribution: current dept/concierge workspaces ──────
+# Regression for the cost-attribution bug: the Jade-Mac dept/concierge
+# workspaces were renamed to bubble-ops-content (Miranda), bubble-ops-accountant
+# (Geraldine) and ellie (Ellie concierge). Those keys were missing from
+# classify()'s Mac-cache map, so classify() returned None and their sessions
+# were silently dropped from /costs (Miranda undercounted by ~99.9%:
+# 1,676 msgs / 388M tokens dropped on 2026-07-02). Relates to #496.
+
+def test_classify_mac_current_content_workspace_is_miranda():
+    # current Jade-Mac content workspace → miranda (jade-mac), NOT None
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-content"
+    ) == "miranda (jade-mac)"
+
+
+def test_classify_mac_legacy_miranda_socials_still_miranda():
+    # legacy workspace must still attribute to miranda (both aggregate under miranda)
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-Miranda-Socials"
+    ) == "miranda (jade-mac)"
+
+
+def test_classify_mac_accountant_workspace():
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-accountant"
+    ) == "accountant"
+
+
+def test_classify_mac_ellie_workspace():
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-ellie"
+    ) == "ellie"
+
+
+def test_classify_mac_rick_unchanged():
+    # regression: existing Rick mapping must be untouched
+    assert cost_tracker.classify(
+        "_mac-joris/-Users-joris-claude-workspaces-Rick-RnD"
+    ) == "rick"
+
+
+def test_classify_vps_ben_unchanged():
+    # regression: VPS-live dept branch must be untouched
+    assert cost_tracker.classify("-home-claude-agents-bubble-ops-ben") == "ben"
+
+
+def test_classify_mac_unknown_workspace_still_none():
+    # truly-unknown workspace must still be dropped (None)
+    assert cost_tracker.classify(
+        "_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-some-random-workspace"
+    ) is None
+
+
 # ─── Report-level TTL cache (board #450) ───────────────────────────────
 
 @pytest.fixture(autouse=True)

@@ -138,7 +138,13 @@ def classify(dir_name: str) -> Optional[str]:
         for key, label in (
             ("rick-rnd", "rick"),
             ("tony-ceo", "tony (local)"),
-            ("miranda-socials", "miranda"),
+            # current Jade-Mac dept/concierge workspaces (renamed from the
+            # legacy *-socials/*-fund names). Without these keys their sessions
+            # were silently dropped from the cost report.
+            ("bubble-ops-content", "miranda"),
+            ("miranda-socials", "miranda"),        # legacy workspace → still miranda
+            ("bubble-ops-accountant", "accountant"),
+            ("ellie", "ellie"),
             ("ben-fund", "ben (mac-legacy)"),
             ("maya-sales", "maya (mac-legacy)"),
             ("eliot-security", "eliot (mac-legacy)"),
