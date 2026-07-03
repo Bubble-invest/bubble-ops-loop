@@ -1247,6 +1247,14 @@ code, .code {
   hyphens: auto;
 }
 
+/* ─── Horizontal-scroll wrapper for wide tables ─────────────────────
+   Lets the costs table (Agent/Job · Aujourd'hui · 7j · Cache · Sessions ·
+   Modèles) scroll sideways on narrow screens so the rightmost columns stay
+   reachable. overflow-x:auto only scrolls when content actually overflows,
+   so this is inert on desktop where the table already fits. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll .costs-table { min-width: 620px; }
+
 /* ─── Mobile sidebar — CSS-only hamburger menu ──────────────────── */
 .sidebar-toggle-input { display: none; }
 .sidebar-toggle-label { display: none; }
@@ -1255,6 +1263,11 @@ code, .code {
 @media (max-width: 768px) {
   .app-shell { position: relative; }
   .content { padding: 24px 16px 48px; }
+
+  /* Clear the fixed hamburger (top:12px + 40px = 52px bottom edge) so the
+     page hero title/lede don't render underneath it. Scoped to .page-hero
+     only, so pages using .carnet-header etc. are untouched. */
+  .page-hero { padding-top: 44px; }
 
   .sidebar-toggle-label {
     display: flex; align-items: center; justify-content: center;

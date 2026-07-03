@@ -28,6 +28,7 @@
   {% if not report.agents %}
     <p>Aucune activité mesurée sur 7&nbsp;jours.</p>
   {% else %}
+  <div class="table-scroll">
   <table class="costs-table" style="width:100%;border-collapse:collapse">
     <thead>
       <tr style="text-align:left;border-bottom:2px solid #ccc">
@@ -66,6 +67,7 @@
       </tr>
     </tfoot>
   </table>
+  </div>
   <p style="font-size:.8em;opacity:.6;margin-top:1em">
     Astuce&nbsp;: le cache-read (contexte relu à chaque tour) gonfle le volume de
     tokens mais reste bon marché&nbsp;; le vrai levier coût = le modèle (opus ≫ sonnet ≫ haiku)
