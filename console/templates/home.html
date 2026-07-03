@@ -55,13 +55,17 @@
     </div>
     {% endif %}
 
-    {# Rick's build-side decisions (needs:human board cards) — board #358 #}
-    {% if rnd_decisions %}
+    {# Board needs:human decisions, grouped by dept — board #358, widened to
+       EVERY dept (not just rnd) by #505. Previously only dept:rnd cards
+       reached this page; the dept gates above don't cover cards with no
+       host: label, so 14/15 open needs:human cards were invisible. #}
+    {% if decision_groups %}
+    {% for grp in decision_groups %}
     <h3 class="section-subheading" style="margin-top:18px; font-size:14px; color:var(--body-muted);">
-      ⬥ Décisions R&amp;D / build ({{ rnd_decision_count }})
+      ⬥ {% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% else %}Décisions — {{ grp.label }}{% endif %} ({{ grp.cards|length }})
     </h3>
     <div class="decisions-grid">
-      {% for c in rnd_decisions %}
+      {% for c in grp.cards %}
       <div id="rnd-card-{{ c.id }}" class="decision-card" style="display:block;">
         <a href="/kanban/card/{{ c.id }}" style="text-decoration:none; display:block; color:inherit;">
           <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
@@ -74,6 +78,7 @@
       </div>
       {% endfor %}
     </div>
+    {% endfor %}
     {% endif %}
   {% endif %}
 </section>

@@ -61,23 +61,57 @@ def _kanban_queue_counts() -> Dict[str, int]:
 
 
 def _board_decision_cards() -> list:
-    """needs:human board cards Joris owes a decision on — surfaced on the landing
-    page next to the dept gates (board #358). Reuses the kanban in-process cache,
-    so no extra network call. Returns the cards sorted: overdue/soonest-due first,
-    then by recency. Each carries id/title/summary/owner/due for the decision-card UI."""
+    """ALL open needs:human board cards Joris owes a decision on — surfaced on
+    the landing page (board #358, widened by #505). Reuses the kanban
+    in-process cache, so no extra network call.
+
+    Board #505: the dept gates do NOT cover every dept (8+ needs:human cards
+    carry no host: label, so no gate ever surfaces them) — so this must return
+    EVERY open needs:human card, not just dept:rnd's. Each carries its
+    id/title/summary/owner/due for the decision-card UI, sorted
+    overdue/soonest-due first (undated last) WITHIN owner group."""
     from console.routes import kanban as _kanban  # lazy — avoid circular import
     issues, _err = _kanban._fetch_issues()
     out = []
     for issue in issues:
         card = _kanban.issue_to_card(issue)
-        # Rick's own decisions (dept:rnd) — the dept gates already cover the others.
-        if card.get("needs_human") and (card.get("owner") or "") == "rnd":
+        if card.get("needs_human"):
             out.append(card)
     # overdue/soonest-due first, undated last
     def _key(c):
         d = c.get("due") or ""
         return (0, d) if d else (1, c.get("id", ""))
     return sorted(out, key=_key)
+
+
+def _group_decision_cards_by_dept(cards: list) -> list:
+    """Group needs:human cards by owner dept for the landing page (board #505).
+
+    Order: 'rnd' first (Rick's own build decisions — kept where operators
+    already expect them), then every other dept alphabetically, then a
+    no-dept bucket ("") last for cards with no dept: label at all. Cards are
+    already due-sorted by `_board_decision_cards`; that order is preserved
+    within each group (stable sort).
+
+    Returns a list of {"owner": str, "label": str, "cards": [...]} dicts —
+    empty groups are omitted.
+    """
+    by_owner: Dict[str, list] = defaultdict(list)
+    for c in cards:
+        by_owner[c.get("owner") or ""].append(c)
+
+    other_owners = sorted(o for o in by_owner if o not in ("rnd", ""))
+    ordered_owners = [o for o in (["rnd"] + other_owners + [""]) if by_owner.get(o)]
+
+    groups = []
+    for owner in ordered_owners:
+        label = f"dept:{owner}" if owner else "sans dept"
+        groups.append({
+            "owner": owner,
+            "label": label,
+            "cards": by_owner[owner],
+        })
+    return groups
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -113,7 +147,14 @@ def home(request: Request):
     concierges = concierge_reader.list_concierges()
     # Kanban queue counts — reuse kanban.py's in-process cache (no added latency).
     kanban_counts = _kanban_queue_counts()
-    rnd_decisions = _board_decision_cards()  # needs:human cards (board #358)
+    # ALL open needs:human board cards (board #358, widened to every dept by
+    # #505 — previously filtered to dept:rnd only, hiding 14/15 cards from
+    # Joris because the dept gates don't cover cards with no host: label).
+    # `rnd_decisions`/`rnd_decision_count` names kept for back-compat (hero
+    # counter math + any external readers); `decision_groups` is the new
+    # dept-grouped structure the template iterates to render every card.
+    rnd_decisions = _board_decision_cards()
+    decision_groups = _group_decision_cards_by_dept(rnd_decisions)
     # Merge-ready PRs — reviewed + waiting for Joris to merge (board #469).
     # Read-only surface; fails safe to [] on token-missing/API error.
     merge_ready = merge_ready_reader.list_merge_ready()
@@ -128,6 +169,7 @@ def home(request: Request):
             "total_gates": total_gates,
             "rnd_decisions": rnd_decisions,
             "rnd_decision_count": len(rnd_decisions),
+            "decision_groups": decision_groups,
             "merge_ready": merge_ready,
             "live_count": len([c for c in columns if c["dept"].is_live]),
             "eclore_count": len([c for c in columns if not c["dept"].is_live]),
