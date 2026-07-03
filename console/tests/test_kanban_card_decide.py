@@ -50,13 +50,16 @@ def captured_board(client, monkeypatch):
 
 
 def test_approve_labels_comments_and_closes(client, captured_board):
-    """approve → ensure+add decision:approved label, post an approval comment,
-    PATCH the issue closed."""
+    """approve → DELETE the needs:human label (so the closed card drops off
+    Joris's decision queue, board #356), ensure+add decision:approved label,
+    post an approval comment, PATCH the issue closed."""
     r = client.post("/kanban/card/427/decide",
                     data={"action": "approve", "comment": "go"})
     assert r.status_code == 200
     methods_paths = [(m, p) for (m, p, _payload) in captured_board]
 
+    # needs:human removed so the closed card leaves the decision queue (#356)
+    assert ("DELETE", "/issues/427/labels/needs:human") in methods_paths
     # Label created (idempotent) + applied
     assert ("POST", "/labels") in methods_paths
     assert ("POST", "/issues/427/labels") in methods_paths
@@ -73,10 +76,13 @@ def test_approve_labels_comments_and_closes(client, captured_board):
 
 
 def test_reject_labels_comments_and_closes(client, captured_board):
-    """reject → decision:rejected label, rejection comment, close."""
+    """reject → DELETE needs:human (drops off the decision queue, board #356),
+    decision:rejected label, rejection comment, close."""
     r = client.post("/kanban/card/500/decide", data={"action": "reject"})
     assert r.status_code == 200
     methods_paths = [(m, p) for (m, p, _payload) in captured_board]
+    # needs:human removed so the closed card leaves the decision queue (#356)
+    assert ("DELETE", "/issues/500/labels/needs:human") in methods_paths
     assert ("POST", "/issues/500/labels") in methods_paths
     label_payload = [pl for (m, p, pl) in captured_board
                      if p == "/issues/500/labels"][0]

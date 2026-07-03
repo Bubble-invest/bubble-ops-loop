@@ -740,8 +740,8 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
     un-queue for defer). Reuses the board token. Raises urllib.error.HTTPError /
     URLError on a failed REST call so the route can render an error partial.
 
-    - approve : +decision:approved, comment (note folded in), close
-    - reject  : +decision:rejected, comment (note folded in), close
+    - approve : -needs:human, +decision:approved, comment (note folded in), close
+    - reject  : -needs:human, +decision:rejected, comment (note folded in), close
     - defer   : -needs:human, comment (note folded in; stays OPEN — Rick's queue)
     - clarify : -needs:human, byte-exact marker comment, THEN the note (if any) as
                 a second «📝 Note de Joris : …» comment (stays OPEN — Rick re-works)
@@ -750,6 +750,16 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
     suffix = ("\n\n" + extra) if extra else ""
 
     if action == "approve":
+        # Remove needs:human FIRST so the closed card also drops off Joris's
+        # decision queue (the cockpit landing panel keys on the needs:human
+        # label — a closed-but-still-labelled card kept re-surfacing, board #356).
+        # DELETE a label that isn't present 404s — tolerate it (desired end-state,
+        # label-absent, is already achieved). Same tolerant pattern as defer/clarify.
+        try:
+            _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
         _ensure_board_label("decision:approved", _DECISION_LABELS["decision:approved"], token)
         _board_api("POST", f"/issues/{number}/labels", token,
                    {"labels": ["decision:approved"]})
@@ -757,6 +767,13 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
                    {"body": "✅ Approved by Joris via cockpit" + suffix})
         _board_api("PATCH", f"/issues/{number}", token, {"state": "closed"})
     elif action == "reject":
+        # Remove needs:human FIRST — same reason as approve (board #356): a
+        # closed rejected card must also leave Joris's decision queue.
+        try:
+            _board_api("DELETE", f"/issues/{number}/labels/needs:human", token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
         _ensure_board_label("decision:rejected", _DECISION_LABELS["decision:rejected"], token)
         _board_api("POST", f"/issues/{number}/labels", token,
                    {"labels": ["decision:rejected"]})
