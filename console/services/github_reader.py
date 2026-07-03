@@ -26,6 +26,7 @@ import yaml
 
 from console import settings
 from console.services.dept_registry import repo_path
+from console.services.humanize import humanize_queue_item
 
 _log = logging.getLogger("console.github_reader")
 
@@ -1574,12 +1575,19 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
     """Derive a human-readable, DISTINCT title from a queue item YAML dict.
 
     Strategy (in order):
+      0. A known payload shape (morning_brief, dept_kpi_analysis, directive,
+         …) gets a hand-written few-words summary from
+         `humanize.humanize_queue_item` — e.g. morning_brief renders
+         "Brief du matin — santé dept 86.7/100, content en warning" instead
+         of repeating the kind (#460, Joris spec 2026-07-02).
       1. Determine a label: `kind`, else a `source`/`mission` field, else "item".
       2. Use `title`/any known text-content field as the excerpt (truncated).
       3. Else use a `subject` field (ticker/theme/name) — this keeps two items of
          the same kind distinguishable (#391: two ideas_scout → LSEG vs TDG).
       4. Else fall back to the first non-meta string value.
-      5. Last resort: just the label.
+      5. Generic fallback: "<label> · <created_at date> · <first payload
+         scalar>" — never just the bare label repeated (#460 spec: "kind +
+         created_at + first payload scalar").
 
     The label always prefixes the excerpt so the operator sees "<kind>: <what>".
     """
@@ -1593,6 +1601,13 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
                 break
     if not label:
         label = "item"
+
+    # 0) Known payload shape — a hand-written few-words summary, not a
+    #    generic field scan. Checked first: even if the doc also happens to
+    #    carry a generic text field, the curated summary is more readable.
+    known = humanize_queue_item(doc, label)
+    if known:
+        return known
 
     def _fmt(excerpt: str) -> str:
         excerpt = excerpt.strip().replace("\n", " ")
@@ -1620,8 +1635,21 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
         if isinstance(v, str) and v.strip():
             return _fmt(v)
 
-    # 5) Last resort: just the label.
-    return label
+    # 5) Generic fallback (#460 spec): label + created_at date + first
+    #    payload scalar (any type — numbers/bools count here, unlike step 4
+    #    which only looks at strings) — never the bare label alone, which is
+    #    indistinguishable from "<kind>: <kind>".
+    created_at = str(doc.get("created_at") or "").strip()
+    date_part = created_at[:10] if created_at else ""
+    scalar_part = ""
+    for k, v in doc.items():
+        if k in skip:
+            continue
+        if isinstance(v, (str, int, float, bool)) and str(v).strip():
+            scalar_part = f"{k}={v}"
+            break
+    bits = [b for b in (label, date_part, scalar_part) if b]
+    return " · ".join(bits) if len(bits) > 1 else label
 
 
 # Sentinel `kind` for the one synthetic "N notes traitées" summary item

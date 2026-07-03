@@ -83,6 +83,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402  (see sys.path setup ab
     _parse_iso,
     read_last_mgmt_scan,
 )
+from console.services.humanize import humanize_queue_item  # noqa: E402
 
 
 @dataclass
@@ -148,6 +149,20 @@ def _note_label(data: Dict[str, Any], fallback: str) -> str:
 
 
 def _note_title(data: Dict[str, Any], label: str) -> str:
+    """Human one-liner for a mgmt-note row.
+
+    Checks a known-payload summary first (#460, Joris spec 2026-07-02) —
+    e.g. a `morning_brief` note's payload is pure KPI numbers
+    (`dept_health_score`/`children_in_warning`), never a free-text field, so
+    without this it always fell through to the bare `label` (the exact
+    "morning_brief: morning_brief" duplication #459 first flagged). Falls
+    back to the pre-existing free-text-field scan, then the bare label, for
+    any mission_id/kind this module doesn't specifically know how to
+    summarize.
+    """
+    known = humanize_queue_item(data, label)
+    if known:
+        return known
     for f in ("title", "subject", "summary", "detail", "body"):
         v = data.get(f)
         if v and isinstance(v, str) and v.strip():
