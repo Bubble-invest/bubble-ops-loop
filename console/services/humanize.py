@@ -10,6 +10,8 @@ no enum slug).
 """
 from __future__ import annotations
 
+from typing import Any
+
 _HUMAN_KIND: dict[str, str] = {
     "decision":           "décision",
     "exec_retry":         "reprise d'exécution",
@@ -419,3 +421,96 @@ def humanize_cadence(mission: dict | None) -> str:
     if time:
         return f"{prose} à {time}"
     return prose or "Cadence non spécifiée"
+
+
+# ---------------------------------------------------------------------------
+# Queue-item ("À traiter") summaries — board card #460, Joris spec 2026-07-02
+#
+# The left-column pending pile (console/services/github_reader.py's
+# `_derive_queue_item_title` for L1/L3/gates, mgmt_note_state.py's
+# `_note_title` for L2 management notes) used to render "<kind>: <kind>"
+# whenever a queue item carried no free-text field (title/summary/body/…) —
+# e.g. `morning_brief` notes, whose payload is entirely numeric KPIs
+# (`dept_health_score`, `children_in_warning`), not prose. That is a mission
+# id repeated twice, not a summary a human can read at a glance.
+#
+# `humanize_queue_item()` is the single place both callers reach for a
+# payload-aware one-liner BEFORE falling through to their own generic
+# text-field scan. It only special-cases kinds/mission_ids whose payload
+# shape is actually known (tight, no fuzzy guessing — same philosophy as
+# `humanize_kind` above); anything else returns None so the caller's
+# existing fallback chain (free-text field → subject field → first scalar →
+# bare label) still applies unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _fmt_num(v: Any) -> str:
+    """Render a score number without a noisy trailing .0."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return str(int(f)) if f.is_integer() else f"{f:.1f}"
+
+
+def humanize_queue_item(doc: dict | None, key: str | None) -> str | None:
+    """Return a human, few-words summary for a queue-item/mgmt-note payload,
+    or None if this payload shape isn't one we know how to summarize.
+
+    `key` is whatever the caller already uses as its display label: a queue
+    item's `kind` (github_reader._derive_queue_item_title), or a mgmt note's
+    resolved `mission_id`-else-`kind` label (mgmt_note_state._note_label) —
+    so a `morning_brief` note is recognized the same way whether it arrives
+    as a queue item (kind="morning_brief") or a management note
+    (mission_id="morning_brief", generic kind="management_note").
+
+    Examples:
+        >>> humanize_queue_item(
+        ...     {"dept_health_score": 86.7, "children_in_warning": ["content"]},
+        ...     "morning_brief")
+        'Brief du matin — santé dept 86.7/100, content en warning'
+        >>> humanize_queue_item({"dept_health_score": 92}, "morning_brief")
+        'Brief du matin — santé dept 92/100'
+        >>> humanize_queue_item({"foo": "bar"}, "unknown_kind") is None
+        True
+    """
+    if not isinstance(doc, dict):
+        return None
+    key = (key or "").strip()
+
+    if key == "morning_brief":
+        score = doc.get("dept_health_score")
+        warning = doc.get("children_in_warning")
+        # Normalize to a list of names, tolerating a bare string or a count.
+        if isinstance(warning, str):
+            warning_names = [warning] if warning.strip() else []
+        elif isinstance(warning, (list, tuple)):
+            warning_names = [str(w).strip() for w in warning if str(w).strip()]
+        else:
+            warning_names = []
+
+        parts: list[str] = []
+        if score is not None:
+            parts.append(f"santé dept {_fmt_num(score)}/100")
+        if warning_names:
+            joined = ", ".join(warning_names)
+            plural = "s" if len(warning_names) > 1 else ""
+            parts.append(f"{joined} en warning{plural}")
+        if parts:
+            return "Brief du matin — " + ", ".join(parts)
+        return "Brief du matin"
+
+    if key == "dept_kpi_analysis":
+        score = doc.get("dept_health_score") or doc.get("health_score")
+        if score is not None:
+            return f"Analyse KPI — santé dept {_fmt_num(score)}/100"
+        return "Analyse KPI du département"
+
+    if key == "directive":
+        text = doc.get("directive_text") or doc.get("instruction")
+        if isinstance(text, str) and text.strip():
+            excerpt = text.strip().replace("\n", " ")
+            return "Directive — " + (excerpt[:57] + "…" if len(excerpt) > 57 else excerpt)
+        return "Nouvelle directive"
+
+    return None
