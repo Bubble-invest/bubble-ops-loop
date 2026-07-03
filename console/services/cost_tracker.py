@@ -36,13 +36,16 @@ PROJECTS_DIR = HOME / ".claude" / "projects"
 CACHE_DIR = HOME / ".claude" / "cache"
 CACHE_FILE = CACHE_DIR / "console-cost-sessions.json"
 
-# ── Pricing (USD per 1M tokens). Approximate public list prices; override via
+# ── Pricing (USD per 1M tokens). Current public list prices; override via
 # BUBBLE_COST_PRICING_JSON (a JSON file path) if they change. Cache-read is
-# ~10% of input; cache-creation ~125% of input (5m TTL). Keep it simple +
+# 10% of input; cache-creation 125% of input (5m TTL). Keep it simple +
 # clearly-labelled "estimate" in the UI — for trend/relative use, not billing.
+# Keys are model-name substrings; none may be a substring of another (the
+# lookup in _price_for_model returns the first key that matches).
 _DEFAULT_PRICING = {
     # model-substring : {input, output, cache_read, cache_write} per 1M tokens
-    "opus":   {"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
+    "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.00, "cache_write": 12.50},
+    "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.10, "cache_write": 1.25},
 }
@@ -63,8 +66,10 @@ def _price_for_model(model: str, pricing: dict) -> dict:
     for key, rates in pricing.items():
         if key in m:
             return rates
-    # unknown model → price as sonnet (middle) so it's never silently $0
-    return pricing.get("sonnet", {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75})
+    # unknown / non-Anthropic model (e.g. deepseek) → zero-cost so it's never
+    # silently over-billed at some Anthropic rate. Better to under-count an
+    # unpriced model than to attribute phantom Anthropic dollars to it.
+    return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
 
 
 def _cost_split(model_usage: dict, pricing: dict) -> dict:
