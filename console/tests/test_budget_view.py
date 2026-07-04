@@ -118,7 +118,10 @@ class _Dept:
 def test_dept_budgets_no_budget_graceful(monkeypatch):
     from console.routes import home
 
-    monkeypatch.setattr(cost_tracker, "build_report",
+    # Patch on the SAME module objects home actually references — after another
+    # test reimports console.* these may differ from this file's top-level
+    # `cost_tracker`, so patch via home.cost_tracker to be reimport-robust.
+    monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {"alpha": {"week": {"cost": 5.0}}}})
     # dept.yaml with NO budget_usd → budget None → "budget non défini"
     monkeypatch.setattr(home.github_reader, "load_dept_yaml",
@@ -135,7 +138,7 @@ def test_dept_budgets_no_budget_graceful(monkeypatch):
 def test_dept_budgets_over_budget_case(monkeypatch):
     from console.routes import home
 
-    monkeypatch.setattr(cost_tracker, "build_report",
+    monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {"beta": {"week": {"cost": 30.0}}}})
     monkeypatch.setattr(home.github_reader, "load_dept_yaml",
                         lambda slug: {"recurring_missions": [{"id": "m", "budget_usd": 20}]})
@@ -152,7 +155,7 @@ def test_dept_budgets_degrades_to_empty_on_report_failure(monkeypatch):
 
     def _boom(refresh=False):
         raise RuntimeError("cost scan blew up")
-    monkeypatch.setattr(cost_tracker, "build_report", _boom)
+    monkeypatch.setattr(home.cost_tracker, "build_report", _boom)
     rows = home._dept_budgets([{"dept": _Dept("x", "X")}])
     assert rows == []  # never raises → home page never 500s
 
@@ -160,7 +163,7 @@ def test_dept_budgets_degrades_to_empty_on_report_failure(monkeypatch):
 def test_dept_budgets_skips_non_live(monkeypatch):
     from console.routes import home
 
-    monkeypatch.setattr(cost_tracker, "build_report",
+    monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {}})
     monkeypatch.setattr(home.github_reader, "load_dept_yaml", lambda slug: None)
     cols = [{"dept": _Dept("live1", "L", live=True)},
