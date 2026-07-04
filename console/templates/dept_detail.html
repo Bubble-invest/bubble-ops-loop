@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ dept.display_name }} — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin the home page uses. The dept page adopts it (#534) so the two
+   read as one cabinet: warm gradient, glass cards, compact widget rows,
+   monospace numbers, secondary detail collapsed. #}
+{% block body_class %}m4{% endblock %}
 {% block head_extra %}
 <!-- #286/#300: markdown render for the live-session feed (prettier than raw) -->
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
@@ -58,36 +63,30 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   4: 'relecture, ajustements pour demain',
 } %}
 
-{# Map manual_required → human gate-mode phrasing. #}
-{% set mode_phrasing = {
-  'manual_required':            "Tu valides chaque fois.",
-  'manual_unless_policy_passed': "Tu valides — sauf si elle respecte la règle.",
-  'auto_if_policy_passed':       dept.display_name ~ " gère seule si la règle est OK.",
-  'auto_with_veto_window':       dept.display_name ~ " agit ; tu peux revenir dessus.",
-  'disabled':                    "Désactivé.",
-} %}
-
-<header class="dept-header">
-  <h1 class="dept-title">{{ dept.display_name }}</h1>
-  <p class="dept-subtitle">
+{# ═══ HÉRO — qui est ce collègue ═══════════════════════════════════
+   Épuré m4 hero (mirrors home.html): eyebrow + name + one-line status.
+   The deployment facts (model/runtime/host) move into a compact meta
+   strip of pills right below — a declared, version-controlled fact. #}
+<section class="page-hero m4-hero dept-hero" aria-labelledby="dept-hero-title">
+  <div class="hero-eyebrow">
+    <span class="live-dot" aria-hidden="true"></span>
+    {% if dept.is_ancien %}ancien collègue{% elif dept.is_live %}collègue en poste{% else %}en éclosion{% endif %}
+  </div>
+  <h1 class="page-hero-title dept-title" id="dept-hero-title">{{ dept.display_name }}</h1>
+  <p class="page-hero-lede dept-subtitle">
     {% if dept.is_ancien %}
       {% if dept.status == 'Cancelled' %}
         Ancienne éclosion — annulée avant l'activation.
       {% else %}
-        Ancien collègue — à la retraite.
+        Ancien collègue — à la retraite. Sa fiche reste consultable.
       {% endif %}
     {% elif dept.is_live %}
-      Collègue en poste · niveau d'autonomie actuel : tu valides chaque fois.
+      En poste · niveau d'autonomie actuel : tu valides chaque fois.
     {% else %}
-      Collègue en éclosion — encore en train d'apprendre son métier.
+      En éclosion — encore en train d'apprendre son métier.
     {% endif %}
   </p>
-  {# ─── Agent deployment info strip ────────────────────────────────
-     Which model/runtime this dept's agent process actually launches
-     with — a declared, version-controlled fact from dept.yaml
-     (department.model), not something the console can introspect live
-     (it can't SSH each host). Falls back to the platform default label
-     when undeclared — never blank, never a crash. Card 2026-07-02. #}
+  {# ─── Agent deployment info strip (model/runtime/host) — pills. #}
   <div class="dept-agent-meta" aria-label="Informations de déploiement de l'agent">
     <span class="pill pill-mute" title="Modèle du process agent (department.model dans dept.yaml)">
       Modèle : <span class="slug-ref">{{ agent_model_info.model }}</span>
@@ -110,20 +109,26 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </span>
     {% endif %}
   </div>
-</header>
+</section>
 
 {# ─── BUREAU (desk view, #286) — at-a-glance 3-zone desk: 📥 à traiter →
-   🔄 session en direct (center) → 📤 terminé. The detailed numbered
-   sections below remain as drill-down. Live depts only. ─────────────── #}
+   🔄 session en direct (center) → 📤 terminé. This is the LIVE at-a-glance;
+   the numbered widgets below are the drill-down. Live depts only.
+   #524: the "👀 À valider" sub-pile was REMOVED — it merely re-listed the
+   same gate_groups that section 01 ("Décisions qu'on attend de toi") shows
+   with the real decide links. One fact, one place. #}
 {% if dept.is_live %}
-<section class="cabinet-section bureau" aria-label="Bureau — vue d'ensemble">
+<section class="cabinet-section m4-section bureau" aria-label="Bureau — vue d'ensemble">
+  <div class="section-head">
+    <span class="section-num">◷</span>
+    <h2 class="section-title">Son bureau, en direct</h2>
+    <span class="section-sub">rafraîchi toutes les 5 s</span>
+  </div>
   <div class="desk-grid">
 
     {# 📥 LEFT — à traiter (missions by layer + live queue items, #376)
        htmx refreshes the inner content every 5 s (same cadence as the session
-       feed) so items appearing/disappearing from queues update live.
-       hx-swap="innerHTML" keeps the outer .desk-pile wrapper stable.
-    #}
+       feed) so items appearing/disappearing from queues update live. #}
     <div class="desk-pile desk-pile--inbox">
       <div class="desk-pile-head"><span class="desk-emoji">📥</span> À traiter</div>
       <div id="dept-inbox-content"
@@ -140,7 +145,6 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     <div class="desk-pile desk-pile--active">
       <div class="desk-pile-head">
         <span class="desk-live-dot"></span> En cours · session en direct
-        <span class="desk-live-note">rafraîchi toutes les 5 s</span>
       </div>
       {# pixel agent at his desk — animates "working" while the session is live (#286) #}
       <div class="desk-agent-stage">
@@ -192,41 +196,23 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </div>
     </div>
 
-    {# 📤 RIGHT — terminé: 👀 à valider (gates) + ✅ posté/actionné (outputs) #}
+    {# 📤 RIGHT — terminé: ✅ posté / actionné (outputs). The "à valider"
+       gate list moved to the Décisions widget below (#534 de-dup). #}
     <div class="desk-pile desk-pile--done">
-      <div class="desk-pile-head"><span class="desk-emoji">📤</span> Terminé</div>
-
-      <div class="desk-sub desk-sub--validate">
-        <div class="desk-sub-head"><span class="desk-emoji">👀</span> À valider</div>
-        {% if gate_groups %}
-          {% for grp in gate_groups %}
-            <a class="desk-card desk-card--gate"
-               href="{% if grp.count > 1 %}/gate/{{ dept.slug }}/kind/{{ grp.kind }}{% else %}/gate/{{ dept.slug }}/{{ grp.gates[0].id }}{% endif %}">
-              <span class="desk-card-count">{{ grp.count }}</span>
-              <span class="desk-card-title">{{ grp.kind_label or grp.kind }}</span>
-            </a>
-          {% endfor %}
-        {% else %}
-          <p class="desk-empty">Rien à valider.</p>
+      <div class="desk-pile-head"><span class="desk-emoji">📤</span> Posté / actionné</div>
+      {% set _ns2 = namespace(any=false) %}
+      {% for l in [1,2,3,4] %}
+        {% set _ro = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
+        {% if _ro %}{% set _ns2.any = true %}
+          <div class="desk-done-item">
+            <span class="desk-done-layer">L{{ l }}</span>
+            <span class="desk-done-text">{{ (_ro.title if _ro.title is defined else _ro) | string | truncate(48) }}</span>
+          </div>
         {% endif %}
-      </div>
-
-      <div class="desk-sub desk-sub--posted">
-        <div class="desk-sub-head"><span class="desk-emoji">✅</span> Posté / actionné</div>
-        {% set _ns2 = namespace(any=false) %}
-        {% for l in [1,2,3,4] %}
-          {% set _ro = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
-          {% if _ro %}{% set _ns2.any = true %}
-            <div class="desk-done-item">
-              <span class="desk-done-layer">L{{ l }}</span>
-              <span class="desk-done-text">{{ (_ro.title if _ro.title is defined else _ro) | string | truncate(48) }}</span>
-            </div>
-          {% endif %}
-        {% endfor %}
-        {% if not _ns2.any %}
-          <p class="desk-empty">Rien posté aujourd'hui pour l'instant.</p>
-        {% endif %}
-      </div>
+      {% endfor %}
+      {% if not _ns2.any %}
+        <p class="desk-empty">Rien posté aujourd'hui pour l'instant.</p>
+      {% endif %}
     </div>
 
   </div>
@@ -246,178 +232,16 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
 </aside>
 {% endif %}
 
-{# ─── Son mandat ────────────────────────────────────────────────
-   One-line mandate shown plainly first (human-readable), then the
-   full MANDATE.md as a collapsible for audit ({{OPERATOR}} msg 1071). #}
-<section class="cabinet-section" aria-labelledby="dept-mandate-heading">
-  <h2 id="dept-mandate-heading" class="section-heading">
-    <span class="section-heading-number">0.</span>
-    Son mandat
-  </h2>
-  {% if dept_yaml and dept_yaml.department and dept_yaml.department.mandate %}
-    <p class="dept-mandate-brief">{{ dept_yaml.department.mandate }}</p>
-  {% endif %}
-  {% if mandate_md %}
-    <details class="mandate-full">
-      <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.95em; padding:8px 0;">
-        Lire son mandat complet (MANDATE.md) →
-      </summary>
-      <article class="mandate-body"
-               style="margin-top:14px; padding:18px 22px; background:#fdf6e8;
-                      border-left:3px solid var(--ochre); border-radius:4px;
-                      white-space:pre-wrap; font-family:var(--font-body);
-                      font-size:0.92em; line-height:1.55; color:var(--ink);">{{ mandate_md }}</article>
-    </details>
-  {% endif %}
-</section>
-
-{# ─── Tableau de bord (whiteboard) ───────────────────────────────
-   KPIs first — {{OPERATOR}} msg 1167 (2026-06-01) reordered the page so health
-   leads, then decisions awaiting him, then the 4 moments. Two halves:
-     • curated cards + notes — from whiteboard.yaml, refreshed by Layer 4
-     • graphs — KPI time-series built from Layer-4 output history
-       (whiteboard_graphs, {{OPERATOR}} msg 1163, 2026-06-01). #}
-<section class="cabinet-section" aria-labelledby="dept-whiteboard-heading">
-  <h2 id="dept-whiteboard-heading" class="section-heading">
-    <span class="section-heading-number">1.</span>
-    {% if whiteboard and whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
-  </h2>
-  {% if whiteboard and whiteboard.updated_at %}
-    <p class="whiteboard-updated">Mis à jour : {{ whiteboard.updated_at }}</p>
-  {% endif %}
-  {% if whiteboard and whiteboard.kpis %}
-    <div class="kpi-grid whiteboard-kpis">
-      {% for kpi in whiteboard.kpis %}
-        <div class="kpi-card">
-          <div class="kpi-value">
-            {{ kpi.value }}
-            {% if kpi.trend == 'up' %}
-              <span class="kpi-trend kpi-trend--up">↑</span>
-            {% elif kpi.trend == 'down' %}
-              <span class="kpi-trend kpi-trend--down">↓</span>
-            {% elif kpi.trend == 'stable' %}
-              <span class="kpi-trend">→</span>
-            {% endif %}
-          </div>
-          <h4 class="kpi-label">{{ kpi.label }}</h4>
-          {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
-        </div>
-      {% endfor %}
-    </div>
-  {% endif %}
-
-  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop. #}
-  {% if whiteboard_graphs %}
-    <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
-    <div class="kpi-chart-grid">
-      {% for metric in whiteboard_graphs %}
-        {% include "components/kpi-sparkline.html" %}
-      {% endfor %}
-    </div>
-  {% else %}
-    <p class="whiteboard-graphs-empty">
-      Les graphiques apparaîtront après quelques cycles de boucle —
-      la Couche 4 publie un point de mesure à chaque passage.
-    </p>
-  {% endif %}
-
-  {% if whiteboard_notes_rendered %}
-    {# Notes — {{OPERATOR}} authors `notes` in whiteboard.yaml as either a
-       plain string or a list of dated decision-log entries (Ben). Each entry
-       is sanitized markdown→HTML (markdown_render.render_markdown_safe, same
-       trust boundary as whiteboard_freeform below) — never raw repr'd text.
-       Collapsed by default (card #507, {{OPERATOR}} add-on): mirrors the
-       "N derniers passages" <details> idiom used for backup events below. #}
-    <details class="whiteboard-notes-details">
-      <summary>📓 Notes ({{ whiteboard_notes_rendered|length }} entrée{{ 's' if whiteboard_notes_rendered|length != 1 else '' }})</summary>
-      {% if whiteboard_notes_rendered|length == 1 %}
-        <div class="whiteboard-notes markdown-body">{{ whiteboard_notes_rendered[0] }}</div>
-      {% else %}
-        <ul class="whiteboard-notes-list">
-          {% for note_html in whiteboard_notes_rendered %}
-            <li class="whiteboard-notes-item markdown-body">{{ note_html }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </details>
-  {% endif %}
-
-  {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
-     A real blank canvas the dept manager fills with anything. Content
-     comes from <repo>/whiteboard.md, rendered verbatim. Always present
-     (the framework), empty until the agent writes to it. #}
-  <div class="whiteboard-free">
-    <div class="whiteboard-free-head">
-      <h3 class="whiteboard-free-title">Whiteboard</h3>
-      <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}</span>
-    </div>
-    {% if whiteboard_freeform %}
-      {# whiteboard_freeform is sanitized markdown→HTML (markdown_render) — a
-         Markup object, rendered unescaped. The agent fills whiteboard.md with
-         any data rep: tables, headings, rich text, embedded chart images. #}
-      <article class="whiteboard-free-body markdown-body">{{ whiteboard_freeform }}</article>
-    {% else %}
-      <div class="whiteboard-free-empty">
-        <p class="whiteboard-free-empty-lede">Espace libre — {{ dept.display_name }} écrit ici ce qu'elle veut : notes, tableaux, données du métier, graphiques, liens, suivi… Rien pour l'instant.</p>
-        <p class="whiteboard-free-hint">Le contenu du fichier <code>whiteboard.md</code> du département s'affiche ici, en markdown formaté (titres, tableaux, images de graphiques…).</p>
-      </div>
-    {% endif %}
+{# ═══ 01 — DÉCISIONS qu'on attend de toi ═══════════════════════════
+   Primary actionable surface, first (mirrors home putting decisions high).
+   Compact rows, not a big card per gate. Routes preserved verbatim:
+     gate group (count≥2) → /gate/<slug>/kind/<kind>
+     gate single (count==1) → /gate/<slug>/<id>. #}
+<section class="cabinet-section m4-section" aria-labelledby="dept-decisions-heading">
+  <div class="section-head">
+    <span class="section-num">01</span>
+    <h2 id="dept-decisions-heading" class="section-title">Décisions qu'on attend de toi</h2>
   </div>
-</section>
-
-{# ─── Kanban (firm-wide snapshot — management dept only) ──────────────
-   Compact cross-dept board: per-column counts + the items needing
-   attention. Full board at /kanban. Read-only. ({{OPERATOR}} 2026-06-17.) #}
-{% if kanban_summary %}
-<section class="cabinet-section" aria-labelledby="dept-kanban-heading">
-  <div style="display:flex; justify-content:space-between; align-items:baseline;">
-    <h2 id="dept-kanban-heading" class="section-heading">
-      <span class="section-heading-number">1bis.</span>
-      Kanban — toute l'équipe
-    </h2>
-    <a href="/kanban" class="discreet-link" style="font-size:13px;">Tout voir →</a>
-  </div>
-
-  <div class="kpi-grid" style="margin:6px 0 14px;">
-    {% for key, label in kanban_summary.labels.items() %}
-    <div class="kpi-card">
-      <div class="kpi-value">{{ kanban_summary.counts[key] }}</div>
-      <div class="kpi-label">{{ label }}</div>
-    </div>
-    {% endfor %}
-  </div>
-
-  {% if kanban_summary.attention %}
-    <div style="display:flex; flex-direction:column; gap:8px;">
-      {% for item in kanban_summary.attention %}
-      <div style="padding:10px 14px; background:var(--paper); border:1px solid var(--line); border-radius:2px;">
-        <strong style="font-size:13px;">{{ item.title or item.summary or '(sans titre)' }}</strong>
-        {% if item.assignee or item.task %}
-        <span style="font-size:11px; color:var(--body-soft);">
-          — {% if item.assignee %}{{ item.assignee }}{% endif %}{% if item.task %} · {{ item.task }}{% endif %}
-        </span>
-        {% endif %}
-      </div>
-      {% endfor %}
-    </div>
-    {% if kanban_summary.attention_total > kanban_summary.attention|length %}
-      <p class="muted-italic" style="font-size:12px; margin-top:8px;">
-        + {{ kanban_summary.attention_total - kanban_summary.attention|length }} autres à traiter —
-        <a href="/kanban" class="discreet-link">voir le board complet</a>
-      </p>
-    {% endif %}
-  {% else %}
-    <p class="muted-italic" style="font-size:13px;">Rien à traiter — le board est calme.</p>
-  {% endif %}
-</section>
-{% endif %}
-
-{# ─── Décisions qu'on attend de toi ──────────────────────────── #}
-<section class="cabinet-section" aria-labelledby="dept-decisions-heading">
-  <h2 id="dept-decisions-heading" class="section-heading">
-    <span class="section-heading-number">2.</span>
-    Décisions qu'on attend de toi
-  </h2>
 
   {% if gate_groups %}
     {# Mirror the home page: group gates of the same kind into one card.
@@ -467,22 +291,191 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   {% endif %}
 </section>
 
+{# ═══ 02 — TABLEAU DE BORD (whiteboard) ════════════════════════════
+   KPIs first — {{OPERATOR}} msg 1167 reordered so health leads. Two halves:
+     • KPI tiles + graphs — from whiteboard.yaml / Layer-4 output history
+     • notes + free-space whiteboard — collapsed / secondary. #}
+<section class="cabinet-section m4-section" aria-labelledby="dept-whiteboard-heading">
+  <div class="section-head">
+    <span class="section-num">02</span>
+    <h2 id="dept-whiteboard-heading" class="section-title">
+      {% if whiteboard and whiteboard.title %}{{ whiteboard.title }}{% else %}Tableau de bord{% endif %}
+    </h2>
+    {% if whiteboard and whiteboard.updated_at %}
+      <span class="section-sub">màj {{ whiteboard.updated_at }}</span>
+    {% endif %}
+  </div>
 
+  {% if whiteboard and whiteboard.kpis %}
+    {# #534 (Joris): only ONE row of KPI tiles visible by default; the rest
+       tuck behind the same "+N de plus" collapse used for loop-runs overflow.
+       KPI_ROW = the desktop column count of #dept-kpi-grid at the 1280 width
+       (repeat(auto-fit, minmax(148px,1fr)) in ~955px content ⇒ 5/row).
+       Guard: ≤ one row → render all with NO empty <details>. The collapsed
+       tiles still LIVE inside the grid (inside the details), so the
+       #dept-kpi-grid id + every .kpi-value stay in the DOM. #}
+    {% set KPI_ROW = 5 %}
+    {% set _kpi_extra = whiteboard.kpis[KPI_ROW:] %}
+    {% macro kpi_card(kpi) %}
+        <div class="kpi-card">
+          <div class="kpi-value">
+            {{ kpi.value }}
+            {% if kpi.trend == 'up' %}
+              <span class="kpi-trend kpi-trend--up">↑</span>
+            {% elif kpi.trend == 'down' %}
+              <span class="kpi-trend kpi-trend--down">↓</span>
+            {% elif kpi.trend == 'stable' %}
+              <span class="kpi-trend">→</span>
+            {% endif %}
+          </div>
+          <h4 class="kpi-label">{{ kpi.label }}</h4>
+          {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
+        </div>
+    {% endmacro %}
+    <div id="dept-kpi-grid" class="kpi-grid whiteboard-kpis">
+      {% for kpi in whiteboard.kpis[:KPI_ROW] %}{{ kpi_card(kpi) }}{% endfor %}
+      {% if _kpi_extra %}
+        {# The overflow tiles live inside the same grid so they flow into the
+           same columns when expanded. The <details> spans the full grid row. #}
+        <details class="loop-runs-overflow kpi-overflow">
+          <summary>{{ _kpi_extra|length }} autre{{ 's' if _kpi_extra|length != 1 else '' }} indicateur{{ 's' if _kpi_extra|length != 1 else '' }} · voir tous ({{ whiteboard.kpis|length }})</summary>
+          <div class="kpi-grid whiteboard-kpis kpi-overflow-grid">
+            {% for kpi in _kpi_extra %}{{ kpi_card(kpi) }}{% endfor %}
+          </div>
+        </details>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop.
+     #534 (Joris): same one-row rule as the KPI tiles above. GRAPH_ROW = the
+     desktop column count of .kpi-chart-grid at 1280 (repeat(auto-fit,
+     minmax(240px,1fr)) in ~955px content ⇒ 3/row). Rest → "+N de plus"
+     collapse. Guard: ≤ one row → no empty <details>. #}
+  {% if whiteboard_graphs %}
+    {% set GRAPH_ROW = 3 %}
+    {% set _graph_extra = whiteboard_graphs[GRAPH_ROW:] %}
+    <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
+    <div class="kpi-chart-grid">
+      {% for metric in whiteboard_graphs[:GRAPH_ROW] %}
+        {% include "components/kpi-sparkline.html" %}
+      {% endfor %}
+    </div>
+    {% if _graph_extra %}
+      <details class="loop-runs-overflow kpi-overflow">
+        <summary>{{ _graph_extra|length }} autre{{ 's' if _graph_extra|length != 1 else '' }} graphique{{ 's' if _graph_extra|length != 1 else '' }} · voir tous ({{ whiteboard_graphs|length }})</summary>
+        <div class="kpi-chart-grid kpi-overflow-grid">
+          {% for metric in _graph_extra %}
+            {% include "components/kpi-sparkline.html" %}
+          {% endfor %}
+        </div>
+      </details>
+    {% endif %}
+  {% else %}
+    <p class="whiteboard-graphs-empty">
+      Les graphiques apparaîtront après quelques cycles de boucle —
+      la Couche 4 publie un point de mesure à chaque passage.
+    </p>
+  {% endif %}
+
+  {% if whiteboard_notes_rendered %}
+    {# Notes — {{OPERATOR}} authors `notes` in whiteboard.yaml as either a
+       plain string or a list of dated decision-log entries (Ben). Each entry
+       is sanitized markdown→HTML. Collapsed by default (card #507). #}
+    <details class="whiteboard-notes-details">
+      <summary>📓 Notes ({{ whiteboard_notes_rendered|length }} entrée{{ 's' if whiteboard_notes_rendered|length != 1 else '' }})</summary>
+      {% if whiteboard_notes_rendered|length == 1 %}
+        <div class="whiteboard-notes markdown-body">{{ whiteboard_notes_rendered[0] }}</div>
+      {% else %}
+        <ul class="whiteboard-notes-list">
+          {% for note_html in whiteboard_notes_rendered %}
+            <li class="whiteboard-notes-item markdown-body">{{ note_html }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </details>
+  {% endif %}
+
+  {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
+     A real blank canvas the dept manager fills with anything. Content comes
+     from <repo>/whiteboard.md, rendered verbatim. #534: the free-space canvas
+     is secondary/long-form → ALWAYS collapsed by default (even when filled —
+     Ben's trade dashboard is a wall that would dominate the page). The
+     operator expands it on demand. The card is ALWAYS present (the
+     framework) even when empty. #}
+  <details class="whiteboard-free-details">
+    <summary class="whiteboard-free-summary">
+      🧾 <span class="whiteboard-free-title">Whiteboard</span>
+      <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}{% if whiteboard_freeform %} (déplier){% endif %}</span>
+    </summary>
+    <div class="whiteboard-free">
+      {% if whiteboard_freeform %}
+        {# whiteboard_freeform is sanitized markdown→HTML (markdown_render) — a
+           Markup object, rendered unescaped. #}
+        <article class="whiteboard-free-body markdown-body">{{ whiteboard_freeform }}</article>
+      {% else %}
+        <div class="whiteboard-free-empty">
+          <p class="whiteboard-free-empty-lede">Espace libre — {{ dept.display_name }} écrit ici ce qu'elle veut : notes, tableaux, données du métier, graphiques, liens, suivi… Rien pour l'instant.</p>
+          <p class="whiteboard-free-hint">Le contenu du fichier <code>whiteboard.md</code> du département s'affiche ici, en markdown formaté (titres, tableaux, images de graphiques…).</p>
+        </div>
+      {% endif %}
+    </div>
+  </details>
+</section>
+
+{# ═══ 03 — KANBAN (firm-wide snapshot — management dept only) ═══════
+   Compact cross-dept board: per-column counts + the items needing
+   attention. Full board at /kanban. Read-only. ({{OPERATOR}} 2026-06-17.) #}
+{% if kanban_summary %}
+<section class="cabinet-section m4-section" aria-labelledby="dept-kanban-heading">
+  <div class="section-head">
+    <span class="section-num">03</span>
+    <h2 id="dept-kanban-heading" class="section-title">Kanban — toute l'équipe</h2>
+    <span class="section-sub"><a href="/kanban" class="discreet-link">tout voir →</a></span>
+  </div>
+
+  <div class="kanban" style="margin-bottom:14px;">
+    {% for key, label in kanban_summary.labels.items() %}
+    <div class="kcol">
+      <div class="kcol-head"><span class="kcol-title">{{ label }}</span><span class="kcol-count">{{ kanban_summary.counts[key] }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if kanban_summary.attention %}
+    <div class="dept-kanban-attention">
+      {% for item in kanban_summary.attention %}
+      <div class="dept-kanban-attn-row">
+        <strong>{{ item.title or item.summary or '(sans titre)' }}</strong>
+        {% if item.assignee or item.task %}
+        <span class="dept-kanban-attn-meta">
+          — {% if item.assignee %}{{ item.assignee }}{% endif %}{% if item.task %} · {{ item.task }}{% endif %}
+        </span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% if kanban_summary.attention_total > kanban_summary.attention|length %}
+      <p class="muted-italic" style="font-size:12px; margin-top:8px;">
+        + {{ kanban_summary.attention_total - kanban_summary.attention|length }} autres à traiter —
+        <a href="/kanban" class="discreet-link">voir le board complet</a>
+      </p>
+    {% endif %}
+  {% else %}
+    <p class="muted-italic" style="font-size:13px;">Rien à traiter — le board est calme.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ═══ 04 — SES 4 MOMENTS de la journée (consolidated, msg 3142) ═════
+   ONE section: 4 Moment cards, each containing its missions inline + its
+   PROMPT.md collapsible. #}
 <style>@keyframes dept-pulse { 0%,100%{opacity:1;} 50%{opacity:.25;} }</style>
-{# ─── Ses 4 moments de la journée (consolidated, msg 3142) ──────
-   Was previously TWO sections: "Ce qu'elle fait chaque jour" (flat
-   mission cards) + "Ses 4 moments" (4 layer cards). {{OPERATOR}} flagged
-   msg 3142: every mission already has a `layer:` so this duplicates.
-   Now ONE section: 4 Moment cards, each containing its missions
-   inline + its PROMPT.md collapsible.
-
-   Moved below Décisions in the msg-1167 reorder (KPIs → décisions →
-   moments). #}
-<section class="cabinet-section" aria-labelledby="dept-missions-heading">
-  <h2 id="dept-missions-heading" class="section-heading">
-    <span class="section-heading-number">3.</span>
-    Ses 4 moments de la journée
-  </h2>
+<section class="cabinet-section m4-section" aria-labelledby="dept-missions-heading">
+  <div class="section-head">
+    <span class="section-num">04</span>
+    <h2 id="dept-missions-heading" class="section-title">Ses 4 moments de la journée</h2>
+  </div>
 
   {% if layers %}
     <ul class="moments-list">
@@ -507,9 +500,15 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
             </div>
           {% endif %}
 
-          {# Missions for this Moment (nested inline) #}
+          {# Missions for this Moment. #534 (épuré): the Moment header + name +
+             what-it-does is the primary at-a-glance; the full mission detail
+             cards (description, produit, gate rule) are the drill-down, so
+             they collapse behind a compact "N missions →" summary. Keeps the
+             4-moments overview a screenful instead of a wall of cards. #}
           {% if _ms %}
-            <ul class="missions-list" style="margin-top:14px;">
+            <details class="moment-missions-details" style="margin-top:14px;">
+              <summary class="moment-missions-summary">{{ _ms|length }} mission{{ 's' if _ms|length != 1 else '' }} dans ce moment</summary>
+            <ul class="missions-list" style="margin-top:12px;">
               {% for m in _ms %}
                 <li class="mission-card" data-mission-id="{{ m.id }}" data-layer="{{ m.layer }}">
                   <div class="mission-card-head">
@@ -540,6 +539,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
                 </li>
               {% endfor %}
             </ul>
+            </details>
           {% else %}
             <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
               Aucune mission déclarée pour ce moment.
@@ -573,184 +573,224 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   {% endif %}
 </section>
 
-{# ─── Historique des boucles + décisions ──────────────────────────
-   Compact by default: recent 7 days expanded, older collapsed.
-   Decision timeline surfaces {{OPERATOR}}'s approvals/rejections per day.
-   {{OPERATOR}} msg 1168 (2026-06-01) + compact redesign 2026-06-09. #}
-<section class="cabinet-section" aria-labelledby="dept-history-heading">
-  <h2 id="dept-history-heading" class="section-heading">
-    <span class="section-heading-number">4.</span>
-    Historique des boucles
-  </h2>
+{# ═══ 05 — SON MANDAT + HISTORIQUE (secondary — collapsed detail) ═══
+   #534: the mandate one-liner stays visible; the full MANDATE.md, the loop
+   cadence, the safety-net, the decision timeline and the loop-run history
+   are all deep/secondary → each collapsed. Every detail is reachable, none
+   crowds the primary surfaces above. #}
+<section class="cabinet-section m4-section" aria-labelledby="dept-detail-heading">
+  <div class="section-head">
+    <span class="section-num">05</span>
+    <h2 id="dept-detail-heading" class="section-title">Son mandat &amp; son historique</h2>
+    <span class="section-sub"><a href="/settings/{{ dept.slug }}" class="discreet-link">réglages →</a></span>
+  </div>
 
-  {# ─── Rythme de la boucle (runtime /loop prompt) ─ board #331 ── #}
-  <div class="backup-net" style="margin-bottom:14px;">
-    <div class="backup-net-head">
-      <span class="backup-net-title">Rythme de la boucle</span>
-      <span class="backup-net-sub">consigne de cadence injectée au démarrage (lecture seule)</span>
-    </div>
-    {% if loop_runtime_prompt %}
-      <div class="backup-latest backup-latest--{{ 'ok' if loop_runtime_prompt.cadence == 'self-paced' else ('fail' if loop_runtime_prompt.cadence == 'unknown' else 'warn') }}">
-        <span class="backup-dot" aria-hidden="true"></span>
-        <span class="backup-verdict">
-          {%- if loop_runtime_prompt.cadence == 'self-paced' -%}Auto-rythmée (l'agent choisit son prochain réveil)
-          {%- elif loop_runtime_prompt.cadence == 'fixed-interval' -%}Intervalle fixe (cron périodique)
-          {%- else -%}Cadence indéterminée{%- endif -%}
-        </span>
-      </div>
-      <details class="backup-recent" style="margin-top:8px;">
-        <summary>Lire la consigne de cadence injectée →</summary>
-        <article style="white-space:pre-wrap; word-break:break-word; margin-top:8px;
-                        font-size:0.86em; line-height:1.5; color:var(--ink);">{{ loop_runtime_prompt.prompt }}</article>
-        <p style="margin-top:8px; font-size:0.78em; opacity:0.65;">source : <code>{{ loop_runtime_prompt.source }}</code></p>
+  {# ─── Son mandat — one-line brief visible, full MANDATE.md collapsed. #}
+  <div class="dept-detail-block" aria-labelledby="dept-mandate-heading">
+    <h3 id="dept-mandate-heading" class="dept-detail-subhead">Son mandat</h3>
+    {% if dept_yaml and dept_yaml.department and dept_yaml.department.mandate %}
+      <p class="dept-mandate-brief">{{ dept_yaml.department.mandate }}</p>
+    {% endif %}
+    {% if mandate_md %}
+      <details class="mandate-full">
+        <summary style="cursor:pointer; font-family:var(--font-display); color:var(--ochre); font-size:0.9em; padding:6px 0;">
+          Lire son mandat complet (MANDATE.md) →
+        </summary>
+        <article class="mandate-body"
+                 style="margin-top:12px; padding:16px 20px; background:#fdf6e8;
+                        border-left:3px solid var(--ochre); border-radius:4px;
+                        white-space:pre-wrap; font-family:var(--font-body);
+                        font-size:0.9em; line-height:1.55; color:var(--ink);">{{ mandate_md }}</article>
       </details>
-    {% else %}
-      <p class="backup-empty">Consigne de cadence non disponible pour ce département (agent hébergé sur une autre machine, ou pas de drop-in boot-inject — il s'arme via le filet de sécurité / sa propre logique /loop).</p>
     {% endif %}
   </div>
 
-  {# ─── Filet de sécurité (loop-backup) ────────────────────────────── #}
-  <div class="backup-net">
-    <div class="backup-net-head">
-      <span class="backup-net-title">Filet de sécurité</span>
-      <span class="backup-net-sub">sauvegarde planifiée · 08:00 + 14:00 (Paris)</span>
-    </div>
-    {% if latest_backup %}
-      <div class="backup-latest backup-latest--{{ 'ok' if latest_backup.ok else 'fail' }}">
-        <span class="backup-dot" aria-hidden="true"></span>
-        <span class="backup-verdict">{{ latest_backup.verdict_fr }}</span>
-        <span class="backup-when">{{ latest_backup.ts }}{% if latest_backup.age_human %} · boucle vue il y a {{ latest_backup.age_human }}{% endif %}</span>
+  {# ─── Historique des boucles + rythme + filet de sécurité + décisions. #}
+  <div class="dept-detail-block" aria-labelledby="dept-history-heading">
+    <h3 id="dept-history-heading" class="dept-detail-subhead">Historique des boucles</h3>
+
+    {# ─── Rythme de la boucle (runtime /loop prompt) — board #331 ── #}
+    <div class="backup-net" style="margin-bottom:14px;">
+      <div class="backup-net-head">
+        <span class="backup-net-title">Rythme de la boucle</span>
+        <span class="backup-net-sub">consigne de cadence injectée au démarrage (lecture seule)</span>
       </div>
-      {% if backup_events|length > 1 %}
-        <details class="backup-recent">
-          <summary>{{ backup_events|length }} derniers passages</summary>
-          <ul class="backup-events">
-            {% for ev in backup_events %}
-              <li class="backup-event backup-event--{{ 'ok' if ev.ok else 'fail' }}">
-                <span class="backup-event-ts">{{ ev.ts }}</span>
-                <span class="backup-event-verdict">{{ ev.verdict_fr }}</span>
-              </li>
+      {% if loop_runtime_prompt %}
+        <div class="backup-latest backup-latest--{{ 'ok' if loop_runtime_prompt.cadence == 'self-paced' else ('fail' if loop_runtime_prompt.cadence == 'unknown' else 'warn') }}">
+          <span class="backup-dot" aria-hidden="true"></span>
+          <span class="backup-verdict">
+            {%- if loop_runtime_prompt.cadence == 'self-paced' -%}Auto-rythmée (l'agent choisit son prochain réveil)
+            {%- elif loop_runtime_prompt.cadence == 'fixed-interval' -%}Intervalle fixe (cron périodique)
+            {%- else -%}Cadence indéterminée{%- endif -%}
+          </span>
+        </div>
+        <details class="backup-recent" style="margin-top:8px;">
+          <summary>Lire la consigne de cadence injectée →</summary>
+          <article style="white-space:pre-wrap; word-break:break-word; margin-top:8px;
+                          font-size:0.86em; line-height:1.5; color:var(--ink);">{{ loop_runtime_prompt.prompt }}</article>
+          <p style="margin-top:8px; font-size:0.78em; opacity:0.65;">source : <code>{{ loop_runtime_prompt.source }}</code></p>
+        </details>
+      {% else %}
+        <p class="backup-empty">Consigne de cadence non disponible pour ce département (agent hébergé sur une autre machine, ou pas de drop-in boot-inject — il s'arme via le filet de sécurité / sa propre logique /loop).</p>
+      {% endif %}
+    </div>
+
+    {# ─── Filet de sécurité (loop-backup) ────────────────────────────── #}
+    <div class="backup-net">
+      <div class="backup-net-head">
+        <span class="backup-net-title">Filet de sécurité</span>
+        <span class="backup-net-sub">sauvegarde planifiée · 08:00 + 14:00 (Paris)</span>
+      </div>
+      {% if latest_backup %}
+        <div class="backup-latest backup-latest--{{ 'ok' if latest_backup.ok else 'fail' }}">
+          <span class="backup-dot" aria-hidden="true"></span>
+          <span class="backup-verdict">{{ latest_backup.verdict_fr }}</span>
+          <span class="backup-when">{{ latest_backup.ts }}{% if latest_backup.age_human %} · boucle vue il y a {{ latest_backup.age_human }}{% endif %}</span>
+        </div>
+        {% if backup_events|length > 1 %}
+          <details class="backup-recent">
+            <summary>{{ backup_events|length }} derniers passages</summary>
+            <ul class="backup-events">
+              {% for ev in backup_events %}
+                <li class="backup-event backup-event--{{ 'ok' if ev.ok else 'fail' }}">
+                  <span class="backup-event-ts">{{ ev.ts }}</span>
+                  <span class="backup-event-verdict">{{ ev.verdict_fr }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      {% else %}
+        <p class="backup-empty">Aucun passage enregistré pour l'instant — le filet se déclenchera au prochain créneau (08:00 / 14:00 Paris) et le résultat s'affichera ici.</p>
+      {% endif %}
+    </div>
+
+    {# ─── Décisions (timeline) — collapsed by default (#534). ──────────── #}
+    {% if decision_events %}
+      <details class="decision-timeline-details">
+        <summary class="decision-timeline-summary">
+          {{ decision_events|length }} décision{{ 's' if decision_events|length != 1 else '' }}
+          <span class="decision-timeline-sub">historique des approbations et rejets</span>
+        </summary>
+        <div class="decision-timeline">
+          {% for ev in decision_events[:30] %}
+            <div class="decision-event decision-event--{{ ev.status }}">
+              <span class="decision-event-date">{{ ev.date }}</span>
+              <span class="decision-event-status decision-status--{{ ev.status }}">{{ ev.status }}</span>
+              <span class="decision-event-kind">{{ ev.kind | replace('_', ' ') }}</span>
+              <span class="decision-event-summary">{{ ev.summary[:120] }}{% if ev.summary|length > 120 %}…{% endif %}</span>
+              {% if ev.url %}
+                <a class="decision-event-link" href="{{ ev.url }}">→</a>
+              {% endif %}
+            </div>
+          {% endfor %}
+          {% if decision_events|length > 30 %}
+            <p class="muted-italic" style="text-align:center;margin-top:8px;">… et {{ decision_events|length - 30 }} décision{{ 's' if decision_events|length - 30 != 1 else '' }} plus ancienne{{ 's' if decision_events|length - 30 != 1 else '' }}</p>
+          {% endif %}
+        </div>
+      </details>
+    {% endif %}
+
+    {# ─── Boucles — compact, click to expand. #534: the run LIST is capped to
+         the most recent LOOP_RUNS_CAP; older runs tuck behind one collapse so
+         a dept with months of history doesn't stretch this section into a wall
+         of date rows. Each run is still individually expandable. ─────────── #}
+    {% set LOOP_RUNS_CAP = 8 %}
+    {% macro loop_run_li(run) %}
+          <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
+            <details class="loop-run-toggle">
+              <summary class="loop-run-head">
+                <span class="loop-run-date">{{ run.date }}</span>
+                {% if run.total_rounds is not none %}
+                  <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
+                {% endif %}
+                <span class="loop-run-badges">
+                  {% for layer in run.layers %}
+                    <span class="loop-badge loop-badge--L{{ layer.num }}" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
+                  {% endfor %}
+                </span>
+                {% if run.is_empty %}
+                  <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
+                {% endif %}
+              </summary>
+
+              {% for layer in run.layers %}
+                <div class="loop-layer">
+                  <div class="loop-layer-head">
+                    <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
+                    {% if layer.last_run %}
+                      <span class="loop-layer-time">{{ layer.last_run }}</span>
+                    {% endif %}
+                    {% if layer.rounds %}
+                      <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
+                    {% endif %}
+                  </div>
+                  {% if layer.files %}
+                    <ul class="loop-files">
+                      {% for of in layer.files %}
+                        <li>
+                          <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
+                            {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
+                          </a>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
+                  {% endif %}
+                </div>
+              {% endfor %}
+
+              {% if run.extra_files %}
+                <div class="loop-extra">
+                  <span class="loop-extra-label">Journal de boucle :</span>
+                  {% for of in run.extra_files %}
+                    <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </details>
+          </li>
+    {% endmacro %}
+    {% if loop_runs %}
+      <ul class="loop-runs">
+        {% for run in loop_runs[:LOOP_RUNS_CAP] %}
+          {{ loop_run_li(run) }}
+        {% endfor %}
+      </ul>
+      {% if loop_runs|length > LOOP_RUNS_CAP %}
+        <details class="loop-runs-overflow">
+          <summary>+{{ loop_runs|length - LOOP_RUNS_CAP }} boucle{{ 's' if (loop_runs|length - LOOP_RUNS_CAP) != 1 else '' }} plus ancienne{{ 's' if (loop_runs|length - LOOP_RUNS_CAP) != 1 else '' }}</summary>
+          <ul class="loop-runs">
+            {% for run in loop_runs[LOOP_RUNS_CAP:] %}
+              {{ loop_run_li(run) }}
             {% endfor %}
           </ul>
         </details>
       {% endif %}
     {% else %}
-      <p class="backup-empty">Aucun passage enregistré pour l'instant — le filet se déclenchera au prochain créneau (08:00 / 14:00 Paris) et le résultat s'affichera ici.</p>
+      {% with title="Aucune boucle enregistrée pour l'instant.",
+              body=dept.display_name ~ " n'a pas encore tourné — l'historique se remplira à chaque cycle." %}
+        {% include "components/empty-state.html" %}
+      {% endwith %}
     {% endif %}
   </div>
-
-  {# ─── Décisions ─────────────────────────────────────────────────── #}
-  {% if decision_events %}
-    <details class="decision-timeline-details" open>
-      <summary class="decision-timeline-summary">
-        {{ decision_events|length }} décision{{ 's' if decision_events|length != 1 else '' }}
-        <span class="decision-timeline-sub">historique des approbations et rejets</span>
-      </summary>
-      <div class="decision-timeline">
-        {% for ev in decision_events[:30] %}
-          <div class="decision-event decision-event--{{ ev.status }}">
-            <span class="decision-event-date">{{ ev.date }}</span>
-            <span class="decision-event-status decision-status--{{ ev.status }}">{{ ev.status }}</span>
-            <span class="decision-event-kind">{{ ev.kind | replace('_', ' ') }}</span>
-            <span class="decision-event-summary">{{ ev.summary[:120] }}{% if ev.summary|length > 120 %}…{% endif %}</span>
-            {% if ev.url %}
-              <a class="decision-event-link" href="{{ ev.url }}">→</a>
-            {% endif %}
-          </div>
-        {% endfor %}
-        {% if decision_events|length > 30 %}
-          <p class="muted-italic" style="text-align:center;margin-top:8px;">… et {{ decision_events|length - 30 }} décision{{ 's' if decision_events|length - 30 != 1 else '' }} plus ancienne{{ 's' if decision_events|length - 30 != 1 else '' }}</p>
-        {% endif %}
-      </div>
-    </details>
-  {% endif %}
-
-  {# ─── Boucles — compact, click to expand ────────────────────────── #}
-  {% if loop_runs %}
-    <ul class="loop-runs">
-      {% for run in loop_runs %}
-        <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
-          <details class="loop-run-toggle">
-            <summary class="loop-run-head">
-              <span class="loop-run-date">{{ run.date }}</span>
-              {% if run.total_rounds is not none %}
-                <span class="loop-run-rounds">{{ run.total_rounds }} tour{{ '' if run.total_rounds == 1 else 's' }}</span>
-              {% endif %}
-              <span class="loop-run-badges">
-                {% for layer in run.layers %}
-                  <span class="loop-badge loop-badge--L{{ layer.num }}" title="Moment {{ layer.num }} : {{ layer.name }}">L{{ layer.num }}</span>
-                {% endfor %}
-              </span>
-              {% if run.is_empty %}
-                <span class="loop-run-tag">boucle active — aucune sortie de couche</span>
-              {% endif %}
-            </summary>
-
-            {% for layer in run.layers %}
-              <div class="loop-layer">
-                <div class="loop-layer-head">
-                  <span class="loop-layer-name">Moment {{ layer.num }} · {{ layer.name }}</span>
-                  {% if layer.last_run %}
-                    <span class="loop-layer-time">{{ layer.last_run }}</span>
-                  {% endif %}
-                  {% if layer.rounds %}
-                    <span class="loop-layer-rounds">{{ layer.rounds }}×</span>
-                  {% endif %}
-                </div>
-                {% if layer.files %}
-                  <ul class="loop-files">
-                    {% for of in layer.files %}
-                      <li>
-                        <a class="loop-file" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">
-                          {{ of.name }}{% if of.empty %} <span class="loop-file-empty">(vide)</span>{% endif %}
-                        </a>
-                      </li>
-                    {% endfor %}
-                  </ul>
-                {% else %}
-                  <p class="loop-files-empty">Aucun fichier produit par ce moment.</p>
-                {% endif %}
-              </div>
-            {% endfor %}
-
-            {% if run.extra_files %}
-              <div class="loop-extra">
-                <span class="loop-extra-label">Journal de boucle :</span>
-                {% for of in run.extra_files %}
-                  <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ of.rel_path | urlencode }}">{{ of.name }}</a>{% if not loop.last %} · {% endif %}
-                {% endfor %}
-              </div>
-            {% endif %}
-          </details>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    {% with title="Aucune boucle enregistrée pour l'instant.",
-            body=dept.display_name ~ " n'a pas encore tourné — l'historique se remplira à chaque cycle." %}
-      {% include "components/empty-state.html" %}
-    {% endwith %}
-  {% endif %}
 </section>
 
-<p style="margin-top:12px;">
-  <a href="/settings/{{ dept.slug }}" class="discreet-link">Ajuster ses réglages →</a>
-</p>
-
-{# ─── Mettre à la retraite ────────────────────────────────────────
+{# ═══ METTRE À LA RETRAITE — danger zone (safety flow, unchanged) ═══
    Sprint Lifecycle (UI gap fixed 2026-05-24, {{OPERATOR}} msg 3030): backend
-   route POST /agents/<slug>/retire existed but no UI element triggered
-   it — operators had to use curl. CTA only shown for Live depts;
-   éclore depts use cancel-eclosion (different workflow), anciens are
-   already retired. #}
+   route POST /agents/<slug>/retire. CTA only shown for Live depts; éclore
+   depts use cancel-eclosion (different workflow), anciens are already retired.
+   #534: restyled lightly (m4 danger section) — the hx-confirm flow, the
+   POST target, the reason input are all preserved verbatim. #}
 {% if dept.is_live %}
-<section class="cabinet-section cabinet-section--danger"
+<section class="cabinet-section m4-section cabinet-section--danger"
          aria-labelledby="dept-retire-heading">
-  <h2 id="dept-retire-heading" class="section-heading" style="color:#8a3a3a;">
-    <span class="section-heading-number">5.</span>
-    Mettre à la retraite
-  </h2>
-  <p class="prose-block">
+  <div class="section-head">
+    <span class="section-num" style="color:#8a3a3a;">⚠</span>
+    <h2 id="dept-retire-heading" class="section-title" style="color:#8a3a3a;">Mettre à la retraite</h2>
+  </div>
+  <p class="prose-block" style="font-size:13px;">
     Si {{ dept.display_name }} n'a plus sa place dans l'équipe, tu peux
     la retirer en douceur. Son repo est archivé, son service systemd
     s'arrête, et un dernier message Telegram lui est envoyé. Tout

@@ -380,3 +380,43 @@ def test_dept_detail_includes_htmx_inbox_refresh(tmp_path, monkeypatch):
     assert "dept-inbox-content" in body, (
         "inbox content div id must be present for htmx targeting"
     )
+
+
+def test_inbox_fragment_caps_queue_and_collapses_overflow(tmp_path, monkeypatch):
+    """#534 (épuré): the left column must NOT dump dozens of raw queue ids.
+    Beyond QUEUE_CAP (6) items, the overflow tucks into a single '+N de plus'
+    collapse so the at-a-glance stays a screenful. Recurring missions collapse
+    behind a per-layer count too."""
+    import os
+    monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "test-token-xyz")
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    repo = _make_queue_repo(tmp_path)
+
+    # Seed 15 research items into L1 → well past the cap of 6.
+    for i in range(15):
+        (repo / "queues" / "research" / f"ri-extra-{i}.yaml").write_text(
+            yaml.safe_dump({
+                "id": f"ri-extra-{i}", "kind": "research_item",
+                "question_text": f"Extra research question number {i}?",
+                "created_at": "2026-06-28T09:00:00Z",
+            }),
+            encoding="utf-8",
+        )
+
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+    from console.main import create_app
+    from fastapi.testclient import TestClient
+    c = TestClient(create_app())
+    c.headers.update({"Authorization": "Bearer test-token-xyz"})
+
+    r = c.get("/dept/qtest/inbox-fragment")
+    assert r.status_code == 200
+    body = r.text
+    # The overflow collapse must be present with a "+N de plus" summary.
+    assert "desk-queue-overflow" in body, (
+        "queue overflow past the cap must collapse behind a <details>, not dump"
+    )
+    assert "de plus" in body, "overflow summary must read '+N de plus'"
