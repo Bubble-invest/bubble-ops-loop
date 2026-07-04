@@ -77,31 +77,55 @@
       {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
       <section class="dept-decisions-widget{% if not d.is_live %} dept-decisions-widget--eclosion{% endif %}"
                aria-label="{{ d.display_name }} — statut &amp; décisions">
-        {# ─ status head: avatar + name + role + stat-tiles ─ #}
+        {# ─ status head: avatar + name + role + stat-tiles ─
+           #532: the head is NO LONGER one big <a> to /dept — each stat-tile is
+           its own <a> to the REAL destination (nested <a> is invalid HTML), and
+           the avatar+name is a separate <a> to /dept. Resolved tile hrefs:
+             · décisions en attente → single pending gate /gate/<slug>/<id> when
+               exactly one gate; else the dept decisions section.
+             · sujets ouverts → the kind batch /gate/<slug>/kind/<kind> when a
+               single gate-group; else the dept decisions section.
+             · cartes kanban → the by-département kanban view, anchored to this
+               dept (/kanban?view=dept#dept-<slug>). #}
         {% if d.is_live %}
-        <a class="ddw-status" href="/dept/{{ d.slug }}">
-          <div class="dept-card-top">
-            <span class="avatar" aria-hidden="true">{{ initial }}</span>
-            <div>
-              <div class="dept-name-lg">{{ d.display_name }}</div>
-              <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
+        {% set gg = col.gate_groups %}
+        {% set decisions_href = "/dept/" ~ d.slug ~ "#dept-decisions-heading" %}
+        {% if gate_n == 1 and gg and gg[0].gates %}
+          {% set gate_tile_href = "/gate/" ~ d.slug ~ "/" ~ gg[0].gates[0].id %}
+        {% else %}
+          {% set gate_tile_href = decisions_href %}
+        {% endif %}
+        {% if gg|length == 1 %}
+          {% set topic_tile_href = "/gate/" ~ d.slug ~ "/kind/" ~ gg[0].kind %}
+        {% else %}
+          {% set topic_tile_href = decisions_href %}
+        {% endif %}
+        {% set kanban_tile_href = "/kanban?view=dept#dept-" ~ d.slug %}
+        <div class="ddw-status">
+          <a class="ddw-status-head" href="/dept/{{ d.slug }}">
+            <div class="dept-card-top">
+              <span class="avatar" aria-hidden="true">{{ initial }}</span>
+              <div>
+                <div class="dept-name-lg">{{ d.display_name }}</div>
+                <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
+              </div>
             </div>
-          </div>
+          </a>
           <div class="stat-strip">
-            <div class="stat-tile{% if gate_n == 0 %} mint{% endif %}">
+            <a class="stat-tile{% if gate_n == 0 %} mint{% endif %}" href="{{ gate_tile_href }}">
               <span class="stat-num">{{ gate_n }}</span>
               <span class="stat-lbl">décision{{ '' if gate_n == 1 else 's' }} en attente</span>
-            </div>
-            <div class="stat-tile mint">
+            </a>
+            <a class="stat-tile mint" href="{{ topic_tile_href }}">
               <span class="stat-num">{{ col.gate_groups|length }}</span>
               <span class="stat-lbl">sujet{{ '' if col.gate_groups|length == 1 else 's' }} ouvert{{ '' if col.gate_groups|length == 1 else 's' }}</span>
-            </div>
-            <div class="stat-tile{% if col.card_count == 0 %} mint{% endif %}">
+            </a>
+            <a class="stat-tile{% if col.card_count == 0 %} mint{% endif %}" href="{{ kanban_tile_href }}">
               <span class="stat-num">{{ col.card_count }}</span>
               <span class="stat-lbl">carte{{ '' if col.card_count == 1 else 's' }} kanban</span>
-            </div>
+            </a>
           </div>
-        </a>
+        </div>
         {% else %}
         <a class="ddw-status ddw-status--eclosion" href="/agents/{{ d.slug }}/onboarding">
           <div class="dept-card-top">
