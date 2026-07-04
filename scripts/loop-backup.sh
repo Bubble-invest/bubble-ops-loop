@@ -612,7 +612,7 @@ inject_live_loop() {
     local slug="$1"
     local svc="ops-loop-${slug}.service"
     # session alive? = a bun process in this service's cgroup.
-    local main_pid; main_pid=$(systemctl show "$svc" -p MainPID --value 2>/dev/null || echo 0)
+    local main_pid; main_pid=$("$SYSTEMCTL" show "$svc" -p MainPID --value 2>/dev/null || echo 0)
     [[ "$main_pid" =~ ^[0-9]+$ ]] && (( main_pid > 0 )) || return 1
     local alive=1 pid
     for pid in $(pgrep -x bun 2>/dev/null); do
