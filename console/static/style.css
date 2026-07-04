@@ -1433,6 +1433,18 @@ code, .code {
    recurring mission's cadence + description + layer + creates
    + gate_policy_id. Compact grid so the page stays scannable in
    5 seconds on iPhone. */
+/* #534 — the per-Moment mission detail cards collapse behind a compact
+   summary so the 4-moments overview stays a screenful, not a wall of cards. */
+.moment-missions-details > summary {
+  cursor: pointer; list-style: none;
+  font-family: var(--font-display);
+  color: var(--ochre); font-size: 0.85em;
+  padding: 4px 0;
+}
+.moment-missions-details > summary::-webkit-details-marker { display: none; }
+.moment-missions-details > summary::before { content: "▸ "; opacity: .7; }
+.moment-missions-details[open] > summary::before { content: "▾ "; }
+
 .missions-list {
   list-style: none;
   padding: 0;
@@ -1821,6 +1833,18 @@ code, .code {
 
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
+
+/* #534 — older loop runs past the cap tuck behind one quiet collapse so the
+   history never stretches this section into a wall of date rows. */
+.loop-runs-overflow { margin-top: 4px; }
+.loop-runs-overflow > summary {
+  cursor: pointer; list-style: none;
+  font-size: 12px; color: var(--body-muted);
+  padding: 6px 2px;
+}
+.loop-runs-overflow > summary::-webkit-details-marker { display: none; }
+.loop-runs-overflow > summary::before { content: "+ "; opacity: .6; }
+.loop-runs-overflow[open] > summary { color: var(--body-soft); }
 
 /* ─── Loop-run day card ─────────────────────────────────────────────── */
 .loop-run {
@@ -2777,6 +2801,29 @@ a.fw-node:hover { border-color: var(--ochre); box-shadow: 0 1px 6px rgba(0,0,0,.
    inside one Couche (#391) — quieter than the layer header. */
 .desk-section-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--body-muted); opacity: .75; margin: 5px 0 1px; }
 .desk-section-label--queue { margin-top: 6px; }
+/* #534 (épuré) — recurring missions collapse behind a count so the repetitive
+   id list never reads as a wall; the summary reuses the quiet section-label
+   look and is clickable. */
+.desk-missions-details { margin: 5px 0 1px; }
+.desk-missions-details > summary {
+  cursor: pointer; list-style: none; margin: 0;
+}
+.desk-missions-details > summary::-webkit-details-marker { display: none; }
+.desk-missions-details > summary::before {
+  content: "▸ "; color: var(--body-muted); opacity: .6;
+}
+.desk-missions-details[open] > summary::before { content: "▾ "; }
+/* #534 — the "+N de plus" overflow collapse for queue items past the cap. */
+.desk-queue-overflow { margin: 2px 0 6px; }
+.desk-queue-overflow > summary {
+  cursor: pointer; list-style: none;
+  font-size: 11px; color: var(--body-muted);
+  padding: 2px 0;
+}
+.desk-queue-overflow > summary::-webkit-details-marker { display: none; }
+.desk-queue-overflow > summary::before {
+  content: "+ "; opacity: .6;
+}
 .desk-folder-item {
   font-size: 12.5px; color: var(--body-soft);
   padding: 3px 8px; margin: 2px 0; background: var(--paper);

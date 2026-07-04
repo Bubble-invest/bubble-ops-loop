@@ -363,13 +363,14 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
      A real blank canvas the dept manager fills with anything. Content comes
      from <repo>/whiteboard.md, rendered verbatim. #534: the free-space canvas
-     is secondary/long-form → collapsed by default (mirrors the notes idiom),
-     so the dashboard KPIs stay the primary thing on this section. The card is
-     ALWAYS present (the framework) even when empty. #}
-  <details class="whiteboard-free-details" {% if whiteboard_freeform %}open{% endif %}>
+     is secondary/long-form → ALWAYS collapsed by default (even when filled —
+     Ben's trade dashboard is a wall that would dominate the page). The
+     operator expands it on demand. The card is ALWAYS present (the
+     framework) even when empty. #}
+  <details class="whiteboard-free-details">
     <summary class="whiteboard-free-summary">
       🧾 <span class="whiteboard-free-title">Whiteboard</span>
-      <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}</span>
+      <span class="whiteboard-free-sub">espace libre de {{ dept.display_name }}{% if whiteboard_freeform %} (déplier){% endif %}</span>
     </summary>
     <div class="whiteboard-free">
       {% if whiteboard_freeform %}
@@ -463,9 +464,15 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
             </div>
           {% endif %}
 
-          {# Missions for this Moment (nested inline) #}
+          {# Missions for this Moment. #534 (épuré): the Moment header + name +
+             what-it-does is the primary at-a-glance; the full mission detail
+             cards (description, produit, gate rule) are the drill-down, so
+             they collapse behind a compact "N missions →" summary. Keeps the
+             4-moments overview a screenful instead of a wall of cards. #}
           {% if _ms %}
-            <ul class="missions-list" style="margin-top:14px;">
+            <details class="moment-missions-details" style="margin-top:14px;">
+              <summary class="moment-missions-summary">{{ _ms|length }} mission{{ 's' if _ms|length != 1 else '' }} dans ce moment</summary>
+            <ul class="missions-list" style="margin-top:12px;">
               {% for m in _ms %}
                 <li class="mission-card" data-mission-id="{{ m.id }}" data-layer="{{ m.layer }}">
                   <div class="mission-card-head">
@@ -496,6 +503,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
                 </li>
               {% endfor %}
             </ul>
+            </details>
           {% else %}
             <p class="muted-italic" style="font-size:12px; margin:10px 0 0;">
               Aucune mission déclarée pour ce moment.
@@ -647,10 +655,12 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </details>
     {% endif %}
 
-    {# ─── Boucles — compact, click to expand ────────────────────────── #}
-    {% if loop_runs %}
-      <ul class="loop-runs">
-        {% for run in loop_runs %}
+    {# ─── Boucles — compact, click to expand. #534: the run LIST is capped to
+         the most recent LOOP_RUNS_CAP; older runs tuck behind one collapse so
+         a dept with months of history doesn't stretch this section into a wall
+         of date rows. Each run is still individually expandable. ─────────── #}
+    {% set LOOP_RUNS_CAP = 8 %}
+    {% macro loop_run_li(run) %}
           <li class="loop-run{% if run.is_empty %} loop-run--empty{% endif %}">
             <details class="loop-run-toggle">
               <summary class="loop-run-head">
@@ -705,8 +715,23 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
               {% endif %}
             </details>
           </li>
+    {% endmacro %}
+    {% if loop_runs %}
+      <ul class="loop-runs">
+        {% for run in loop_runs[:LOOP_RUNS_CAP] %}
+          {{ loop_run_li(run) }}
         {% endfor %}
       </ul>
+      {% if loop_runs|length > LOOP_RUNS_CAP %}
+        <details class="loop-runs-overflow">
+          <summary>+{{ loop_runs|length - LOOP_RUNS_CAP }} boucle{{ 's' if (loop_runs|length - LOOP_RUNS_CAP) != 1 else '' }} plus ancienne{{ 's' if (loop_runs|length - LOOP_RUNS_CAP) != 1 else '' }}</summary>
+          <ul class="loop-runs">
+            {% for run in loop_runs[LOOP_RUNS_CAP:] %}
+              {{ loop_run_li(run) }}
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
     {% else %}
       {% with title="Aucune boucle enregistrée pour l'instant.",
               body=dept.display_name ~ " n'a pas encore tourné — l'historique se remplira à chaque cycle." %}

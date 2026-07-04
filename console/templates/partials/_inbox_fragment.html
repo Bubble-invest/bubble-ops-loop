@@ -4,6 +4,15 @@
    full-page load from dept_detail.html so the column is never blank on first
    load.
 
+   #534 (épuré): this column used to dump a raw wall of dozens of mission/queue
+   ids across all four layers — the single biggest block on the page. It is now
+   TIGHT by default:
+     • Recurring missions (the standing schedule, NOT pending work) collapse
+       behind a per-layer "N missions récurrentes" <details> — visible on demand.
+     • Genuinely-waiting queue items show the first few (QUEUE_CAP total across
+       all layers); the overflow tucks into a single "+N de plus" <details>.
+   The at-a-glance stays a screenful, not a scroll-for-pages dump.
+
    Receives:
      dept              — dept object (slug, display_name, is_live, …)
      gate_groups       — list of grouped gate objects (for the count chip)
@@ -20,11 +29,17 @@
      kanban_summary    — optional kanban snapshot (may be None in fragment)
 #}
 
+{% set QUEUE_CAP = 6 %}
+
 {% set _att = (kanban_summary.attention_total if kanban_summary else 0) %}
 {% if _att %}
   <a href="#dept-kanban-heading" class="desk-chip desk-chip--load">{{ _att }} carte{{ 's' if _att > 1 else '' }} en attente</a>
 {% endif %}
 
+{# Global running counter of queue items shown so far, so the visible cap
+   spans ALL layers (not per-layer). Overflow rows render inside a collapsed
+   <details> instead of extending the page. #}
+{% set _q = namespace(shown=0, overflow=0) %}
 {% set _ns = namespace(any=false) %}
 {% for l in [1,2,3,4] %}
   {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
@@ -34,36 +49,46 @@
       <div class="desk-folder-layer">Couche {{ l }}</div>
 
       {# Recurring missions — the standing schedule for this layer, NOT pending
-         work. Labelled (when shown alongside queue items) so a mission is never
-         misread as a waiting to-do (#391). #}
+         work (#391). Épuré (#534): collapsed behind a count so the repetitive
+         id list never reads as a wall of to-dos. #}
       {% if _ms %}
-        {% if _qi %}<div class="desk-section-label desk-section-label--missions">Missions récurrentes</div>{% endif %}
-        {% for m in _ms %}
-          <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
-        {% endfor %}
+        <details class="desk-missions-details">
+          <summary class="desk-section-label desk-section-label--missions">{{ _ms|length }} mission{{ 's' if _ms|length != 1 else '' }} récurrente{{ 's' if _ms|length != 1 else '' }}</summary>
+          {% for m in _ms %}
+            <div class="desk-folder-item">{{ m.id if m.id is defined else m }}</div>
+          {% endfor %}
+        </details>
       {% endif %}
 
-      {# Queue items actually WAITING to be treated in this layer (#376) #}
+      {# Queue items actually WAITING to be treated in this layer (#376). #}
       {% if _qi %}
         {% if _ms %}<div class="desk-section-label desk-section-label--queue">En attente de traitement</div>{% endif %}
         <div class="desk-queue-items">
           {% for item in _qi %}
-            {# #459 — the mgmt-note consumed-count summary is a single
-               collapsed muted line, not a pending "À traiter" row: it
-               represents notes already acted on (id/timestamp checked
-               against .consumed.json / .last-mgmt-scan), kept visible only
-               so the operator knows the queue isn't silently empty. #}
-            {% if item.kind == "_mgmt_consumed_summary" %}
-              <div class="desk-queue-item desk-queue-item--consumed-summary">
-                <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
-              </div>
+            {% set _row %}
+              {# #459 — the mgmt-note consumed-count summary is a single
+                 collapsed muted line, not a pending "À traiter" row: it
+                 represents notes already acted on (id/timestamp checked
+                 against .consumed.json / .last-mgmt-scan), kept visible only
+                 so the operator knows the queue isn't silently empty. #}
+              {% if item.kind == "_mgmt_consumed_summary" %}
+                <div class="desk-queue-item desk-queue-item--consumed-summary">
+                  <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
+                </div>
+              {% else %}
+                <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+                  <span class="desk-queue-title">{{ item.title }}</span>
+                  {% if item.pending_human %}
+                    <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
+                  {% endif %}
+                </div>
+              {% endif %}
+            {% endset %}
+            {% if _q.shown < QUEUE_CAP %}
+              {{ _row }}
+              {% set _q.shown = _q.shown + 1 %}
             {% else %}
-              <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
-                <span class="desk-queue-title">{{ item.title }}</span>
-                {% if item.pending_human %}
-                  <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
-                {% endif %}
-              </div>
+              {% set _q.overflow = _q.overflow + 1 %}
             {% endif %}
           {% endfor %}
         </div>
@@ -73,6 +98,36 @@
     </div>
   {% endif %}
 {% endfor %}
+
+{# Overflow — every queue item past the cap, tucked behind one collapse so the
+   column never scrolls for pages (#534). #}
+{% if _q.overflow %}
+  <details class="desk-queue-overflow">
+    <summary>+{{ _q.overflow }} de plus</summary>
+    {# Flat re-walk: skip the first QUEUE_CAP items overall, render the rest. #}
+    {% set _sk = namespace(n=0) %}
+    {% for l in [1,2,3,4] %}
+      {% for item in (layer_queues.get(l, []) if layer_queues else []) %}
+        {% if _sk.n < QUEUE_CAP %}
+          {% set _sk.n = _sk.n + 1 %}
+        {% else %}
+          {% if item.kind == "_mgmt_consumed_summary" %}
+            <div class="desk-queue-item desk-queue-item--consumed-summary">
+              <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
+            </div>
+          {% else %}
+            <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+              <span class="desk-queue-title">{{ item.title }}</span>
+              {% if item.pending_human %}
+                <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
+              {% endif %}
+            </div>
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+  </details>
+{% endif %}
 
 {% if not _ns.any and not _att %}
   <p class="desk-empty">Pile vide — rien en attente.</p>

@@ -80,6 +80,26 @@ def test_card_renders_manager_content(client, fixture_root):
     assert "Rien pour l'instant" not in r.text
 
 
+def test_freespace_collapsed_by_default_even_when_filled(client, fixture_root):
+    """#534 (épuré): the free-space canvas is secondary/long-form and must be
+    COLLAPSED BY DEFAULT even when filled (Ben's trade dashboard is a wall that
+    would otherwise dominate the page). The <details> must NOT carry `open`, and
+    the summary invites the operator to expand it."""
+    repo = fixture_root / "bubble-ops-fixture"
+    (repo / "whiteboard.md").write_text(
+        "# Tableau de bord\n\n" + "\n".join(f"- ligne {i}" for i in range(40)),
+        encoding="utf-8",
+    )
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    # The free-space details is present but closed (no `open` attribute on it).
+    assert 'class="whiteboard-free-details"' in r.text
+    assert 'class="whiteboard-free-details" open' not in r.text
+    assert 'whiteboard-free-details open' not in r.text
+    # Summary invites expansion when there is content to reveal.
+    assert "(déplier)" in r.text
+
+
 def test_tableau_de_bord_section_always_renders(client):
     """Section 1 must render even with no KPIs/graphs, so the free space
     is always reachable (was previously hidden when both were empty)."""
