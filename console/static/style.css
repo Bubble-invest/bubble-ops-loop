@@ -3248,9 +3248,12 @@ body.m4 .avatar {
 }
 body.m4 .dept-name-lg { font-family: var(--font-display); font-weight: 700; font-size: 13.5px; color: var(--ink); line-height: 1.2; }
 body.m4 .dept-role { font-size: 11px; color: var(--body-muted); margin-top: 2px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-body.m4 .stat-strip { display: flex; gap: 8px; position: relative; }
+/* 3 tiles (décisions · sujets · cartes kanban, board #531): flex-wrap + a
+   min-width floor lets them share one row on desktop yet wrap cleanly (2+1,
+   then stacked) on narrow viewports instead of squishing the 9px labels. */
+body.m4 .stat-strip { display: flex; flex-wrap: wrap; gap: 8px; position: relative; }
 body.m4 .stat-tile {
-  flex: 1; min-width: 0; background: rgba(255,255,255,.6);
+  flex: 1 1 88px; min-width: 88px; background: rgba(255,255,255,.6);
   border: 1px solid rgba(102,126,234,.10); border-radius: 11px; padding: 9px 10px;
   display: flex; flex-direction: column; gap: 3px;
 }

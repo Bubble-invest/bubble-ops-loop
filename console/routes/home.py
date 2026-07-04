@@ -61,6 +61,32 @@ def _kanban_queue_counts() -> Dict[str, int]:
     }
 
 
+def _dept_card_counts() -> Dict[str, int]:
+    """Per-dept count of OPEN board cards tagged `dept:<slug>` (board #531).
+
+    Powers the 3rd stat-tile ("cartes kanban") on each dept widget. Matches the
+    /kanban by-department view's semantics exactly: bucket every open issue by
+    `_kanban._canon_dept(card["owner"])` (owner derived from the `dept:<x>`
+    label, then case/alias-normalised so e.g. `dept:rick / rnd` still counts
+    toward `rnd`). Reuses `_kanban._fetch_issues()` — the same in-process cache
+    the decision cards + queue counts already hit, so NO extra network call.
+
+    Returns a dict keyed by canonical dept slug → int. Fully guarded: any fetch
+    error degrades to an empty dict (→ every widget shows 0), never a 500.
+    """
+    from console.routes import kanban as _kanban  # lazy — avoid circular import
+
+    counts: Dict[str, int] = defaultdict(int)
+    try:
+        issues, _err = _kanban._fetch_issues()
+        for issue in issues:
+            card = _kanban.issue_to_card(issue)
+            counts[_kanban._canon_dept(card.get("owner"))] += 1
+    except Exception:  # noqa: BLE001 — a board hiccup must never 500 the home page
+        return {}
+    return dict(counts)
+
+
 def _board_decision_cards() -> list:
     """ALL open needs:human board cards Joris owes a decision on — surfaced on
     the landing page (board #358, widened by #505). Reuses the kanban
@@ -175,6 +201,10 @@ def home(request: Request):
         if not d.is_ancien
         and d.slug not in dept_registry.KNOWN_CONCIERGE_SLUGS
     ]
+    # Per-dept count of OPEN board cards tagged dept:<slug> (board #531) — feeds
+    # the 3rd stat-tile on each widget. Reuses the kanban in-process cache (no
+    # extra network call); degrades to {} → every widget shows 0 on any error.
+    dept_card_counts = _dept_card_counts()
     columns = []
     for d in depts:
         gates = github_reader.list_pending_gates(d.slug)
@@ -183,6 +213,7 @@ def home(request: Request):
             "gates": gates,
             "gate_count": len(gates),
             "gate_groups": _group_gates_by_kind(gates),
+            "card_count": dept_card_counts.get(d.slug, 0),
         })
     total_gates = sum(c["gate_count"] for c in columns)
     # Safety-net roll-up — last loop-backup fire across all depts ({{OPERATOR}} msg
