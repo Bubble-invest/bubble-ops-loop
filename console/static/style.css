@@ -3316,13 +3316,22 @@ body.m4 .rich-grid { display: grid; grid-template-columns: repeat(auto-fit, minm
 body.m4 .card.rich { padding: 0; overflow: hidden; }
 body.m4 .rich-head { padding: 16px 18px 0; position: relative; z-index: 1; }
 body.m4 .rich-body-pad { padding: 5px 18px 2px; position: relative; z-index: 1; }
-body.m4 .chart-wrap { background: linear-gradient(180deg, rgba(255,247,232,.5), rgba(255,255,255,.4)); border-top: 1px solid rgba(255,255,255,.8); padding: 14px 18px 12px; margin: 12px 0 0; position: relative; z-index: 1; }
-body.m4 .chart-legend { display: flex; gap: 14px; margin-bottom: 11px; }
-body.m4 .legend-item { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 9.5px; color: var(--body-muted); }
-body.m4 .legend-swatch { width: 12px; height: 3px; border-radius: 2px; }
-body.m4 .chart-svg { width: 100%; height: auto; display: block; filter: drop-shadow(0 2px 4px rgba(102,126,234,.12)); }
-body.m4 .chart-axis { font-family: var(--font-mono); font-size: 8px; fill: #b3a894; }
-body.m4 .chart-note { font-family: var(--font-accent); font-size: 11px; color: var(--violet); margin-top: 9px; }
+/* Cartes riches — REAL gate-proposal cards (board #533; replaced the old
+   hardcoded INDA/EEM/SPY illustrative chart). The thesis excerpt is
+   agent-authored markdown, already nh3-sanitized server-side. */
+body.m4 .rich-proposal { display: flex; flex-direction: column; }
+body.m4 .rich-proposal .trade-actions { margin-top: auto; }
+body.m4 .rich-thesis { font-size: 13px; line-height: 1.55; color: var(--body-soft); margin: 6px 0 2px; }
+body.m4 .rich-thesis p { margin: 0 0 8px; }
+body.m4 .rich-thesis p:last-child { margin-bottom: 0; }
+body.m4 .rich-thesis ul, body.m4 .rich-thesis ol { margin: 4px 0 8px; padding-left: 18px; }
+body.m4 .rich-thesis li { margin: 2px 0; }
+body.m4 .rich-thesis h1, body.m4 .rich-thesis h2, body.m4 .rich-thesis h3,
+body.m4 .rich-thesis h4 { font-size: 13px; font-weight: 600; margin: 6px 0 4px; color: var(--ink-soft); }
+body.m4 .rich-thesis code { font-family: var(--font-mono); font-size: 12px; }
+body.m4 .rich-thesis table { font-size: 12px; border-collapse: collapse; }
+body.m4 .rich-thesis th, body.m4 .rich-thesis td { padding: 2px 8px 2px 0; text-align: left; }
+body.m4 .rich-empty .card-body { color: var(--body-muted); }
 body.m4 .trade-actions { display: flex; gap: 8px; padding: 14px 18px; position: relative; z-index: 1; flex-wrap: wrap; }
 body.m4 .btn {
   font-family: var(--font-display); font-size: 11px; font-weight: 600; padding: 7px 14px;

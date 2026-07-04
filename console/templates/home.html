@@ -355,67 +355,42 @@
     <span class="section-sub">graphiques &amp; flux</span>
   </div>
 
-  {# Resolve the first dept that actually has a pending gate, for the CTA.
-     Link to the dept page (not the raw gate id) so the section stays
-     anchored to a real, live destination without leaking gate ids into
-     the page prose (#524 gate-grouping prose contract). #}
-  {% set first_gate = namespace(slug=None) %}
-  {% for col in columns %}
-    {% if first_gate.slug is none and col.gates %}
-      {% set first_gate.slug = col.dept.slug %}
-    {% endif %}
-  {% endfor %}
-
   <div class="rich-grid">
-    {# CHART CARD — illustrative rebased performance (INDA/EEM/SPY). #}
-    <div class="card rich decision-card">
-      <div class="rich-head">
-        <div class="card-kicker">exemple · proposition de trade · illustratif</div>
-        <div class="card-title">Basculer EEM → INDA (Inde vs. émergents larges)</div>
-      </div>
-      <div class="rich-body-pad">
-        <div class="card-body" style="margin:0 0 4px;">Rebasé à 100 sur 6 mois. Illustration du type de carte riche qu'une proposition de gate porte. Taille proposée 2.5% NAV.</div>
-      </div>
-      <div class="chart-wrap">
-        <div class="chart-legend">
-          <span class="legend-item"><span class="legend-swatch" style="background:#667eea;"></span>INDA</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:#a7e8d7;"></span>EEM</span>
-          <span class="legend-item"><span class="legend-swatch" style="background:#c9bfae;"></span>SPY</span>
+    {# REAL rich cards — actual pending gate-proposals (board #533), replacing
+       the old hardcoded illustrative INDA/EEM/SPY chart. Each is a live gate
+       with its real thesis excerpt + a link to the full decision. Empty →
+       quiet placeholder, never fake data. #}
+    {% if rich_cards %}
+      {% for rc in rich_cards %}
+      <div class="card rich decision-card rich-proposal">
+        <div class="rich-head">
+          <div class="card-kicker">{{ rc.display_name }} · {{ rc.kind_label }} · risque {{ rc.risk_label }}</div>
+          <div class="card-title">{{ rc.title }}</div>
         </div>
-        <svg class="chart-svg" viewBox="0 0 520 160" preserveAspectRatio="none" aria-label="Performance rebasée INDA EEM SPY">
-          <defs>
-            <linearGradient id="indaFill2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#667eea" stop-opacity=".18"/>
-              <stop offset="100%" stop-color="#667eea" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-          <line x1="40" y1="16" x2="40" y2="134" stroke="rgba(0,0,0,.06)"/>
-          <line x1="40" y1="134" x2="510" y2="134" stroke="rgba(0,0,0,.06)"/>
-          <line x1="40" y1="75" x2="510" y2="75" stroke="rgba(0,0,0,.03)"/>
-          <line x1="40" y1="46" x2="510" y2="46" stroke="rgba(0,0,0,.03)"/>
-          <line x1="40" y1="105" x2="510" y2="105" stroke="rgba(0,0,0,.03)"/>
-          <text class="chart-axis" x="14" y="20">120</text>
-          <text class="chart-axis" x="14" y="79">100</text>
-          <text class="chart-axis" x="20" y="137">85</text>
-          <text class="chart-axis" x="40" y="150">janv.</text>
-          <text class="chart-axis" x="250" y="150">avr.</text>
-          <text class="chart-axis" x="470" y="150">juin</text>
-          <path fill="url(#indaFill2)" d="M40,75 118,68 196,58 274,55 352,43 430,36 510,27 510,134 40,134 Z"/>
-          <polyline fill="none" stroke="#c9bfae" stroke-width="1.8" points="40,75 118,72 196,73 274,66 352,65 430,60 510,58"/>
-          <polyline fill="none" stroke="#a7e8d7" stroke-width="2.4" points="40,75 118,80 196,77 274,82 352,87 430,83 510,90"/>
-          <polyline fill="none" stroke="#667eea" stroke-width="2.8" points="40,75 118,68 196,58 274,55 352,43 430,36 510,27"/>
-          <circle cx="510" cy="27" r="3.5" fill="#667eea"/>
-        </svg>
-        <div class="chart-note">INDA +17.8% · EEM +3.1% · SPY +8.2% — un écart de 14,7 pts</div>
-      </div>
-      <div class="trade-actions">
-        {% if first_gate.slug %}
-        <a class="btn primary" href="/dept/{{ first_gate.slug }}">Voir les décisions →</a>
-        {% else %}
-        <a class="btn primary" href="/kanban">Voir le tableau →</a>
+        {% if rc.thesis %}
+        <div class="rich-body-pad">
+          <div class="card-body rich-thesis">{{ rc.thesis }}</div>
+        </div>
         {% endif %}
+        <div class="trade-actions">
+          <a class="btn primary" href="{{ rc.href }}">Voir la décision →</a>
+        </div>
       </div>
-    </div>
+      {% endfor %}
+    {% else %}
+      <div class="card rich rich-empty">
+        <div class="rich-head">
+          <div class="card-kicker">propositions en attente</div>
+          <div class="card-title">Aucune proposition riche en attente</div>
+        </div>
+        <div class="rich-body-pad">
+          <div class="card-body" style="margin:0 0 4px;">Quand un collègue soumet une décision, sa proposition apparaît ici avec sa thèse — prête à lire et à trancher.</div>
+        </div>
+        <div class="trade-actions">
+          <a class="btn primary" href="/kanban">Voir le tableau →</a>
+        </div>
+      </div>
+    {% endif %}
 
     {# FLOWCHART CARD — the real gate lifecycle. #}
     <div class="card rich">
