@@ -1329,7 +1329,18 @@ def load_whiteboard(slug: str) -> Optional[Dict[str, Any]]:
             value: str
             trend: up | down | stable  (optional)
             note: str  (optional)
-        notes: str (free-text, optional)
+        notes: str OR list[str] (free-text, optional)
+
+    `notes` is documented as a single free-text string, but some depts
+    (Ben) populate it as a YAML list of dated decision-log entries instead.
+    Jinja renders a Python list via repr() when dumped directly, producing
+    an unreadable `['...', '...']` wall on the cockpit (card #507). Rather
+    than push that str-vs-list branching into the template, we normalize
+    here: this function ALSO adds a `notes_list` key — always a list of
+    strings, one entry per note (a single-item list when `notes` was a
+    plain string) — so the template can render N readable entries uniformly
+    regardless of the authored shape. The original `notes` key is left
+    untouched for any other consumer.
     """
     root = repo_path(slug)
     if root is None:
@@ -1341,12 +1352,36 @@ def load_whiteboard(slug: str) -> Optional[Dict[str, Any]]:
             try:
                 data = yaml.safe_load(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    data["notes_list"] = _normalize_whiteboard_notes(data.get("notes"))
                     return data
             except yaml.YAMLError as exc:
                 _log.warning("yaml parse error for whiteboard %s: %s", p, exc)
                 return None
 
     return None
+
+
+def _normalize_whiteboard_notes(notes: Any) -> List[str]:
+    """Normalize whiteboard.yaml's `notes` field (str OR list) into a flat
+    list[str] of non-empty entries, in order. Non-str list items are
+    stringified defensively (a dept could author a number/date scalar).
+    """
+    if notes is None:
+        return []
+    if isinstance(notes, str):
+        return [notes] if notes.strip() else []
+    if isinstance(notes, list):
+        out: List[str] = []
+        for item in notes:
+            if item is None:
+                continue
+            text = item if isinstance(item, str) else str(item)
+            if text.strip():
+                out.append(text)
+        return out
+    # Unexpected scalar shape (int/dict/etc.) — stringify rather than drop,
+    # so authoring mistakes are still visible instead of silently vanishing.
+    return [str(notes)]
 
 
 def list_recent_decisions(slugs: List[str], limit: int = 10) -> List[Dict[str, Any]]:

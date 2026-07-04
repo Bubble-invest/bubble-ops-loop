@@ -321,8 +321,25 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     </p>
   {% endif %}
 
-  {% if whiteboard and whiteboard.notes %}
-    <div class="whiteboard-notes">{{ whiteboard.notes }}</div>
+  {% if whiteboard_notes_rendered %}
+    {# Notes — {{OPERATOR}} authors `notes` in whiteboard.yaml as either a
+       plain string or a list of dated decision-log entries (Ben). Each entry
+       is sanitized markdown→HTML (markdown_render.render_markdown_safe, same
+       trust boundary as whiteboard_freeform below) — never raw repr'd text.
+       Collapsed by default (card #507, {{OPERATOR}} add-on): mirrors the
+       "N derniers passages" <details> idiom used for backup events below. #}
+    <details class="whiteboard-notes-details">
+      <summary>📓 Notes ({{ whiteboard_notes_rendered|length }} entrée{{ 's' if whiteboard_notes_rendered|length != 1 else '' }})</summary>
+      {% if whiteboard_notes_rendered|length == 1 %}
+        <div class="whiteboard-notes markdown-body">{{ whiteboard_notes_rendered[0] }}</div>
+      {% else %}
+        <ul class="whiteboard-notes-list">
+          {% for note_html in whiteboard_notes_rendered %}
+            <li class="whiteboard-notes-item markdown-body">{{ note_html }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </details>
   {% endif %}
 
   {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────

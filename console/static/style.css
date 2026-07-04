@@ -1602,9 +1602,41 @@ code, .code {
   font-size: 14.5px;
   line-height: 1.65;
   color: var(--body-soft);
-  white-space: pre-wrap;
   max-width: 760px;
 }
+/* Notes — collapsed-by-default <details> (card #507). `notes` in
+   whiteboard.yaml may be a single string or a list of dated entries; both
+   render as sanitized markdown, one-or-many, inside this wrapper. */
+.whiteboard-notes-details {
+  margin: 8px 0 20px;
+}
+.whiteboard-notes-details > summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  color: var(--ochre);
+  font-size: 0.95em;
+  padding: 8px 0;
+}
+.whiteboard-notes-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 760px;
+}
+.whiteboard-notes-item {
+  padding: 14px 20px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--sage);
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--body-soft);
+}
+.whiteboard-notes-item > p:first-child { margin-top: 0; }
+.whiteboard-notes-item > p:last-child { margin-bottom: 0; }
 
 /* ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ───────────────── */
 /* A blank canvas card the dept manager fills with anything. */

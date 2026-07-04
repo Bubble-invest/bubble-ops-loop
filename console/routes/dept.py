@@ -116,6 +116,17 @@ def dept_detail(slug: str, request: Request):
     # Per-dept whiteboard — agent-surfaced KPIs/metrics for {{OPERATOR}}
     # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
+    # `notes` is documented as free-text but some depts (Ben) author it as a
+    # YAML list of dated entries — Jinja was rendering that list via Python
+    # repr() into an unreadable `['...', '...']` wall (card #507).
+    # load_whiteboard() normalizes it to `notes_list` (always list[str]); we
+    # sanitize+markdown-render each entry the same way whiteboard_freeform is
+    # (agent-authored content is untrusted → nh3-sanitized HTML, never raw).
+    whiteboard_notes_rendered = [
+        rendered
+        for note in ((whiteboard or {}).get("notes_list") or [])
+        if (rendered := markdown_render.render_markdown_safe(note)) is not None
+    ]
     # Free-space whiteboard — a blank canvas card the dept manager fills with
     # any data representation it wants: tables, headings, rich text, embedded
     # chart images (whiteboard.md). Rendered as SANITIZED markdown→HTML so the
@@ -184,6 +195,7 @@ def dept_detail(slug: str, request: Request):
             "mandate_md": mandate_md,
             "layer_recent_outputs": layer_recent_outputs,
             "whiteboard": whiteboard,
+            "whiteboard_notes_rendered": whiteboard_notes_rendered,
             "whiteboard_freeform": whiteboard_freeform,
             "whiteboard_graphs": whiteboard_graphs,
             "loop_runs": loop_runs,
