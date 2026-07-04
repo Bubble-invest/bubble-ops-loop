@@ -811,6 +811,100 @@ else
 fi
 unset BUBBLE_AUTORESTART BUBBLE_AUTORESTART_STATE BUBBLE_BACKUP_CLAUDE_BIN
 
+# =============================================================================
+# L. Floor-fired L1/L4 brief relay (board #521, cause 3) — when the SAFETY NET
+#    (not the live loop) fires Layer 1 or 4 for a stale dept, the floor prompt
+#    tells the tick NOT to send its own Telegram message ("the backup wrapper
+#    relays"), so the dept's normal STEP F (tools/notify_layer.py) never runs.
+#    Before the fix, {{OPERATOR}} only got the generic 🛟 safety-net ping (the raw
+#    chat-reply text) — never the actual L1/L4 brief the tick just wrote to
+#    disk. `notify_floor_layer_brief` must fire a SEPARATE relay call for L1/L4
+#    (not L2/L3), reusing the canonical send path, and skip it entirely for a
+#    DEGRADED L4 (no fresh brief exists) and for a failed tick (exit != 0).
+# =============================================================================
+BRIEF_NOTIFY_STUB="$WORK/brief-notify-stub.sh"
+BRIEF_NOTIFY_LOG="$WORK/brief-notify.log"
+: > "$BRIEF_NOTIFY_LOG"
+cat > "$BRIEF_NOTIFY_STUB" <<EOF
+#!/usr/bin/env bash
+printf '%s\t%s\t%s\n' "\$1" "\$2" "\$3" >> "$BRIEF_NOTIFY_LOG"
+EOF
+chmod +x "$BRIEF_NOTIFY_STUB"
+
+# L1: a successful floor L1 tick relays the brief (stub called with slug=1 layer=path).
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_BRIEF_NOTIFY_CMD="$BRIEF_NOTIFY_STUB"
+make_dept briefdept 10800; make_layer briefdept 1
+set_enabled briefdept
+export BUBBLE_BACKUP_DEPTS="briefdept"
+: > "$BRIEF_NOTIFY_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+if grep -q $'^briefdept\t1\t' "$BRIEF_NOTIFY_LOG" 2>/dev/null; then
+    ok "L1 successful floor L1 tick relays the brief via notify_floor_layer_brief"
+else
+    bad "L1 expected a brief relay call for briefdept layer 1; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG" 2>/dev/null)"
+fi
+
+# L2: the summary path passed to the relay points at THIS dept's L1 output dir today.
+TODAY="$(date -u +%Y-%m-%d)"
+expected_path="$AGENTS_ROOT/bubble-ops-briefdept/outputs/$TODAY/1/summary.md"
+if grep -qF "$expected_path" "$BRIEF_NOTIFY_LOG" 2>/dev/null; then
+    ok "L2 brief relay summary path resolves under outputs/<today>/1/"
+else
+    bad "L2 expected summary path '$expected_path' in brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG" 2>/dev/null)"
+fi
+
+# L3: L2/L3 floor ticks must NOT trigger a brief relay (only L1/L4 do).
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_BRIEF_NOTIFY_CMD="$BRIEF_NOTIFY_STUB"
+make_dept midlayer 10800; make_layer midlayer 2
+set_enabled midlayer
+export BUBBLE_BACKUP_DEPTS="midlayer"
+: > "$BRIEF_NOTIFY_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 2
+if [[ ! -s "$BRIEF_NOTIFY_LOG" ]]; then
+    ok "L3 L2 floor tick does NOT trigger a brief relay (L1/L4 only)"
+else
+    bad "L3 unexpected brief relay for an L2 floor tick; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG")"
+fi
+
+# L4: a FAILED floor L4 tick (exit != 0) must NOT relay a (nonexistent) brief.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_BRIEF_NOTIFY_CMD="$BRIEF_NOTIFY_STUB"
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+make_dept faildept 10800; make_layer faildept 4
+set_enabled faildept
+export BUBBLE_BACKUP_DEPTS="faildept"
+: > "$BRIEF_NOTIFY_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+if [[ ! -s "$BRIEF_NOTIFY_LOG" ]]; then
+    ok "L4 a FAILED floor tick does NOT trigger a brief relay"
+else
+    bad "L4 unexpected brief relay after a failed tick; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG")"
+fi
+export BUBBLE_BACKUP_CLAUDE_BIN="$CLAUDE_STUB"
+
+# L5: a DEGRADED L4 (L1/2/3 not all fired + loop stale) must NOT trigger a
+#     brief relay — there is no fresh brief to send, only a carried-over debrief.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_BRIEF_NOTIFY_CMD="$BRIEF_NOTIFY_STUB"
+export BUBBLE_BACKUP_LAYER_OFFSET_H=0
+make_dept degdept 999999; make_layer degdept 4
+set_enabled degdept
+export BUBBLE_BACKUP_DEPTS="degdept"
+: > "$BRIEF_NOTIFY_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+if [[ ! -s "$BRIEF_NOTIFY_LOG" ]]; then
+    ok "L5 a DEGRADED L4 floor tick does NOT trigger a brief relay"
+else
+    bad "L5 unexpected brief relay for a degraded L4; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG")"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H BUBBLE_BACKUP_BRIEF_NOTIFY_CMD
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]

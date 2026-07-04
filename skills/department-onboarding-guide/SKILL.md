@@ -518,6 +518,23 @@ a Telegram ping each time a layer fires, the dept `/loop` protocol (CLAUDE.md) s
 - at STEP 6 call `notify_layers_batched(dept, layer_fires, config=...)` once (batched).
 Recipients come from the dept `config.yaml` (`accounts`/`notifications`); if the dept has no
 `config.yaml` yet, the helpers default to {{OPERATOR}}'s chat_id. (tony/cgp still need a config.yaml.)
+
+**Sending the REAL L1/L4 brief, not just the summary heading (board #521, 2026-07-04):**
+by default `notify_layer_fired` sends only the first line of `summary.md` — a
+content-free stub. To send the actual brief body (e.g. `morning_brief.md` for
+L1, `telegram_message.md` for L4), declare a `brief_artifacts` map — either
+`config.yaml`'s flat `brief_artifacts: {"1": "...", "4": "..."}` (checked
+first) or `dept.yaml`'s `department.brief_artifacts:` (see the commented
+example in `dept.yaml.template`). Keys accept `"1"`/`1`/`"L1"`. The dept's own
+`tools/notify_layer.py fired --layer N --summary outputs/<today>/N/summary.md`
+call (STEP F) then resolves and sends the configured file — truncated with a
+"…(tronqué)" marker if oversized — verbatim on Telegram, no other wiring
+needed. With nothing configured (or the file not yet written that tick) it
+safely falls back to the pre-#521 first-line shape — no dept regresses.
+`tools/notify_layer.py`'s artifact gate also no longer drops the send when the
+brief exists but a separate `summary.md` wasn't written. Every send attempt
+(success or failure) is appended to a `notify.log` (`BUBBLE_NOTIFY_LOG_PATH`
+env, default `outputs/notify.log`) so a dropped/failed send leaves a trace.
 #### Check F.2 — Gate-card YAML must be VALID (write-time validation)
 
 Layers hand-author gate cards under `queues/gates/*.yaml`. A single unquoted

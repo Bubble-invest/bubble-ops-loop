@@ -65,6 +65,32 @@ department:
 {% endfor %}
 {% endif %}
 
+  # brief_artifacts:                     # OPTIONAL (board #521, 2026-07-04).
+  #   "1": morning_brief.md              # Declares WHICH file, inside each
+  #   "4": telegram_message.md           # layer's own outputs/<date>/<N>/
+                                          # dir, holds the REAL L1/L4 brief the
+                                          # dept wants relayed verbatim on
+                                          # Telegram (instead of just the
+                                          # summary.md heading). Only L1/L4 are
+                                          # read this way — L2/L3 stay batched
+                                          # one-liners. Keys accept "1"/1/"L1"
+                                          # (any shape). When absent, or when
+                                          # the configured file isn't found for
+                                          # a given tick, the loop safely falls
+                                          # back to the pre-#521 first-line-of-
+                                          # summary shape — no regression.
+                                          # NOTE: this is the dept.yaml
+                                          # CONVENTION (config['department']
+                                          # ['brief_artifacts'] in
+                                          # scripts/lib/loop_notify.py); a flat
+                                          # config['brief_artifacts'] in the
+                                          # dept's own config.yaml is checked
+                                          # FIRST and works identically — use
+                                          # whichever config file is already
+                                          # loaded at your dept's notify call
+                                          # site. See loop_notify.py's module
+                                          # docstring for the full contract.
+
 # --- Placeholders below — filled in by subsequent onboarding steps.
 # They satisfy schema `required` so the file validates from Step 1 onwards.
 layers:
