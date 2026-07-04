@@ -354,6 +354,57 @@ if not receipt.success:
 PYEOF
 }
 
+# ── Floor-fired L1/L4 brief delivery (board #521, cause 3) ──────────────────
+# The floor prompt (build_tick_prompt, FORCE_LAYER branch) explicitly tells
+# the tick "Do NOT send your own Telegram message — the backup wrapper
+# relays your final message" — so when the SAFETY NET (not the live loop)
+# fires L1 or L4, the dept's own CLAUDE.md STEP F (which would normally call
+# tools/notify_layer.py) never runs. Only the generic 🛟 "backup tick fired"
+# line went out (notify_backup_fired above), carrying the tick's raw CHAT
+# reply (LAST_TICK_SUMMARY, capped ~1500 chars) — NOT the actual brief
+# artifact the tick just wrote to disk. Joris got the safety-net ping but
+# never the L1/L4 brief itself.
+#
+# Fix: after a successful (exit=0) floor tick for layer 1 or 4, reuse the
+# SAME canonical send path every dept already uses
+# (tools/notify_layer.py -> scripts/lib/loop_notify.notify_layer_fired) to
+# deliver the real brief body, config-driven exactly like the live-loop path
+# (brief_artifacts in config.yaml / dept.yaml, safe fallback to the summary
+# heading when nothing is configured/found — no dept regresses). This is a
+# SEPARATE message from the 🛟 safety-net ping (which stays as-is, so the
+# "loop was down" signal is never lost); it is skipped for a DEGRADED L4
+# (no fresh brief was written — the dept only wrote a carried-over debrief,
+# and it already gets a real dispatch on the LIVE loop's next good tick).
+notify_floor_layer_brief() {
+    local slug="$1" workdir="$2" envfile="$3" layer="$4" exit_code="$5"
+    [[ "$layer" == "1" || "$layer" == "4" ]] || return 0
+    [[ "$exit_code" == "0" ]] || { log "$slug: skip floor L${layer} brief relay (tick exit=${exit_code})"; return 0; }
+
+    local today; today="$(date -u +%Y-%m-%d)"
+    local summary_path="${workdir}/outputs/${today}/${layer}/summary.md"
+
+    # Test seam: mirrors BUBBLE_BACKUP_NOTIFY_CMD's shape so the bash harness
+    # can assert this fired without a real notify_layer.py subprocess.
+    if [[ -n "${BUBBLE_BACKUP_BRIEF_NOTIFY_CMD:-}" ]]; then
+        "${BUBBLE_BACKUP_BRIEF_NOTIFY_CMD}" "$slug" "$layer" "$summary_path" \
+            || log "$slug: warn — floor brief notify stub failed"
+        return 0
+    fi
+
+    if [[ ! -f "$workdir/tools/notify_layer.py" ]]; then
+        log "$slug: skip floor L${layer} brief relay — tools/notify_layer.py not vendored"
+        return 0
+    fi
+    (
+        set -a
+        # shellcheck disable=SC1090
+        [[ -f "$envfile" ]] && . "$envfile"
+        set +a
+        cd "$workdir" || exit 1
+        "$PY" tools/notify_layer.py fired --layer "$layer" --summary "$summary_path"
+    ) 2>&1 | while IFS= read -r _l; do log "$slug: [floor-brief] $_l"; done
+}
+
 # ── Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved) ──────────
 # When the backup tick could NOT revive a dead dept (tick exited non-zero — the
 # loop is down AND the safety net couldn't run a layer), restart the dept's
@@ -863,6 +914,14 @@ PYEOF2
         [[ -f "$envfile" ]] && . "$envfile"
         set +a
         notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
+        # Board #521 cause 3: on a floor-fired L1/L4 (not degraded), also
+        # relay the REAL brief body — a SEPARATE message from the 🛟 ping
+        # above, via the same canonical send path every dept's live loop
+        # uses. Never blocks/fails the safety net (own subshell + own log
+        # lines only).
+        if [[ -n "$FORCE_LAYER" && "${DEGRADED_L4:-0}" != "1" ]]; then
+            notify_floor_layer_brief "$slug" "$workdir" "$envfile" "$FORCE_LAYER" "$tick_exit"
+        fi
         # Auto-restart the dead DEPT only when the backup tick FAILED to revive it
         # (tick_exit != 0 = loop down AND the safety net couldn't run a layer).
         # The pure decision enforces the concierge guard + the 3/hour guardrail.

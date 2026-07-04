@@ -12,6 +12,10 @@ Covers:
   * graceful email degradation: no SMTP creds → Telegram still delivers,
     email returns a failed-but-non-fatal receipt (per-channel isolation in the
     promoted notify.deliver).
+  * board #521 (fleet-wide L1/L4 real-brief delivery): the brief BODY is sent
+    (not just the summary heading); the config-driven brief_artifacts path
+    resolves + falls back safely; oversized briefs truncate; L2/L3 unchanged;
+    every send outcome is logged (observability).
 
 No live HTTP — a fake opener captures every request.
 """
@@ -84,6 +88,16 @@ CONFIG = {
 @pytest.fixture
 def token_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TESTTOKEN:abc")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_notify_log(tmp_path, monkeypatch):
+    """Board #521 cause 4 wired every send through log_notify_event, which
+    falls back to ``./notify.log`` (cwd) when no explicit path / env var is
+    given. Redirect that default into tmp_path for every test in this file so
+    the suite never writes a stray notify.log into the repo working tree."""
+    monkeypatch.setenv("BUBBLE_NOTIFY_LOG_PATH", str(tmp_path / "_unused-default-notify.log"))
     yield
 
 
@@ -351,3 +365,257 @@ def test_layer_fired_no_test_flag_has_no_marker(tmp_path, token_env):
     loop_notify.notify_layer_fired("ben", 4, summary, config=CONFIG, opener=opener)
     text = opener.calls[0]["body"]["text"]
     assert "TEST" not in text and "\U0001F9EA" not in text
+
+
+# ─── board #521 — fleet-wide L1/L4 real-brief delivery ─────────────────────
+
+
+def _make_layer_dir(tmp_path, layer="1"):
+    layer_dir = tmp_path / "outputs" / "2026-07-04" / layer
+    layer_dir.mkdir(parents=True)
+    return layer_dir
+
+
+CONFIG_WITH_BRIEFS = {
+    **CONFIG,
+    "brief_artifacts": {"1": "morning_brief.md", "4": "telegram_message.md"},
+}
+
+
+def test_layer_fired_sends_brief_body_not_just_heading(tmp_path, token_env):
+    """Cause 1: L1 must send the REAL BRIEF BODY, not the summary heading."""
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# L1 fired — L1 Morning Brief — 2026-07-04\n")
+    brief = layer_dir / "morning_brief.md"
+    brief_text = "# Morning Brief\n\nPosition update: NAV up 1.2%.\nRisk: nominal.\n"
+    brief.write_text(brief_text)
+
+    opener = _CapturingOpener()
+    receipt = loop_notify.notify_layer_fired(
+        "tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener
+    )
+
+    assert receipt.success is True
+    call = opener.calls[0]
+    text = call["body"]["text"]
+    # The real brief content must be present...
+    assert "Position update" in text
+    assert "NAV up" in text
+    # ...and the content-free stub heading must NOT be the only thing sent —
+    # the header line is fine, but the brief body is what carries the info.
+    assert "L1 fired" in text
+
+
+def test_layer_fired_no_brief_configured_falls_back_safely(tmp_path, token_env):
+    """Cause 2 (safe fallback): a dept with no brief_artifacts config keeps
+    the pre-#521 first-line-of-summary shape — no regression."""
+    summary = tmp_path / "summary.md"
+    summary.write_text("# L1 brief: 3 prospects queued for review\nmore detail\n")
+    opener = _CapturingOpener()
+
+    receipt = loop_notify.notify_layer_fired(
+        "maya", 1, summary, config=CONFIG, opener=opener  # CONFIG has no brief_artifacts
+    )
+
+    assert receipt.success is True
+    text = opener.calls[0]["body"]["text"]
+    assert "3 prospects queued for review" in text
+
+
+def test_layer_fired_brief_configured_but_file_missing_falls_back(tmp_path, token_env):
+    """Cause 2 (safe fallback): brief_artifacts configured but the file was
+    never written this tick — falls back to first-line-of-summary, doesn't
+    crash or send an empty ping."""
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# fallback heading used\n")
+    # NOTE: morning_brief.md deliberately NOT created.
+
+    opener = _CapturingOpener()
+    receipt = loop_notify.notify_layer_fired(
+        "tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener
+    )
+    assert receipt.success is True
+    text = opener.calls[0]["body"]["text"]
+    assert "fallback heading used" in text
+
+
+def test_layer_fired_brief_artifacts_resolves_int_and_L_prefixed_keys(tmp_path, token_env):
+    """The brief_artifacts lookup must accept "4", 4, and "L4" key shapes so a
+    dept.yaml author doesn't have to guess YAML's int-vs-str quoting."""
+    layer_dir = _make_layer_dir(tmp_path, "4")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "telegram_message.md"
+    brief.write_text("Full L4 telegram brief content here.")
+
+    for key in ("4", 4, "L4"):
+        cfg = {**CONFIG, "brief_artifacts": {key: "telegram_message.md"}}
+        opener = _CapturingOpener()
+        loop_notify.notify_layer_fired("tony", 4, summary, config=cfg, opener=opener)
+        text = opener.calls[0]["body"]["text"]
+        assert "Full L4 telegram brief content here" in text, f"failed for key={key!r}"
+
+
+def test_layer_fired_brief_artifacts_from_department_nested_config(tmp_path, token_env):
+    """dept.yaml convention: config['department']['brief_artifacts'] is also
+    honored (the flat config['brief_artifacts'] is merely preferred)."""
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text("Nested config brief body")
+
+    cfg = {
+        **CONFIG,
+        "department": {"brief_artifacts": {"1": "morning_brief.md"}},
+    }
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired("tony", 1, summary, config=cfg, opener=opener)
+    text = opener.calls[0]["body"]["text"]
+    assert "Nested config brief body" in text
+
+
+def test_layer_fired_oversized_brief_is_truncated(tmp_path, token_env, monkeypatch):
+    """Cause 1 + robustness: an oversized brief must be truncated with a
+    visible marker, never sent raw past the message budget."""
+    monkeypatch.setattr(loop_notify, "BRIEF_MAX_CHARS", 100)
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text("A" * 5000)
+
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired("tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener)
+    text = opener.calls[0]["body"]["text"]
+    assert "tronqu" in text  # "…(tronqué)" marker present (accent-safe substring)
+    # The raw 5000-char brief must not have been sent whole.
+    assert "A" * 5000 not in text
+
+
+def test_layer_fired_script_like_brief_content_handled(tmp_path, token_env):
+    """A brief body containing HTML/script-like content or MarkdownV2 special
+    chars must not crash the send — it's rendered through the same markdown
+    pipeline as any other body (escaped, not executed/interpreted)."""
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text("<script>alert(1)</script>\nSpecial chars: _*[]()~`>#+-=|{}.!")
+
+    opener = _CapturingOpener()
+    receipt = loop_notify.notify_layer_fired(
+        "tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener
+    )
+    assert receipt.success is True
+    assert len(opener.calls) == 1
+
+
+def test_layer_fired_multi_account_cc_jade_on_briefs(tmp_path, token_env):
+    """Cause 4 (recipients): the brief must fan out to multiple accounts
+    (e.g. Operator + Jade) via the existing multi-account resolve_recipients
+    path — no hardcoded chat_id."""
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text("Brief for both Operator and Jade.")
+
+    cfg = {
+        "accounts": {
+            "Operator": {"telegram_chat_id": "6532205130"},
+            "Jade": {"telegram_chat_id": "7470271615"},
+        },
+        "brief_artifacts": {"1": "morning_brief.md"},
+    }
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired(
+        "tony", 1, summary, config=cfg, account=["Operator", "Jade"], opener=opener
+    )
+    chat_ids = {c["body"]["chat_id"] for c in opener.calls}
+    assert chat_ids == {"6532205130", "7470271615"}
+    for c in opener.calls:
+        assert "Brief for both Operator and Jade" in c["body"]["text"]
+
+
+def test_l2_l3_batched_unchanged_by_521(token_env):
+    """L2/L3 stay batched one-liners — board #521 only touches L1/L4. Even
+    with brief_artifacts configured for the dept, the batched L2/L3 ping
+    carries no brief body — just the counts + cockpit link."""
+    opener = _CapturingOpener()
+    loop_notify.notify_layers_batched(
+        "maya", {"2": 3, "3": 1}, config=CONFIG_WITH_BRIEFS, opener=opener
+    )
+    text = opener.calls[0]["body"]["text"]
+    assert "L2 ×3" in text and "L3 ×1" in text
+    assert "fired" not in text
+    # No brief-artifact filenames ever get read into a batched ping.
+    assert "morning_brief" not in text and "telegram_message" not in text
+
+
+# ─── board #521 cause 4 — delivery observability (no silent drops) ─────────
+
+
+def test_send_success_is_logged(tmp_path, token_env):
+    log_path = tmp_path / "notify.log"
+    opener = _CapturingOpener()
+    loop_notify.notify_layer_fired(
+        "tony", 1, None, config=CONFIG, opener=opener, notify_log_path=log_path
+    )
+    assert log_path.exists()
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["dept"] == "tony"
+    assert rec["layer"] == "1"
+    assert rec["success"] is True
+
+
+def test_send_failure_is_logged_not_silently_swallowed(tmp_path, monkeypatch):
+    """A send failure (e.g. missing token) must leave a durable, inspectable
+    trace — not just a local print() that vanishes with the cron's stdout."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    log_path = tmp_path / "notify.log"
+    opener = _CapturingOpener()
+
+    receipt = loop_notify.notify_layer_fired(
+        "tony", 1, None, config=CONFIG, opener=opener, notify_log_path=log_path
+    )
+    assert receipt.success is False
+
+    assert log_path.exists()
+    rec = json.loads(log_path.read_text().strip().splitlines()[0])
+    assert rec["success"] is False
+    assert rec["error"]
+    assert "TELEGRAM_BOT_TOKEN" in rec["error"]
+
+
+def test_batched_send_is_also_logged(tmp_path, token_env):
+    log_path = tmp_path / "notify.log"
+    opener = _CapturingOpener()
+    loop_notify.notify_layers_batched(
+        "maya", {"2": 1}, config=CONFIG, opener=opener, notify_log_path=log_path
+    )
+    rec = json.loads(log_path.read_text().strip().splitlines()[0])
+    assert rec["kind"] == "layers_batched"
+    assert rec["success"] is True
+
+
+def test_log_notify_event_never_raises_on_bad_path(monkeypatch):
+    """Observability logging must never crash the loop — even a completely
+    unwritable path is swallowed."""
+    loop_notify.log_notify_event(
+        {"dept": "x"}, notify_log_path="/nonexistent-root-dir-xyz/notify.log"
+    )
+    # No exception raised = pass.
+
+
+def test_log_notify_event_env_var_path(tmp_path, monkeypatch):
+    log_path = tmp_path / "env-notify.log"
+    monkeypatch.setenv("BUBBLE_NOTIFY_LOG_PATH", str(log_path))
+    loop_notify.log_notify_event({"dept": "tony", "success": True})
+    assert log_path.exists()
+    rec = json.loads(log_path.read_text().strip())
+    assert rec["dept"] == "tony"
