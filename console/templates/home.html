@@ -96,6 +96,10 @@
               <span class="stat-num">{{ col.gate_groups|length }}</span>
               <span class="stat-lbl">sujet{{ '' if col.gate_groups|length == 1 else 's' }} ouvert{{ '' if col.gate_groups|length == 1 else 's' }}</span>
             </div>
+            <div class="stat-tile{% if col.card_count == 0 %} mint{% endif %}">
+              <span class="stat-num">{{ col.card_count }}</span>
+              <span class="stat-lbl">carte{{ '' if col.card_count == 1 else 's' }} kanban</span>
+            </div>
           </div>
         </a>
         {% else %}
