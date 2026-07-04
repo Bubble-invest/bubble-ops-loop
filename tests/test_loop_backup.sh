@@ -111,8 +111,17 @@ RESTART_LOG="$WORK/systemctl-restart.log"      # records each `systemctl restart
 cat > "$SYSTEMCTL_STUB" <<EOF
 #!/usr/bin/env bash
 # Calls we emulate:
-#   systemctl is-enabled ops-loop-<slug>.service  (eligibility gate)
-#   systemctl restart    ops-loop-<slug>.service  (auto-restart — recorded)
+#   systemctl is-enabled ops-loop-<slug>.service        (eligibility gate)
+#   systemctl restart    ops-loop-<slug>.service        (auto-restart — recorded)
+#   systemctl show <svc> -p MainPID --value             (inject_live_loop probe)
+# The MainPID probe returns 0 (no live session) so inject_live_loop bails
+# immediately instead of doing a real pgrep/cgroup scan + 240s heartbeat wait
+# against whatever bun processes happen to run on the host — keeping this test
+# hermetic AND fast on a populated multi-tenant VPS.
+if [[ "\$1" == "show" ]]; then
+    echo 0     # MainPID=0 → inject_live_loop sees "no live poller" → return 1
+    exit 0
+fi
 if [[ "\$1" == "is-enabled" ]]; then
     unit="\$2"                       # ops-loop-<slug>.service
     slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
