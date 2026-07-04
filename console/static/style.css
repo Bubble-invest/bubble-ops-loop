@@ -3117,9 +3117,19 @@ body.m4 .ddw-rows > * + * { border-top: 1px solid rgba(102,126,234,.08); }
 body.m4 .ddw-status {
   display: flex; flex-direction: column; gap: 11px;
   padding: 13px 14px 12px; text-decoration: none; color: inherit;
-  position: relative; transition: background .18s ease;
+  position: relative;
 }
-body.m4 .ddw-status:hover { background: rgba(102,126,234,.04); }
+/* #532: the avatar+name is now its own link to /dept (the tiles link elsewhere).
+   The whole head no longer navigates as one block. */
+body.m4 .ddw-status-head {
+  display: block; text-decoration: none; color: inherit;
+  border-radius: 8px; margin: -3px -4px; padding: 3px 4px;
+  transition: background .18s ease;
+}
+body.m4 .ddw-status-head:hover,
+body.m4 .ddw-status-head:focus-visible { background: rgba(102,126,234,.04); }
+/* éclosion head keeps its single-anchor behaviour → still hover the block. */
+body.m4 .ddw-status--eclosion:hover { background: rgba(102,126,234,.04); }
 body.m4 .dept-decisions-widget .ddw-status + .ddw-rows { border-top: 1px solid rgba(102,126,234,.12); }
 /* a faint warm corner glow to echo the old dept-card, tuned per state */
 body.m4 .dept-decisions-widget { position: relative; }
@@ -3257,6 +3267,16 @@ body.m4 .stat-tile {
   border: 1px solid rgba(102,126,234,.10); border-radius: 11px; padding: 9px 10px;
   display: flex; flex-direction: column; gap: 3px;
 }
+/* #532: each tile is now its own <a> to a real destination. Keep it looking
+   like a tile, add a clickable affordance (lift + border on hover/focus). */
+body.m4 a.stat-tile { text-decoration: none; color: inherit; cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease; }
+body.m4 a.stat-tile:hover,
+body.m4 a.stat-tile:focus-visible {
+  background: rgba(255,255,255,.85); border-color: rgba(102,126,234,.28);
+  transform: translateY(-1px);
+}
+body.m4 a.stat-tile:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
 body.m4 .stat-num { font-family: var(--font-display); font-weight: 700; font-size: 19px; line-height: 1; color: var(--violet); letter-spacing: -.01em; }
 body.m4 .stat-lbl { font-family: var(--font-mono); font-size: 9px; line-height: 1.25; color: var(--body-muted); letter-spacing: .04em; text-transform: uppercase; }
 body.m4 .stat-tile.mint .stat-num { color: #2d6b56; }

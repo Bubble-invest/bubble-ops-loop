@@ -41,6 +41,9 @@
 .vp-graph { margin: 4px 0 14px; }
 .vp-graph summary { cursor: pointer; font-size: 12px; color: var(--body-muted, #8a7d6c); user-select: none; }
 .vp-graph .mermaid { margin-top: 8px; background: var(--paper-soft, #f8f5f0); border: 1px solid var(--line, #e8e0d3); border-radius: 4px; padding: 10px; }
+/* #532: deep-link anchor for a dept group — scroll-margin offsets the header
+   so the group title isn't tucked under the top of the viewport. */
+.dept-anchor { display: block; height: 0; scroll-margin-top: 76px; }
 /* ── View-switcher tabs ──────────────────────────────────────────── */
 .vp-tabs {
   display: flex;
@@ -425,6 +428,10 @@
   {% set ns_dept = namespace(total=0) %}
   {% for dept_name, cards in by_department.items() %}
     {% set ns_dept.total = ns_dept.total + cards | length %}
+    {# #532: per-dept anchor so the home "cartes kanban" tile can deep-link
+       (/kanban?view=dept#dept-<slug>) straight to this dept's group. The
+       scroll-margin (CSS) offsets the sticky tabs so the header isn't hidden. #}
+    <span class="dept-anchor" id="dept-{{ dept_name }}" aria-hidden="true"></span>
     {# In dept view, show status chip per card; dept badge would be redundant #}
     {{ render_group(dept_name, cards, accents_dept, show_status=True, show_dept=False) }}
   {% endfor %}
@@ -495,10 +502,29 @@
     btn.addEventListener('click', function () { activate(btn.dataset.view); });
   });
 
-  // Restore last tab or default to project view
+  // #532: an explicit ?view=<id> query param (e.g. the home "cartes kanban"
+  // tile → /kanban?view=dept#dept-<slug>) wins over the stored tab, so the
+  // deep-link always lands on the intended view. Falls back to the last tab.
+  var VALID = { dept: 1, projet: 1, statut: 1, echeances: 1, recent: 1 };
+  var requested = null;
+  try {
+    requested = new URLSearchParams(window.location.search).get('view');
+  } catch (_) {}
   var saved;
   try { saved = sessionStorage.getItem(STORAGE_KEY); } catch (_) {}
-  activate(saved || DEFAULT_VIEW);
+  activate((requested && VALID[requested]) ? requested : (saved || DEFAULT_VIEW));
+
+  // After activating the (now-visible) panel, honour a #dept-<slug> hash by
+  // scrolling its anchor into view — the browser's native hash scroll fires
+  // before the tab JS reveals the panel, so it no-ops without this.
+  if (window.location.hash) {
+    var target = document.getElementById(window.location.hash.slice(1));
+    if (target) {
+      requestAnimationFrame(function () {
+        target.scrollIntoView({ block: 'start', behavior: 'auto' });
+      });
+    }
+  }
 }());
 </script>
 
