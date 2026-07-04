@@ -260,67 +260,69 @@
 </section>
 {% endif %}
 
-{# ═══ 04 — COÛTS (cost-tile stat cards) ══════════════════════════
-   Cost figures aren't on the home context (they live behind /costs).
-   Rather than invent NAV/token numbers, surface the REAL fleet counts
-   this page already holds + a link to the real cost ledger. #}
+{# ═══ 04 — COÛTS — budget par dept (#524d) ═══════════════════════
+   Budget hebdomadaire par collègue + ce qu'il a dépensé jusqu'ici cette
+   semaine. Le budget est un cadrage READ-ONLY posé par l'opérateur dans
+   chaque dept.yaml (recurring_missions[].budget_usd) ; la dépense vient du
+   vrai relevé de coûts (cost_tracker, coût réel-équivalent API). Barre
+   verte <80%, ambre 80–100%, rouge >100%. Tant qu'aucun budget n'est posé,
+   la ligne affiche "budget non défini" (dégradation gracieuse). #}
 <section class="cabinet-section m4-section" aria-labelledby="costs-heading">
   <div class="section-head">
     <span class="section-num">04</span>
-    <h2 id="costs-heading" class="section-title">Coûts</h2>
-    <span class="section-sub"><a href="/costs" class="discreet-link">voir le détail →</a></span>
+    <h2 id="costs-heading" class="section-title">Coûts — budget par collègue</h2>
+    <span class="section-sub"><a href="/costs" class="discreet-link">voir le détail par agent →</a></span>
   </div>
-  <div class="cost-strip">
-    <div class="cost-tile">
-      <span class="cost-num violet">{{ live_count }}</span>
-      <span class="cost-lbl">agents en poste</span>
-      <span class="cost-delta">tous en ligne</span>
+  {% if not dept_budgets %}
+    <p class="ddw-nothing">Relevé de coûts indisponible pour le moment.</p>
+  {% else %}
+  <div class="budget-list">
+    {% for b in dept_budgets %}
+    <div class="budget-row budget-row--{{ b.level }}">
+      <div class="budget-row-head">
+        <span class="budget-dept">{{ b.display_name }}</span>
+        {% if b.defined %}
+        <span class="budget-figure">
+          dépensé <b class="ochre-num">${{ '%.2f'|format(b.spent) }}</b>
+          sur ${{ '%.2f'|format(b.budget) }} cette semaine
+          <span class="budget-pct budget-pct--{{ b.level }}">{{ '%.0f'|format(b.pct) }}%</span>
+        </span>
+        {% else %}
+        <span class="budget-figure budget-figure--undef">
+          dépensé <b class="ochre-num">${{ '%.2f'|format(b.spent) }}</b> ·
+          <span class="budget-undef">budget non défini</span>
+        </span>
+        {% endif %}
+      </div>
+      {% if b.defined %}
+      <div class="budget-bar" role="progressbar"
+           aria-valuenow="{{ '%.0f'|format(b.pct) }}" aria-valuemin="0" aria-valuemax="100"
+           aria-label="{{ b.display_name }} — {{ '%.0f'|format(b.pct) }}% du budget">
+        <span class="budget-bar-fill budget-bar-fill--{{ b.level }}"
+              style="width: {{ [b.pct, 100]|min }}%;"></span>
+      </div>
+      {% endif %}
     </div>
-    <div class="cost-tile">
-      <span class="cost-num">{{ eclore_count }}</span>
-      <span class="cost-lbl">en éclosion</span>
-      <span class="cost-delta">arrivées en préparation</span>
-    </div>
-    <div class="cost-tile">
-      <span class="cost-num">{{ total_gates }}</span>
-      <span class="cost-lbl">gates ouverts</span>
-      <span class="cost-delta">décisions en attente</span>
-    </div>
-    <div class="cost-tile">
-      <span class="cost-num up">{{ kanban_counts.total_open }}</span>
-      <span class="cost-lbl">tickets ouverts</span>
-      <span class="cost-delta">sur le board</span>
-    </div>
+    {% endfor %}
   </div>
+  {% endif %}
 </section>
 
-{# ═══ 05 — KANBAN (snapshot columns) ═════════════════════════════
-   The dept-KPI grid the tests scope by id="dept-kpi-grid" is kept intact
-   inside this section (order: total_gates, live_count, eclore_count). #}
+{# ═══ 05 — LE TABLEAU (kanban snapshot columns) ══════════════════
+   #524d de-dup: the three count-tiles that used to head this section
+   (Décisions en attente / Collègues en poste / Arrivées en préparation)
+   were REMOVED — they merely repeated the hero counter + the per-dept
+   stat-tiles in section 02. What remains is the ONE non-duplicate figure
+   on home: the board's à-traiter/en-cours/en-attente/terminé queue split. #}
 <section class="cabinet-section m4-section" aria-labelledby="semaine-heading">
   <div class="section-head">
     <span class="section-num">05</span>
-    <h2 id="semaine-heading" class="section-title">Cette semaine en bref</h2>
+    <h2 id="semaine-heading" class="section-title">Le tableau — cette semaine</h2>
     <span class="section-sub"><a href="/kanban" class="discreet-link">voir le tableau →</a></span>
   </div>
 
-  <div class="kpi-grid" id="dept-kpi-grid">
-    {% with value=total_gates, label="Décisions en attente",
-            note="Ce que l'équipe te demande en ce moment." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=live_count, label="Collègues en poste",
-            note="Membres actifs de l'équipe." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=eclore_count, label="Arrivées en préparation",
-            note="Collègues qui terminent leur éclosion." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-  </div>
-
   {# Task-queue snapshot as mockup-4 columns — real kanban_counts. #}
-  <div class="kanban" style="margin-top:22px;">
+  <div class="kanban">
     <div class="kcol">
       <div class="kcol-head"><span class="kcol-title">À traiter</span><span class="kcol-count">{{ kanban_counts.needs_attention }}</span></div>
     </div>

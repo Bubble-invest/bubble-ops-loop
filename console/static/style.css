@@ -3270,6 +3270,27 @@ body.m4 .cost-num.up { color: #2d6b56; } body.m4 .cost-num.violet { color: var(-
 body.m4 .cost-lbl { font-family: var(--font-mono); font-size: 9px; color: var(--body-muted); letter-spacing: .04em; text-transform: uppercase; }
 body.m4 .cost-delta { font-family: var(--font-mono); font-size: 10px; color: var(--body-muted); }
 
+/* ── Budget par dept / par agent (board #524d) ────────────────────────
+   Used on BOTH home (Coûts section, body.m4) and /costs (no body.m4) so
+   the rules are unscoped. Green <80% / amber 80–100% / red >100%. */
+.budget-list { display: flex; flex-direction: column; gap: 12px; }
+.budget-row { display: flex; flex-direction: column; gap: 6px; }
+.budget-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; justify-content: space-between; }
+.budget-dept { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--ink); }
+.budget-figure { font-size: 13px; color: var(--body-muted); }
+.budget-figure--undef { opacity: .85; }
+.budget-undef { font-style: italic; color: var(--body-muted); opacity: .8; }
+.budget-bar { position: relative; height: 8px; border-radius: 999px; background: rgba(0,0,0,.07); overflow: hidden; }
+.budget-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--sage); transition: width .3s ease; }
+.budget-bar-fill--ok   { background: #2d6b56; }
+.budget-bar-fill--warn { background: #d9a441; }
+.budget-bar-fill--over { background: #c0392b; }
+.budget-pct { font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+.budget-pct--ok   { color: #2d6b56; background: rgba(45,107,86,.12); }
+.budget-pct--warn { color: #b07d1f; background: rgba(217,164,65,.16); }
+.budget-pct--over { color: #c0392b; background: rgba(192,57,43,.12); }
+.budget-fleet-total { margin-top: 4px; }
+
 /* ── KPI grid (kept for tests) — glassified ───────────────────────────── */
 body.m4 #dept-kpi-grid.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px,1fr)); gap: 14px; }
 body.m4 #dept-kpi-grid .kpi-card {

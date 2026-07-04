@@ -431,6 +431,96 @@ def _build_report_uncached(refresh: bool = False) -> dict:
     }
 
 
+# ── Budget (read-only operator steer, board #524d) ──────────────────────
+# Budgets are set by the operator in each dept.yaml under recurring_missions[]
+# (each mission entry MAY carry `budget_usd`). We only READ them here — never
+# write. The enumeration mirrors dataflow._all_mission_entries / _missions:
+# entries live under any of layers|recurring_missions|missions.
+_BUDGET_MISSION_KEYS = ("layers", "recurring_missions", "missions")
+
+
+def mission_budget_total(dept_yaml: Optional[dict]) -> Optional[float]:
+    """Sum `budget_usd` across a dept.yaml's mission entries.
+
+    Returns the summed budget as a float, or None when NO mission entry carries
+    a `budget_usd` at all (so the caller can render "budget non défini" instead
+    of a misleading $0). A malformed / missing dept_yaml → None. Never raises.
+    """
+    if not isinstance(dept_yaml, dict):
+        return None
+    total = 0.0
+    found = False
+    for key in _BUDGET_MISSION_KEYS:
+        v = dept_yaml.get(key)
+        if not isinstance(v, list):
+            continue
+        for m in v:
+            if not isinstance(m, dict):
+                continue
+            b = m.get("budget_usd")
+            if isinstance(b, (int, float)) and not isinstance(b, bool):
+                total += float(b)
+                found = True
+    return round(total, 2) if found else None
+
+
+# Report agent-keys carry disambiguation suffixes (e.g. "miranda (jade-mac)",
+# "ben (mac-legacy)") and a couple of workspace→agent aliases (content→miranda).
+# To roll a dept's spend up from the per-agent report we normalise each agent
+# key back to its dept slug: strip any " (...)" suffix, then map known aliases.
+_AGENT_KEY_TO_SLUG_ALIAS = {
+    "miranda": "content",  # Miranda IS the content dept's agent (workspace bubble-ops-content)
+}
+
+
+def agent_key_base(agent_key: str) -> str:
+    """Normalise a report agent-key to its comparable base name: drop the
+    ' (mac...)' disambiguation suffix and lower-case. e.g.
+    'miranda (jade-mac)' → 'miranda', 'ben (mac-legacy)' → 'ben'."""
+    base = (agent_key or "").split(" (", 1)[0].strip().lower()
+    return base
+
+
+def spent_by_dept(report: dict, span: str = "week") -> dict:
+    """Roll the per-agent report up to a {dept_slug: real-$ spend} map.
+
+    Matches each report agent-key to a dept slug by its normalised base name
+    (see agent_key_base) plus a small alias map (miranda→content). Agent keys
+    that don't map to a dept slug (e.g. `claude -p` cron jobs like
+    'wiki-compile') are simply left out of the map. Never raises.
+    """
+    out: dict[str, float] = {}
+    agents = report.get("agents") if isinstance(report, dict) else None
+    if not isinstance(agents, dict):
+        return out
+    for key, a in agents.items():
+        base = agent_key_base(key)
+        slug = _AGENT_KEY_TO_SLUG_ALIAS.get(base, base)
+        try:
+            cost = float(a.get(span, {}).get("cost", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            cost = 0.0
+        out[slug] = round(out.get(slug, 0.0) + cost, 3)
+    return out
+
+
+def budget_status(spent: float, budget: Optional[float]) -> dict:
+    """Return a render-ready budget row: {spent, budget, pct, level, defined}.
+
+    level ∈ {"ok" (<80%), "warn" (80–100%), "over" (>100%)} drives the
+    green/amber/red progress bar. When budget is None or <= 0, defined=False,
+    pct=None (no bar, no div-by-zero). Never raises.
+    """
+    spent = float(spent or 0.0)
+    if not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget is None or budget <= 0:
+        return {"spent": round(spent, 2), "budget": None, "pct": None,
+                "level": "none", "defined": False}
+    pct = round(spent / budget * 100.0, 1)
+    level = "ok" if pct < 80 else ("warn" if pct <= 100 else "over")
+    return {"spent": round(spent, 2), "budget": round(float(budget), 2),
+            "pct": pct, "level": level, "defined": True}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true")
