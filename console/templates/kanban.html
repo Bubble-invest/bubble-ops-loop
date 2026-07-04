@@ -377,10 +377,13 @@
 {# View switcher tabs                                                  #}
 {# ─────────────────────────────────────────────────────────────────── #}
 
+{# Dept grouping is the default view (#524b, Joris: "kanban cards grouped by
+   dept as well"). The other lenses (projet / statut / échéances / récent)
+   remain one tab away. #}
 <div class="vp-tabs" role="tablist">
-  <button class="vp-tab" data-view="projet" role="tab" aria-selected="true">Par projet</button>
+  <button class="vp-tab" data-view="dept" role="tab" aria-selected="true">Par département</button>
+  <button class="vp-tab" data-view="projet" role="tab" aria-selected="false">Par projet</button>
   <button class="vp-tab" data-view="statut" role="tab" aria-selected="false">Par statut</button>
-  <button class="vp-tab" data-view="dept" role="tab" aria-selected="false">Par département</button>
   <button class="vp-tab" data-view="echeances" role="tab" aria-selected="false">Échéances</button>
   <button class="vp-tab" data-view="recent" role="tab" aria-selected="false">Récent</button>
 </div>
@@ -471,7 +474,7 @@
   // Minimal vanilla tab switcher — no framework, no deps.
   // Persists the active view in sessionStorage so refreshes remember the tab.
   var STORAGE_KEY = 'kanban-view';
-  var DEFAULT_VIEW = 'projet';
+  var DEFAULT_VIEW = 'dept';
 
   var tabs = document.querySelectorAll('.vp-tab');
   var panels = document.querySelectorAll('.vp-panel');

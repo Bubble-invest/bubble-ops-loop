@@ -44,41 +44,76 @@
       {% include "components/empty-state.html" %}
     {% endwith %}
   {% else %}
-    {% if total_gates > 0 %}
-    <div class="grid decisions-grid">
-      {% for col in columns %}
-        {% for grp in col.gate_groups %}
-          {% if grp.count == 1 %}
-            {% set g = grp.gates[0] %}
-            {% include "partials/kanban_card.html" %}
-          {% else %}
-            {% include "partials/decision_group_card.html" %}
-          {% endif %}
-        {% endfor %}
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {# Board needs:human decisions, grouped by dept (board #358, widened to
-       every dept by #505). Compact click-through to the card detail page —
-       the decide form lives there, NOT inline on this overview (#524). #}
-    {% if decision_groups %}
-    {% for grp in decision_groups %}
-    <h3 class="section-subheading m4-subheading">
-      ⬥ {% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% else %}Décisions — {{ grp.label }}{% endif %} ({{ grp.cards|length }})
-    </h3>
-    <div class="grid decisions-grid">
-      {% for c in grp.cards %}
-      <a id="rnd-card-{{ c.id }}" class="card decision-card" href="/kanban/card/{{ c.id }}">
-        <div class="card-kicker">#{{ c.id }}{% if c.owner %} · dept:{{ c.owner }}{% endif %}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
-        <div class="card-title">{{ c.title or c.summary or 'Décision' }}</div>
-        {% if c.summary and c.summary != c.title %}<div class="card-body">{{ c.summary }}</div>{% endif %}
-        <span class="card-cta">Décider →</span>
-      </a>
-      {% endfor %}
-    </div>
+    {# ─── DÉCISIONS = WIDGETS GROUPÉS PAR DÉPARTEMENT (#524b) ──────────────
+       One compact bounded widget per dept. Two decision sources are unified
+       under the SAME dept grouping:
+         · gate decisions  → columns[].gate_groups (keyed by col.dept.slug)
+         · board decisions → decision_groups (needs:human cards, keyed by owner)
+       Each decision is a MINIMAL ROW, not a big card. Routes preserved:
+         gate single → /gate/<slug>/<id>   (partials/kanban_card.html)
+         gate group  → /gate/<slug>/kind/<kind> (partials/decision_group_card.html)
+         board card  → /kanban/card/<id>
+       The gate partials are reused verbatim (dept_detail.html shares them);
+       the .dept-decisions-widget wrapper + m4 CSS flatten them into rows. #}
+    {% set board_by_owner = {} %}
+    {% for grp in (decision_groups or []) %}
+      {% set _ = board_by_owner.update({grp.owner: grp}) %}
     {% endfor %}
-    {% endif %}
+    {% set seen_owners = namespace(list=[]) %}
+
+    <div class="dept-decisions-stack">
+    {# 1 — one widget per dept that has gates (merges its board cards in). #}
+    {% for col in columns %}
+      {% set bgrp = board_by_owner.get(col.dept.slug) %}
+      {% set gate_n = col.gate_count %}
+      {% set board_n = (bgrp.cards|length) if bgrp else 0 %}
+      {% if gate_n > 0 or board_n > 0 %}
+        {% set _ = seen_owners.list.append(col.dept.slug) %}
+        {% set initial = col.dept.display_name[0]|upper if col.dept.display_name else col.dept.slug[0]|upper %}
+        <section class="dept-decisions-widget" aria-label="Décisions — {{ col.dept.display_name }}">
+          <header class="ddw-head">
+            <span class="ddw-avatar" aria-hidden="true">{{ initial }}</span>
+            <span class="ddw-name">{{ col.dept.display_name }}</span>
+            <span class="ddw-count">{{ gate_n + board_n }}</span>
+          </header>
+          <div class="ddw-rows">
+            {% for grp in col.gate_groups %}
+              {% if grp.count == 1 %}
+                {% set g = grp.gates[0] %}
+                {% include "partials/kanban_card.html" %}
+              {% else %}
+                {% include "partials/decision_group_card.html" %}
+              {% endif %}
+            {% endfor %}
+            {% if bgrp %}
+              {% for c in bgrp.cards %}
+                {% include "partials/home_board_decision_row.html" %}
+              {% endfor %}
+            {% endif %}
+          </div>
+        </section>
+      {% endif %}
+    {% endfor %}
+
+    {# 2 — board-only depts (no gate column) + the no-dept bucket, in the
+       route's rnd-first / alpha / no-dept-last order. #}
+    {% for grp in (decision_groups or []) %}
+      {% if grp.owner not in seen_owners.list %}
+        <section class="dept-decisions-widget" aria-label="{% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% elif grp.owner %}Décisions — {{ grp.label }}{% else %}Décisions sans département{% endif %}">
+          <header class="ddw-head">
+            <span class="ddw-avatar" aria-hidden="true">{% if grp.owner %}{{ grp.owner[0]|upper }}{% else %}·{% endif %}</span>
+            <span class="ddw-name">{% if grp.owner == 'rnd' %}R&amp;D / build{% elif grp.owner %}{{ grp.owner }}{% else %}sans département{% endif %}</span>
+            <span class="ddw-count">{{ grp.cards|length }}</span>
+          </header>
+          <div class="ddw-rows">
+            {% for c in grp.cards %}
+              {% include "partials/home_board_decision_row.html" %}
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+    {% endfor %}
+    </div>
   {% endif %}
 </section>
 

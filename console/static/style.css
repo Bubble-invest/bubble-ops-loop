@@ -3066,6 +3066,105 @@ body.m4 .chip {
   border: 1px solid var(--line); color: var(--body-muted); background: var(--paper-soft);
 }
 
+/* ── Décisions — dept-grouped WIDGETS (#524b) ─────────────────────────────
+   Joris feedback: decision cards were too big / basic-AI / card-per-item.
+   taste-skill VISUAL_DENSITY 8: group items into one bounded widget per
+   dept, items as minimal-weight rows, dividers only between rows — no card
+   per decision, no hairline-under-every-row-as-the-only-structure. The gate
+   partials (.decision-card / -title / -body / -cta) are reused verbatim and
+   flattened into rows here so /dept/<slug> keeps its own big-card styling. */
+body.m4 .dept-decisions-stack {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+body.m4 .dept-decisions-widget {
+  background: rgba(255,255,255,.62);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.9);
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+body.m4 .ddw-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 13px 9px;
+  border-bottom: 1px solid rgba(102,126,234,.10);
+}
+body.m4 .ddw-avatar {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, var(--violet-12), var(--mint-warm));
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-weight: 700; font-size: 10px; color: var(--violet);
+}
+body.m4 .ddw-name {
+  font-family: var(--font-display); font-weight: 700; font-size: 12.5px;
+  color: var(--ink); letter-spacing: -.01em; flex: 1; min-width: 0;
+}
+body.m4 .ddw-count {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; color: var(--violet);
+  background: var(--violet-08); padding: 1px 8px; border-radius: 999px; flex: none;
+}
+body.m4 .ddw-rows { display: flex; flex-direction: column; }
+/* divider only BETWEEN rows, never a full card each */
+body.m4 .ddw-rows > * + * { border-top: 1px solid rgba(102,126,234,.08); }
+
+/* A row — whether the reused gate partial (.decision-card) or the board
+   partial (.ddw-row). Tight single line, monospace id, muted, hover-warm. */
+body.m4 .ddw-row {
+  display: flex; align-items: baseline; gap: 9px;
+  padding: 8px 13px; text-decoration: none; color: inherit;
+  transition: background .18s ease;
+}
+body.m4 .ddw-row:hover { background: rgba(102,126,234,.05); }
+body.m4 .ddw-row-id {
+  font-family: var(--font-mono); font-size: 10px; color: var(--body-muted);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+body.m4 .ddw-row-title {
+  font-size: 12.5px; color: var(--ink); line-height: 1.35; font-weight: 500;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.m4 .ddw-row-due {
+  font-family: var(--font-mono); font-size: 9px; color: var(--body-muted);
+  flex: none; white-space: nowrap;
+}
+body.m4 .ddw-row-due--over { color: #a3503f; font-weight: 600; }
+body.m4 .ddw-row-cta {
+  font-size: 10px; font-weight: 700; color: var(--violet); letter-spacing: .02em;
+  flex: none; white-space: nowrap;
+}
+
+/* Flatten the reused gate partial (.decision-card) into the same row shape.
+   Only WITHIN a widget — the shared /dept/<slug> pages are untouched. */
+body.m4 .ddw-rows .decision-card {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  border: none; border-top: none; border-radius: 0; background: none;
+  box-shadow: none; padding: 8px 13px; position: static; overflow: visible;
+  transition: background .18s ease;
+}
+body.m4 .ddw-rows .decision-card:hover { background: rgba(102,126,234,.05); transform: none; box-shadow: none; }
+body.m4 .ddw-rows .decision-card::before { display: none; }
+body.m4 .ddw-rows .decision-card .decision-card-count { display: none; }
+body.m4 .ddw-rows .decision-card .decision-card-title {
+  font-family: var(--font-display); font-weight: 500; font-size: 12.5px; color: var(--ink);
+  margin: 0; line-height: 1.35; flex: 1; min-width: 60%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.m4 .ddw-rows .decision-card .decision-card-body {
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--body-muted);
+  margin: 0; line-height: 1.3; flex: none; order: 3; width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.m4 .ddw-rows .decision-card .decision-card-cta {
+  font-size: 10px; font-weight: 700; color: var(--violet); letter-spacing: .02em;
+  text-transform: none; flex: none; white-space: nowrap; order: 2;
+}
+@media (max-width: 480px) {
+  body.m4 .dept-decisions-stack { grid-template-columns: 1fr; }
+}
+
 /* ── Recent decisions list ────────────────────────────────────────────── */
 body.m4 .recent-decisions-list { display: flex; flex-direction: column; gap: 8px; }
 body.m4 .recent-decision-row {
