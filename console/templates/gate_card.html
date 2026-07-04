@@ -220,9 +220,14 @@
         {% endif %}
       </div>
       {% else %}
-      {# Plain-string summary — same render as generic gate, but styled for content #}
-      <div class="gate-thesis" style="margin:0 0 14px; font-size:14px; line-height:1.6;
-           color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
+      {# Plain-string summary — same render as generic gate, but styled for
+         content. Rendered as sanitized markdown->HTML (card #523-A, mirrors
+         #507's whiteboard-notes pipeline): gate.thesis_rendered is a
+         markupsafe.Markup built by console/routes/gate.py via
+         render_markdown_safe(gate.summary), nh3-sanitized, safe to emit
+         directly. `pre-line` dropped — markdown's own structure replaces it. #}
+      <div class="gate-thesis markdown-body" style="margin:0 0 14px; font-size:14px; line-height:1.6;
+           color: var(--body-soft);">{{ gate.thesis_rendered }}</div>
       {% endif %}
     {% endif %}
 
@@ -337,10 +342,15 @@
   {% endif %}
 
   {# Generic summary — shown for all gates EXCEPT content-kind gates which
-     already render summary inside their dedicated proposal block above. #}
+     already render summary inside their dedicated proposal block above.
+     Rendered as sanitized markdown->HTML (card #523-A, mirrors #507's
+     whiteboard-notes pipeline): gate.thesis_rendered is a markupsafe.Markup
+     built by console/routes/gate.py via render_markdown_safe(gate.summary),
+     nh3-sanitized, safe to emit directly. `pre-line` dropped — markdown's
+     own paragraphs/lists/headings now carry the structure. #}
   {% if gate.summary and gate.kind not in ('social_post', 'content_publish') %}
-  <div class="gate-thesis" style="margin:0 0 16px; font-size:15px; line-height:1.6;
-       color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</div>
+  <div class="gate-thesis markdown-body" style="margin:0 0 16px; font-size:15px; line-height:1.6;
+       color: var(--body-soft);">{{ gate.thesis_rendered }}</div>
   {% endif %}
 
   {# ─── Draft + angles (prospect_dm / warming_comment) ────────────

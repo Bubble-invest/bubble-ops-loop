@@ -18,10 +18,36 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from console.services import dept_registry, github_reader
 from console.services.humanize import humanize_kind
+from console.services.markdown_render import render_markdown_safe
 
 router = APIRouter()
 
 ALLOWED_ACTIONS = {"approve", "reject", "modify", "defer"}
+
+
+def _attach_thesis_rendered(gate: dict) -> dict:
+    """Mutate `gate` in place, adding `thesis_rendered` — the sanitized
+    markdown->HTML Markup of `gate.summary` (card #523-A).
+
+    Ben's (and other depts') trade-proposal thesis was rendered with
+    `white-space:pre-line` on the raw `gate.summary` string — newlines were
+    preserved but markdown (**bold**, ## headings, - bullets) showed up as
+    literal characters instead of formatted HTML. This mirrors the #507
+    whiteboard-notes fix: agent-authored text is untrusted, so it goes
+    through the same nh3-sanitized markdown pipeline before the template
+    ever sees it.
+
+    Only applies when `gate.summary` is a plain string — a handful of dept
+    kinds (Miranda's content gates) emit `summary` as a structured dict
+    (hook/theme/compliance/...), which the templates already render field-by
+    -field; markdown-rendering a dict makes no sense, so we skip it there.
+    """
+    summary = gate.get("summary")
+    if isinstance(summary, str):
+        gate["thesis_rendered"] = render_markdown_safe(summary)
+    else:
+        gate["thesis_rendered"] = None
+    return gate
 
 
 # IMPORTANT: this MUST be declared before /gate/{slug}/{gate_id} — otherwise
@@ -33,7 +59,7 @@ def gate_batch(slug: str, kind: str, request: Request):
     and act-then-advance in place instead of being stranded on gate #1."""
     if dept_registry.get_department(slug) is None:
         raise HTTPException(404, f"Unknown dept: {slug}")
-    gates = [g for g in github_reader.list_pending_gates(slug)
+    gates = [_attach_thesis_rendered(g) for g in github_reader.list_pending_gates(slug)
              if (g.get("kind") or "decision") == kind]
     return request.app.state.templates.TemplateResponse(
         "gate_batch.html",
@@ -129,6 +155,7 @@ def gate_card(slug: str, gate_id: str, request: Request):
     raw = github_reader.load_gate_raw(slug, gate_id)
     if gate is None or raw is None:
         raise HTTPException(404, f"Gate not found: {gate_id}")
+    gate = _attach_thesis_rendered(gate)
     return request.app.state.templates.TemplateResponse(
         "gate_card.html",
         {
