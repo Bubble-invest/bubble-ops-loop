@@ -1,22 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Bonjour {{OPERATOR}} — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css). #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'home' %}
 {% block content %}
 
-{# ─── Hero greeting ───────────────────────────────────────────── #}
-<section class="page-hero">
-  <h1 class="page-hero-title">Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.</h1>
+{# ═══ 01 — LE MATIN (hero) ═══════════════════════════════════════ #}
+<section class="page-hero m4-hero" aria-labelledby="hero-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>01 / LE MATIN — labo ouvert</div>
+  <h1 class="page-hero-title" id="hero-title">Bonjour {{OPERATOR}}. Voici où en est l'équipe aujourd'hui.</h1>
   <p class="page-hero-lede">
-    <span class="ochre-num">{{ total_gates + (rnd_decision_count or 0) }}</span>
+    <b class="ochre-num">{{ total_gates + (rnd_decision_count or 0) }}</b>
     décision{{ '' if (total_gates + (rnd_decision_count or 0)) == 1 else 's' }} qu'on attend de toi ·
-    <span class="ochre-num">{{ eclore_count }}</span>
+    <b class="ochre-num">{{ eclore_count }}</b>
     collègue{{ '' if eclore_count == 1 else 's' }} en éclosion ·
     le reste tourne en silence.
   </p>
+  <div class="hero-signature">— l'équipe, qui a déjà commencé sans toi</div>
 </section>
 
-{# ─── Filet de sécurité — roll-up ({{OPERATOR}} msg 1171) ──────────────
-   The loop-backup timer (08:00 + 14:00 Paris) catches any /loop that
-   died. Shown only once it has fired at least once. #}
+{# ─── Filet de sécurité — roll-up ({{OPERATOR}} msg 1171) ─────────── #}
 {% if backup_rollup and backup_rollup.any_activity %}
 <p class="backup-banner{% if backup_rollup.failed %} backup-banner--fail{% endif %}">
   <span class="backup-dot" aria-hidden="true"></span>
@@ -27,286 +30,412 @@
 </p>
 {% endif %}
 
-{# ─── Section 1 — Décisions qu'on attend de toi ───────────────── #}
-<section class="cabinet-section" aria-labelledby="decisions-heading">
-  <div style="display:flex; justify-content:space-between; align-items:baseline;"><h2 id="decisions-heading" class="section-heading">
-    <span class="section-heading-number">1.</span>
-    Décisions qu'on attend de toi
-  </h2></div>
-
-  {% if total_gates == 0 and (rnd_decision_count or 0) == 0 %}
-    {% with title="Personne ne te demande rien.",
-            body="L'équipe travaille en silence." %}
-      {% include "components/empty-state.html" %}
-    {% endwith %}
-  {% else %}
-    {% if total_gates > 0 %}
-    <div class="decisions-grid">
-      {% for col in columns %}
-        {% for grp in col.gate_groups %}
-          {% if grp.count == 1 %}
-            {% set g = grp.gates[0] %}
-            {% include "partials/kanban_card.html" %}
-          {% else %}
-            {% include "partials/decision_group_card.html" %}
-          {% endif %}
-        {% endfor %}
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {# Board needs:human decisions, grouped by dept — board #358, widened to
-       EVERY dept (not just rnd) by #505. Previously only dept:rnd cards
-       reached this page; the dept gates above don't cover cards with no
-       host: label, so 14/15 open needs:human cards were invisible. #}
-    {% if decision_groups %}
-    {% for grp in decision_groups %}
-    <h3 class="section-subheading" style="margin-top:18px; font-size:14px; color:var(--body-muted);">
-      ⬥ {% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% else %}Décisions — {{ grp.label }}{% endif %} ({{ grp.cards|length }})
-    </h3>
-    <div class="decisions-grid">
-      {% for c in grp.cards %}
-      <div id="rnd-card-{{ c.id }}" class="decision-card" style="display:block;">
-        <a href="/kanban/card/{{ c.id }}" style="text-decoration:none; display:block; color:inherit;">
-          <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
-          <div class="decision-card-title">{{ c.title or c.summary or 'Décision' }}</div>
-          {% if c.summary and c.summary != c.title %}<div class="decision-card-sub" style="font-size:13px; color:var(--body-soft); margin-top:4px;">{{ c.summary }}</div>{% endif %}
-          <div class="decision-card-cta" style="margin-top:8px; font-size:12px; text-transform:uppercase; color:var(--ochre-deep); letter-spacing:0.04em;">Décider →</div>
-        </a>
-        {# Inline decide actions (board #427) — record-only; Rick reprend au prochain cycle. #}
-        {% include "partials/rnd_card_actions.html" %}
-      </div>
-      {% endfor %}
-    </div>
-    {% endfor %}
-    {% endif %}
-  {% endif %}
-</section>
-
-{# ─── Section 1a — Prêt à merger (board #469) ─────────────────────
-   PRs Rick's independent-reviewer has approved, waiting only for Joris to
-   merge on GitHub. Read-only surface — merging stays on GitHub. Hidden
-   entirely when there is nothing waiting (no noise). #}
-{% if merge_ready %}
-<section class="cabinet-section" aria-labelledby="merge-ready-heading">
-  <h2 id="merge-ready-heading" class="section-heading">
-    <span class="section-heading-number">1a.</span>
-    🟢 Prêt à merger
-  </h2>
-  <div class="decisions-grid">
-    {% for pr in merge_ready %}
-    <div class="decision-card" style="display:block;">
-      <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">
-        {{ pr.repo }}·#{{ pr.number }}{% if pr.age %} · {{ pr.age }}{% endif %}
-      </div>
-      <div class="decision-card-title">{{ pr.explanation or pr.title }}</div>
-      {% if pr.chips %}
-      <div class="decision-card-sub" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">
-        {% for chip in pr.chips %}
-        <span style="font-size:11px; padding:2px 8px; border:1px solid var(--line);
-                     border-radius:2px; color:var(--body-soft); background:var(--paper-soft);">{{ chip }}</span>
-        {% endfor %}
-      </div>
-      {% endif %}
-      <a href="{{ pr.html_url }}" target="_blank" rel="noopener"
-         class="decision-card-cta"
-         style="display:inline-block; margin-top:10px; font-size:12px; text-transform:uppercase;
-                color:var(--ochre-deep); letter-spacing:0.04em; text-decoration:none;">
-        Ouvrir sur GitHub →
-      </a>
-    </div>
-    {% endfor %}
+{# ═══ 02 — L'ÉQUIPE & DÉCISIONS (merged, #524c) ══════════════════
+   ONE section, ONE widget per département: the colleague's status
+   (en poste / en éclosion + stat-tiles) on top, and — directly below,
+   in the SAME container — the decisions that dept is waiting on you for.
+   Two decision sources are unified under the SAME dept grouping:
+     · gate decisions  → columns[].gate_groups (keyed by col.dept.slug)
+     · board decisions → decision_groups (needs:human cards, keyed by owner)
+   Each decision is a MINIMAL ROW, not a big card. Routes preserved:
+     gate single → /gate/<slug>/<id>   (partials/kanban_card.html)
+     gate group  → /gate/<slug>/kind/<kind> (partials/decision_group_card.html)
+     board card  → /kanban/card/<id>
+     dept page   → /dept/<slug> (live) · /agents/<slug>/onboarding (éclosion)
+   The gate partials are reused verbatim (dept_detail.html shares them);
+   the .ddw-rows wrapper + m4 CSS flatten them into rows. #}
+<section class="cabinet-section m4-section" aria-labelledby="equipe-heading">
+  <div class="section-head">
+    <span class="section-num">02</span>
+    <h2 id="equipe-heading" class="section-title">L'équipe &amp; décisions</h2>
+    <span class="section-sub">chaque collègue, et ce qu'il attend de toi</span>
   </div>
-</section>
-{% endif %}
-
-{# ─── Section 1b — Décidé récemment ──────────────────────────── #}
-{% if recent_decisions %}
-<section class="cabinet-section" aria-labelledby="recentes-heading">
-  <h2 id="recentes-heading" class="section-heading">
-    <span class="section-heading-number">1b.</span>
-    Décidé récemment
-  </h2>
-  <div style="display:flex; flex-direction:column; gap:8px;">
-  {% for dec in recent_decisions %}
-    {% set action_color =
-      'var(--sage)' if dec.action == 'approve'
-      else 'var(--danger, #c0392b)' if dec.action == 'reject'
-      else 'var(--ochre)' if dec.action == 'modify'
-      else 'var(--body-muted)' %}
-    <div style="display:flex; align-items:center; gap:10px; padding:8px 12px;
-         background: var(--paper-soft); border:1px solid var(--line);
-         border-radius:2px; font-size:13px; flex-wrap:wrap;">
-      <span style="color: var(--body-muted); min-width:60px;">{{ dec.slug }}</span>
-      <span style="color: var(--ink); flex:1;">{{ dec.gate_id }}</span>
-      <span style="color: {{ action_color }}; font-weight:600; min-width:60px;">{{ dec.action }}</span>
-      {% if dec.decided_at %}
-      <span class="muted-italic" style="font-size:12px; color: var(--body-muted);">{{ dec.decided_at[:16] | replace('T', ' ') }}</span>
-      {% endif %}
-      {# Undo control — only for unprocessed decisions (still in inbox/decisions/, not .processed/) #}
-      {% if not dec.processed %}
-      <form hx-post="/gate/{{ dec.slug }}/{{ dec.gate_id }}/undo"
-            hx-target="#undo-result-{{ loop.index }}"
-            hx-swap="outerHTML"
-            style="margin:0;">
-        <button type="submit"
-                style="font-size:12px; color: var(--body-muted); background:none;
-                       border:1px solid var(--line); border-radius:2px;
-                       padding:2px 8px; cursor:pointer;">
-          Annuler
-        </button>
-      </form>
-      {% endif %}
-    </div>
-    <div id="undo-result-{{ loop.index }}"></div>
-  {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-{# ─── Section 2 — L'équipe ────────────────────────────────────── #}
-<section class="cabinet-section" aria-labelledby="equipe-heading">
-  <h2 id="equipe-heading" class="section-heading">
-    <span class="section-heading-number">2.</span>
-    L'équipe
-  </h2>
 
   {% if not columns %}
-    {% with title="L'équipe n'a pas encore de membres.",
+    {% with title="Personne ne te demande rien.",
             body="Commence par accueillir ton premier collègue.",
             cta_href="/agents/new",
             cta_label="Accueillir ton premier collègue" %}
       {% include "components/empty-state.html" %}
     {% endwith %}
   {% else %}
-    <div class="equipe-list">
+    {% set board_by_owner = {} %}
+    {% for grp in (decision_groups or []) %}
+      {% set _ = board_by_owner.update({grp.owner: grp}) %}
+    {% endfor %}
+    {% set seen_owners = namespace(list=[]) %}
+
+    <div class="dept-decisions-stack">
+    {# 1 — one widget per dept: status tiles + its decision rows together. #}
     {% for col in columns %}
       {% set d = col.dept %}
+      {% set bgrp = board_by_owner.get(d.slug) %}
+      {% set gate_n = col.gate_count %}
+      {% set board_n = (bgrp.cards|length) if bgrp else 0 %}
+      {% set decision_n = gate_n + board_n %}
+      {% set _ = seen_owners.list.append(d.slug) %}
       {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
-      {% if d.is_live %}
-        {% set href = "/dept/" ~ d.slug %}
-        {% set role = "Collègue en poste — gère ses missions au quotidien." %}
-        {% set state_html %}
-          <span class="en-poste-dot" aria-hidden="true"></span>
-          <span class="en-poste-label">En poste</span>
-          {% if col.gate_count > 0 %}
-            · attend {{ col.gate_count }} décision{{ '' if col.gate_count == 1 else 's' }} de toi
-          {% else %}
-            · tout est calme de son côté
+      <section class="dept-decisions-widget{% if not d.is_live %} dept-decisions-widget--eclosion{% endif %}"
+               aria-label="{{ d.display_name }} — statut &amp; décisions">
+        {# ─ status head: avatar + name + role + stat-tiles ─ #}
+        {% if d.is_live %}
+        <a class="ddw-status" href="/dept/{{ d.slug }}">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
+            </div>
+          </div>
+          <div class="stat-strip">
+            <div class="stat-tile{% if gate_n == 0 %} mint{% endif %}">
+              <span class="stat-num">{{ gate_n }}</span>
+              <span class="stat-lbl">décision{{ '' if gate_n == 1 else 's' }} en attente</span>
+            </div>
+            <div class="stat-tile mint">
+              <span class="stat-num">{{ col.gate_groups|length }}</span>
+              <span class="stat-lbl">sujet{{ '' if col.gate_groups|length == 1 else 's' }} ouvert{{ '' if col.gate_groups|length == 1 else 's' }}</span>
+            </div>
+          </div>
+        </a>
+        {% else %}
+        <a class="ddw-status ddw-status--eclosion" href="/agents/{{ d.slug }}/onboarding">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en éclosion — apprend son métier</div>
+            </div>
+          </div>
+          <div class="stat-strip">
+            <div class="stat-tile">
+              <span class="stat-num">{{ d.percent_complete }}%</span>
+              <span class="stat-lbl">éclosion
+                {%- if d.status == 'Idea' %} · à peine annoncée
+                {%- elif d.status == 'Configuring' %} · prend ses marques
+                {%- elif d.status == 'Drafting' %} · apprend à se présenter
+                {%- elif d.status == 'Needs validation' %} · attend ton avis
+                {%- elif d.status == 'Dry run' %} · répétition à blanc
+                {%- elif d.status == 'Ready to activate' %} · prête à rejoindre
+                {%- else %} · en cours{% endif -%}
+              </span>
+            </div>
+          </div>
+        </a>
+        {% endif %}
+
+        {# ─ its pending decisions, right below the status ─ #}
+        {% if decision_n > 0 %}
+        <div class="ddw-rows">
+          {% for grp in col.gate_groups %}
+            {% if grp.count == 1 %}
+              {% set g = grp.gates[0] %}
+              {% include "partials/kanban_card.html" %}
+            {% else %}
+              {% include "partials/decision_group_card.html" %}
+            {% endif %}
+          {% endfor %}
+          {% if bgrp %}
+            {% for c in bgrp.cards %}
+              {% include "partials/home_board_decision_row.html" %}
+            {% endfor %}
           {% endif %}
-        {% endset %}
-        {% with variant='live', name=d.display_name, initial=initial,
-                href=href, role=role, state_html=state_html, cta="Voir →" %}
-          {% include "components/collegue-card.html" %}
-        {% endwith %}
-      {% else %}
-        {% set href = "/agents/" ~ d.slug ~ "/onboarding" %}
-        {% set role = "Collègue en éclosion — apprend son métier." %}
-        {% set state_html %}
-          {% if d.status == 'Idea' %}À peine annoncée
-          {% elif d.status == 'Configuring' %}Prend ses marques
-          {% elif d.status == 'Drafting' %}Apprend à se présenter
-          {% elif d.status == 'Needs validation' %}Attend ton avis sur ce qu'elle a écrit
-          {% elif d.status == 'Dry run' %}En répétition à blanc
-          {% elif d.status == 'Ready to activate' %}Prête à rejoindre l'équipe
-          {% else %}En cours d'éclosion{% endif %}
-        {% endset %}
-        {% with variant='eclosion', name=d.display_name, initial=initial,
-                href=href, role=role, state_html=state_html,
-                percent=d.percent_complete, cta="Continuer son éclosion →" %}
-          {% include "components/collegue-card.html" %}
-        {% endwith %}
+        </div>
+        {% else %}
+        <p class="ddw-nothing">rien à décider</p>
+        {% endif %}
+      </section>
+    {% endfor %}
+
+    {# 2 — board-only depts (no gate column) + the no-dept bucket, in the
+       route's rnd-first / alpha / no-dept-last order. These carry decisions
+       but no colleague card of their own — surfaced as decision-only widgets. #}
+    {% for grp in (decision_groups or []) %}
+      {% if grp.owner not in seen_owners.list %}
+        <section class="dept-decisions-widget" aria-label="{% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% elif grp.owner %}Décisions — {{ grp.label }}{% else %}Décisions sans département{% endif %}">
+          <header class="ddw-head">
+            <span class="ddw-avatar" aria-hidden="true">{% if grp.owner %}{{ grp.owner[0]|upper }}{% else %}·{% endif %}</span>
+            <span class="ddw-name">{% if grp.owner == 'rnd' %}R&amp;D / build{% elif grp.owner %}{{ grp.owner }}{% else %}sans département{% endif %}</span>
+            <span class="ddw-count">{{ grp.cards|length }}</span>
+          </header>
+          <div class="ddw-rows">
+            {% for c in grp.cards %}
+              {% include "partials/home_board_decision_row.html" %}
+            {% endfor %}
+          </div>
+        </section>
       {% endif %}
     {% endfor %}
     </div>
   {% endif %}
 
-  {# ─── Concierges (Morty, Claudette) — reactive assistants, not
-       loop-depts. Own sub-section with a link to their live page. #}
+  {# ─── Concierges (Morty, Claudette) — reactive assistants. #}
   {% if concierges %}
-    <h3 class="section-subheading" style="margin-top:22px;">Les concierges</h3>
-    <p class="muted-italic" style="font-size:13px; margin:0 0 10px;">
-      Assistants réactifs — pas de boucle de département. Clique pour voir
-      leur état et leur session en direct.
-    </p>
-    <div class="equipe-list">
+    <h3 class="section-subheading m4-subheading" style="margin-top:22px;">Les concierges</h3>
+    <div class="team-grid">
     {% for c in concierges %}
       {% set status = c.metadata.get('service_status', 'unknown') %}
       {% set initial = c.name[0]|upper %}
-      {% set state_html %}
-        <span class="en-poste-dot" aria-hidden="true"
-              style="background: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};"></span>
-        <span class="en-poste-label">{{ 'En service' if status == 'active' else status }}</span>
-        {% if c.last_activity_iso %} · actif {{ c.last_activity_iso }}{% endif %}
-      {% endset %}
-      {% with variant='live', name=c.name|capitalize, initial=initial,
-              href="/concierge/" ~ c.name,
-              role="Concierge — assistant réactif.",
-              state_html=state_html, cta="Voir la session →" %}
-        {% include "components/collegue-card.html" %}
-      {% endwith %}
+      <a class="card dept-card" href="/concierge/{{ c.name }}">
+        <div class="dept-card-top">
+          <span class="avatar" aria-hidden="true">{{ initial }}</span>
+          <div>
+            <div class="dept-name-lg">{{ c.name|capitalize }}</div>
+            <div class="dept-role">concierge — assistant réactif
+              <span class="live-dot" aria-hidden="true"
+                    style="background: {{ '#a7e8d7' if status == 'active' else '#c0392b' }};"></span>
+              {{ 'en service' if status == 'active' else status }}
+            </div>
+          </div>
+        </div>
+      </a>
     {% endfor %}
     </div>
   {% endif %}
 </section>
 
-{# ─── Section 3 — Cette semaine en bref ───────────────────────── #}
-<section class="cabinet-section" aria-labelledby="semaine-heading">
-  <h2 id="semaine-heading" class="section-heading">
-    <span class="section-heading-number">3.</span>
-    Cette semaine en bref
-  </h2>
-  <div class="kpi-grid" id="dept-kpi-grid">
-    {% with value=total_gates,
-            label="Décisions en attente",
-            note="Ce que l'équipe te demande en ce moment." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=live_count,
-            label="Collègues en poste",
-            note="Membres actifs de l'équipe." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=eclore_count,
-            label="Arrivées en préparation",
-            note="Collègues qui terminent leur éclosion." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
+{# ─── 02a — Prêt à merger (board #469) ────────────────────────────
+   PRs Rick's independent-reviewer has approved, waiting only for Joris to
+   merge on GitHub. Read-only surface. Hidden when nothing is waiting. #}
+{% if merge_ready %}
+<section class="cabinet-section m4-section" aria-labelledby="merge-ready-heading">
+  <div class="section-head">
+    <span class="section-num">02a</span>
+    <h2 id="merge-ready-heading" class="section-title">🟢 Prêt à merger</h2>
+  </div>
+  <div class="grid decisions-grid">
+    {% for pr in merge_ready %}
+    <div class="card decision-card">
+      <div class="card-kicker">{{ pr.repo }}·#{{ pr.number }}{% if pr.age %} · {{ pr.age }}{% endif %}</div>
+      <div class="card-title">{{ pr.explanation or pr.title }}</div>
+      {% if pr.chips %}
+      <div class="card-body" style="display:flex; flex-wrap:wrap; gap:6px;">
+        {% for chip in pr.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <a href="{{ pr.html_url }}" target="_blank" rel="noopener" class="card-cta">Ouvrir sur GitHub →</a>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ─── 02b — Décidé récemment (collapsed by default, #524c) ────────
+   Compact: a one-line summary that expands to the rows on click, so it
+   takes near-zero vertical space when collapsed. Reuses the chevron
+   <details> idiom from dept_detail.html's decision-timeline. #}
+{% if recent_decisions %}
+<section class="cabinet-section m4-section" aria-labelledby="recentes-heading">
+  <details class="recent-decisions-details">
+    <summary class="recent-decisions-summary">
+      <span class="section-num">02b</span>
+      <span id="recentes-heading" class="recent-decisions-title">Décidé récemment ({{ recent_decisions|length }})</span>
+      <span class="recent-decisions-sub">déplier l'historique</span>
+    </summary>
+    <div class="recent-decisions-list">
+  {% for dec in recent_decisions %}
+    {% set action_color =
+      'var(--sage)' if dec.action == 'approve'
+      else 'var(--danger, #c0392b)' if dec.action == 'reject'
+      else 'var(--ochre)' if dec.action == 'modify'
+      else 'var(--body-muted)' %}
+    <div class="recent-decision-row">
+      <span style="color: var(--body-muted); min-width:60px;">{{ dec.slug }}</span>
+      <span style="color: var(--ink); flex:1;">{{ dec.gate_id }}</span>
+      <span style="color: {{ action_color }}; font-weight:600; min-width:60px;">{{ dec.action }}</span>
+      {% if dec.decided_at %}
+      <span class="muted-italic" style="font-size:12px; color: var(--body-muted);">{{ dec.decided_at[:16] | replace('T', ' ') }}</span>
+      {% endif %}
+      {% if not dec.processed %}
+      <form hx-post="/gate/{{ dec.slug }}/{{ dec.gate_id }}/undo"
+            hx-target="#undo-result-{{ loop.index }}" hx-swap="outerHTML" style="margin:0;">
+        <button type="submit" class="btn">Annuler</button>
+      </form>
+      {% endif %}
+    </div>
+    <div id="undo-result-{{ loop.index }}"></div>
+  {% endfor %}
+    </div>
+  </details>
+</section>
+{% endif %}
+
+{# ═══ 04 — COÛTS — budget par dept (#524d) ═══════════════════════
+   Budget hebdomadaire par collègue + ce qu'il a dépensé jusqu'ici cette
+   semaine. Le budget est un cadrage READ-ONLY posé par l'opérateur dans
+   chaque dept.yaml (recurring_missions[].budget_usd) ; la dépense vient du
+   vrai relevé de coûts (cost_tracker, coût réel-équivalent API). Barre
+   verte <80%, ambre 80–100%, rouge >100%. Tant qu'aucun budget n'est posé,
+   la ligne affiche "budget non défini" (dégradation gracieuse). #}
+<section class="cabinet-section m4-section" aria-labelledby="costs-heading">
+  <div class="section-head">
+    <span class="section-num">04</span>
+    <h2 id="costs-heading" class="section-title">Coûts — budget par collègue</h2>
+    <span class="section-sub"><a href="/costs" class="discreet-link">voir le détail par agent →</a></span>
+  </div>
+  {% if not dept_budgets %}
+    <p class="ddw-nothing">Relevé de coûts indisponible pour le moment.</p>
+  {% else %}
+  <div class="budget-list">
+    {% for b in dept_budgets %}
+    <div class="budget-row budget-row--{{ b.level }}">
+      <div class="budget-row-head">
+        <span class="budget-dept">{{ b.display_name }}</span>
+        {% if b.defined %}
+        <span class="budget-figure">
+          dépensé <b class="ochre-num">${{ '%.2f'|format(b.spent) }}</b>
+          sur ${{ '%.2f'|format(b.budget) }} cette semaine
+          <span class="budget-pct budget-pct--{{ b.level }}">{{ '%.0f'|format(b.pct) }}%</span>
+        </span>
+        {% else %}
+        <span class="budget-figure budget-figure--undef">
+          dépensé <b class="ochre-num">${{ '%.2f'|format(b.spent) }}</b> ·
+          <span class="budget-undef">budget non défini</span>
+        </span>
+        {% endif %}
+      </div>
+      {% if b.defined %}
+      <div class="budget-bar" role="progressbar"
+           aria-valuenow="{{ '%.0f'|format(b.pct) }}" aria-valuemin="0" aria-valuemax="100"
+           aria-label="{{ b.display_name }} — {{ '%.0f'|format(b.pct) }}% du budget">
+        <span class="budget-bar-fill budget-bar-fill--{{ b.level }}"
+              style="width: {{ [b.pct, 100]|min }}%;"></span>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{# ═══ 05 — LE TABLEAU (kanban snapshot columns) ══════════════════
+   #524d de-dup: the three count-tiles that used to head this section
+   (Décisions en attente / Collègues en poste / Arrivées en préparation)
+   were REMOVED — they merely repeated the hero counter + the per-dept
+   stat-tiles in section 02. What remains is the ONE non-duplicate figure
+   on home: the board's à-traiter/en-cours/en-attente/terminé queue split. #}
+<section class="cabinet-section m4-section" aria-labelledby="semaine-heading">
+  <div class="section-head">
+    <span class="section-num">05</span>
+    <h2 id="semaine-heading" class="section-title">Le tableau — cette semaine</h2>
+    <span class="section-sub"><a href="/kanban" class="discreet-link">voir le tableau →</a></span>
+  </div>
+
+  {# Task-queue snapshot as mockup-4 columns — real kanban_counts. #}
+  <div class="kanban">
+    <div class="kcol">
+      <div class="kcol-head"><span class="kcol-title">À traiter</span><span class="kcol-count">{{ kanban_counts.needs_attention }}</span></div>
+    </div>
+    <div class="kcol">
+      <div class="kcol-head"><span class="kcol-title">En cours</span><span class="kcol-count">{{ kanban_counts.investigating }}</span></div>
+    </div>
+    <div class="kcol">
+      <div class="kcol-head"><span class="kcol-title">En attente / Bloqué</span><span class="kcol-count">{{ kanban_counts.waiting }}</span></div>
+    </div>
+    <div class="kcol">
+      <div class="kcol-head"><span class="kcol-title">Terminé</span><span class="kcol-count">{{ kanban_counts.done }}</span></div>
+    </div>
   </div>
 </section>
 
-{# ─── Section 4 — File des tâches (profondeur de file à la volée) ──── #}
-<section class="cabinet-section" aria-labelledby="file-taches-heading">
-  <h2 id="file-taches-heading" class="section-heading">
-    <span class="section-heading-number">4.</span>
-    File des tâches — <a href="/kanban" class="discreet-link">voir le tableau →</a>
-  </h2>
-  <div class="kpi-grid">
-    {% with value=kanban_counts.total_open,
-            label="Total ouvert",
-            note="Tickets actifs sur le board (hors Terminé)." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=kanban_counts.needs_attention,
-            label="À traiter",
-            note="En attente de triage ou d'action." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=kanban_counts.investigating,
-            label="En cours",
-            note="Travail en cours par un agent." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=kanban_counts.waiting,
-            label="En attente / Bloqué",
-            note="Bloqués ou en attente de dépendance." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
-    {% with value=kanban_counts.done,
-            label="Terminé",
-            note="Clos depuis le dernier rafraîchissement du cache." %}
-      {% include "components/kpi-summary.html" %}
-    {% endwith %}
+{# ═══ 06 — CARTES RICHES (chart + gate-lifecycle flowchart) ══════
+   The chart is an illustrative rebased-performance SVG (mockup-4). The
+   flowchart is the real gate lifecycle every dept decision follows. The
+   CTA links to the FIRST dept that actually has a pending gate (compact,
+   click-through to its real decisions), so the section is anchored to
+   live data; otherwise it degrades to the kanban board link. #}
+<section class="cabinet-section m4-section" aria-labelledby="riches-heading">
+  <div class="section-head">
+    <span class="section-num">06</span>
+    <h2 id="riches-heading" class="section-title">Cartes riches — ce qui compte vraiment</h2>
+    <span class="section-sub">graphiques &amp; flux</span>
+  </div>
+
+  {# Resolve the first dept that actually has a pending gate, for the CTA.
+     Link to the dept page (not the raw gate id) so the section stays
+     anchored to a real, live destination without leaking gate ids into
+     the page prose (#524 gate-grouping prose contract). #}
+  {% set first_gate = namespace(slug=None) %}
+  {% for col in columns %}
+    {% if first_gate.slug is none and col.gates %}
+      {% set first_gate.slug = col.dept.slug %}
+    {% endif %}
+  {% endfor %}
+
+  <div class="rich-grid">
+    {# CHART CARD — illustrative rebased performance (INDA/EEM/SPY). #}
+    <div class="card rich decision-card">
+      <div class="rich-head">
+        <div class="card-kicker">exemple · proposition de trade · illustratif</div>
+        <div class="card-title">Basculer EEM → INDA (Inde vs. émergents larges)</div>
+      </div>
+      <div class="rich-body-pad">
+        <div class="card-body" style="margin:0 0 4px;">Rebasé à 100 sur 6 mois. Illustration du type de carte riche qu'une proposition de gate porte. Taille proposée 2.5% NAV.</div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-swatch" style="background:#667eea;"></span>INDA</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#a7e8d7;"></span>EEM</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#c9bfae;"></span>SPY</span>
+        </div>
+        <svg class="chart-svg" viewBox="0 0 520 160" preserveAspectRatio="none" aria-label="Performance rebasée INDA EEM SPY">
+          <defs>
+            <linearGradient id="indaFill2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#667eea" stop-opacity=".18"/>
+              <stop offset="100%" stop-color="#667eea" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <line x1="40" y1="16" x2="40" y2="134" stroke="rgba(0,0,0,.06)"/>
+          <line x1="40" y1="134" x2="510" y2="134" stroke="rgba(0,0,0,.06)"/>
+          <line x1="40" y1="75" x2="510" y2="75" stroke="rgba(0,0,0,.03)"/>
+          <line x1="40" y1="46" x2="510" y2="46" stroke="rgba(0,0,0,.03)"/>
+          <line x1="40" y1="105" x2="510" y2="105" stroke="rgba(0,0,0,.03)"/>
+          <text class="chart-axis" x="14" y="20">120</text>
+          <text class="chart-axis" x="14" y="79">100</text>
+          <text class="chart-axis" x="20" y="137">85</text>
+          <text class="chart-axis" x="40" y="150">janv.</text>
+          <text class="chart-axis" x="250" y="150">avr.</text>
+          <text class="chart-axis" x="470" y="150">juin</text>
+          <path fill="url(#indaFill2)" d="M40,75 118,68 196,58 274,55 352,43 430,36 510,27 510,134 40,134 Z"/>
+          <polyline fill="none" stroke="#c9bfae" stroke-width="1.8" points="40,75 118,72 196,73 274,66 352,65 430,60 510,58"/>
+          <polyline fill="none" stroke="#a7e8d7" stroke-width="2.4" points="40,75 118,80 196,77 274,82 352,87 430,83 510,90"/>
+          <polyline fill="none" stroke="#667eea" stroke-width="2.8" points="40,75 118,68 196,58 274,55 352,43 430,36 510,27"/>
+          <circle cx="510" cy="27" r="3.5" fill="#667eea"/>
+        </svg>
+        <div class="chart-note">INDA +17.8% · EEM +3.1% · SPY +8.2% — un écart de 14,7 pts</div>
+      </div>
+      <div class="trade-actions">
+        {% if first_gate.slug %}
+        <a class="btn primary" href="/dept/{{ first_gate.slug }}">Voir les décisions →</a>
+        {% else %}
+        <a class="btn primary" href="/kanban">Voir le tableau →</a>
+        {% endif %}
+      </div>
+    </div>
+
+    {# FLOWCHART CARD — the real gate lifecycle. #}
+    <div class="card rich">
+      <div class="rich-head">
+        <div class="card-kicker">workflow · cycle d'un gate</div>
+        <div class="card-title">Cycle d'un gate — de la proposition à l'exécution</div>
+      </div>
+      <div class="rich-body-pad">
+        <div class="card-body" style="margin:0 0 4px;">Comment une décision remonte jusqu'à toi, et ce qui se passe selon ton choix.</div>
+      </div>
+      <div class="flow-wrap">
+        <pre class="mermaid">
+flowchart TD
+    A([Un collègue propose]) --> B{Policy check}
+    B -- passe --> C[Gate ouvert au cockpit]
+    B -- échoue --> X[Rejet auto + log]
+    C --> D{Décision de {{OPERATOR}}}
+    D -- Approuver --> E([Exécution live])
+    D -- Reporter --> F[Re-file demain]
+    D -- Rejeter --> X
+    E --> G([Carnet de bord])
+        </pre>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -314,4 +443,20 @@
   <a href="/health" class="discreet-link">Voir le carnet de bord détaillé →</a>
 </p>
 
+{% endblock %}
+
+{% block head_extra %}
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad:true, theme:'base',
+    fontFamily:'"IBM Plex Sans", sans-serif',
+    themeVariables:{
+      primaryColor:'#ffffff', primaryBorderColor:'#667eea',
+      primaryTextColor:'#1a2440', lineColor:'#8b7ff0',
+      secondaryColor:'#d4f4e8', tertiaryColor:'#fff7e8',
+      fontSize:'11px', edgeLabelBackground:'#fff7e8'
+    }
+  });
+</script>
 {% endblock %}

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from console.services import (
     backup_history,
     concierge_reader,
+    cost_tracker,
     dept_registry,
     github_reader,
     merge_ready_reader,
@@ -114,6 +115,51 @@ def _group_decision_cards_by_dept(cards: list) -> list:
     return groups
 
 
+def _dept_budgets(columns: list) -> list:
+    """Per-LIVE-dept budget-vs-spend rows for the home 'Coûts' section (#524d).
+
+    For each live dept: budget = Σ budget_usd across its recurring_missions[]
+    (read-only, operator-set, via cost_tracker.mission_budget_total on its
+    dept.yaml); spent = its real-$ week spend rolled up from the cost report.
+    Returns [{slug, display_name, spent, budget, pct, level, defined}], sorted
+    over-budget first then by spend desc so the tightest budgets surface on top.
+
+    Fully guarded: a cost-scan error, a missing dept.yaml, or an unset budget
+    never raises — the whole thing degrades to [] (on report failure) or to
+    individual "budget non défini" rows.
+    """
+    try:
+        report = cost_tracker.build_report(refresh=False)
+        spent_map = cost_tracker.spent_by_dept(report, span="week")
+    except Exception:  # noqa: BLE001 — cost scan must never 500 the home page
+        return []
+
+    rows = []
+    for col in columns:
+        d = col["dept"]
+        if not d.is_live:
+            continue
+        try:
+            dept_yaml = github_reader.load_dept_yaml(d.slug)
+            budget = cost_tracker.mission_budget_total(dept_yaml)
+        except Exception:  # noqa: BLE001 — a bad yaml on one dept must not sink the row
+            budget = None
+        spent = spent_map.get(d.slug, 0.0)
+        status = cost_tracker.budget_status(spent, budget)
+        rows.append({
+            "slug": d.slug,
+            "display_name": d.display_name,
+            **status,
+        })
+
+    # over-budget first, then by spend desc (defined budgets before undefined
+    # within equal spend so the meaningful bars lead).
+    def _key(r):
+        over = 0 if r["level"] == "over" else 1
+        return (over, -r["spent"], 0 if r["defined"] else 1)
+    return sorted(rows, key=_key)
+
+
 @router.get("/", response_class=HTMLResponse)
 def home(request: Request):
     # Exclude anciens (Retired/Cancelled) — they have their own section on
@@ -161,6 +207,13 @@ def home(request: Request):
     # Recent decisions tray — last ~10 decisions across all live depts, newest first.
     all_slugs = [col["dept"].slug for col in columns]
     recent_decisions = github_reader.list_recent_decisions(all_slugs, limit=10)
+    # Per-dept BUDGET vs SPEND this week (board #524d). One row per LIVE dept:
+    # budget = Σ budget_usd across its recurring_missions[] (operator-set, read-
+    # only); spent = its real-$ week cost from cost_tracker. Fully guarded — a
+    # cost-scan or missing-budget hiccup degrades to [] / "budget non défini",
+    # never a 500. Budgets are unset in most dept.yaml today → the bars render
+    # "budget non défini" until Joris sets them (graceful degradation).
+    dept_budgets = _dept_budgets(columns)
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -177,5 +230,6 @@ def home(request: Request):
             "concierges": concierges,
             "kanban_counts": kanban_counts,
             "recent_decisions": recent_decisions,
+            "dept_budgets": dept_budgets,
         },
     )

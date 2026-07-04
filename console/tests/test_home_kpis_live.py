@@ -1,13 +1,15 @@
 """
-test_home_kpis_live.py — Item E3 polish.
+test_home_kpis_live.py — home de-dup (#524d) + live-data counts.
 
-The "Cette semaine en bref" KPI tiles must reflect live data:
-  - Décisions en attente = sum of pending gates across all depts
-  - Collègues en poste   = count of live departments
-  - Arrivées en préparation = count of a-éclore departments
+BEFORE #524d, "Cette semaine en bref" carried a three-tile kpi-grid
+(id="dept-kpi-grid") repeating Décisions en attente / Collègues en poste /
+Arrivées en préparation — the SAME numbers already shown in the hero counter
+and the per-dept stat-tiles in section 02. #524d removed that duplicate grid.
 
-These must NOT be hardcoded literals (smoke saw 2·1·2 baseline, but the
-values must move when the fixture changes).
+This test now guards the de-dup + that the surviving figures are LIVE:
+  · the redundant id="dept-kpi-grid" is GONE from home;
+  · the pending-decisions count still reflects real gate totals (hero counter);
+  · the count moves when the fixture changes (not a hardcoded literal).
 """
 from __future__ import annotations
 
@@ -73,55 +75,48 @@ def _build_client(monkeypatch, root: Path):
     return c
 
 
-def _extract_kpi_values(body: str) -> list[str]:
-    """Extract <div class="kpi-value">N</div> integers from the dept-KPI section
-    only (id="dept-kpi-grid").  The page has a second kpi-grid for the task
-    queue (Section 4 — File des tâches) which must NOT be counted here."""
-    import re
-    # Isolate the dept-KPI section by slicing from its id to the next </section>.
-    m = re.search(r'id="dept-kpi-grid"', body)
-    if not m:
-        # Fallback: return all values so the assertion message is visible.
-        return re.findall(r'<div class="kpi-value">\s*(\d+)\s*</div>', body)
-    # Find the closing </section> tag after the dept-kpi-grid marker.
-    section_end = body.find("</section>", m.start())
-    scoped = body[m.start(): section_end] if section_end != -1 else body[m.start():]
-    return re.findall(r'<div class="kpi-value">\s*(\d+)\s*</div>', scoped)
-
-
-def test_kpis_reflect_live_fixture_3_depts_0_eclore_7_gates(monkeypatch, tmp_path):
-    """3 live depts, 0 in éclosion, gates total = 2+3+2 = 7 → KPI tiles
-    show 7 (décisions en attente), 3 (collègues en poste), 0 (arrivées)."""
+def test_home_dropped_duplicate_kpi_grid(monkeypatch, tmp_path):
+    """#524d: the redundant id="dept-kpi-grid" tiles were removed from home
+    (they repeated the hero counter + the per-dept stat-tiles)."""
     root = _make_root(tmp_path)
     _make_live_dept(root, "alpha", "Alpha", gates=2)
     _make_live_dept(root, "beta",  "Beta",  gates=3)
-    _make_live_dept(root, "gamma", "Gamma", gates=2)
-
-    c = _build_client(monkeypatch, root)
-    r = c.get("/")
-    assert r.status_code == 200
-    body = r.text
-
-    values = _extract_kpi_values(body)
-    # Order on the page: Décisions en attente, Collègues en poste, Arrivées
-    assert values == ["7", "3", "0"], (
-        f"expected KPI tiles to read 7·3·0, got {values}"
-    )
-
-
-def test_kpis_count_changes_when_fixture_changes(monkeypatch, tmp_path):
-    """If we add a 4th live dept with no gates, decisions stays the same,
-    collègues bumps to 4, arrivées stays 0 — proves the values are NOT
-    hardcoded literals."""
-    root = _make_root(tmp_path)
-    _make_live_dept(root, "alpha", "Alpha", gates=1)
-    _make_live_dept(root, "beta",  "Beta",  gates=1)
-    _make_live_dept(root, "gamma", "Gamma", gates=0)
-    _make_live_dept(root, "delta", "Delta", gates=0)
 
     c = _build_client(monkeypatch, root)
     body = c.get("/").text
-    values = _extract_kpi_values(body)
-    assert values == ["2", "4", "0"], (
-        f"expected KPI tiles to read 2·4·0, got {values}"
+    assert 'id="dept-kpi-grid"' not in body, (
+        "the duplicate 'Cette semaine en bref' kpi-grid must be gone (#524d de-dup)"
+    )
+    # The removed tile labels must not reappear as their own count-tiles.
+    assert "Arrivées en préparation" not in body
+
+
+def test_home_pending_count_reflects_live_gates(monkeypatch, tmp_path):
+    """The pending-decisions figure in the hero counter reflects the real gate
+    total (2 + 3 = 5 gates, 0 board cards in this fixture)."""
+    root = _make_root(tmp_path)
+    _make_live_dept(root, "alpha", "Alpha", gates=2)
+    _make_live_dept(root, "beta",  "Beta",  gates=3)
+
+    c = _build_client(monkeypatch, root)
+    body = c.get("/").text
+    # hero counter: "<b class="ochre-num">5</b> décisions qu'on attend"
+    import re
+    m = re.search(r'ochre-num">\s*(\d+)\s*</b>\s*\n?\s*décision', body)
+    assert m, "hero decisions counter not found"
+    assert m.group(1) == "5", f"expected 5 pending decisions, got {m.group(1)}"
+
+
+def test_home_pending_count_moves_with_fixture(monkeypatch, tmp_path):
+    """Proves the hero count is live, not a hardcoded literal: 1+1 gates → 2."""
+    root = _make_root(tmp_path)
+    _make_live_dept(root, "alpha", "Alpha", gates=1)
+    _make_live_dept(root, "beta",  "Beta",  gates=1)
+
+    c = _build_client(monkeypatch, root)
+    body = c.get("/").text
+    import re
+    m = re.search(r'ochre-num">\s*(\d+)\s*</b>\s*\n?\s*décision', body)
+    assert m and m.group(1) == "2", (
+        f"expected 2 pending decisions, got {m.group(1) if m else None}"
     )

@@ -1,0 +1,11 @@
+{# One board needs:human decision, rendered as a MINIMAL ROW inside a dept
+   widget on the home page (#524b). Context: `c` is a board card dict
+   (id/title/summary/owner/due). Click-through to the detail page where the
+   decide form lives — the row itself is 1–2 lines, never a big card.
+   Route preserved: /kanban/card/<id> (test_home_decisions_all_depts). #}
+<a id="rnd-card-{{ c.id }}" class="ddw-row" href="/kanban/card/{{ c.id }}">
+  <span class="ddw-row-id">#{{ c.id }}</span>
+  <span class="ddw-row-title">{{ c.title or c.summary or 'Décision' }}</span>
+  {% if c.due %}<span class="ddw-row-due{% if c.overdue %} ddw-row-due--over{% endif %}">⏱ {{ c.due }}</span>{% endif %}
+  <span class="ddw-row-cta">Décider →</span>
+</a>
