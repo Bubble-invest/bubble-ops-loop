@@ -3345,3 +3345,154 @@ body.m4 .mermaid { font-family: var(--font-display) !important; font-size: 11px;
   body.m4 .kanban { grid-template-columns: 1fr; }
   body.m4 .content { padding: 44px 16px 60px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   DEPT DETAIL PAGE — m4 épuré skin (#534)
+   The /dept/<slug> page adopts the same warm-glass mockup-4 look as home.
+   These rules are body.m4-scoped so the shared components (.decision-card,
+   .backup-net, .moment, …) get the glass treatment ONLY on the m4 pages;
+   the base (unscoped) rules elsewhere are untouched.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Hero: name + status + deployment pills ──────────────────────────── */
+body.m4 .dept-hero { max-width: 760px; margin-bottom: 44px; }
+body.m4 .dept-hero .page-hero-title { margin-bottom: 6px; }
+body.m4 .dept-agent-meta {
+  display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px;
+  border: none; padding: 0; background: none;
+}
+body.m4 .dept-agent-meta .pill {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 500;
+  letter-spacing: .02em; padding: 3px 10px; border-radius: 999px;
+  background: rgba(255,255,255,.6); border: 1px solid rgba(102,126,234,.14);
+  color: var(--body-muted); text-transform: none;
+}
+body.m4 .dept-agent-meta .pill .slug-ref { color: var(--violet); font-weight: 600; }
+body.m4 .dept-agent-meta .pill-stale {
+  background: rgba(217,164,65,.12); border-color: rgba(217,164,65,.3); color: #b07d1f;
+}
+
+/* ── Section subhead links (réglages →, tout voir →) ─────────────────── */
+body.m4 .section-sub .discreet-link { color: #999; text-decoration: none; }
+body.m4 .section-sub .discreet-link:hover { color: var(--violet); }
+
+/* ── Bureau (live desk) — glassify the three piles ───────────────────── */
+body.m4 .bureau { margin-bottom: 64px; }
+body.m4 .desk-pile {
+  background: rgba(255,255,255,.55); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.85); border-radius: 14px;
+  box-shadow: var(--shadow-soft); padding: 14px 16px;
+}
+body.m4 .desk-pile--active {
+  background: rgba(255,255,255,.72); border-color: rgba(255,255,255,.95);
+  box-shadow: var(--shadow-mod);
+}
+body.m4 .desk-pile-head {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--body-muted); font-weight: 600;
+  border-bottom: 1px solid rgba(102,126,234,.10); padding-bottom: 8px;
+}
+body.m4 .desk-emoji { font-size: 13px; }
+body.m4 .desk-done-item { font-size: 12px; }
+body.m4 .desk-empty { font-size: 11.5px; }
+
+/* ── Décisions — reuse the compact m4 card grid (from home) ──────────── */
+/* The .decision-card m4 rules already exist (glass, hover-lift, hidden
+   count). We just want the grid to use the same auto-fit as home's .grid. */
+body.m4 .decisions-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 16px;
+}
+
+/* ── Tableau de bord: whiteboard KPI tiles are glassified via the existing
+   #dept-kpi-grid rule. Graph heading + notes/free-space collapses below. ─ */
+body.m4 .whiteboard-graphs-heading {
+  font-family: var(--font-display); font-weight: 600; font-size: 13px;
+  color: var(--body-muted); margin: 22px 0 12px;
+}
+body.m4 .whiteboard-graphs-empty,
+body.m4 .whiteboard-notes-details,
+body.m4 .whiteboard-free-details { margin-top: 16px; }
+body.m4 .whiteboard-notes-details > summary,
+body.m4 .whiteboard-free-summary {
+  cursor: pointer; list-style: none;
+  font-family: var(--font-display); font-weight: 600; font-size: 13px; color: var(--ink);
+  padding: 9px 13px; border-radius: 11px;
+  background: rgba(255,255,255,.55); border: 1px solid rgba(255,255,255,.85);
+  display: flex; align-items: baseline; gap: 9px;
+}
+body.m4 .whiteboard-notes-details > summary::-webkit-details-marker,
+body.m4 .whiteboard-free-summary::-webkit-details-marker { display: none; }
+body.m4 .whiteboard-free-sub {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--body-muted); margin-left: auto;
+}
+body.m4 .whiteboard-free {
+  margin-top: 12px; padding: 16px 18px; border-radius: 14px;
+  background: rgba(255,255,255,.5); border: 1px solid rgba(255,255,255,.8);
+}
+body.m4 .whiteboard-free-empty-lede { font-size: 13px; color: var(--body-muted); margin: 0 0 8px; }
+body.m4 .whiteboard-free-hint { font-size: 12px; color: var(--body-muted); opacity: .8; margin: 0; }
+
+/* ── Kanban attention rows (management dept) ─────────────────────────── */
+body.m4 .dept-kanban-attention { display: flex; flex-direction: column; gap: 8px; }
+body.m4 .dept-kanban-attn-row {
+  padding: 9px 13px; border-radius: 11px;
+  background: rgba(255,255,255,.6); border: 1px solid rgba(102,126,234,.10);
+}
+body.m4 .dept-kanban-attn-row strong { font-size: 12.5px; color: var(--ink); }
+body.m4 .dept-kanban-attn-meta { font-size: 11px; color: var(--body-muted); }
+
+/* ── Moments — glass tiles ───────────────────────────────────────────── */
+body.m4 .moments-list {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 16px;
+  list-style: none; margin: 0; padding: 0;
+}
+body.m4 .moment {
+  background: rgba(255,255,255,.6); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.9); border-radius: 14px;
+  box-shadow: var(--shadow-soft); padding: 15px 16px 14px; margin: 0;
+}
+body.m4 .moment--active { border-color: rgba(102,126,234,.28); }
+body.m4 .moment-num {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--body-muted);
+}
+body.m4 .moment-nom {
+  font-family: var(--font-display); font-weight: 700; font-size: 14.5px;
+  color: var(--ink); margin: 3px 0 0; letter-spacing: -.01em;
+}
+body.m4 .missions-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+body.m4 .mission-card {
+  background: rgba(255,255,255,.5); border: 1px solid rgba(102,126,234,.10);
+  border-radius: 11px; padding: 10px 12px; margin: 0;
+}
+body.m4 .mission-nom { font-family: var(--font-display); font-weight: 600; font-size: 12.5px; color: var(--ink); margin: 0; }
+body.m4 .mission-cadence { font-family: var(--font-mono); font-size: 10px; color: var(--body-muted); margin: 4px 0 0; }
+body.m4 .mission-desc { font-size: 12px; color: var(--body-muted); line-height: 1.45; margin: 6px 0 0; }
+body.m4 .mission-meta { font-size: 11px; margin: 6px 0 0; }
+body.m4 .mission-meta dt { font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--body-muted); }
+body.m4 .mission-id { font-family: var(--font-mono); font-size: 9px; }
+
+/* ── Backup-net panels (rythme + filet) — glass ──────────────────────── */
+body.m4 .backup-net {
+  background: rgba(255,255,255,.55); border: 1px solid rgba(255,255,255,.85);
+  border-radius: 14px; padding: 13px 15px; box-shadow: var(--shadow-soft);
+}
+body.m4 .backup-net-title { font-family: var(--font-display); font-weight: 700; font-size: 12.5px; color: var(--ink); }
+body.m4 .backup-net-sub { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; color: var(--body-muted); }
+
+/* ── Son mandat & historique — collapsed detail blocks ───────────────── */
+body.m4 .dept-detail-block { margin-bottom: 22px; }
+body.m4 .dept-detail-subhead {
+  font-family: var(--font-display); font-weight: 600; font-size: 13px;
+  color: var(--body-muted); margin: 0 0 12px;
+}
+body.m4 .dept-mandate-brief { font-size: 13.5px; color: var(--ink); line-height: 1.55; margin: 0 0 10px; }
+
+/* ── Danger zone — light warm accent, confirm flow unchanged ─────────── */
+body.m4 .cabinet-section--danger { border-radius: 14px; }
+
+/* ── dept-page mobile: single-column grids on phone ──────────────────── */
+@media (max-width: 480px) {
+  body.m4 .decisions-grid, body.m4 .moments-list { grid-template-columns: 1fr; }
+}
