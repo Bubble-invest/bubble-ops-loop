@@ -16,8 +16,88 @@ from console.services import (
     merge_ready_reader,
 )
 from console.services.gate_grouping import group_gates_by_kind
+from console.services.humanize import humanize_kind, humanize_risk
+from console.services.markdown_render import render_markdown_safe
 
 router = APIRouter()
+
+# Highest → lowest signal ordering for the "Cartes riches" featured section.
+# Higher-risk proposals surface first (they most deserve the operator's eye).
+_RISK_RANK = {"critical": 0, "high": 1, "moderate": 2, "medium": 2, "low": 3}
+
+# Card-sized excerpt: truncate the RAW thesis text (at a word boundary) BEFORE
+# markdown-rendering, so we never cut inside an HTML tag the renderer emits.
+_THESIS_EXCERPT_CHARS = 320
+
+
+def _thesis_excerpt(summary: Any):
+    """Return a card-sized rendered-markdown excerpt of a gate's thesis.
+
+    `summary` is agent-authored (untrusted) — it goes through the same
+    nh3-sanitized markdown pipeline gate.py uses (`_attach_thesis_rendered`).
+    Only plain-string summaries are excerpted+rendered; structured (dict)
+    summaries — a few content-dept kinds — return None so the card falls back
+    to its title only (rendering a dict as markdown makes no sense).
+    """
+    if not isinstance(summary, str):
+        return None
+    text = summary.strip()
+    if len(text) > _THESIS_EXCERPT_CHARS:
+        cut = text[:_THESIS_EXCERPT_CHARS]
+        # back off to the last whitespace so we don't split a word/markdown token
+        sp = cut.rfind(" ")
+        if sp > 0:
+            cut = cut[:sp]
+        text = cut.rstrip() + "…"
+    return render_markdown_safe(text)
+
+
+def _rich_cards(columns: list, limit: int = 3) -> list:
+    """Up to `limit` REAL pending gate-proposals to feature in the home
+    "Cartes riches" section (board #533).
+
+    Reuses the per-dept gates ALREADY fetched into `columns` by the route (no
+    redundant network scan). Across all depts, ranks pending gates by
+    risk_level (higher first) then keeps a small, high-signal set. Malformed
+    placeholder gates are skipped — they surface on the dept page, not here.
+
+    Each card carries: slug, display_name, id, title, kind_label, risk_label,
+    thesis (rendered-markdown excerpt or None), href (/gate/<slug>/<id>).
+    Fully guarded — any per-gate hiccup is skipped, never a 500.
+    """
+    candidates = []
+    for col in columns:
+        dept = col["dept"]
+        for g in col.get("gates", []):
+            if not isinstance(g, dict) or g.get("_malformed"):
+                continue
+            candidates.append((dept, g))
+
+    def _key(item):
+        _dept, g = item
+        risk = str(g.get("risk_level") or "").strip().lower()
+        return _RISK_RANK.get(risk, 2)
+
+    candidates.sort(key=_key)
+
+    cards = []
+    for dept, g in candidates[:limit]:
+        gid = g.get("id")
+        if not gid:
+            continue
+        # Prefer an explicit title; else the humanized kind as a stand-in.
+        title = g.get("title") or humanize_kind(g.get("kind"))
+        cards.append({
+            "slug": dept.slug,
+            "display_name": dept.display_name,
+            "id": gid,
+            "title": title,
+            "kind_label": humanize_kind(g.get("kind")),
+            "risk_label": humanize_risk(g.get("risk_level")),
+            "thesis": _thesis_excerpt(g.get("summary")),
+            "href": f"/gate/{dept.slug}/{gid}",
+        })
+    return cards
 
 
 # Back-compat alias for tests that import the private helper.
@@ -245,6 +325,11 @@ def home(request: Request):
     # never a 500. Budgets are unset in most dept.yaml today → the bars render
     # "budget non défini" until Joris sets them (graceful degradation).
     dept_budgets = _dept_budgets(columns)
+    # Cartes riches (board #533) — REAL pending gate-proposals featured on the
+    # home page, replacing the old hardcoded illustrative INDA/EEM/SPY chart.
+    # Reuses the gates already on `columns` (no extra scan); empty → the
+    # template shows a quiet placeholder, never the fake chart.
+    rich_cards = _rich_cards(columns)
     return request.app.state.templates.TemplateResponse(
         "home.html",
         {
@@ -262,5 +347,6 @@ def home(request: Request):
             "kanban_counts": kanban_counts,
             "recent_decisions": recent_decisions,
             "dept_budgets": dept_budgets,
+            "rich_cards": rich_cards,
         },
     )

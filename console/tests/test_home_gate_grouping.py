@@ -102,9 +102,15 @@ def test_two_gates_same_dept_same_kind_render_as_single_card(monkeypatch, tmp_pa
     assert "2 décisions à prendre" in body, \
         "expected grouped header '2 décisions à prendre' " \
         f"in body, got: {body[:2000]}"
-    # The two gate ids must no longer leak into the home card body
-    assert "gate-notif-test-002" not in body
-    assert "gate-roundtrip-test-001" not in body
+    # The two gate ids must no longer leak into the GROUPED décision-card prose
+    # (the #524 contract). Scope the check to the "L'équipe & décisions"
+    # section — the "Cartes riches" section (#533) is a separate, intentional
+    # surface that DOES deep-link to individual featured proposals via
+    # /gate/<slug>/<id>, so it legitimately carries gate ids in its hrefs.
+    riches_idx = body.find('id="riches-heading"')
+    decisions_body = body[:riches_idx] if riches_idx != -1 else body
+    assert "gate-notif-test-002" not in decisions_body
+    assert "gate-roundtrip-test-001" not in decisions_body
     # The CTA must offer to view all N
     assert "Voir les 2" in body, "expected CTA 'Voir les 2 →'"
     # The CTA must deep-link straight to the batch triage view for this
