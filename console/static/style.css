@@ -60,8 +60,8 @@
 
   /* Geometry — charte radii + shadows */
   --maxw: 100%;  /* full-width with sidebar */
-  --sidebar-w: 200px;
-  --section-gap: 64px;
+  --sidebar-w: 180px;
+  --section-gap: 48px;
   --radius-card: 16px;
   --shadow-soft: 0 4px 6px rgba(0,0,0,0.05);
   --shadow-mod: 0 8px 24px rgba(0,0,0,0.04);
@@ -83,7 +83,7 @@ html, body {
   background-attachment: fixed;
   color: var(--body);
   font-family: var(--font-body);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 400;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -120,14 +120,14 @@ code, .code {
 .content {
   flex: 1;
   min-width: 0;
-  padding: 36px 40px 64px;
+  padding: 24px 32px 48px;
   background: var(--paper);
 }
 
 /* ─── Sidebar ──────────────────────────────────────────────────── */
 .sidebar {
-  width: 260px;
-  min-width: 260px;
+  width: 220px;
+  min-width: 220px;
   background: var(--nuit);   /* charte: bleu nuit Ghibli, JAMAIS noir pur */
   color: #c8d0dc;
   display: flex;
@@ -732,7 +732,7 @@ code, .code {
 }
 .dept-title {
   font-family: var(--font-display);
-  font-size: clamp(28px, 4vw, 36px);
+  font-size: clamp(24px, 3.5vw, 30px);
   font-weight: 600;
   color: var(--ink);
   margin: 0 0 6px;
@@ -741,7 +741,7 @@ code, .code {
 .dept-subtitle {
   font-family: var(--font-display);
   font-style: italic;
-  font-size: 17px;
+  font-size: 15px;
   color: var(--body-muted);
   margin: 0;
 }
