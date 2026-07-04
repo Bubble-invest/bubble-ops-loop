@@ -30,31 +30,35 @@
 </p>
 {% endif %}
 
-{# ═══ 02 — DÉCISIONS QU'ON ATTEND DE TOI ═════════════════════════ #}
-<section class="cabinet-section m4-section" aria-labelledby="decisions-heading">
+{# ═══ 02 — L'ÉQUIPE & DÉCISIONS (merged, #524c) ══════════════════
+   ONE section, ONE widget per département: the colleague's status
+   (en poste / en éclosion + stat-tiles) on top, and — directly below,
+   in the SAME container — the decisions that dept is waiting on you for.
+   Two decision sources are unified under the SAME dept grouping:
+     · gate decisions  → columns[].gate_groups (keyed by col.dept.slug)
+     · board decisions → decision_groups (needs:human cards, keyed by owner)
+   Each decision is a MINIMAL ROW, not a big card. Routes preserved:
+     gate single → /gate/<slug>/<id>   (partials/kanban_card.html)
+     gate group  → /gate/<slug>/kind/<kind> (partials/decision_group_card.html)
+     board card  → /kanban/card/<id>
+     dept page   → /dept/<slug> (live) · /agents/<slug>/onboarding (éclosion)
+   The gate partials are reused verbatim (dept_detail.html shares them);
+   the .ddw-rows wrapper + m4 CSS flatten them into rows. #}
+<section class="cabinet-section m4-section" aria-labelledby="equipe-heading">
   <div class="section-head">
     <span class="section-num">02</span>
-    <h2 id="decisions-heading" class="section-title">Décisions qu'on attend de toi</h2>
-    <span class="section-sub">à ton rythme</span>
+    <h2 id="equipe-heading" class="section-title">L'équipe &amp; décisions</h2>
+    <span class="section-sub">chaque collègue, et ce qu'il attend de toi</span>
   </div>
 
-  {% if total_gates == 0 and (rnd_decision_count or 0) == 0 %}
+  {% if not columns %}
     {% with title="Personne ne te demande rien.",
-            body="L'équipe travaille en silence." %}
+            body="Commence par accueillir ton premier collègue.",
+            cta_href="/agents/new",
+            cta_label="Accueillir ton premier collègue" %}
       {% include "components/empty-state.html" %}
     {% endwith %}
   {% else %}
-    {# ─── DÉCISIONS = WIDGETS GROUPÉS PAR DÉPARTEMENT (#524b) ──────────────
-       One compact bounded widget per dept. Two decision sources are unified
-       under the SAME dept grouping:
-         · gate decisions  → columns[].gate_groups (keyed by col.dept.slug)
-         · board decisions → decision_groups (needs:human cards, keyed by owner)
-       Each decision is a MINIMAL ROW, not a big card. Routes preserved:
-         gate single → /gate/<slug>/<id>   (partials/kanban_card.html)
-         gate group  → /gate/<slug>/kind/<kind> (partials/decision_group_card.html)
-         board card  → /kanban/card/<id>
-       The gate partials are reused verbatim (dept_detail.html shares them);
-       the .dept-decisions-widget wrapper + m4 CSS flatten them into rows. #}
     {% set board_by_owner = {} %}
     {% for grp in (decision_groups or []) %}
       {% set _ = board_by_owner.update({grp.owner: grp}) %}
@@ -62,41 +66,90 @@
     {% set seen_owners = namespace(list=[]) %}
 
     <div class="dept-decisions-stack">
-    {# 1 — one widget per dept that has gates (merges its board cards in). #}
+    {# 1 — one widget per dept: status tiles + its decision rows together. #}
     {% for col in columns %}
-      {% set bgrp = board_by_owner.get(col.dept.slug) %}
+      {% set d = col.dept %}
+      {% set bgrp = board_by_owner.get(d.slug) %}
       {% set gate_n = col.gate_count %}
       {% set board_n = (bgrp.cards|length) if bgrp else 0 %}
-      {% if gate_n > 0 or board_n > 0 %}
-        {% set _ = seen_owners.list.append(col.dept.slug) %}
-        {% set initial = col.dept.display_name[0]|upper if col.dept.display_name else col.dept.slug[0]|upper %}
-        <section class="dept-decisions-widget" aria-label="Décisions — {{ col.dept.display_name }}">
-          <header class="ddw-head">
-            <span class="ddw-avatar" aria-hidden="true">{{ initial }}</span>
-            <span class="ddw-name">{{ col.dept.display_name }}</span>
-            <span class="ddw-count">{{ gate_n + board_n }}</span>
-          </header>
-          <div class="ddw-rows">
-            {% for grp in col.gate_groups %}
-              {% if grp.count == 1 %}
-                {% set g = grp.gates[0] %}
-                {% include "partials/kanban_card.html" %}
-              {% else %}
-                {% include "partials/decision_group_card.html" %}
-              {% endif %}
-            {% endfor %}
-            {% if bgrp %}
-              {% for c in bgrp.cards %}
-                {% include "partials/home_board_decision_row.html" %}
-              {% endfor %}
-            {% endif %}
+      {% set decision_n = gate_n + board_n %}
+      {% set _ = seen_owners.list.append(d.slug) %}
+      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+      <section class="dept-decisions-widget{% if not d.is_live %} dept-decisions-widget--eclosion{% endif %}"
+               aria-label="{{ d.display_name }} — statut &amp; décisions">
+        {# ─ status head: avatar + name + role + stat-tiles ─ #}
+        {% if d.is_live %}
+        <a class="ddw-status" href="/dept/{{ d.slug }}">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
+            </div>
           </div>
-        </section>
-      {% endif %}
+          <div class="stat-strip">
+            <div class="stat-tile{% if gate_n == 0 %} mint{% endif %}">
+              <span class="stat-num">{{ gate_n }}</span>
+              <span class="stat-lbl">décision{{ '' if gate_n == 1 else 's' }} en attente</span>
+            </div>
+            <div class="stat-tile mint">
+              <span class="stat-num">{{ col.gate_groups|length }}</span>
+              <span class="stat-lbl">sujet{{ '' if col.gate_groups|length == 1 else 's' }} ouvert{{ '' if col.gate_groups|length == 1 else 's' }}</span>
+            </div>
+          </div>
+        </a>
+        {% else %}
+        <a class="ddw-status ddw-status--eclosion" href="/agents/{{ d.slug }}/onboarding">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en éclosion — apprend son métier</div>
+            </div>
+          </div>
+          <div class="stat-strip">
+            <div class="stat-tile">
+              <span class="stat-num">{{ d.percent_complete }}%</span>
+              <span class="stat-lbl">éclosion
+                {%- if d.status == 'Idea' %} · à peine annoncée
+                {%- elif d.status == 'Configuring' %} · prend ses marques
+                {%- elif d.status == 'Drafting' %} · apprend à se présenter
+                {%- elif d.status == 'Needs validation' %} · attend ton avis
+                {%- elif d.status == 'Dry run' %} · répétition à blanc
+                {%- elif d.status == 'Ready to activate' %} · prête à rejoindre
+                {%- else %} · en cours{% endif -%}
+              </span>
+            </div>
+          </div>
+        </a>
+        {% endif %}
+
+        {# ─ its pending decisions, right below the status ─ #}
+        {% if decision_n > 0 %}
+        <div class="ddw-rows">
+          {% for grp in col.gate_groups %}
+            {% if grp.count == 1 %}
+              {% set g = grp.gates[0] %}
+              {% include "partials/kanban_card.html" %}
+            {% else %}
+              {% include "partials/decision_group_card.html" %}
+            {% endif %}
+          {% endfor %}
+          {% if bgrp %}
+            {% for c in bgrp.cards %}
+              {% include "partials/home_board_decision_row.html" %}
+            {% endfor %}
+          {% endif %}
+        </div>
+        {% else %}
+        <p class="ddw-nothing">rien à décider</p>
+        {% endif %}
+      </section>
     {% endfor %}
 
     {# 2 — board-only depts (no gate column) + the no-dept bucket, in the
-       route's rnd-first / alpha / no-dept-last order. #}
+       route's rnd-first / alpha / no-dept-last order. These carry decisions
+       but no colleague card of their own — surfaced as decision-only widgets. #}
     {% for grp in (decision_groups or []) %}
       {% if grp.owner not in seen_owners.list %}
         <section class="dept-decisions-widget" aria-label="{% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% elif grp.owner %}Décisions — {{ grp.label }}{% else %}Décisions sans département{% endif %}">
@@ -112,6 +165,30 @@
           </div>
         </section>
       {% endif %}
+    {% endfor %}
+    </div>
+  {% endif %}
+
+  {# ─── Concierges (Morty, Claudette) — reactive assistants. #}
+  {% if concierges %}
+    <h3 class="section-subheading m4-subheading" style="margin-top:22px;">Les concierges</h3>
+    <div class="team-grid">
+    {% for c in concierges %}
+      {% set status = c.metadata.get('service_status', 'unknown') %}
+      {% set initial = c.name[0]|upper %}
+      <a class="card dept-card" href="/concierge/{{ c.name }}">
+        <div class="dept-card-top">
+          <span class="avatar" aria-hidden="true">{{ initial }}</span>
+          <div>
+            <div class="dept-name-lg">{{ c.name|capitalize }}</div>
+            <div class="dept-role">concierge — assistant réactif
+              <span class="live-dot" aria-hidden="true"
+                    style="background: {{ '#a7e8d7' if status == 'active' else '#c0392b' }};"></span>
+              {{ 'en service' if status == 'active' else status }}
+            </div>
+          </div>
+        </div>
+      </a>
     {% endfor %}
     </div>
   {% endif %}
@@ -143,14 +220,19 @@
 </section>
 {% endif %}
 
-{# ─── 02b — Décidé récemment ─────────────────────────────────── #}
+{# ─── 02b — Décidé récemment (collapsed by default, #524c) ────────
+   Compact: a one-line summary that expands to the rows on click, so it
+   takes near-zero vertical space when collapsed. Reuses the chevron
+   <details> idiom from dept_detail.html's decision-timeline. #}
 {% if recent_decisions %}
 <section class="cabinet-section m4-section" aria-labelledby="recentes-heading">
-  <div class="section-head">
-    <span class="section-num">02b</span>
-    <h2 id="recentes-heading" class="section-title">Décidé récemment</h2>
-  </div>
-  <div class="recent-decisions-list">
+  <details class="recent-decisions-details">
+    <summary class="recent-decisions-summary">
+      <span class="section-num">02b</span>
+      <span id="recentes-heading" class="recent-decisions-title">Décidé récemment ({{ recent_decisions|length }})</span>
+      <span class="recent-decisions-sub">déplier l'historique</span>
+    </summary>
+    <div class="recent-decisions-list">
   {% for dec in recent_decisions %}
     {% set action_color =
       'var(--sage)' if dec.action == 'approve'
@@ -173,103 +255,10 @@
     </div>
     <div id="undo-result-{{ loop.index }}"></div>
   {% endfor %}
-  </div>
+    </div>
+  </details>
 </section>
 {% endif %}
-
-{# ═══ 03 — L'ÉQUIPE (rich dept cards + stat-tiles) ═══════════════ #}
-<section class="cabinet-section m4-section" aria-labelledby="equipe-heading">
-  <div class="section-head">
-    <span class="section-num">03</span>
-    <h2 id="equipe-heading" class="section-title">L'équipe</h2>
-    <span class="section-sub">petits indicateurs, en un coup d'œil</span>
-  </div>
-
-  {% if not columns %}
-    {% with title="L'équipe n'a pas encore de membres.",
-            body="Commence par accueillir ton premier collègue.",
-            cta_href="/agents/new",
-            cta_label="Accueillir ton premier collègue" %}
-      {% include "components/empty-state.html" %}
-    {% endwith %}
-  {% else %}
-    <div class="team-grid">
-    {% for col in columns %}
-      {% set d = col.dept %}
-      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
-      {% if d.is_live %}
-      <a class="card dept-card" href="/dept/{{ d.slug }}">
-        <div class="dept-card-top">
-          <span class="avatar" aria-hidden="true">{{ initial }}</span>
-          <div>
-            <div class="dept-name-lg">{{ d.display_name }}</div>
-            <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
-          </div>
-        </div>
-        <div class="stat-strip">
-          <div class="stat-tile{% if col.gate_count == 0 %} mint{% endif %}">
-            <span class="stat-num">{{ col.gate_count }}</span>
-            <span class="stat-lbl">décision{{ '' if col.gate_count == 1 else 's' }} en attente</span>
-          </div>
-          <div class="stat-tile mint">
-            <span class="stat-num">{{ col.gate_groups|length }}</span>
-            <span class="stat-lbl">sujet{{ '' if col.gate_groups|length == 1 else 's' }} ouvert{{ '' if col.gate_groups|length == 1 else 's' }}</span>
-          </div>
-        </div>
-      </a>
-      {% else %}
-      <a class="card dept-card dept-card--eclosion" href="/agents/{{ d.slug }}/onboarding">
-        <div class="dept-card-top">
-          <span class="avatar" aria-hidden="true">{{ initial }}</span>
-          <div>
-            <div class="dept-name-lg">{{ d.display_name }}</div>
-            <div class="dept-role">collègue en éclosion — apprend son métier</div>
-          </div>
-        </div>
-        <div class="stat-strip">
-          <div class="stat-tile">
-            <span class="stat-num">{{ d.percent_complete }}%</span>
-            <span class="stat-lbl">éclosion
-              {%- if d.status == 'Idea' %} · à peine annoncée
-              {%- elif d.status == 'Configuring' %} · prend ses marques
-              {%- elif d.status == 'Drafting' %} · apprend à se présenter
-              {%- elif d.status == 'Needs validation' %} · attend ton avis
-              {%- elif d.status == 'Dry run' %} · répétition à blanc
-              {%- elif d.status == 'Ready to activate' %} · prête à rejoindre
-              {%- else %} · en cours{% endif -%}
-            </span>
-          </div>
-        </div>
-      </a>
-      {% endif %}
-    {% endfor %}
-    </div>
-  {% endif %}
-
-  {# ─── Concierges (Morty, Claudette) — reactive assistants. #}
-  {% if concierges %}
-    <h3 class="section-subheading m4-subheading" style="margin-top:22px;">Les concierges</h3>
-    <div class="team-grid">
-    {% for c in concierges %}
-      {% set status = c.metadata.get('service_status', 'unknown') %}
-      {% set initial = c.name[0]|upper %}
-      <a class="card dept-card" href="/concierge/{{ c.name }}">
-        <div class="dept-card-top">
-          <span class="avatar" aria-hidden="true">{{ initial }}</span>
-          <div>
-            <div class="dept-name-lg">{{ c.name|capitalize }}</div>
-            <div class="dept-role">concierge — assistant réactif
-              <span class="live-dot" aria-hidden="true"
-                    style="background: {{ '#a7e8d7' if status == 'active' else '#c0392b' }};"></span>
-              {{ 'en service' if status == 'active' else status }}
-            </div>
-          </div>
-        </div>
-      </a>
-    {% endfor %}
-    </div>
-  {% endif %}
-</section>
 
 {# ═══ 04 — COÛTS (cost-tile stat cards) ══════════════════════════
    Cost figures aren't on the home context (they live behind /costs).
