@@ -99,8 +99,10 @@ def test_group_decision_cards_by_dept_omits_empty_groups():
 
 def test_home_page_renders_all_dept_cards_and_total_count(client, monkeypatch):
     """Full render: home() must show a count of 3 (not 1), and every card —
-    rnd, content, and no-dept — must be reachable + carry its decide form
-    (the SAME /kanban/card/<id>/decide POST target as before, board #427)."""
+    rnd, content, and no-dept — must be reachable via a compact click-through
+    to its card detail page (/kanban/card/<id>). Per the mockup-4 redesign
+    (#524) the decide form is NOT inlined on this overview — it lives on the
+    detail page the link opens; the click-through IS the real-function guard."""
     _kanban = _kanban_module()
     monkeypatch.setattr(_kanban, "_fetch_issues", lambda: (_three_dept_issues(), None))
 
@@ -115,10 +117,10 @@ def test_home_page_renders_all_dept_cards_and_total_count(client, monkeypatch):
     # The excluded (non needs:human) card must not appear as a decision card.
     assert "Not a decision" not in body
 
-    # Each keeps the same decide POST target.
-    assert 'hx-post="/kanban/card/501/decide"' in body
-    assert 'hx-post="/kanban/card/502/decide"' in body
-    assert 'hx-post="/kanban/card/503/decide"' in body
+    # Each card links to its detail page (where the decide form lives).
+    assert 'href="/kanban/card/501"' in body
+    assert 'href="/kanban/card/502"' in body
+    assert 'href="/kanban/card/503"' in body
 
     # The badge/count reflects the TOTAL across all depts, not just rnd's 1.
     assert "rnd_decision_count" not in body  # sanity: no raw var name leaked

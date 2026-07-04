@@ -24,7 +24,13 @@
           crossorigin="anonymous"></script>
   {% block head_extra %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
+
+  {# ─── Atmospheric warm floating blobs (mockup-4) — pointer-none, z-0.
+       Purely decorative; scoped visible via body.m4 in style.css. #}
+  <div class="bubble-float b1" aria-hidden="true"></div>
+  <div class="bubble-float b2" aria-hidden="true"></div>
+  <div class="bubble-float b3" aria-hidden="true"></div>
 
   {# ─── Mobile menu toggle (CSS-only, no JS) ───────────────────── #}
   <input type="checkbox" id="sidebar-toggle" class="sidebar-toggle-input" aria-hidden="true">
@@ -34,15 +40,24 @@
   <label for="sidebar-toggle" class="sidebar-overlay"></label>
 
   <div class="app-shell">
-    {# ─── Sidebar — agents + current tasks ────────────────────────── #}
+    {# ─── Sidebar — frosted glass (mockup-4). Structure preserved:
+         sidebar_agents() loop for the live dept dots + the route links
+         (kept as the top nav) + the CSS-only hamburger mechanism. #}
     <aside class="sidebar" aria-label="Équipe">
       <a href="/" class="sidebar-brand">
-        <span class="sidebar-brand-name">Bubble.</span>
-        <span class="sidebar-brand-sub">Cabinet d'éclosion</span>
+        <span class="brand-mark"><span class="brand-symbol"></span><span class="sidebar-brand-name">Bubble.</span></span>
+        <span class="sidebar-brand-sub">un laboratoire d'agents,<br>ouvert sur le monde</span>
       </a>
 
       <nav class="sidebar-nav">
-        <div class="sidebar-section-label">Équipe</div>
+        <div class="sidebar-section-label">Navigation</div>
+        <a href="/" class="sidebar-bottom-link{% if nav_active is defined and nav_active == 'home' %} sidebar-bottom-link--active{% endif %}">☀ Le matin</a>
+        <a href="/agents" class="sidebar-bottom-link{% if nav_active is defined and nav_active == 'agents' %} sidebar-bottom-link--active{% endif %}">✦ L'équipe</a>
+        <a href="/kanban" class="sidebar-bottom-link{% if nav_active is defined and nav_active == 'kanban' %} sidebar-bottom-link--active{% endif %}">▦ Kanban</a>
+        <a href="/costs" class="sidebar-bottom-link{% if nav_active is defined and nav_active == 'costs' %} sidebar-bottom-link--active{% endif %}">◎ Coûts</a>
+        <a href="/health" class="sidebar-bottom-link{% if nav_active is defined and nav_active == 'health' %} sidebar-bottom-link--active{% endif %}">✎ Carnet de bord</a>
+
+        <div class="sidebar-section-label">L'équipe</div>
         {% for agent in sidebar_agents() %}
           <a href="/dept/{{ agent.slug }}" class="sidebar-agent{% if dept is defined and dept and dept.slug == agent.slug %} sidebar-agent--active{% endif %}">
             <span class="sidebar-agent-dot"></span>
@@ -54,13 +69,7 @@
         {% endfor %}
       </nav>
 
-      <div class="sidebar-bottom">
-        <a href="/" class="sidebar-bottom-link">← Le matin</a>
-        <a href="/agents" class="sidebar-bottom-link">L'équipe</a>
-        <a href="/kanban" class="sidebar-bottom-link">kanban</a>
-        <a href="/costs" class="sidebar-bottom-link">Coûts</a>
-        <a href="/health" class="sidebar-bottom-link">Carnet de bord</a>
-      </div>
+      <div class="sidebar-foot">le labo est ouvert, ce matin aussi</div>
     </aside>
 
     {# ─── Main content area ───────────────────────────────────────── #}
