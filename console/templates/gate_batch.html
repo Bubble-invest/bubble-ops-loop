@@ -72,7 +72,13 @@
              dedicated proposal block below (outside this <details>). #}
           {% if gate.summary and gate.kind not in ('social_post', 'content_publish',
                 'news_post', 'news_post_task', 'prospect_dm', 'followup_draft', 'draft_task') %}
-          <p style="margin:6px 0 0; font-size:14px; line-height:1.55; color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</p>
+          {# Thesis rendered as sanitized markdown->HTML (card #523-A, mirrors
+             #507's whiteboard-notes pipeline) — gate.thesis_rendered is a
+             markupsafe.Markup built by console/routes/gate.py via
+             render_markdown_safe(gate.summary); nh3-sanitized, safe to emit
+             directly. `pre-line` is no longer needed: markdown's own
+             paragraphs/lists/headings now carry the structure. #}
+          <div class="gate-thesis markdown-body" style="margin:6px 0 0; font-size:14px; line-height:1.55; color: var(--body-soft);">{{ gate.thesis_rendered }}</div>
           {% endif %}
           {% if gate.chart_path %}
           <figure class="gate-chart" style="margin:10px 0 0;">
@@ -235,8 +241,10 @@
             {% endif %}
           </div>
           {% else %}
-          <p style="margin:0 0 10px; font-size:13px; line-height:1.55;
-               color: var(--body-soft); white-space:pre-line;">{{ gate.summary }}</p>
+          {# Plain-string summary (card #523-A) — sanitized markdown->HTML,
+             same gate.thesis_rendered pipeline as the generic thesis above. #}
+          <div class="gate-thesis markdown-body" style="margin:0 0 10px; font-size:13px; line-height:1.55;
+               color: var(--body-soft);">{{ gate.thesis_rendered }}</div>
           {% endif %}
         {% endif %}
 
