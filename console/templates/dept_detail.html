@@ -307,8 +307,16 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   </div>
 
   {% if whiteboard and whiteboard.kpis %}
-    <div id="dept-kpi-grid" class="kpi-grid whiteboard-kpis">
-      {% for kpi in whiteboard.kpis %}
+    {# #534 (Joris): only ONE row of KPI tiles visible by default; the rest
+       tuck behind the same "+N de plus" collapse used for loop-runs overflow.
+       KPI_ROW = the desktop column count of #dept-kpi-grid at the 1280 width
+       (repeat(auto-fit, minmax(148px,1fr)) in ~955px content ⇒ 5/row).
+       Guard: ≤ one row → render all with NO empty <details>. The collapsed
+       tiles still LIVE inside the grid (inside the details), so the
+       #dept-kpi-grid id + every .kpi-value stay in the DOM. #}
+    {% set KPI_ROW = 5 %}
+    {% set _kpi_extra = whiteboard.kpis[KPI_ROW:] %}
+    {% macro kpi_card(kpi) %}
         <div class="kpi-card">
           <div class="kpi-value">
             {{ kpi.value }}
@@ -323,18 +331,46 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
           <h4 class="kpi-label">{{ kpi.label }}</h4>
           {% if kpi.note %}<p class="kpi-note">{{ kpi.note }}</p>{% endif %}
         </div>
-      {% endfor %}
+    {% endmacro %}
+    <div id="dept-kpi-grid" class="kpi-grid whiteboard-kpis">
+      {% for kpi in whiteboard.kpis[:KPI_ROW] %}{{ kpi_card(kpi) }}{% endfor %}
+      {% if _kpi_extra %}
+        {# The overflow tiles live inside the same grid so they flow into the
+           same columns when expanded. The <details> spans the full grid row. #}
+        <details class="loop-runs-overflow kpi-overflow">
+          <summary>{{ _kpi_extra|length }} autre{{ 's' if _kpi_extra|length != 1 else '' }} indicateur{{ 's' if _kpi_extra|length != 1 else '' }} · voir tous ({{ whiteboard.kpis|length }})</summary>
+          <div class="kpi-grid whiteboard-kpis kpi-overflow-grid">
+            {% for kpi in _kpi_extra %}{{ kpi_card(kpi) }}{% endfor %}
+          </div>
+        </details>
+      {% endif %}
     </div>
   {% endif %}
 
-  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop. #}
+  {# Graphs — one inline-SVG line chart per KPI, fed by Layer 4 each loop.
+     #534 (Joris): same one-row rule as the KPI tiles above. GRAPH_ROW = the
+     desktop column count of .kpi-chart-grid at 1280 (repeat(auto-fit,
+     minmax(240px,1fr)) in ~955px content ⇒ 3/row). Rest → "+N de plus"
+     collapse. Guard: ≤ one row → no empty <details>. #}
   {% if whiteboard_graphs %}
+    {% set GRAPH_ROW = 3 %}
+    {% set _graph_extra = whiteboard_graphs[GRAPH_ROW:] %}
     <h3 class="whiteboard-graphs-heading">Évolution des métriques</h3>
     <div class="kpi-chart-grid">
-      {% for metric in whiteboard_graphs %}
+      {% for metric in whiteboard_graphs[:GRAPH_ROW] %}
         {% include "components/kpi-sparkline.html" %}
       {% endfor %}
     </div>
+    {% if _graph_extra %}
+      <details class="loop-runs-overflow kpi-overflow">
+        <summary>{{ _graph_extra|length }} autre{{ 's' if _graph_extra|length != 1 else '' }} graphique{{ 's' if _graph_extra|length != 1 else '' }} · voir tous ({{ whiteboard_graphs|length }})</summary>
+        <div class="kpi-chart-grid kpi-overflow-grid">
+          {% for metric in _graph_extra %}
+            {% include "components/kpi-sparkline.html" %}
+          {% endfor %}
+        </div>
+      </details>
+    {% endif %}
   {% else %}
     <p class="whiteboard-graphs-empty">
       Les graphiques apparaîtront après quelques cycles de boucle —

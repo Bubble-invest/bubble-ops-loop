@@ -3456,6 +3456,20 @@ body.m4 .whiteboard-graphs-heading {
   font-family: var(--font-display); font-weight: 600; font-size: 13px;
   color: var(--body-muted); margin: 22px 0 12px;
 }
+/* ── One-row KPI/graph overflow (#534): only the first desktop row shows;
+   the rest tuck behind the "+N de plus" collapse (loop-runs-overflow idiom).
+   The <details> spans the whole grid row (grid-column: 1/-1) so the visible
+   first row stays exactly one row and the toggle sits on its own line. The
+   expanded overflow-grid re-lays-out the hidden tiles/charts in the same
+   column rhythm just below. ── */
+body.m4 .kpi-overflow { grid-column: 1 / -1; margin-top: 2px; }
+body.m4 .kpi-overflow > summary {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em;
+  color: var(--body-muted);
+}
+body.m4 .kpi-overflow[open] > summary { color: var(--violet); }
+body.m4 .kpi-overflow-grid { margin-top: 14px; }
+
 body.m4 .whiteboard-graphs-empty,
 body.m4 .whiteboard-notes-details,
 body.m4 .whiteboard-free-details { margin-top: 16px; }
