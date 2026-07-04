@@ -26,30 +26,31 @@
   --nuit-soft: #25325a;
   --lampe: #fff7e8;            /* lumière chaude — fonds atmosphériques */
 
-  /* Backgrounds — blanc jamais plat (gradient atmosphérique sur body) */
-  --background: #ffffff;
-  --paper: #ffffff;            /* base de fond */
-  --paper-soft: #f8f8f8;       /* cards (charte gris clair) */
-  --paper-edge: #eeeeee;       /* borders */
+  /* Backgrounds — épuré / taste-skill (#524): one flat warm-neutral tone,
+     no atmospheric gradient blobs. Paper = warm off-white, cards = pure white. */
+  --background: #FBFBFA;
+  --paper: #FFFFFF;            /* cards / surfaces */
+  --paper-soft: #F8F8F7;       /* card-2 — subtle hairline-tinted fills */
+  --paper-edge: #EAEAEA;       /* borders */
 
-  /* Encre — noir + gris (charte palette principale) */
-  --ink: #000000;             /* logo, titres, contours nets */
+  /* Encre — warm-neutral ink ramp (never pure black) */
+  --ink: #1c1c1c;             /* titres, contours nets */
   --ink-soft: #333333;        /* titres secondaires, boutons (charte primary) */
   --body: #444444;            /* corps de texte (charte body) */
   --body-soft: #555555;
-  --body-muted: #666666;      /* textes secondaires (charte gris moyen) */
+  --body-muted: #767676;      /* textes secondaires */
 
-  /* Accents — remap old ochre/sage names to the charte (violet + mint) so
-     every existing rule (KPI numbers, active dots, flowchart edges) recolors. */
-  --ochre: var(--violet);     /* was warm ochre → now signature violet */
+  /* Accents — scarce violet: nav-active, one CTA, decision left-rule,
+     live-dots, chart line, a couple key numbers. Everything else neutral. */
+  --ochre: var(--violet);     /* signature violet */
   --ochre-soft: #8a9bf0;
   --ochre-deep: #4a5fd0;
   --sage: #5a7d72;            /* calm/secondary → muted Ghibli green */
   --sage-soft: var(--mint);
 
-  /* Bordures (charte) */
-  --line: #eeeeee;
-  --line-soft: #f4f4f4;
+  /* Bordures (charte) — crisp 1px hairlines */
+  --line: #EAEAEA;
+  --line-soft: #F0F0EE;
 
   /* Fonts — charte: IBM Plex Sans (display+body), Klee One (accent), JetBrains Mono (code).
      Inter BANNED per charte; Cormorant Garamond + Source Sans 3 removed. */
@@ -61,10 +62,11 @@
   /* Geometry — charte radii + shadows */
   --maxw: 100%;  /* full-width with sidebar */
   --sidebar-w: 180px;
-  --section-gap: 48px;
-  --radius-card: 16px;
-  --shadow-soft: 0 4px 6px rgba(0,0,0,0.05);
-  --shadow-mod: 0 8px 24px rgba(0,0,0,0.04);
+  --section-gap: 64px;   /* macro-whitespace between sections (#524) */
+  --radius-card: 10px;   /* crisp small radius, not rounded/pill */
+  --radius-sm: 8px;
+  --shadow-soft: 0 1px 2px rgba(0,0,0,0.03);   /* shadows near-zero */
+  --shadow-mod: 0 1px 3px rgba(0,0,0,0.04);
 }
 
 * { box-sizing: border-box; }
@@ -73,14 +75,7 @@ html, body {
   margin: 0;
   padding: 0;
   background: var(--background);
-  /* Charte v2 — atmosphère "labo Ghibli" : lampe chaude haut-gauche,
-     violet doux haut-droite, mint bas-centre. Le blanc n'est jamais plat. */
-  background-image:
-    radial-gradient(circle at 8% -5%, rgba(255,240,215,0.85), transparent 38%),   /* lampe chaude */
-    radial-gradient(circle at 95% 4%, rgba(102,126,234,0.08), transparent 42%),    /* violet doux */
-    radial-gradient(circle at 50% 96%, rgba(167,232,215,0.10), transparent 55%),   /* mint */
-    radial-gradient(circle at 70% 50%, rgba(255,247,232,0.30), transparent 55%);
-  background-attachment: fixed;
+  /* Épuré (#524) — one consistent light tone, no gradient-blob atmosphere. */
   color: var(--body);
   font-family: var(--font-body);
   font-size: 15px;
@@ -120,16 +115,18 @@ code, .code {
 .content {
   flex: 1;
   min-width: 0;
-  padding: 24px 32px 48px;
-  background: var(--paper);
+  padding: 44px clamp(28px, 4vw, 72px) 96px;
+  max-width: 1180px;
+  background: var(--background);
 }
 
-/* ─── Sidebar ──────────────────────────────────────────────────── */
+/* ─── Sidebar — épuré (#524): flat, light, hairline. Was dark --nuit. ── */
 .sidebar {
-  width: 220px;
-  min-width: 220px;
-  background: var(--nuit);   /* charte: bleu nuit Ghibli, JAMAIS noir pur */
-  color: #c8d0dc;
+  width: 210px;
+  min-width: 210px;
+  background: var(--background);
+  border-right: 1px solid var(--line);
+  color: var(--body-soft);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -137,26 +134,26 @@ code, .code {
 }
 .sidebar-brand {
   display: block;
-  padding: 22px 20px 18px;
+  padding: 24px 20px 18px;
   text-decoration: none;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--line-soft);
 }
 .sidebar-brand-name {
   display: block;
   font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 600;
-  font-style: italic;
-  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
   letter-spacing: -0.01em;
 }
 .sidebar-brand-sub {
-  font-family: var(--font-body);
+  font-family: var(--font-accent);
   font-size: 11px;
-  font-weight: 300;
-  color: rgba(232,236,244,0.45);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 400;
+  color: var(--body-muted);
+  letter-spacing: 0.02em;
+  margin-top: 6px;
+  display: block;
 }
 .sidebar-nav {
   padding: 12px 0;
@@ -164,116 +161,123 @@ code, .code {
 }
 .sidebar-section-label {
   font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 9px;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: rgba(232,236,244,0.45);
-  padding: 12px 20px 6px;
+  letter-spacing: 0.14em;
+  color: var(--body-muted);
+  padding: 18px 20px 8px;
 }
 .sidebar-agent {
   display: block;
-  padding: 10px 20px;
+  padding: 7px 18px;
+  margin: 0 8px;
+  border-radius: var(--radius-sm);
   text-decoration: none;
-  color: rgba(232,236,244,0.75);
-  transition: background 0.15s, color 0.15s;
-  border-left: 2px solid transparent;
+  color: var(--body-soft);
+  transition: background 0.18s, color 0.18s;
+  border-left: none;
 }
 .sidebar-agent:hover {
-  background: rgba(255,255,255,0.04);
-  color: #e8ecf4;
+  background: var(--paper-soft);
+  color: var(--ink);
 }
 .sidebar-agent--active {
-  background: rgba(184,128,74,0.1);
-  border-left-color: var(--ochre);
-  color: var(--ochre);
+  background: var(--violet-08);
+  color: var(--violet);
 }
+.sidebar-agent--active .sidebar-agent-name { color: var(--violet); }
 .sidebar-agent-dot {
   display: inline-block;
-  width: 6px; height: 6px;
+  width: 5px; height: 5px;
   border-radius: 50%;
-  background: #4caf50;
-  box-shadow: 0 0 4px rgba(76,175,80,0.3);
+  background: var(--mint);
   margin-right: 8px;
   vertical-align: middle;
 }
 .sidebar-agent-name {
   font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-  color: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
 }
 .sidebar-agent-task {
   display: block;
   font-family: var(--font-body);
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.4;
-  color: rgba(232,236,244,0.5);
+  color: var(--body-muted);
   margin-top: 3px;
-  padding-left: 14px;
+  padding-left: 13px;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 .sidebar-bottom {
-  border-top: 1px solid rgba(255,255,255,0.06);
-  padding: 14px 20px;
-  margin-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding: 12px 18px;
+  margin-top: auto;
 }
 .sidebar-bottom-link {
   display: block;
-  padding: 6px 0;
-  font-size: 14px;
-  color: rgba(232,236,244,0.55);
+  padding: 5px 10px;
+  margin-bottom: 1px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--body-soft);
   text-decoration: none;
-  transition: color 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
-.sidebar-bottom-link:hover { color: rgba(232,236,244,0.85); }
+.sidebar-bottom-link:hover { background: var(--paper-soft); color: var(--ink); }
 
 
 
-.page-hero { margin-bottom: var(--section-gap); }
+.page-hero { margin-bottom: 56px; max-width: 640px; }
 .page-hero-title {
   font-family: var(--font-display);
-  font-size: clamp(32px, 4vw, 44px);
-  font-weight: 500;
-  font-style: italic;
-  color: var(--ink);
-  letter-spacing: -0.015em;
-  line-height: 1.15;
-  margin: 0 0 14px;
-}
-.page-hero-lede {
-  font-size: 17px;
-  color: var(--body-soft);
-  max-width: 680px;
-  margin: 0;
-  line-height: 1.6;
-}
-.page-hero-lede .ochre-num {
-  color: var(--ochre-deep);
-  font-weight: 500;
-}
-
-/* Section heading */
-.section-heading {
-  font-family: var(--font-display);
-  font-size: 26px;
+  font-size: clamp(22px, 2.6vw, 25px);
   font-weight: 600;
   color: var(--ink);
-  letter-spacing: -0.005em;
-  margin: 0 0 28px;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  text-wrap: balance;
+  margin: 0 0 12px;
+}
+.page-hero-lede {
+  font-size: 14px;
+  color: var(--body-muted);
+  max-width: 56ch;
+  margin: 0;
+  line-height: 1.65;
+}
+.page-hero-lede .ochre-num {
+  color: var(--violet);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section heading — small, with mono section-number (#524) */
+.section-heading {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin: 0 0 20px;
   display: flex;
   align-items: baseline;
-  gap: 16px;
+  gap: 11px;
 }
 .section-heading-number {
-  font-family: var(--font-display);
-  font-style: italic;
-  color: var(--ochre);
-  font-weight: 500;
-  font-size: 22px;
+  font-family: var(--font-mono);
+  font-style: normal;
+  color: var(--body-muted);
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0.06em;
 }
 
 .cabinet-section {
@@ -293,62 +297,61 @@ code, .code {
 
 .decisions-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+  gap: 14px;
 }
 
 .decision-card {
   position: relative;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-top: 4px solid var(--ochre);
-  border-radius: 2px;
-  padding: 24px 24px 22px;
+  border-left: 2px solid var(--violet);   /* the one scarce accent — a thin left rule */
+  border-radius: var(--radius-card);
+  padding: 15px 16px;
   text-decoration: none;
   display: block;
-  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-              border-color 0.22s ease,
-              box-shadow 0.22s ease;
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s ease;
 }
 .decision-card:hover {
-  transform: translateY(-1px);
-  border-color: var(--ochre-soft);
-  box-shadow: 0 6px 16px rgba(26, 43, 74, 0.06);
+  border-color: #dcdcdc;
+  border-left-color: var(--violet);
+  box-shadow: var(--shadow-soft);
   text-decoration: none;
 }
 .decision-card:focus-visible {
-  outline: 2px solid var(--ochre);
+  outline: 2px solid var(--violet);
   outline-offset: 2px;
 }
 .decision-card-count {
-  font-family: var(--font-display);
-  font-size: 44px;
-  font-weight: 500;
-  color: var(--ochre);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--body-muted);
   line-height: 1;
   margin-bottom: 8px;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.05em;
 }
 .decision-card-title {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 19px;
+  font-size: 14px;
   color: var(--ink);
   margin: 0 0 6px;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 .decision-card-body {
-  font-size: 14px;
-  color: var(--body-soft);
-  margin: 0 0 14px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  color: var(--body-muted);
+  margin: 0 0 12px;
+  line-height: 1.55;
 }
 .decision-card-cta {
-  font-size: 13px;
-  color: var(--ochre-deep);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-weight: 500;
+  font-size: 11px;
+  color: var(--violet);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-weight: 600;
 }
 
 /* Serene empty state */
@@ -383,49 +386,55 @@ code, .code {
 
 /* ─── Collègue rows / cards ──────────────────────────────────── */
 
+/* L'équipe — hairline-separated list, not boxed cards (#524) */
 .equipe-list {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--paper);
 }
 .collegue-row {
   display: flex;
   align-items: center;
-  gap: 22px;
-  padding: 18px 20px;
+  gap: 13px;
+  padding: 12px 16px;
   background: var(--paper);
-  border: 1px solid var(--line-soft);
-  border-radius: 4px;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
   text-decoration: none;
-  transition: border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+  transition: background 0.18s ease;
 }
+.collegue-row:last-child { border-bottom: none; }
 .collegue-row:hover {
-  border-color: var(--ochre-soft);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(26, 43, 74, 0.05);
+  background: var(--paper-soft);
   text-decoration: none;
 }
 
 .collegue-avatar {
   flex: 0 0 auto;
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
   background: var(--paper-soft);
   border: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-display);
-  font-size: 30px;
-  font-weight: 500;
-  color: var(--ochre-deep);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--body-muted);
   line-height: 1;
 }
 .collegue-avatar--lg {
-  width: 80px;
-  height: 80px;
-  font-size: 40px;
+  width: 56px;
+  height: 56px;
+  font-size: 24px;
+  border-radius: 12px;
 }
 
 .collegue-body {
@@ -434,56 +443,53 @@ code, .code {
 }
 .collegue-name {
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink);
-  margin: 0 0 4px;
+  margin: 0 0 1px;
   line-height: 1.2;
 }
 .collegue-role {
-  font-style: italic;
-  font-size: 14px;
+  font-style: normal;
+  font-size: 11px;
   color: var(--body-muted);
-  margin: 0 0 6px;
+  margin: 0 0 3px;
 }
 .collegue-state {
-  font-size: 14px;
+  font-size: 11.5px;
   color: var(--body-soft);
   margin: 0;
 }
 .collegue-cta {
   flex: 0 0 auto;
-  font-size: 13px;
-  color: var(--ochre-deep);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-weight: 500;
+  font-size: 11px;
+  color: var(--violet);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-weight: 600;
 }
 
 .en-poste-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--ochre);
+  background: var(--mint);
   margin-right: 6px;
   vertical-align: middle;
 }
 .en-poste-label {
-  font-size: 13px;
-  color: var(--ochre-deep);
-  letter-spacing: 0.02em;
+  font-size: 11.5px;
+  color: var(--body-soft);
+  letter-spacing: 0.01em;
 }
 
-/* Eclosure variant — paper-soft tint */
+/* Eclosure variant — subtle tint, hairline (no heavy dashed box) */
 .collegue-row--eclosion {
   background: var(--paper-soft);
-  border-style: dashed;
-  border-color: var(--sage-soft);
 }
 .collegue-row--eclosion:hover {
-  border-color: var(--sage);
-  border-style: dashed;
+  background: #f2f2f0;
 }
 
 .eclosion-progress {
@@ -496,7 +502,7 @@ code, .code {
 }
 .eclosion-progress-bar {
   height: 100%;
-  background: var(--ochre);
+  background: var(--violet);
   border-radius: 1px;
   transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -504,40 +510,48 @@ code, .code {
 .collegue-card-stack {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
+  gap: 14px;
 }
 
-/* ─── KPI cards (Maya kpi-card recolored) ────────────────────── */
+/* ─── KPI — compact metrics strip: flat hairline-separated tiles (#524) ── */
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--paper);
 }
 .kpi-card {
   background: var(--paper);
-  border: 1px solid var(--line-soft);
-  border-radius: 4px;
-  padding: 24px 22px;
+  border: none;
+  border-right: 1px solid var(--line-soft);
+  border-radius: 0;
+  padding: 14px 16px;
 }
 .kpi-value {
   font-family: var(--font-display);
-  font-size: 44px;
-  font-weight: 500;
-  color: var(--ochre-deep);
-  line-height: 1;
-  margin-bottom: 8px;
-  letter-spacing: -0.02em;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.1;
+  margin-bottom: 5px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 .kpi-label {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 17px;
-  color: var(--ink);
-  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--body-muted);
+  margin: 0 0 3px;
 }
 .kpi-note {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--body-muted);
   margin: 0;
   line-height: 1.4;
@@ -732,18 +746,19 @@ code, .code {
 }
 .dept-title {
   font-family: var(--font-display);
-  font-size: clamp(24px, 3.5vw, 30px);
+  font-size: clamp(22px, 2.8vw, 25px);
   font-weight: 600;
   color: var(--ink);
   margin: 0 0 6px;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 .dept-subtitle {
   font-family: var(--font-display);
-  font-style: italic;
-  font-size: 15px;
+  font-style: normal;
+  font-size: 13px;
   color: var(--body-muted);
   margin: 0;
+  line-height: 1.55;
 }
 
 /* Agent deployment info strip (model/runtime/hierarchy/layers/host) —
@@ -965,42 +980,47 @@ code, .code {
   letter-spacing: 0.01em;
 }
 
+/* Buttons — épuré (#524): one violet primary CTA, neutral ghost. ≥44px tap. */
 .btn-ochre {
   display: inline-block;
-  background: var(--ochre);
-  color: var(--paper);
-  border: none;
-  font-family: var(--font-body);
-  font-size: 15px;
-  font-weight: 500;
-  padding: 12px 26px;
-  border-radius: 2px;
+  background: var(--violet);
+  color: #fff;
+  border: 1px solid var(--violet);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 11px 18px;
+  min-height: 44px;
+  border-radius: var(--radius-sm);
   letter-spacing: 0.01em;
   cursor: pointer;
   text-decoration: none;
-  transition: background-color 0.22s ease, transform 0.22s ease;
+  transition: background-color 0.2s ease;
 }
 .btn-ochre:hover {
-  background: var(--ochre-deep);
-  transform: translateY(-1px);
+  background: #5a6fd6;
+  border-color: #5a6fd6;
   text-decoration: none;
-  color: var(--paper);
+  color: #fff;
 }
 .btn-ghost {
   display: inline-block;
-  background: transparent;
-  color: var(--body-muted);
+  background: var(--paper);
+  color: var(--body);
   border: 1px solid var(--line);
-  font-family: var(--font-body);
-  font-size: 14px;
-  padding: 11px 22px;
-  border-radius: 2px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 11px 18px;
+  min-height: 44px;
+  border-radius: var(--radius-sm);
   text-decoration: none;
-  transition: color 0.2s ease, border-color 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 .btn-ghost:hover {
   color: var(--ink);
-  border-color: var(--ochre-soft);
+  background: var(--paper-soft);
+  border-color: #dcdcdc;
   text-decoration: none;
 }
 
@@ -1262,25 +1282,29 @@ code, .code {
 
 @media (max-width: 768px) {
   .app-shell { position: relative; }
-  .content { padding: 24px 16px 48px; }
+  /* Top padding clears the fixed 44px hamburger (top:12px) so page content
+     doesn't render under it. */
+  .content { padding: 64px 16px 48px; }
 
-  /* Clear the fixed hamburger (top:12px + 40px = 52px bottom edge) so the
-     page hero title/lede don't render underneath it. Scoped to .page-hero
-     only, so pages using .carnet-header etc. are untouched. */
-  .page-hero { padding-top: 44px; }
+  /* Extra clearance for the hero title/lede specifically. */
+  .page-hero { padding-top: 8px; }
+
+  /* When the off-canvas drawer is open, keep the brand clear of the X button
+     (fixed top:12px left:12px, 44px) so "Bubble." isn't covered. */
+  .sidebar .sidebar-brand { padding-left: 64px; }
 
   .sidebar-toggle-label {
     display: flex; align-items: center; justify-content: center;
     position: fixed; top: 12px; left: 12px; z-index: 101;
-    width: 40px; height: 40px;
-    background: var(--nuit); border-radius: 8px;
+    width: 44px; height: 44px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-sm);
     cursor: pointer;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    box-shadow: var(--shadow-mod);
   }
   .sidebar-toggle-icon,
   .sidebar-toggle-icon::before, .sidebar-toggle-icon::after {
     display: block; width: 18px; height: 2px;
-    background: #e8ecf4; border-radius: 2px;
+    background: var(--ink); border-radius: 2px;
     transition: transform 0.2s, opacity 0.2s;
   }
   .sidebar-toggle-icon { position: relative; }
@@ -1327,23 +1351,23 @@ code, .code {
 }
 
 @media (max-width: 720px) {
-  .content { padding: 36px 22px 60px; }
+  .content { padding: 60px 22px 60px; }   /* top clears the 44px fixed hamburger */
   .carnet-header { flex-direction: column; align-items: flex-start; }
 
-  /* Hero — clamp tighter so 28px is the floor on a 375px phone */
+  /* Hero — épuré scale (#524): compact, never truncates mid-word */
   .page-hero-title {
-    font-size: clamp(26px, 6.2vw, 36px);
-    line-height: 1.18;
+    font-size: clamp(21px, 5.4vw, 24px);
+    line-height: 1.22;
   }
-  .page-hero-lede { font-size: 15.5px; }
+  .page-hero-lede { font-size: 13.5px; }
 
-  /* Collègue rows — stack avatar/body/CTA vertically so the role +
-     state get full width and the CTA doesn't truncate */
+  /* Collègue rows — restack to column so the role + state get full width
+     and the CTA doesn't compete for space (test_collegue_row_restacks). */
   .collegue-row {
     flex-direction: column;
     align-items: flex-start;
-    gap: 10px;
-    padding: 16px 18px;
+    gap: 8px;
+    padding: 14px 15px;
   }
   .collegue-body { width: 100%; min-width: 0; }
   .collegue-role {
@@ -1354,14 +1378,12 @@ code, .code {
   .collegue-cta {
     width: 100%;
     text-align: left;
-    font-size: 12.5px;
     white-space: normal;
   }
 
-  /* Decision cards — keep CTA on one line, shrink slightly */
-  .decision-card { padding: 20px 20px 18px; }
-  .decision-card-cta { font-size: 12px; white-space: nowrap; }
-  .decision-card-title { font-size: 17px; }
+  /* Decision cards — keep CTA on one line */
+  .decision-card { padding: 14px 15px; }
+  .decision-card-cta { white-space: nowrap; }
 
   /* Gate autonomy block — restack label+value vertically so the
      150px label column doesn't squeeze the value off-screen */
@@ -1371,25 +1393,28 @@ code, .code {
   .gate-autonomie-info { margin-left: 0; margin-top: 4px; }
 
   /* Section headings */
-  .section-heading { font-size: 22px; gap: 12px; }
-  .dept-title { font-size: clamp(24px, 5.5vw, 30px); }
+  .section-heading { gap: 10px; }
+  .dept-title { font-size: clamp(21px, 5vw, 25px); }
 
-  /* KPI cards — intermediate tablet step (shrink value, not yet phone-tiny) */
-  .kpi-value { font-size: 34px; }
+  /* KPI strip — stack tiles vertically; swap the tile separator from a
+     right hairline (columns) to a bottom hairline (rows) so the flat
+     strip reads cleanly stacked. */
+  .kpi-grid { grid-template-columns: 1fr; }
+  .kpi-card { border-right: none; border-bottom: 1px solid var(--line-soft); }
+  .kpi-card:last-child { border-bottom: none; }
   .kpi-chart-value { font-size: 22px; }
   .kpi-chart-value .kpi-trend { font-size: 15px; }
 }
 
 @media (max-width: 480px) {
-  .content { padding: 28px 16px 48px; }
+  .content { padding: 60px 16px 48px; }
 
-  /* Hero shrinks one more notch */
+  /* Hero shrinks one more notch (floor 20px on a 320px phone) */
   .page-hero-title {
-    font-size: clamp(22px, 7vw, 30px);
-    line-height: 1.2;
+    font-size: clamp(20px, 6vw, 23px);
+    line-height: 1.24;
   }
-  .section-heading { font-size: 20px; }
-  .carnet-title { font-size: clamp(24px, 6vw, 30px); }
+  .carnet-title { font-size: clamp(22px, 6vw, 25px); }
 
   /* All multi-column grids collapse to single column */
   .kpi-grid,
@@ -1405,16 +1430,16 @@ code, .code {
   /* Gate meta also stacks */
   .gate-meta { grid-template-columns: 1fr; gap: 10px; }
 
-  /* Buttons full-width so they're tap-friendly */
+  /* Buttons full-width so they're tap-friendly (≥44px min-height set on base) */
   .gate-actions { flex-direction: column; }
   .gate-actions .btn-ochre,
   .gate-actions .btn-ghost { width: 100%; text-align: center; }
 
-  /* KPI cards — phone sizing (44px value → 30px, tighter padding) */
-  .kpi-card { padding: 16px 16px; }
-  .kpi-value { font-size: 30px; letter-spacing: -0.01em; }
-  .kpi-label { font-size: 15px; }
-  .kpi-note { font-size: 12px; }
+  /* KPI tiles — phone padding (compact strip, tiles already stacked at 720px) */
+  .kpi-card { padding: 13px 15px; }
+  .kpi-value { font-size: 19px; letter-spacing: -0.01em; }
+  .kpi-label { font-size: 9px; }
+  .kpi-note { font-size: 11px; }
 
   /* KPI chart grid — force single column on phones, shrink type */
   .kpi-chart-grid {

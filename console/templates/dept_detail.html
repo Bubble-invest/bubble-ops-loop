@@ -125,7 +125,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
        hx-swap="innerHTML" keeps the outer .desk-pile wrapper stable.
     #}
     <div class="desk-pile desk-pile--inbox">
-      <div class="desk-pile-head"><span class="desk-emoji">📥</span> À traiter</div>
+      <div class="desk-pile-head">À traiter</div>
       <div id="dept-inbox-content"
            hx-get="/dept/{{ dept.slug }}/inbox-fragment"
            hx-trigger="load, every 5s"
@@ -194,10 +194,10 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
 
     {# 📤 RIGHT — terminé: 👀 à valider (gates) + ✅ posté/actionné (outputs) #}
     <div class="desk-pile desk-pile--done">
-      <div class="desk-pile-head"><span class="desk-emoji">📤</span> Terminé</div>
+      <div class="desk-pile-head">Terminé</div>
 
       <div class="desk-sub desk-sub--validate">
-        <div class="desk-sub-head"><span class="desk-emoji">👀</span> À valider</div>
+        <div class="desk-sub-head">À valider</div>
         {% if gate_groups %}
           {% for grp in gate_groups %}
             <a class="desk-card desk-card--gate"
@@ -212,7 +212,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </div>
 
       <div class="desk-sub desk-sub--posted">
-        <div class="desk-sub-head"><span class="desk-emoji">✅</span> Posté / actionné</div>
+        <div class="desk-sub-head">Posté / actionné</div>
         {% set _ns2 = namespace(any=false) %}
         {% for l in [1,2,3,4] %}
           {% set _ro = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
@@ -517,7 +517,6 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
                     <span class="slug-ref mission-id">{{ m.id }}</span>
                   </div>
                   <p class="mission-cadence">
-                    <span class="mission-cadence-icon" aria-hidden="true">⏱</span>
                     {{ humanize_cadence(m) }}
                   </p>
                   {% if m.description %}

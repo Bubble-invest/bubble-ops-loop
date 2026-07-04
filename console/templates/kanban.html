@@ -9,29 +9,32 @@
 <style>
 /* ── Due chip (P3 timeline) ──────────────────────────────────────── */
 .vp-due-chip {
-  font-size: 10px; font-variant-numeric: tabular-nums;
-  padding: 1px 6px; border-radius: 999px;
-  background: var(--paper-soft, #f3eee7); color: var(--body, #6b5d4f);
-  border: 1px solid var(--line, #e0d6c8);
+  font-family: var(--font-mono); font-size: 8.5px; font-variant-numeric: tabular-nums;
+  padding: 2px 6px; border-radius: 4px;
+  background: var(--paper-soft, #F8F8F7); color: var(--body-muted, #767676);
+  border: 1px solid var(--line, #EAEAEA); letter-spacing: .02em;
 }
 .vp-due-overdue {
   background: #fbe7e4; color: #a3503f; border-color: #e6b8af; font-weight: 600;
 }
-/* needs:human decision chip — violet (the cockpit "needs Joris" signal, board #358) */
+/* needs:human decision chip — the scarce violet accent (board #358) */
 .vp-decision-chip {
-  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
-  background: #eef0fb; color: #4a5fd0; border: 1px solid #c3ccf5;
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 600;
+  padding: 2px 6px; border-radius: 4px; letter-spacing: .02em;
+  background: var(--violet-08, #eef0fb); color: var(--violet, #667eea);
+  border: 1px solid var(--violet-20, #c3ccf5);
 }
-.vp-card:has(.vp-decision-chip) { border-left: 3px solid #667eea; }
+.vp-card:has(.vp-decision-chip) { border-left: 2px solid var(--violet, #667eea); }
 /* budget chip — green (money); the card's real-$ budget (board #358) */
 .vp-budget-chip {
-  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
-  background: #e7f5ea; color: #1a7f37; border: 1px solid #aadcb8;
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 600;
+  padding: 2px 6px; border-radius: 4px; letter-spacing: .02em;
+  background: #f2f8f4; color: #3e8e6f; border: 1px solid #d5e8de;
 }
 .vp-link-chip {
-  font-size: 9.5px; font-variant-numeric: tabular-nums; text-decoration: none;
-  padding: 1px 5px; border-radius: 999px; border: 1px solid var(--line, #e0d6c8);
-  color: var(--body, #6b5d4f); background: var(--paper-soft, #f3eee7);
+  font-family: var(--font-mono); font-size: 8.5px; font-variant-numeric: tabular-nums; text-decoration: none;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line, #EAEAEA);
+  color: var(--body-muted, #767676); background: var(--paper-soft, #F8F8F7); letter-spacing: .02em;
 }
 .vp-link-chip:hover { border-color: var(--ink, #3a3027); }
 .vp-link-parent  { background:#eef3ec; color:#4a6b4a; border-color:#cfe0cb; }
@@ -89,7 +92,7 @@
   height: 18px;
   border-radius: 2px;
   /* color set inline per group via --vp-accent CSS var */
-  background: var(--vp-accent, #b8804a);
+  background: var(--vp-accent, #667eea);
 }
 .vp-group-name {
   font-size: 13px;
@@ -176,13 +179,15 @@
 }
 /* Dept badge */
 .vp-badge-dept {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 10px;
-  background: var(--paper-edge, #ece6d8);
-  color: var(--ink-soft, #2b3f63);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--paper-soft, #F8F8F7);
+  color: var(--body-muted, #767676);
   border: 1px solid var(--line);
   white-space: nowrap;
+  letter-spacing: .02em;
 }
 
 .vp-card-meta {
@@ -305,19 +310,19 @@
     {% if show_dept %}{{ dept_badge(item) }}{% endif %}
     {% if show_status %}{{ status_chip(item) }}{% endif %}
     {% if item.needs_human %}
-    <span class="vp-decision-chip" title="Décision attendue de Joris">⬥ Décision</span>
+    <span class="vp-decision-chip" title="Décision attendue de Joris">Décision</span>
     {% endif %}
     {% if item.budget %}
-    <span class="vp-budget-chip" title="Budget réel-équivalent (hors cache){% if item.budget_pct %} · {{ item.budget_pct }} du budget hebdo{% endif %}">💰 {{ item.budget }}{% if item.budget_pct %} · {{ item.budget_pct }}{% endif %}</span>
+    <span class="vp-budget-chip" title="Budget réel-équivalent (hors cache){% if item.budget_pct %} · {{ item.budget_pct }} du budget hebdo{% endif %}">{{ item.budget }}{% if item.budget_pct %} · {{ item.budget_pct }}{% endif %}</span>
     {% endif %}
     {% if item.due %}
     <span class="vp-due-chip{% if item.overdue %} vp-due-overdue{% endif %}"
-          title="Échéance {{ item.due }}">⏱ {{ item.due }}</span>
+          title="Échéance {{ item.due }}">échéance {{ item.due }}</span>
     {% endif %}
     {% if item.links %}
-      {% for n in item.links.get('parent', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-parent" title="Parent #{{ n }}">↳ #{{ n }}</a>{% endfor %}
-      {% for n in item.links.get('blocks', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-blocks" title="Bloque #{{ n }}">⛔ #{{ n }}</a>{% endfor %}
-      {% for n in item.links.get('relates', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-relates" title="Lié à #{{ n }}">↔ #{{ n }}</a>{% endfor %}
+      {% for n in item.links.get('parent', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-parent" title="Parent #{{ n }}">parent #{{ n }}</a>{% endfor %}
+      {% for n in item.links.get('blocks', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-blocks" title="Bloque #{{ n }}">bloque #{{ n }}</a>{% endfor %}
+      {% for n in item.links.get('relates', []) %}<a href="/kanban/card/{{ n }}" onclick="event.stopPropagation()" class="vp-link-chip vp-link-relates" title="Lié à #{{ n }}">lié #{{ n }}</a>{% endfor %}
     {% endif %}
     {% if item.context_url %}
     <a href="{{ item.context_url }}" target="_blank" rel="noopener"
@@ -359,7 +364,7 @@
 {% macro render_group(group_name, cards, accent_map, show_status=False, show_dept=True) %}
 {% if cards %}
 <div class="vp-group">
-  <div class="vp-group-header" style="--vp-accent: {{ accent_map.get(group_name, '#b8804a') }};">
+  <div class="vp-group-header" style="--vp-accent: {{ accent_map.get(group_name, '#667eea') }};">
     <div class="vp-group-accent"></div>
     <span class="vp-group-name">{{ group_name }}</span>
     <span class="vp-group-count">{{ cards | length }} carte{{ 's' if cards | length != 1 else '' }}</span>
@@ -393,7 +398,7 @@
     {{ render_group(proj_name, cards, accents_project, show_status=True, show_dept=True) }}
     {% if proj_graphs and proj_graphs.get(proj_name) %}
     <details class="vp-graph">
-      <summary>🕸 Carte des liens — {{ proj_name }}</summary>
+      <summary>Carte des liens — {{ proj_name }}</summary>
       <div class="mermaid">{{ proj_graphs.get(proj_name) }}</div>
     </details>
     {% endif %}
@@ -446,7 +451,7 @@
 <div class="vp-panel" id="vp-panel-recent" role="tabpanel" hidden>
   {% if by_date_added %}
   <div class="vp-group">
-    <div class="vp-group-header" style="--vp-accent:#8a6d3b;">
+    <div class="vp-group-header" style="--vp-accent:#667eea;">
       <div class="vp-group-accent"></div>
       <span class="vp-group-name">Ajoutées récemment</span>
       <span class="vp-group-count">{{ by_date_added | length }} carte{{ 's' if by_date_added | length != 1 else '' }}</span>

@@ -62,13 +62,13 @@
     {% if decision_groups %}
     {% for grp in decision_groups %}
     <h3 class="section-subheading" style="margin-top:18px; font-size:14px; color:var(--body-muted);">
-      ⬥ {% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% else %}Décisions — {{ grp.label }}{% endif %} ({{ grp.cards|length }})
+      {% if grp.owner == 'rnd' %}Décisions R&amp;D / build{% else %}Décisions — {{ grp.label }}{% endif %} ({{ grp.cards|length }})
     </h3>
     <div class="decisions-grid">
       {% for c in grp.cards %}
       <div id="rnd-card-{{ c.id }}" class="decision-card" style="display:block;">
         <a href="/kanban/card/{{ c.id }}" style="text-decoration:none; display:block; color:inherit;">
-          <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · ⏱ {{ c.due }}{% endif %}</div>
+          <div class="decision-card-count" style="font-size:13px; color:var(--ochre-deep); font-weight:600;">#{{ c.id }}{% if c.due %} · échéance {{ c.due }}{% endif %}</div>
           <div class="decision-card-title">{{ c.title or c.summary or 'Décision' }}</div>
           {% if c.summary and c.summary != c.title %}<div class="decision-card-sub" style="font-size:13px; color:var(--body-soft); margin-top:4px;">{{ c.summary }}</div>{% endif %}
           <div class="decision-card-cta" style="margin-top:8px; font-size:12px; text-transform:uppercase; color:var(--ochre-deep); letter-spacing:0.04em;">Décider →</div>
@@ -91,7 +91,7 @@
 <section class="cabinet-section" aria-labelledby="merge-ready-heading">
   <h2 id="merge-ready-heading" class="section-heading">
     <span class="section-heading-number">1a.</span>
-    🟢 Prêt à merger
+    Prêt à merger
   </h2>
   <div class="decisions-grid">
     {% for pr in merge_ready %}
