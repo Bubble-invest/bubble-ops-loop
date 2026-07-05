@@ -76,6 +76,7 @@ DRAINED="$WORK/kanban_queue.drained"
 # Entry B: will "fail" (fake gh errors for tasks matching *-fail-*).
 cat > "$QUEUE" <<'EOF'
 {"task":"drain-test-ok-1","severity":"kanban_only","message":"(kanban-only emit) OK card","steps":[],"kanban_items":[{"title":"Drain fixture OK card","type":"incident","priority":"normal","owner":"rnd"}]}
+{"task":"drain-test-ok-2-budget","severity":"kanban_only","message":"(kanban-only emit) OK card w/ budget","steps":[],"kanban_items":[{"title":"Drain fixture OK card with budget","type":"chore","priority":"normal","owner":"rnd","budget":25}]}
 {"task":"drain-test-fail-1","severity":"kanban_only","message":"(kanban-only emit) FAIL card","steps":[],"kanban_items":[{"title":"Drain fixture FAIL card","type":"incident","priority":"normal","owner":"rnd"}]}
 EOF
 
@@ -106,6 +107,10 @@ if [[ "$1" == "issue" && "$2" == "create" ]]; then
     if [[ "${args[$i]}" == "--title" ]]; then
       title="${args[$((i+1))]}"
     fi
+    # #544: capture every --label so the test can assert a budget:$N label lands.
+    if [[ "${args[$i]}" == "--label" ]]; then
+      echo "${args[$((i+1))]}" >> "${DRAIN_TEST_LABELS:-/dev/null}"
+    fi
   done
   if grep -q "emit-task: drain-test-fail-1" "$body" 2>/dev/null || [[ "$title" == *"FAIL card"* ]]; then
     echo "error: simulated gh failure for fail-path fixture" >&2
@@ -118,7 +123,8 @@ exit 0
 FAKEGH
 chmod +x "$FAKEBIN/gh"
 
-DRAIN_OUT=$(PATH="$FAKEBIN:$PATH" KANBAN_QUEUE="$QUEUE" DRAIN_DRY_RUN=0 bash "$DRAIN" 2>&1)
+LABELS_FILE="$WORK/captured-labels.txt"
+DRAIN_OUT=$(PATH="$FAKEBIN:$PATH" KANBAN_QUEUE="$QUEUE" DRAIN_TEST_LABELS="$LABELS_FILE" DRAIN_DRY_RUN=0 bash "$DRAIN" 2>&1)
 DRAIN_RC=$?
 
 [[ "$DRAIN_RC" -eq 2 ]] && ok "drain exits 2 (partial: one failed, expected)" || bad "drain exit was $DRAIN_RC, expected 2"
@@ -128,6 +134,40 @@ echo "$DRAIN_OUT" | grep -q "created https://github.com/Bubble-invest/bubble-ops
 
 echo "$DRAIN_OUT" | grep -q "FAILED for 'Drain fixture FAIL card'" \
   && ok "FAIL entry reported as failed" || bad "FAIL entry not reported as failed. Output: $DRAIN_OUT"
+
+# ── #544: every drained card must carry a budget:$N label ────────────────────
+# The budget-less OK entry gets the DRAIN_DEFAULT_BUDGET ($10); the entry that
+# carried budget:25 keeps its own value. Neither may land budget-less.
+if [[ -f "$LABELS_FILE" ]]; then
+  grep -qx 'budget:$10' "$LABELS_FILE" \
+    && ok "budget-less drained card got the default budget:\$10 label (#544)" \
+    || bad "no budget:\$10 default label on the budget-less card. Labels: $(cat "$LABELS_FILE")"
+  grep -qx 'budget:$25' "$LABELS_FILE" \
+    && ok "drained card with budget:25 kept its own budget:\$25 label (#544)" \
+    || bad "budget:\$25 label missing for the card that carried budget=25. Labels: $(cat "$LABELS_FILE")"
+else
+  bad "no labels captured — drain didn't pass --label to gh issue create"
+fi
+
+# #544 hardening: a mis-typed DRAIN_DEFAULT_BUDGET must NOT produce a malformed
+# budget:$abc label — it falls back to the hardcoded 10.
+QUEUE_BAD="$WORK/kanban_queue_baddefault.jsonl"
+LABELS_BAD="$WORK/captured-labels-baddefault.txt"
+cat > "$QUEUE_BAD" <<'EOF'
+{"task":"drain-test-baddefault","severity":"kanban_only","message":"(kanban-only) bad default","steps":[],"kanban_items":[{"title":"Drain fixture bad-default card","type":"chore","priority":"normal","owner":"rnd"}]}
+EOF
+PATH="$FAKEBIN:$PATH" KANBAN_QUEUE="$QUEUE_BAD" DRAIN_TEST_LABELS="$LABELS_BAD" \
+  DRAIN_DEFAULT_BUDGET="abc" DRAIN_DRY_RUN=0 bash "$DRAIN" >/dev/null 2>&1 || true
+if [[ -f "$LABELS_BAD" ]]; then
+  grep -qx 'budget:$10' "$LABELS_BAD" \
+    && ok "mis-typed DRAIN_DEFAULT_BUDGET=abc falls back to budget:\$10 (no malformed label) (#544)" \
+    || bad "bad DRAIN_DEFAULT_BUDGET did not fall back to \$10. Labels: $(cat "$LABELS_BAD")"
+  grep -q 'budget:\$abc' "$LABELS_BAD" \
+    && bad "malformed budget:\$abc label was stamped (should never happen)" \
+    || ok "no malformed budget:\$abc label stamped (#544)"
+else
+  bad "no labels captured for the bad-default case"
+fi
 
 # The OK entry must be gone from the live queue and archived; the FAIL entry
 # must remain in the live queue (fail-open: nothing lost, nothing invented).
