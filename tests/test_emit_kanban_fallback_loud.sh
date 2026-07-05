@@ -52,7 +52,8 @@ stderr_output=$(
     task=test-emit-fallback-loud \
     title="Bug 262 fallback test card" \
     type=incident \
-    owner=rnd 2>&1 >/dev/null
+    owner=rnd \
+    budget=10 2>&1 >/dev/null
 )
 exit_code=$?
 
@@ -90,7 +91,8 @@ exit2=$(
     task=test-emit-fallback-loud-2 \
     title="Second card — still exits 0" \
     type=findings \
-    owner=ben 2>/dev/null; echo $?
+    owner=ben \
+    budget=5 2>/dev/null; echo $?
 )
 [ "$exit2" -eq 0 ] || fail "second emit call returned $exit2, expected 0"
 pass "second emit call exits 0"
@@ -180,7 +182,8 @@ bash "$EMITTER" \
   task=test-536-empty-ghtoken \
   title="536 empty-GH_TOKEN guard card" \
   type=incident \
-  owner=rnd >/dev/null 2>&1
+  owner=rnd \
+  budget=10 >/dev/null 2>&1
 
 [ -f "$MARKER" ] \
   || fail "empty GH_TOKEN poisoned resolution: gh issue create was NOT reached (the #536 bug — emit fell to the queue instead of the board)"
