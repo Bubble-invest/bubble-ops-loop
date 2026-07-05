@@ -1684,7 +1684,11 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
             scalar_part = f"{k}={v}"
             break
     bits = [b for b in (label, date_part, scalar_part) if b]
-    return " · ".join(bits) if len(bits) > 1 else label
+    full = " · ".join(bits) if len(bits) > 1 else label
+    # Same truncation contract as steps 2-4 (_fmt, above): a large payload
+    # scalar must never blow the title past max_len (#503 — step 5 was the
+    # one path added by #460/#213 that forgot to route through _fmt).
+    return full[:max_len] + ("…" if len(full) > max_len else "")
 
 
 # Sentinel `kind` for the one synthetic "N notes traitées" summary item
