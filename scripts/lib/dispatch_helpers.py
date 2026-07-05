@@ -1132,23 +1132,36 @@ def materialize_due_missions_for_tick(
                 write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
-        # Guard (#442): never write a bare stub for a DEDICATED-PROMPT mission,
-        # regardless of its output_queue. #302 above only covers the literal
-        # `queues/gates` path — but a dedicated-prompt mission (one with its own
-        # `missions/<id>/PROMPT.md`, e.g. `linkedin_sage_batch`, `research_draft`)
-        # ALWAYS has its real output hand-authored by the subagent that runs that
-        # prompt, no matter which queue it targets. The bare descriptor written
-        # below (id/mission_id/kind/created_at/created_by, no payload) was never
-        # meant to BE the card — it is a placeholder the subagent is supposed to
-        # overwrite with the real draft. When the mission's run yields no content
-        # (empty result — the upstream funnel was dry, e.g. no topics to draft),
-        # the subagent has nothing to overwrite the stub with, and the bare stub
-        # is left behind as a phantom, empty "decision" card in the cockpit
-        # (board #442 — draft-linkedin_sage_batch-20260621, draft-research_draft
-        # -20260620, both 11-12 days old, EMPTY, created_by=materialize_due_missions).
-        # Fix: suppress the stub for ANY dedicated-prompt mission the same way
-        # #302 already suppresses it for queues/gates — the subagent is solely
-        # responsible for writing its own card if and when it has real content.
+        # Guard (#442, defense-in-depth GENERALIZATION of #302): never write a
+        # bare stub for a DEDICATED-PROMPT mission, regardless of its output_queue.
+        #
+        # Ground truth on the board-#442 missions (verified against the LIVE content
+        # dept.yaml, 2026-07-05): BOTH offending missions target `queues/gates`, so
+        # the #302 guard ABOVE already suppresses their bare stub today:
+        #   - research_draft      → output_queue=queues/gates, SHIM-resolved
+        #                           (NO missions/research_draft/PROMPT.md) — covered
+        #                           by the #302 `queues/gates` guard above.
+        #   - linkedin_sage_batch → output_queue=queues/gates, DEDICATED-prompt
+        #                           (has missions/linkedin_sage_batch/PROMPT.md) —
+        #                           also covered by the #302 guard above.
+        # The two board-#442 phantom cards (draft-research_draft-20260620,
+        # draft-linkedin_sage_batch-20260621, both EMPTY, created_by=
+        # materialize_due_missions) were written BEFORE #302 landed (2026-06-26);
+        # they were archived to queues/gates/.processed/ and are now also excluded
+        # from the cockpit view (console .processed exclusion). So the ROOT MECHANISM
+        # for the board-#442 cards is already closed by #302 for both missions.
+        #
+        # This guard adds coverage for a case #302 does NOT reach: a dedicated-prompt
+        # mission whose output_queue is something OTHER than queues/gates (e.g.
+        # queues/drafts, queues/research). For any such mission the real card is
+        # ALWAYS hand-authored by the subagent that runs its PROMPT.md; the bare
+        # descriptor written below (id/mission_id/kind/created_at/created_by, no
+        # payload) is only ever meant to be a placeholder the subagent overwrites.
+        # When that run yields no content (dry funnel), nothing overwrites it and a
+        # phantom empty card would be left behind. No LIVE mission is in that shape
+        # today, so this is a preventative invariant, not a repro fix — kept because
+        # it is cheap, harmless (it never fires for shim-resolved missions, whose
+        # stub IS the legitimate hand-off), and mirrors the #302 pattern exactly.
         if _mission_authors_own_marker(repo_dir, {"id": mid}):
             print(
                 f"[materialize] suppressed bare draft stub for mission={mid!r}"
