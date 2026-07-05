@@ -17,15 +17,15 @@
   {% set fleet = agent_budgets.get('__fleet__') if agent_budgets else None %}
   {% if fleet and fleet.defined %}
   <p class="page-hero-lede budget-fleet-total">
-    Budget cette semaine&nbsp;:
+    Enveloppe opérationnelle cette semaine&nbsp;:
     dépensé <span class="ochre-num">${{ '%.2f'|format(fleet.spent) }}</span>
-    sur ${{ '%.2f'|format(fleet.budget) }} de budget
+    sur ${{ '%.2f'|format(fleet.budget) }} d'enveloppe
     <span class="budget-pct budget-pct--{{ fleet.level }}">{{ '%.0f'|format(fleet.pct) }}%</span>.
   </p>
   {% else %}
   <p class="page-hero-lede budget-fleet-total" style="font-size:.85em;opacity:.7">
-    Budget cette semaine&nbsp;: <span class="budget-undef">non défini</span> — aucun
-    <code>budget_usd</code> posé dans les <code>dept.yaml</code> pour l'instant
+    Enveloppe opérationnelle cette semaine&nbsp;: <span class="budget-undef">non définie</span> — aucun
+    agent avec une enveloppe posée pour l'instant
     (dépensé ${{ '%.2f'|format(fleet.spent if fleet else 0) }} au total).
   </p>
   {% endif %}
@@ -50,8 +50,8 @@
         <th style="padding:.5em .6em">Agent / Job</th>
         <th style="padding:.5em .6em;text-align:right">Aujourd'hui</th>
         <th style="padding:.5em .6em;text-align:right">7&nbsp;jours</th>
-        <th style="padding:.5em .6em;text-align:right">Budget&nbsp;(7j)</th>
-        <th style="padding:.5em .6em">Budget&nbsp;utilisé</th>
+        <th style="padding:.5em .6em;text-align:right" title="Enveloppe opérationnelle hebdomadaire de l'agent — PAS le budget de mission (voir dept.yaml pour ça)">Enveloppe&nbsp;(hebdo)</th>
+        <th style="padding:.5em .6em" title="Dépense totale de la semaine (session complète) vs l'enveloppe opérationnelle hebdomadaire de l'agent">Budget&nbsp;opérationnel&nbsp;(7j)</th>
         <th style="padding:.5em .6em;text-align:right;opacity:.6">Cache&nbsp;(7j)</th>
         <th style="padding:.5em .6em;text-align:right">Sessions&nbsp;(7j)</th>
         <th style="padding:.5em .6em">Modèles&nbsp;(7j)</th>
@@ -67,7 +67,7 @@
         </td>
         <td style="padding:.5em .6em;text-align:right;font-weight:600">${{ '%.2f'|format(a.week.cost) }}</td>
         <td style="padding:.5em .6em;text-align:right">
-          {% if bud and bud.defined %}${{ '%.2f'|format(bud.budget) }}{% else %}<span style="opacity:.4" title="aucun budget_usd posé dans le dept.yaml">non défini</span>{% endif %}
+          {% if bud and bud.defined %}${{ '%.2f'|format(bud.budget) }}{% else %}<span style="opacity:.4" title="aucune enveloppe opérationnelle posée pour cet agent">non définie</span>{% endif %}
         </td>
         <td style="padding:.5em .6em;min-width:120px">
           {% if bud and bud.defined %}
