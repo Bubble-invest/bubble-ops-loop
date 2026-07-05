@@ -10,22 +10,29 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from console.services import cost_tracker, github_reader
+from console import settings
+from console.services import cost_tracker
 
 router = APIRouter()
 
 
 def _agent_budgets(report: dict) -> dict:
-    """Per-agent budget-vs-spend for /costs (board #524d).
+    """Per-agent SPEND-vs-OPERATING-ENVELOPE for /costs (board #524d, fixed
+    2026-07-05 — see settings.OPERATING_ENVELOPE_WEEKLY_USD docstring for why).
 
-    For each agent in the report, its budget = Σ budget_usd across its dept's
-    recurring_missions[] (same read-only source as the home Coûts section);
-    spent = its week real-$ cost. Returns {agent_key: budget_status_dict} plus
-    a fleet-total under key "__fleet__": {spent, budget, pct, level, defined}.
+    spent = the agent's week real-$ cost (its WHOLE session spend — interactive
+    + operating + dev, not just missions). budget = the agent's weekly
+    operating envelope from settings.OPERATING_ENVELOPE_WEEKLY_USD, looked up
+    by the FULL report agent-key (e.g. "tony (local)") since the envelope is
+    per-agent-session, not per-dept. Returns {agent_key: budget_status_dict}
+    plus a fleet-total under key "__fleet__": {spent, budget, pct, level,
+    defined} (fleet budget = Σ envelopes of agents that have one defined).
 
-    An agent whose base name doesn't map to a dept with a dept.yaml, or whose
-    dept has no budget_usd, gets a defined=False row (rendered "—"). Fully
-    guarded: any lookup failure degrades that agent to no-budget, never a 500.
+    This is DELIBERATELY NOT the dept.yaml mission_budget_total lookup (that
+    stays on the home page's per-dept "Coûts" section — a mission-cycle
+    budget, not a whole-session envelope). An agent key not in the envelope
+    map gets a defined=False row (rendered "—"). Fully guarded: any lookup
+    failure degrades that agent to no-envelope, never a 500.
     """
     agents = report.get("agents") if isinstance(report, dict) else None
     out: dict = {}
@@ -40,14 +47,7 @@ def _agent_budgets(report: dict) -> dict:
             spent = float(a.get("week", {}).get("cost", 0.0))
         except (AttributeError, TypeError, ValueError):
             spent = 0.0
-        base = cost_tracker.agent_key_base(key)
-        slug = cost_tracker._AGENT_KEY_TO_SLUG_ALIAS.get(base, base)
-        budget = None
-        try:
-            dept_yaml = github_reader.load_dept_yaml(slug)
-            budget = cost_tracker.mission_budget_total(dept_yaml)
-        except Exception:  # noqa: BLE001 — a bad/missing dept.yaml → no budget, not a 500
-            budget = None
+        budget = settings.OPERATING_ENVELOPE_WEEKLY_USD.get(key)
         out[key] = cost_tracker.budget_status(spent, budget)
         fleet_spent += spent
         if budget is not None and budget > 0:

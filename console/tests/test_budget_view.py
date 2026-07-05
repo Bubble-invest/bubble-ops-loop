@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from console.services import cost_tracker
 
 
@@ -172,7 +170,12 @@ def test_dept_budgets_skips_non_live(monkeypatch):
     assert [r["slug"] for r in rows] == ["live1"]
 
 
-# ── /costs page: by-agent budget column + fleet total + degradation ──────
+# ── /costs page: by-agent SPEND-vs-OPERATING-ENVELOPE + fleet + degradation ──
+# Fixed 2026-07-05 (Joris's screenshot: tony 1368%, fleet 1562%). Root cause was
+# dividing a WEEK of total agent session-spend by ONE mission-cycle's
+# budget_usd. /costs now compares week spend to a per-agent WEEKLY OPERATING
+# ENVELOPE (settings.OPERATING_ENVELOPE_WEEKLY_USD) — NOT the dept.yaml mission
+# budget (that stays on the home page's per-dept "Coûts" section, unchanged).
 def _write_session(proj: Path, dirname: str, model: str, u: dict) -> None:
     import json
     d = proj / dirname
@@ -184,34 +187,33 @@ def _write_session(proj: Path, dirname: str, model: str, u: dict) -> None:
     )
 
 
-def _build_costs_client(monkeypatch, tmp_path, budget_usd):
-    """Build a /costs TestClient whose cost report attributes ONE session to the
-    'fixture' dept, with dept.yaml carrying `budget_usd` (None → no budget key).
+def _build_costs_client(monkeypatch, tmp_path, *, agent_dirname="bubble-ops-ben",
+                        model="claude-sonnet-4-6",
+                        usage=None, envelope_json=None):
+    """Build a /costs TestClient whose cost report attributes ONE session to an
+    agent (default dir → classifies to 'ben', which IS in the default envelope
+    map at $90/week). Optionally sets OPERATING_ENVELOPE_JSON to override the
+    envelope map from the env (no dept.yaml / READ_FROM_DISK involved anymore —
+    the /costs denominator no longer reads mission budgets at all).
 
     We set HOME to a temp tree so the freshly-imported cost_tracker resolves its
     PROJECTS_DIR/CACHE from THERE (patching the old module reference is lost when
-    console.* is re-imported below), and READ_FROM_DISK for the dept.yaml.
+    console.* is re-imported below).
     """
+    if usage is None:
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0,
+                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     home = tmp_path / "home"
     proj = home / ".claude" / "projects"
     proj.mkdir(parents=True)
-    _write_session(proj, "-home-claude-agents-bubble-ops-fixture",
-                   "claude-sonnet-4-6",
-                   {"input_tokens": 1_000_000, "output_tokens": 0,
-                    "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0})
-    root = tmp_path / "depts"
-    (root / "bubble-ops-fixture").mkdir(parents=True)
-    mission = {"id": "m1"}
-    if budget_usd is not None:
-        mission["budget_usd"] = budget_usd
-    (root / "bubble-ops-fixture" / "dept.yaml").write_text(
-        yaml.safe_dump({"department": {"slug": "fixture", "level": "ops"},
-                        "recurring_missions": [mission]}, sort_keys=False),
-        encoding="utf-8",
-    )
+    _write_session(proj, f"-home-claude-agents-{agent_dirname}", model, usage)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "test-token-xyz")
-    monkeypatch.setenv("READ_FROM_DISK", str(root))
+    monkeypatch.delenv("READ_FROM_DISK", raising=False)
+    if envelope_json is not None:
+        monkeypatch.setenv("OPERATING_ENVELOPE_JSON", envelope_json)
+    else:
+        monkeypatch.delenv("OPERATING_ENVELOPE_JSON", raising=False)
     import sys
     for mod in list(sys.modules):
         if mod == "console" or mod.startswith("console."):
@@ -223,28 +225,100 @@ def _build_costs_client(monkeypatch, tmp_path, budget_usd):
     return c
 
 
-def test_costs_page_shows_budget_column_and_degrades(monkeypatch, tmp_path):
-    """With NO budget_usd in the fixture dept.yaml, /costs must still render the
-    Budget column + fleet-total line, both saying 'non défini' — graceful."""
-    c = _build_costs_client(monkeypatch, tmp_path, budget_usd=None)
+def test_costs_page_agent_not_in_envelope_map_degrades(monkeypatch, tmp_path):
+    """An agent dir that classifies to a name NOT in the envelope map (e.g. a
+    brand-new/unmapped dept) must still render the column + fleet-total line,
+    both saying 'non définie' — graceful, same as the old missing-budget path."""
+    c = _build_costs_client(monkeypatch, tmp_path,
+                             agent_dirname="bubble-ops-brandnewdept")
     r = c.get("/costs")
     assert r.status_code == 200
     body = r.text
-    assert "Budget&nbsp;(7j)" in body            # the new column header
-    assert "non défini" in body                  # graceful: no budget_usd set
-    assert "Budget cette semaine" in body        # the fleet-total line
-    # the agent row exists but has no bar (undefined budget)
-    assert "budget-bar-fill--" not in body
+    assert "Enveloppe&nbsp;(hebdo)" in body       # the renamed column header
+    assert "non définie" in body                  # graceful: no envelope mapped
+    assert "budget-bar-fill--" not in body         # no bar for the undefined agent
 
 
-def test_costs_page_shows_populated_budget_bar(monkeypatch, tmp_path):
-    """With a budget_usd SET on the fixture dept.yaml, /costs renders a real
-    spent-vs-budget % (over-budget here → red 'over' level) + a fleet total.
-    1M input sonnet tokens = $3 real cost; budget $1 → 300% over."""
-    c = _build_costs_client(monkeypatch, tmp_path, budget_usd=1)
+def test_costs_page_shows_sane_pct_not_old_1368_nonsense(monkeypatch, tmp_path):
+    """The original bug: tony showed 1368% because $109 week-spend was divided
+    by an $8 ONE-DAY mission budget. With the operating-envelope fix, a
+    realistic spend now yields a SANE percentage. 1M input sonnet tokens =
+    $3.00 real cost; 'ben' envelope default is $90 → 3.33%, well under 100%."""
+    c = _build_costs_client(monkeypatch, tmp_path, agent_dirname="bubble-ops-ben")
     r = c.get("/costs")
     assert r.status_code == 200
     body = r.text
-    assert "budget-bar-fill--over" in body        # red bar (spent ≫ budget)
+    assert "budget-pct--ok" in body
+    assert "1368" not in body
+    assert "budget-pct--over" not in body
+    assert "Enveloppe opérationnelle cette semaine" in body   # fleet-total copy
+
+
+def test_costs_page_envelope_over_100_still_shows_over_level(monkeypatch, tmp_path):
+    """A spend that genuinely exceeds ITS OWN weekly envelope still renders the
+    red 'over' level — the fix changes the denominator, not the thresholds."""
+    # 1M input tokens on sonnet = $3.00 real cost; override ben's envelope to
+    # $1 so $3.00 spend is a genuine 300% over-envelope case.
+    c = _build_costs_client(monkeypatch, tmp_path, agent_dirname="bubble-ops-ben",
+                             envelope_json='{"ben": 1}')
+    r = c.get("/costs")
+    assert r.status_code == 200
+    body = r.text
+    assert "budget-bar-fill--over" in body
     assert "budget-pct--over" in body
-    assert "de budget" in body                     # fleet-total copy
+
+
+def test_costs_page_fleet_row_sums_envelopes(monkeypatch, tmp_path):
+    """The fleet '__fleet__' total sums the envelopes of agents that HAVE one
+    defined (skips agents without an envelope) — verified directly against the
+    route helper rather than scraping HTML, since the fleet is a single number."""
+    monkeypatch.delenv("OPERATING_ENVELOPE_JSON", raising=False)
+    import sys
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console.routes.costs import _agent_budgets
+    report = {"agents": {
+        "ben": {"week": {"cost": 10.0}},          # envelope 90 (default)
+        "maya": {"week": {"cost": 20.0}},         # envelope 130 (default)
+        "brandnewdept": {"week": {"cost": 5.0}},  # no envelope → excluded from fleet budget
+    }}
+    out = _agent_budgets(report)
+    fleet = out["__fleet__"]
+    assert fleet["defined"] is True
+    assert fleet["budget"] == 220.0     # 90 + 130, brandnewdept excluded
+    assert fleet["spent"] == 35.0       # 10 + 20 + 5, ALL spend counted
+
+
+def test_operating_envelope_json_override_merges_over_defaults(monkeypatch):
+    """OPERATING_ENVELOPE_JSON merges OVER the defaults: an existing key is
+    replaced, a new key is added, defaults not mentioned are untouched."""
+    monkeypatch.setenv("OPERATING_ENVELOPE_JSON",
+                       '{"ben": 999, "newagent": 42}')
+    import sys
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD["ben"] == 999.0        # overridden
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD["newagent"] == 42.0    # added
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD["maya"] == 130         # untouched default
+
+
+def test_operating_envelope_json_malformed_falls_back_to_defaults(monkeypatch):
+    """A malformed OPERATING_ENVELOPE_JSON (bad JSON, or not an object) must
+    degrade to the defaults, never crash the console on boot."""
+    monkeypatch.setenv("OPERATING_ENVELOPE_JSON", "not json{{{")
+    import sys
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD["ben"] == 90
+
+    monkeypatch.setenv("OPERATING_ENVELOPE_JSON", "[1, 2, 3]")
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings as settings2
+    assert settings2.OPERATING_ENVELOPE_WEEKLY_USD["ben"] == 90

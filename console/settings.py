@@ -1,6 +1,7 @@
 """Console settings — paths + env-var resolution."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -50,6 +51,65 @@ WEEKLY_BUDGET_USD = float(os.environ.get("BUBBLE_WEEKLY_BUDGET_USD", "4500"))
 # (Notion v5 line 1011 — Tailscale-only, not clearnet).
 BIND_HOST = os.environ.get("CONSOLE_BIND_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("CONSOLE_BIND_PORT", "8642"))
+
+# Per-agent WEEKLY OPERATING ENVELOPE (USD, real-equivalent non-cache cost).
+# The DENOMINATOR for /costs' per-agent "Enveloppe (hebdo)" column (board
+# #524d follow-up — Joris's "Option B" fix, 2026-07-05). This is deliberately
+# NOT the same thing as a mission's `budget_usd` in dept.yaml: the /costs
+# numerator is an agent's WHOLE 7-day session spend (interactive + operating +
+# dev), not just its recurring missions, so the right denominator is a
+# per-agent-session weekly envelope, not a Σ of one daily mission cycle's
+# budget. Keyed by the exact agent key the cost report uses (e.g.
+# "tony (local)" — includes the disambiguation suffix, unlike the dept-budget
+# rollup which strips it). An agent key NOT in this map has no envelope
+# (defined=False, renders "—") — same graceful degradation as the old
+# mission-budget lookup.
+#
+# Defaults are Rick's proposal from measured actuals + ~30-50% headroom —
+# tune via OPERATING_ENVELOPE_JSON (a JSON object merged OVER these defaults)
+# without a code change, e.g.:
+#   OPERATING_ENVELOPE_JSON='{"tony (local)": 200, "newagent": 50}'
+_OPERATING_ENVELOPE_WEEKLY_USD_DEFAULTS: dict[str, float] = {
+    "rick": 800,
+    "miranda (jade-mac)": 200,
+    "claudette": 150,
+    "tony": 150,
+    "tony (local)": 150,
+    "maya": 130,
+    "accountant": 100,
+    "ben": 90,
+    "morty": 60,
+    "ellie": 30,
+    "eliot (mac-legacy)": 20,
+    "maya (mac-legacy)": 20,
+}
+
+
+def _load_operating_envelope() -> dict[str, float]:
+    """Defaults merged with an optional OPERATING_ENVELOPE_JSON override.
+
+    The env var, if set, must decode to a JSON object of {agent_key: USD};
+    anything else (bad JSON, non-dict, non-numeric values) is ignored for
+    that key (or the whole override) so a malformed env var degrades to the
+    defaults rather than crashing the console on boot.
+    """
+    envelope = dict(_OPERATING_ENVELOPE_WEEKLY_USD_DEFAULTS)
+    raw = os.environ.get("OPERATING_ENVELOPE_JSON", "")
+    if not raw:
+        return envelope
+    try:
+        override = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return envelope
+    if not isinstance(override, dict):
+        return envelope
+    for key, val in override.items():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            envelope[str(key)] = float(val)
+    return envelope
+
+
+OPERATING_ENVELOPE_WEEKLY_USD: dict[str, float] = _load_operating_envelope()
 
 
 def disk_mode() -> bool:
