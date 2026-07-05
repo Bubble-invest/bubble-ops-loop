@@ -106,8 +106,12 @@ try:
     print(item.get('body', ''))
     print(item.get('context_url', '') or '')
     print(item.get('telegram_ref', '') or '')
+    # budget: a legacy queued item (pre-#537) may lack one; emit '' and let the
+    # drain apply DRAIN_DEFAULT_BUDGET so the board stays budget-complete (#544).
+    _b = item.get('budget', '')
+    print(str(_b) if _b not in (None, '') else '')
 except Exception as e:
-    print('', '', 'incident', 'normal', '', '', '', '', sep='\n')
+    print('', '', 'incident', 'normal', '', '', '', '', '', sep='\n')
     sys.stderr.write('drain: parse error: ' + str(e) + '\n')
 " "$line" 2>/dev/null) || true
 
@@ -119,6 +123,7 @@ except Exception as e:
   OWNER=$(echo "$PARSED"    | sed -n '5p')
   BODY=$(echo "$PARSED"     | sed -n '6p')
   CONTEXT_URL=$(echo "$PARSED" | sed -n '7p')
+  BUDGET=$(echo "$PARSED"   | sed -n '9p')  # may be empty for a pre-#537 queued item
 
   if [ -z "$TITLE" ]; then
     echo "drain_kanban_queue: skipping unparseable line (archiving as failed): ${line:0:80}..." >&2
@@ -193,10 +198,22 @@ except Exception as e:
     docs|documentation)         type_label="type:docs"       ;;
   esac
 
+  # budget label (#544): keep the board budget-complete. A pre-#537 queued item
+  # may carry no budget — apply DRAIN_DEFAULT_BUDGET (default $10) so a drained
+  # card is never budget-less. Strip a leading $, keep only a positive integer.
+  budget_val="${BUDGET#\$}"
+  if ! echo "$budget_val" | grep -qE '^[1-9][0-9]*$'; then
+    budget_val="${DRAIN_DEFAULT_BUDGET:-10}"
+  fi
+  budget_label="budget:\$${budget_val}"
+  gh label create "$budget_label" --repo "$BOARD_REPO" --color "0e8a16" \
+    --description "Real-\$ per-run budget for this card" --force >/dev/null 2>&1 || true
+
   label_args=()
   [ -n "$dept_label" ] && label_args+=("--label" "$dept_label")
   label_args+=("--label" "$type_label")
   label_args+=("--label" "status:triage")
+  label_args+=("--label" "$budget_label")
 
   issue_url=$(gh issue create \
     --repo "$BOARD_REPO" \
