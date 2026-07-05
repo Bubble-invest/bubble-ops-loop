@@ -159,5 +159,80 @@ bash_d_out=$(
 [ -f "$QUEUE_D" ] || fail "(d) budget=\$20 (dollar-prefixed) was rejected. Output: $bash_d_out"
 pass "(d) a \$-prefixed integer budget (e.g. budget=\$20) is accepted"
 
+# ── Test (e): budget-reject fires a LOUD Telegram alert (loud-drop, not silent) ─
+# A fire-and-forget cron/agent tick has no human watching stderr, so a
+# silently-dropped card is the wrong failure mode for #537. The reject path must
+# ALSO fire a best-effort Telegram alert (same _kanban_queue_alert pattern).
+# We stub `curl` (shadowing PATH, same style as the ssh/sudo stubs) so the alert
+# never hits the network: the stub touches a marker file when it sees a Telegram
+# sendMessage call. We assert:
+#   (e1) with a STUB TELEGRAM_BOT_TOKEN + chat id set, the reject path attempts
+#        the alert (marker touched), AND still creates no card.
+#   (e2) with TELEGRAM_BOT_TOKEN="" the reject path does NOT attempt a send
+#        (stays hermetic — the guard no-ops), so the marker is NOT touched.
+STUBBIN_E="$TMPDIR_T/stubbin_e"
+mkdir -p "$STUBBIN_E"
+# Re-provide the ssh/sudo no-op stubs alongside the curl stub so gh-auth still
+# fails deterministically on this PATH too.
+cp "$STUBBIN/ssh" "$STUBBIN/sudo" "$STUBBIN_E/"
+TG_MARKER="$TMPDIR_T/telegram-alert-was-attempted"
+cat > "$STUBBIN_E/curl" <<EOF
+#!/usr/bin/env bash
+# No-op curl stub: if this is a Telegram sendMessage call, record that the alert
+# was attempted, then succeed quietly. Never touches the network.
+for a in "\$@"; do
+  case "\$a" in
+    *api.telegram.org*sendMessage*) touch "$TG_MARKER" ;;
+  esac
+done
+exit 0
+EOF
+chmod +x "$STUBBIN_E/curl"
+
+# (e1) STUB token + chat id set → alert attempted, still no card.
+QUEUE_E1="$TMPDIR_T/queue_e1.jsonl"
+rm -f "$TG_MARKER"
+out_e1=$(
+  PATH="$STUBBIN_E:$PATH" \
+  GH_TOKEN=bad_token_force_fail \
+  KANBAN_HOST=localhost:19999 \
+  KANBAN_QUEUE="$QUEUE_E1" \
+  TELEGRAM_BOT_TOKEN="stub-bot-token" \
+  BUBBLE_OPERATOR_CHAT_ID="stub-chat-id" \
+  bash "$EMITTER" \
+    task=test-budget-required-e1 \
+    title="No-budget card must alert loudly" \
+    type=incident \
+    owner=rnd 2>&1 >/dev/null
+)
+exit_e1=$?
+[ "$exit_e1" -eq 0 ] || fail "(e1) exit code was $exit_e1, expected 0"
+[ -f "$TG_MARKER" ] || fail "(e1) budget-reject did NOT attempt a Telegram alert (marker not touched). Got: $out_e1"
+[ ! -f "$QUEUE_E1" ] || fail "(e1) a card leaked into the fallback queue despite missing budget"
+pass "(e1) budget-reject fires a Telegram alert (loud drop) when a token+chat are set, and still creates no card"
+
+# (e2) TELEGRAM_BOT_TOKEN="" → guard no-ops, no send attempted (stays hermetic).
+QUEUE_E2="$TMPDIR_T/queue_e2.jsonl"
+rm -f "$TG_MARKER"
+out_e2=$(
+  PATH="$STUBBIN_E:$PATH" \
+  GH_TOKEN=bad_token_force_fail \
+  KANBAN_HOST=localhost:19999 \
+  KANBAN_QUEUE="$QUEUE_E2" \
+  TELEGRAM_BOT_TOKEN="" \
+  BUBBLE_OPERATOR_CHAT_ID="" \
+  bash "$EMITTER" \
+    task=test-budget-required-e2 \
+    title="No-budget card with empty token must stay silent" \
+    type=incident \
+    owner=rnd 2>&1 >/dev/null
+)
+exit_e2=$?
+[ "$exit_e2" -eq 0 ] || fail "(e2) exit code was $exit_e2, expected 0"
+[ ! -f "$TG_MARKER" ] || fail "(e2) alert was attempted despite empty TELEGRAM_BOT_TOKEN — guard failed, test is not hermetic"
+echo "$out_e2" | grep -q "budget= is required" \
+  || fail "(e2) expected the stderr 'budget= is required' error even with empty token. Got: $out_e2"
+pass "(e2) empty TELEGRAM_BOT_TOKEN → no Telegram send attempted (guard respected, stays hermetic)"
+
 echo ""
 echo "All budget-required tests passed."

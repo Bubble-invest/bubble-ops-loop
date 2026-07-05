@@ -119,6 +119,38 @@ if [ "${1:-}" = "--print-emit-key" ]; then
   exit 0
 fi
 
+# ── Budget-reject Telegram alert ─────────────────────────────────────────────
+# _budget_reject_alert — fire a Telegram alert when an emit is REJECTED for a
+# missing/invalid budget. Mirrors _kanban_queue_alert exactly (same env vars,
+# same guard, same best-effort curl): a fire-and-forget cron/agent tick doesn't
+# have a human watching stderr, so a silently-dropped card is the wrong failure
+# mode for #537 ("cards must be precise"). This makes the drop LOUD to a human.
+# Degrades silently (no send, no abort) when TELEGRAM_BOT_TOKEN or the chat id
+# is unset — keeps tests/dry-runs hermetic.
+_budget_reject_alert() {
+  local title="$1"
+  local owner="$2"
+  local task="$3"
+  local got="$4"
+  local tok="${TELEGRAM_BOT_TOKEN:-}"
+  local chat="${KANBAN_ALERT_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-}}"
+
+  if [ -z "$tok" ] || [ -z "$chat" ]; then
+    # No token or no chat_id — stderr error already emitted by caller; skip Telegram.
+    return 0
+  fi
+
+  local msg
+  msg="⚠️ emit REJECTED — missing/invalid budget= on card '${title}' from ${owner:-?} (task=${task}). Card NOT created. Add budget=<int USD> and retry. (Got: '${got}')"
+
+  # Best-effort POST; never let the alert itself crash the emitter.
+  curl -s -m 5 -o /dev/null \
+    "https://api.telegram.org/bot${tok}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=${msg}" \
+    2>/dev/null || true
+}
+
 # ── Budget is a MANDATORY emit input (board #537) ────────────────────────────
 # Every emitted card must carry a per-run USD budget so cost is attributable
 # per card from creation ("cards must be precise" — Joris, 2026-07-05). This is
@@ -127,9 +159,13 @@ fi
 # emit call fails LOUD on stderr but doesn't crash the calling agent's turn —
 # emission failures must never break a cron/agent tick), but we return BEFORE
 # any gh/dashboard emission happens, so no card is ever created without one.
+# In addition to the stderr error, fire a best-effort Telegram alert so a
+# silently-dropped card is loud to a human (a fire-and-forget tick has no human
+# on stderr) — same alert pattern as the fallback-queue case (_kanban_queue_alert).
 _BUDGET_STRIPPED="${BUDGET#\$}"
 if [ -z "$BUDGET" ] || ! echo "$_BUDGET_STRIPPED" | grep -qE '^[1-9][0-9]*$'; then
   echo "emit_kanban_item: budget= is required (integer USD, per-run) — every card must carry a budget. Got: '${BUDGET}'" >&2
+  _budget_reject_alert "$TITLE" "$OWNER" "$TASK" "$BUDGET"
   exit 0
 fi
 
