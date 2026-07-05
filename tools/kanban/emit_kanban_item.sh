@@ -13,11 +13,14 @@
 #     type=decision \
 #     priority=high \
 #     owner=rnd \
+#     budget=10 \
 #     actions=accept,reject,escalate \
 #     context_url=https://wiki/... \
 #     telegram_ref="https://t.me/c/123/456"
 #
-# Required args: task, title.
+# Required args: task, title, budget (integer USD, per-run — board #537: every card
+#           must carry a budget so cost is attributable per card from creation).
+#           A missing/invalid budget fails LOUD on stderr and creates NO card.
 # Optional: body, type (approval|decision|incident|findings|manual|bug|feature|infra|docs|chore|research),
 #           priority (normal|high|urgent), owner, actions (comma-separated), context_url, telegram_ref,
 #           diagram_mermaid (Mermaid source for decision diagrams, ≤3000 chars),
@@ -109,9 +112,24 @@ print(task + '::' + slug)
 
 # Dry-run hook for tests: \`emit_kanban_item.sh --print-emit-key task=… title=…\`
 # prints the computed dedup key and exits, exercising the REAL slug logic above
-# without touching GitHub.
+# without touching GitHub. Exempt from the budget gate below — it never creates
+# a card, so it doesn't need one.
 if [ "${1:-}" = "--print-emit-key" ]; then
   _emit_key "$TASK" "$TITLE"
+  exit 0
+fi
+
+# ── Budget is a MANDATORY emit input (board #537) ────────────────────────────
+# Every emitted card must carry a per-run USD budget so cost is attributable
+# per card from creation ("cards must be precise" — Joris, 2026-07-05). This is
+# a hard validation gate, not a soft warning: a missing or non-integer budget
+# must NOT create a card. We keep the existing "exit 0" convention (so a bad
+# emit call fails LOUD on stderr but doesn't crash the calling agent's turn —
+# emission failures must never break a cron/agent tick), but we return BEFORE
+# any gh/dashboard emission happens, so no card is ever created without one.
+_BUDGET_STRIPPED="${BUDGET#\$}"
+if [ -z "$BUDGET" ] || ! echo "$_BUDGET_STRIPPED" | grep -qE '^[1-9][0-9]*$'; then
+  echo "emit_kanban_item: budget= is required (integer USD, per-run) — every card must carry a budget. Got: '${BUDGET}'" >&2
   exit 0
 fi
 

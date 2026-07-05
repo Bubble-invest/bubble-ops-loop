@@ -134,6 +134,12 @@ echo "yaml_path=$YAML_PATH"
 
 # ---------------------------------------------------------------------------
 # Kanban emission — best-effort, degrades gracefully when dashboard is down
+#
+# budget: emit_kanban_item.sh now REQUIRES budget= (board #537 — every card
+# must carry a per-run USD budget). A dept→Rick request is a small triage/
+# investigate ask, not a build task, so default to $10 unless the caller
+# overrides via RICK_REQUEST_BUDGET. This is a placeholder default pending a
+# real per-request estimate from the calling dept (follow-up, not this card).
 # ---------------------------------------------------------------------------
 EMIT_KANBAN="/home/claude/scripts/emit_kanban_item.sh"
 KANBAN_STATUS="not_attempted"
@@ -154,6 +160,7 @@ if [ -x "$EMIT_KANBAN" ]; then
        type="incident" \
        priority="$PRIORITY" \
        owner="rick" \
+       budget="${RICK_REQUEST_BUDGET:-10}" \
        context_url="file://${YAML_PATH}" 2>/dev/null; then
     KANBAN_STATUS="emitted"
   else

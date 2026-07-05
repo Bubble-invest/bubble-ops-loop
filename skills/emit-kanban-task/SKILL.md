@@ -37,9 +37,9 @@ so you never have to figure out where the tool lives:
   type=<approval|decision|incident|findings|manual|bug|feature|infra|docs|chore|research> \
   priority=<normal|high|urgent> \
   owner=<your dept slug, e.g. ben|maya|tony|content|accountant|rnd|tonio> \
+  budget=<REQUIRED integer USD, per-run, e.g. 10 — see Budget guidance below> \
   proj=<optional project slug, e.g. bubble-shield, client-dev, cockpit, fund> \
   due=<optional YYYY-MM-DD> \
-  budget=<optional integer USD, e.g. 45 — the card's real-$ (cache-excluded) budget> \
   host=<optional local|vps — usually inferred from owner> \
   links=<optional typed links, e.g. parent:258;relates:318,324;blocks:340> \
   actions=<comma-separated, e.g. accept,investigate,escalate> \
@@ -48,10 +48,22 @@ so you never have to figure out where the tool lives:
   visual_attachments="<comma-separated repo-relative paths under outputs/>"
 ```
 
-Required: `task` + `title`. Everything else is optional but `body`, `type`, `priority`,
-`owner` make a card actionable rather than a mystery. The underlying tool exits 0 even on
-failure (emission must never break your tick) — so confirm it landed (see "Verify" below)
-rather than trusting the exit code.
+Required: `task` + `title` + **`budget`** (integer USD, per-run — every card must carry a
+budget so cost is attributable per card from creation; board #537). A missing or
+non-integer `budget=` makes the emit **fail loud and create no card** — you'll see a clear
+`budget= is required` error on stderr, and nothing lands on the board. Everything else is
+optional but `body`, `type`, `priority`, `owner` make a card actionable rather than a
+mystery. The underlying tool exits 0 even on a valid-but-failed emission (emission must
+never break your tick) — so confirm it landed (see "Verify" below) rather than trusting the
+exit code alone.
+
+**Picking a budget** (per-run/per-card USD estimate, tied to scope):
+- **Small** (~$2–5): a quick lookup, a one-file fix, a single triage pass.
+- **Medium** (~$10–20): a typical multi-step task — investigate + fix + test one thing.
+- **Large** (~$30–60): a multi-step build spanning several files, a PR with tests, or a
+  fleet-wide contract change.
+When unsure, round up slightly rather than under-budget — the number is a planning signal,
+not a hard cap.
 
 ## When to emit (and when NOT to)
 
@@ -91,6 +103,11 @@ lost — and does it matter?"* If yes to both → emit a card.
   (a Bubble Shield bug = `owner=security proj=bubble-shield`). Unknown slugs are auto-created.
 - **due** — `YYYY-MM-DD` deadline → a `due:<date>` label. Renders on the cockpit **timeline**
   (Échéances) view + sorts surfaced cards (overdue first). Malformed dates are ignored.
+- **budget** — **REQUIRED.** Integer USD, per-run (e.g. `budget=15`) → a `budget:$N` label.
+  This is the card's real-$ (cache-excluded) cost attribution — see "Picking a budget" above.
+  A missing, empty, or non-integer `budget=` is a **hard fail**: the emitter prints a clear
+  `budget= is required` error to stderr and creates no card at all (not even a queued
+  fallback). There is no default — every card must carry an explicit estimate.
 - **host** — `local` or `vps`; normally inferred from owner (tonio/content/claudette→local,
   ben/maya/tony/accountant/morty→vps). `owner=tonio` → `dept:tony` + `host:local` (the local
   Tony, @ClaudeRickyBot). With `owner`+`host`, the card surfaces on THAT agent's loop tick.
@@ -154,7 +171,7 @@ scripts/emit.sh \
   task=ben-positions-snapshot \
   title="Positions snapshot is degenerate — poisons sizer + 2 KPIs" \
   body="The stored positions snapshot is a plumbing bug (live NAV/holdings are correct, but the snapshot is degenerate). It poisons downstream: the Ledoit sizer and two L4 KPIs read it. PR #61 fixes the sizer; the deeper consolidation fix is out of scope for this tick. Track it. Evidence: outputs/<date>/positions-snapshot.json vs live broker NAV." \
-  type=bug priority=high owner=rnd actions=accept,investigate,defer
+  type=bug priority=high owner=rnd budget=15 actions=accept,investigate,defer
 ```
 
 ## Note
