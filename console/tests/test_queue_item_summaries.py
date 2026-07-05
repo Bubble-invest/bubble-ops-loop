@@ -146,6 +146,30 @@ def test_derive_queue_item_title_generic_fallback_no_scalar_no_date():
     assert title == "mystery"
 
 
+def test_derive_queue_item_title_generic_fallback_caps_large_payload():
+    """Card #503: the step-5 generic fallback (added by #213/#460) built
+    "<label> · <date> · <first scalar>" with NO length cap — unlike steps
+    2-4, which all route through `_fmt(max_len=60)`. A large numeric/bool
+    scalar (the only shapes step 5 reaches that step 4 doesn't, since step 4
+    only matches strings) rendered a 200+ char title in the cockpit
+    pending-item row, defeating #460's "few words" intent.
+
+    Uses a huge int, not a huge string, because a huge *string* field would
+    already be caught (and truncated) by step 4 — this test must exercise
+    step 5 specifically."""
+    from console.services.github_reader import _derive_queue_item_title
+
+    doc = {
+        "id": "x-3", "kind": "totally_unknown_kind",
+        "created_at": "2026-07-01T12:00:00Z",
+        "huge_number": int("9" * 250),
+    }
+    title = _derive_queue_item_title(doc, "totally_unknown_kind")
+    assert len(title) <= 61  # max_len=60 + 1-char ellipsis, same cap as _fmt
+    assert title.startswith("totally_unknown_kind · 2026-07-01 · huge_number=")
+    assert title.endswith("…")
+
+
 # ─── _note_title() — wiring into the L2 mgmt-note path (where morning_brief
 #     notes actually live in production; #459's own fixtures use mission_id=
 #     "morning_brief") ──────────────────────────────────────────────────────
