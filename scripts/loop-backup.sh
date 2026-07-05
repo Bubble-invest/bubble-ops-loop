@@ -863,8 +863,25 @@ PYEOF2
             log "$slug: DEGRADED backup L4 — L1/L2/L3 not all fired today + loop stale; running a degraded debrief"
             emit_event "$slug" "degraded" "backup L4 degraded (L1/2/3 pending, loop stale)" "$age"
             DEGRADED_L4=1
+        elif [[ "$layer_ok" == "ERR" && "$FORCE_LAYER" == "4" ]]; then
+            # Board #529: the probe itself errored (e.g. a missing python dep
+            # for dispatch_helpers.py) — for L4 specifically, that means we have
+            # NO evidence L1/2/3 actually fired today. Failing OPEN here (as if
+            # "OK") would let a genuinely-degraded L4 look like a normal one and
+            # relay a brief with no fresh content behind it — the exact defect
+            # board #529 caught (L5 in tests/test_loop_backup.sh). WHETHER to
+            # tick still fails open (the dept must never go silent — run the
+            # tick below as usual); only the "is this brief fresh enough to
+            # relay" signal fails SAFE (degraded) when we can't verify it.
+            # EARLY-vs-PREREQ for L1/2/3 doesn't carry this risk (no brief
+            # relay is gated on them), so ERR stays fail-open there.
+            log "$slug: DEGRADED backup L4 — eligibility probe errored (unknown L1/2/3 status); failing safe to degraded"
+            emit_event "$slug" "degraded" "backup L4 degraded (eligibility probe error, treated as unverified prereqs)" "$age"
+            DEGRADED_L4=1
         fi
-        # "OK" or "ERR" (fail-open: a check error runs the tick as before).
+        # "OK" (prerequisites verified met; tick proceeds as a normal floor
+        # tick), or "ERR" on a non-L4 layer (fail-open: a check error runs the
+        # tick as before — no brief-relay invariant depends on L1/2/3's PREREQ).
     fi
     if [[ "$DRY_RUN" == "1" ]]; then
         # Record the decision even in dry-run so a smoke test of the schedule
