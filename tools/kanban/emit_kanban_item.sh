@@ -487,6 +487,16 @@ print(json.dumps(payload))
 #      `gh issue` calls in _gh_emit authenticate. Min-scope: create board issues only.
 # If neither yields auth, we fall through to the dashboard (graceful, never breaks).
 _resolve_gh_token() {
+  # 0. POISONED-ENV GUARD. A caller that prefixes the invocation with
+  #    `GH_TOKEN="${GITHUB_TOKEN:-}" ...` (a common but self-sabotaging habit —
+  #    Morty/VPS did exactly this) exports an EMPTY GH_TOKEN. An empty GH_TOKEN
+  #    makes `gh auth status` exit 0 while `gh` is actually UNauthenticated, so
+  #    the check below would return 0 early and every `gh` call then fails with
+  #    "Could not resolve to a Repository" — the emit silently falls to the
+  #    dead local queue. Unset any empty/whitespace-only token so a poisoned env
+  #    can never defeat the real token resolution (step 2a) below.
+  local _gt="${GH_TOKEN-}"; if [ -z "${_gt//[[:space:]]/}" ]; then unset GH_TOKEN; fi
+  local _ght="${GITHUB_TOKEN-}"; if [ -z "${_ght//[[:space:]]/}" ]; then unset GITHUB_TOKEN; fi
   if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     return 0  # gh already authed — _gh_emit uses ambient auth
   fi
@@ -494,7 +504,7 @@ _resolve_gh_token() {
   #     keeps a fresh short-lived board token at /run/bubble-board/token
   #     (root:claude 0640, ~45min refresh). Reading it needs NO sudo, so it works
   #     even under NoNewPrivileges (where the sudo-minter path below is blocked).
-  local tokfile=/run/bubble-board/token
+  local tokfile="${BOARD_TOKEN_FILE:-/run/bubble-board/token}"
   if command -v gh &>/dev/null && [ -r "$tokfile" ]; then
     local ftok
     ftok=$(cat "$tokfile" 2>/dev/null || true)
