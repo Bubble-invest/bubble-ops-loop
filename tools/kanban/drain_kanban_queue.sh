@@ -9,6 +9,9 @@
 #   ~/claude-workspaces/Rick_RnD/tools/kanban/drain_kanban_queue.sh
 #   KANBAN_QUEUE=/custom/path.jsonl drain_kanban_queue.sh   # override path
 #   DRAIN_DRY_RUN=1 drain_kanban_queue.sh                   # dry-run, no gh calls
+#   DRAIN_DEFAULT_BUDGET=10 drain_kanban_queue.sh           # budget:$N for a
+#                                                           # budget-less queued
+#                                                           # item (#544; default 10)
 #
 # Idempotence: processed lines are appended to <queue>.drained and removed
 # from the live queue atomically (temp-file swap). A line is only archived
@@ -204,6 +207,10 @@ except Exception as e:
   budget_val="${BUDGET#\$}"
   if ! echo "$budget_val" | grep -qE '^[1-9][0-9]*$'; then
     budget_val="${DRAIN_DEFAULT_BUDGET:-10}"
+    # Re-validate the default too: a mis-typed DRAIN_DEFAULT_BUDGET (e.g. via a
+    # systemd drop-in typo) must NOT produce a malformed budget:$abc label —
+    # fall back to the hardcoded 10 rather than stamp garbage on the board.
+    echo "$budget_val" | grep -qE '^[1-9][0-9]*$' || budget_val=10
   fi
   budget_label="budget:\$${budget_val}"
   gh label create "$budget_label" --repo "$BOARD_REPO" --color "0e8a16" \

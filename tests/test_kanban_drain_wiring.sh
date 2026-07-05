@@ -149,6 +149,26 @@ else
   bad "no labels captured — drain didn't pass --label to gh issue create"
 fi
 
+# #544 hardening: a mis-typed DRAIN_DEFAULT_BUDGET must NOT produce a malformed
+# budget:$abc label — it falls back to the hardcoded 10.
+QUEUE_BAD="$WORK/kanban_queue_baddefault.jsonl"
+LABELS_BAD="$WORK/captured-labels-baddefault.txt"
+cat > "$QUEUE_BAD" <<'EOF'
+{"task":"drain-test-baddefault","severity":"kanban_only","message":"(kanban-only) bad default","steps":[],"kanban_items":[{"title":"Drain fixture bad-default card","type":"chore","priority":"normal","owner":"rnd"}]}
+EOF
+PATH="$FAKEBIN:$PATH" KANBAN_QUEUE="$QUEUE_BAD" DRAIN_TEST_LABELS="$LABELS_BAD" \
+  DRAIN_DEFAULT_BUDGET="abc" DRAIN_DRY_RUN=0 bash "$DRAIN" >/dev/null 2>&1 || true
+if [[ -f "$LABELS_BAD" ]]; then
+  grep -qx 'budget:$10' "$LABELS_BAD" \
+    && ok "mis-typed DRAIN_DEFAULT_BUDGET=abc falls back to budget:\$10 (no malformed label) (#544)" \
+    || bad "bad DRAIN_DEFAULT_BUDGET did not fall back to \$10. Labels: $(cat "$LABELS_BAD")"
+  grep -q 'budget:\$abc' "$LABELS_BAD" \
+    && bad "malformed budget:\$abc label was stamped (should never happen)" \
+    || ok "no malformed budget:\$abc label stamped (#544)"
+else
+  bad "no labels captured for the bad-default case"
+fi
+
 # The OK entry must be gone from the live queue and archived; the FAIL entry
 # must remain in the live queue (fail-open: nothing lost, nothing invented).
 if [[ -f "$QUEUE" ]]; then
