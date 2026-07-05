@@ -119,6 +119,58 @@ def test_list_layer_queues_basic(tmp_path, monkeypatch):
     assert ri_item["pending_human"] is False, "research item should have pending_human=False"
 
 
+def test_gates_processed_subdir_excluded_from_pending_and_layer_queues(tmp_path, monkeypatch):
+    """Board #442: an archived draft/gate card moved to queues/gates/.processed/
+    must be excluded from BOTH list_pending_gates() (the "décisions à prendre"
+    / gate-batch source) and list_layer_queues() (the per-dept left column) —
+    not just from queues/research/.processed/ (already covered above).
+
+    Repro shape mirrors the real board #442 cards exactly: kind=draft,
+    created_by=materialize_due_missions, archived under queues/gates/.processed/.
+    """
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+
+    # Archive a phantom empty draft card into queues/gates/.processed/, exactly
+    # as board #442 describes (archived + pushed, but reportedly still rendering).
+    processed_dir = repo / "queues" / "gates" / ".processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    (processed_dir / "draft-linkedin_sage_batch-20260621-170320.yaml").write_text(
+        yaml.safe_dump({
+            "id": "draft-linkedin_sage_batch-20260621-170320",
+            "mission_id": "linkedin_sage_batch",
+            "kind": "draft",
+            "created_at": "2026-06-21T17:03:20Z",
+            "created_by": "materialize_due_missions",
+        }),
+        encoding="utf-8",
+    )
+
+    from console.services.github_reader import list_pending_gates, list_layer_queues
+
+    pending = list_pending_gates("qtest")
+    pending_ids = [g.get("id") for g in pending]
+    assert "draft-linkedin_sage_batch-20260621-170320" not in pending_ids, (
+        "a .processed gate card must not appear in list_pending_gates() "
+        "('décisions à prendre' source)"
+    )
+    assert "gate-1" in pending_ids, "sanity: the still-live gate must still appear"
+
+    result = list_layer_queues("qtest")
+    for layer_items in result.values():
+        layer_ids = [i["id"] for i in layer_items]
+        assert "draft-linkedin_sage_batch-20260621-170320" not in layer_ids, (
+            "a .processed gate card must not appear in list_layer_queues() on "
+            "any layer (gates are cross-cut to all layers)"
+        )
+
+
 def test_list_layer_queues_title_derived(tmp_path, monkeypatch):
     """Titles are derived from question_text / post_body / description fields."""
     import os

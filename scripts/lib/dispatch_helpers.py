@@ -1132,6 +1132,35 @@ def materialize_due_missions_for_tick(
                 write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
+        # Guard (#442): never write a bare stub for a DEDICATED-PROMPT mission,
+        # regardless of its output_queue. #302 above only covers the literal
+        # `queues/gates` path — but a dedicated-prompt mission (one with its own
+        # `missions/<id>/PROMPT.md`, e.g. `linkedin_sage_batch`, `research_draft`)
+        # ALWAYS has its real output hand-authored by the subagent that runs that
+        # prompt, no matter which queue it targets. The bare descriptor written
+        # below (id/mission_id/kind/created_at/created_by, no payload) was never
+        # meant to BE the card — it is a placeholder the subagent is supposed to
+        # overwrite with the real draft. When the mission's run yields no content
+        # (empty result — the upstream funnel was dry, e.g. no topics to draft),
+        # the subagent has nothing to overwrite the stub with, and the bare stub
+        # is left behind as a phantom, empty "decision" card in the cockpit
+        # (board #442 — draft-linkedin_sage_batch-20260621, draft-research_draft
+        # -20260620, both 11-12 days old, EMPTY, created_by=materialize_due_missions).
+        # Fix: suppress the stub for ANY dedicated-prompt mission the same way
+        # #302 already suppresses it for queues/gates — the subagent is solely
+        # responsible for writing its own card if and when it has real content.
+        if _mission_authors_own_marker(repo_dir, {"id": mid}):
+            print(
+                f"[materialize] suppressed bare draft stub for mission={mid!r}"
+                f" (dedicated-prompt mission — its subagent authors the real"
+                f" card only when it has content; #442)"
+            )
+            # Dedicated-prompt missions stamp their OWN per-mission marker at
+            # STEP 0 when they actually run (see #428) — do NOT stamp it here,
+            # that would be the same premature-stamp silent-failure bug #428
+            # fixed for the queues/gates case.
+            continue
+
         # Create the queue item.
         ts = now_utc.isoformat()
         item_id = f"{kind}-{mid}-{now_utc.strftime('%Y%m%d-%H%M%S')}"
