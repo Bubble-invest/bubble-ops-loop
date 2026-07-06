@@ -1134,6 +1134,27 @@ code, .code {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Substack content_type badge (#475) — at-a-glance Note / Essai / paid
+   Investment Case, mirrors the gate-chip pattern (flat, hairline where
+   not a solid fill, no shadow). Absent content_type renders nothing —
+   most gates are not Substack. */
+.gate-chip--content-note {
+  background: var(--paper-soft);
+  color: #2b6cb0;
+  border: 1px solid #2b6cb0;
+  text-transform: none;
+}
+.gate-chip--content-essay_free {
+  background: var(--paper-soft);
+  color: var(--body-muted);
+  border: 1px solid var(--line);
+  text-transform: none;
+}
+.gate-chip--content-investment_case_paid {
+  background: #b8860b;
+  color: #fff;
+  text-transform: none;
+}
 
 .gate-card {
   background: var(--paper);

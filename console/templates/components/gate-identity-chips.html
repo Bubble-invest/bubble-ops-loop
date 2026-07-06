@@ -25,7 +25,19 @@
   {% set _chip_source = gate.approval_bridge.item_ref | string | replace('\\', '/') %}
   {% set _chip_source = _chip_source.split('/')[-1] %}
 {% endif %}
-{% if gate.kind or _chip_channel or _chip_source %}
+{# ─── Substack content_type badge (#475) ──────────────────────────────
+   Substack gates carry `content_type`: note | essay_free |
+   investment_case_paid. Renders a small at-a-glance badge so {{OPERATOR}}
+   can tell a Note from an Essai from a paid Investment Case without
+   opening the card. Absent content_type -> render nothing (most gates
+   are not Substack; graceful no-op, no invented label for an unmapped
+   value). #}
+{% set _content_type_label = {
+     'note': 'Note',
+     'essay_free': 'Essai',
+     'investment_case_paid': 'Investment Case',
+   }.get(gate.content_type) %}
+{% if gate.kind or _chip_channel or _chip_source or _content_type_label %}
 <div class="gate-identity-chips">
   {% if gate.kind %}
   <span class="gate-chip gate-chip--type" title="Type d'artefact">
@@ -35,6 +47,11 @@
   {% if _chip_channel %}
   <span class="gate-chip gate-chip--channel" title="Canal de diffusion">
     {{ _chip_channel | upper }}
+  </span>
+  {% endif %}
+  {% if _content_type_label %}
+  <span class="gate-chip gate-chip--content-{{ gate.content_type }}" title="Type de contenu Substack">
+    {{ _content_type_label }}
   </span>
   {% endif %}
   {% if _chip_source %}
