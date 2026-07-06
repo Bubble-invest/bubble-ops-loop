@@ -170,6 +170,42 @@ def test_derive_queue_item_title_generic_fallback_caps_large_payload():
     assert title.endswith("…")
 
 
+# ─── _cap() — the shared tail-truncation helper (#540, follow-up to #503) ────
+# Factored out of `_fmt`'s truncation tail and step 5's duplicate copy of the
+# same expression, so the one truncation contract (`s[:max_len] + ellipsis`)
+# lives in a single place. Pure refactor — these are direct unit tests of
+# the helper itself; the behavioural coverage above already pins the
+# unchanged rendered output.
+
+
+def test_cap_empty_string():
+    from console.services.github_reader import _cap
+
+    assert _cap("", 60) == ""
+
+
+def test_cap_exactly_max_len_unchanged():
+    from console.services.github_reader import _cap
+
+    s = "x" * 60
+    assert _cap(s, 60) == s
+
+
+def test_cap_over_max_len_truncates_with_ellipsis():
+    from console.services.github_reader import _cap
+
+    s = "x" * 61
+    out = _cap(s, 60)
+    assert out == ("x" * 60) + "…"
+    assert len(out) == 61
+
+
+def test_cap_under_max_len_unchanged():
+    from console.services.github_reader import _cap
+
+    assert _cap("short", 60) == "short"
+
+
 # ─── _note_title() — wiring into the L2 mgmt-note path (where morning_brief
 #     notes actually live in production; #459's own fixtures use mission_id=
 #     "morning_brief") ──────────────────────────────────────────────────────

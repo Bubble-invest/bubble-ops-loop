@@ -1606,6 +1606,14 @@ _QUEUE_SUBJECT_FIELDS: List[str] = [
 _QUEUE_KIND_FALLBACK_FIELDS: List[str] = ["source", "mission", "producer"]
 
 
+def _cap(s: str, max_len: int) -> str:
+    """Tail-truncate `s` to `max_len` chars, appending an ellipsis when it
+    overflows. Shared by `_fmt` and `_derive_queue_item_title`'s step-5
+    generic fallback (#540, follow-up to #503) so the one truncation
+    contract lives in a single place instead of two copies drifting apart."""
+    return s[:max_len] + ("…" if len(s) > max_len else "")
+
+
 def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) -> str:
     """Derive a human-readable, DISTINCT title from a queue item YAML dict.
 
@@ -1647,7 +1655,7 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
     def _fmt(excerpt: str) -> str:
         excerpt = excerpt.strip().replace("\n", " ")
         full = f"{label}: {excerpt}"
-        return full[:max_len] + ("…" if len(full) > max_len else "")
+        return _cap(full, max_len)
 
     # 2) Rich text-content field.
     for field in _QUEUE_TITLE_FIELDS:
@@ -1688,7 +1696,8 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
     # Same truncation contract as steps 2-4 (_fmt, above): a large payload
     # scalar must never blow the title past max_len (#503 — step 5 was the
     # one path added by #460/#213 that forgot to route through _fmt).
-    return full[:max_len] + ("…" if len(full) > max_len else "")
+    # Both this and _fmt's tail now call the shared _cap() helper (#540).
+    return _cap(full, max_len)
 
 
 # Sentinel `kind` for the one synthetic "N notes traitées" summary item
