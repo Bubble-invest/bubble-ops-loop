@@ -3,10 +3,15 @@ test_budget_view.py — per-dept / per-agent BUDGET vs SPEND (board #524d).
 
 Covers:
   · cost_tracker.mission_budget_total  — Σ budget_usd over recurring_missions[],
-    None when nothing carries a budget (graceful "budget non défini").
+    None when nothing carries a budget (graceful "budget non défini"). Still
+    used elsewhere (kept for back-compat); NO LONGER the home page's
+    denominator — see #550 below.
   · cost_tracker.budget_status         — green/amber/red level + pct + over-budget.
   · cost_tracker.spent_by_dept         — roll per-agent report up to dept slug.
-  · home._dept_budgets                 — home Coûts rows incl no-budget + >100%.
+  · home._dept_budgets                 — home Coûts rows, fixed #550: now
+    compares week spend to settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT (a
+    per-dept-slug WEEKLY envelope), not mission_budget_total (a ONE-mission-
+    cycle budget) — the old code produced nonsense like tony $185.92/$8=2324%.
   · /costs                             — by-agent budget column + fleet total +
                                          graceful degradation with no budget.
 """
@@ -101,7 +106,12 @@ def test_spent_by_dept_empty_report():
     assert cost_tracker.spent_by_dept({"agents": None}, "week") == {}
 
 
-# ── home._dept_budgets: no-budget + over-budget cases ────────────────────
+# ── home._dept_budgets: no-envelope + over-envelope cases (fixed #550) ───
+# Board #550: the home page divided a dept's WEEK total spend by
+# mission_budget_total (Σ budget_usd over ONE daily mission cycle) — e.g.
+# tony $185.92 spent / $8 mission budget = 2324%. The fix looks up
+# settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT by dept SLUG instead — a
+# real WEEKLY envelope, same shape as /costs' per-agent fix (#546).
 class _Dept:
     def __init__(self, slug, name, live=True):
         self.slug = slug
@@ -113,7 +123,7 @@ class _Dept:
         return self._live
 
 
-def test_dept_budgets_no_budget_graceful(monkeypatch):
+def test_dept_budgets_no_envelope_graceful(monkeypatch):
     from console.routes import home
 
     # Patch on the SAME module objects home actually references — after another
@@ -121,9 +131,8 @@ def test_dept_budgets_no_budget_graceful(monkeypatch):
     # `cost_tracker`, so patch via home.cost_tracker to be reimport-robust.
     monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {"alpha": {"week": {"cost": 5.0}}}})
-    # dept.yaml with NO budget_usd → budget None → "budget non défini"
-    monkeypatch.setattr(home.github_reader, "load_dept_yaml",
-                        lambda slug: {"recurring_missions": [{"id": "m"}]})
+    # dept slug NOT in the envelope map → budget None → "budget non défini"
+    monkeypatch.setattr(home.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {})
     cols = [{"dept": _Dept("alpha", "Alpha")}]
     rows = home._dept_budgets(cols)
     assert len(rows) == 1
@@ -133,13 +142,33 @@ def test_dept_budgets_no_budget_graceful(monkeypatch):
     assert rows[0]["pct"] is None
 
 
-def test_dept_budgets_over_budget_case(monkeypatch):
+def test_dept_budgets_sane_pct_not_old_2324_nonsense(monkeypatch):
+    """The original #550 bug: tony showed 2324% ($185.92 week-spend / $8
+    ONE-DAY mission budget). With the per-dept-slug WEEKLY envelope, the same
+    kind of spend now yields a SANE percentage (spent 186 vs envelope 220 →
+    84.5%, not 2324%)."""
+    from console.routes import home
+
+    monkeypatch.setattr(home.cost_tracker, "build_report",
+                        lambda refresh=False: {"agents": {"tony": {"week": {"cost": 186.0}}}})
+    monkeypatch.setattr(home.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {"tony": 220})
+    cols = [{"dept": _Dept("tony", "Tony")}]
+    rows = home._dept_budgets(cols)
+    assert rows[0]["defined"] is True
+    # 84.5% falls in the 80-100 "warn" (amber) band — sane, not the red/over
+    # 2324% the old mission-budget denominator produced.
+    assert rows[0]["level"] == "warn"
+    assert rows[0]["pct"] == 84.5
+    assert rows[0]["budget"] == 220.0
+    assert rows[0]["pct"] != 2324.0
+
+
+def test_dept_budgets_over_envelope_case(monkeypatch):
     from console.routes import home
 
     monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {"beta": {"week": {"cost": 30.0}}}})
-    monkeypatch.setattr(home.github_reader, "load_dept_yaml",
-                        lambda slug: {"recurring_missions": [{"id": "m", "budget_usd": 20}]})
+    monkeypatch.setattr(home.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {"beta": 20})
     cols = [{"dept": _Dept("beta", "Beta")}]
     rows = home._dept_budgets(cols)
     assert rows[0]["defined"] is True
@@ -163,11 +192,46 @@ def test_dept_budgets_skips_non_live(monkeypatch):
 
     monkeypatch.setattr(home.cost_tracker, "build_report",
                         lambda refresh=False: {"agents": {}})
-    monkeypatch.setattr(home.github_reader, "load_dept_yaml", lambda slug: None)
+    monkeypatch.setattr(home.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {})
     cols = [{"dept": _Dept("live1", "L", live=True)},
             {"dept": _Dept("eclore1", "E", live=False)}]
     rows = home._dept_budgets(cols)
     assert [r["slug"] for r in rows] == ["live1"]
+
+
+# ── settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT + its JSON override ───
+def test_operating_envelope_by_dept_json_override_merges_over_defaults(monkeypatch):
+    """OPERATING_ENVELOPE_BY_DEPT_JSON merges OVER the defaults: an existing
+    key is replaced, a new key is added, defaults not mentioned are untouched."""
+    monkeypatch.setenv("OPERATING_ENVELOPE_BY_DEPT_JSON",
+                       '{"tony": 999, "newdept": 42}')
+    import sys
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT["tony"] == 999.0      # overridden
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT["newdept"] == 42.0    # added
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT["maya"] == 100        # untouched default
+
+
+def test_operating_envelope_by_dept_json_malformed_falls_back_to_defaults(monkeypatch):
+    """A malformed OPERATING_ENVELOPE_BY_DEPT_JSON (bad JSON, or not an object)
+    must degrade to the defaults, never crash the console on boot."""
+    monkeypatch.setenv("OPERATING_ENVELOPE_BY_DEPT_JSON", "not json{{{")
+    import sys
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings
+    assert settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT["tony"] == 220
+
+    monkeypatch.setenv("OPERATING_ENVELOPE_BY_DEPT_JSON", "[1, 2, 3]")
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console import settings as settings2
+    assert settings2.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT["tony"] == 220
 
 
 # ── /costs page: by-agent SPEND-vs-OPERATING-ENVELOPE + fleet + degradation ──

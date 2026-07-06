@@ -112,6 +112,61 @@ def _load_operating_envelope() -> dict[str, float]:
 OPERATING_ENVELOPE_WEEKLY_USD: dict[str, float] = _load_operating_envelope()
 
 
+# Per-DEPT-SLUG WEEKLY OPERATING ENVELOPE (USD, real-equivalent non-cache cost).
+# The DENOMINATOR for the HOME page's "Coûts — budget par collègue" section
+# (board #550 — the SAME apples-to-oranges bug as #524d/#546, a DIFFERENT code
+# path). home.py's `_dept_budgets` compares a dept's WEEK total spend against
+# this envelope — it must NOT use cost_tracker.mission_budget_total (Σ
+# budget_usd over ONE daily mission cycle in dept.yaml), because that produced
+# nonsense like tony $185.92 spent / $8 mission budget = 2324%.
+#
+# Keyed by dept SLUG (not agent-key — home is per-dept, unlike /costs which is
+# per-agent-session). A dept slug NOT in this map has no envelope (defined=
+# False, renders "budget non défini") — same graceful degradation as before.
+#
+# Defaults are Rick's proposal from measured home-page actuals + ~30% headroom
+# — tune via OPERATING_ENVELOPE_BY_DEPT_JSON (a JSON object merged OVER these
+# defaults) without a code change, e.g.:
+#   OPERATING_ENVELOPE_BY_DEPT_JSON='{"tony": 250, "newdept": 50}'
+_OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT_DEFAULTS: dict[str, float] = {
+    "tony": 220,
+    "content": 200,
+    "maya": 100,
+    "ben": 100,
+    "accountant": 110,
+    "security": 40,
+    "cgp": 60,
+}
+
+
+def _load_operating_envelope_by_dept() -> dict[str, float]:
+    """Defaults merged with an optional OPERATING_ENVELOPE_BY_DEPT_JSON override.
+
+    Mirrors `_load_operating_envelope` exactly: the env var, if set, must
+    decode to a JSON object of {dept_slug: USD}; anything else (bad JSON,
+    non-dict, non-numeric values) is ignored for that key (or the whole
+    override) so a malformed env var degrades to the defaults rather than
+    crashing the console on boot.
+    """
+    envelope = dict(_OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT_DEFAULTS)
+    raw = os.environ.get("OPERATING_ENVELOPE_BY_DEPT_JSON", "")
+    if not raw:
+        return envelope
+    try:
+        override = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return envelope
+    if not isinstance(override, dict):
+        return envelope
+    for key, val in override.items():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            envelope[str(key)] = float(val)
+    return envelope
+
+
+OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT: dict[str, float] = _load_operating_envelope_by_dept()
+
+
 def disk_mode() -> bool:
     """True iff READ_FROM_DISK is set (test + local-dev mode)."""
     return bool(READ_FROM_DISK)
