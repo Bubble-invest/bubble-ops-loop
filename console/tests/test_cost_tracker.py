@@ -27,6 +27,25 @@ def _session(path: Path, *, model: str, turns: list[dict], first_user: str = "")
     path.write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
 
 
+def _session_with_ts(path: Path, *, model: str, turns: list[dict], first_user: str = "") -> None:
+    """Like _session, but each turn dict may carry a "ts" key (ISO string,
+    e.g. "2026-07-02T09:00:00.000Z") written out as the JSONL entry's
+    "timestamp" field — for the day= (per-message-timestamp) bucketing tests.
+    "usage" is the rest of the turn dict (everything except "ts")."""
+    lines = []
+    if first_user:
+        lines.append({"type": "user", "message": {"role": "user", "content": first_user}})
+    for t in turns:
+        t = dict(t)
+        ts = t.pop("ts", None)
+        entry = {"type": "assistant", "message": {"role": "assistant", "model": model, "usage": t}}
+        if ts is not None:
+            entry["timestamp"] = ts
+        lines.append(entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
+
+
 @pytest.fixture
 def fake_projects(monkeypatch, tmp_path):
     proj = tmp_path / "projects"
@@ -287,3 +306,141 @@ def test_report_refresh_true_always_bypasses_ttl_cache(fake_projects):
     # still open — the explicit-refresh escape hatch must keep working.
     rep = cost_tracker.build_report(refresh=True)
     assert "maya" in rep["agents"]
+
+
+# ─── day= per-message-timestamp bucketing (board #499 residual #2) ─────────
+# build_report's default (day=None) path buckets by FILE MTIME. That's fast
+# but wrong for an exceptional-day audit: editing/touching an old session
+# file today makes it look like today's spend under mtime bucketing, and you
+# can't isolate one specific past calendar day at all. day="YYYY-MM-DD" adds
+# a "day" span computed from each message's OWN timestamp instead.
+
+def test_day_none_path_unchanged_by_new_param(fake_projects):
+    """Back-compat: calling build_report with no day= arg at all produces the
+    exact same shape (no "day" key anywhere) as before this feature existed —
+    proves the additive param doesn't touch the default path."""
+    _session(fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+              model="claude-sonnet-4-6",
+              turns=[{"input_tokens": 100, "output_tokens": 50,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}])
+    rep = cost_tracker.build_report(refresh=True)
+    assert "day_requested" not in rep
+    assert "day" not in rep["totals"]
+    assert "day" not in rep["agents"]["ben"]
+
+
+def test_day_filter_isolates_one_calendar_day_by_message_ts(fake_projects):
+    """A session file has messages on TWO different days (by timestamp). With
+    day="2026-07-02", only that day's usage is counted in the "day" span —
+    proving isolation works even when both days' messages live in the SAME
+    file (so file mtime alone could never separate them)."""
+    _session_with_ts(
+        fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+        model="claude-sonnet-4-6",
+        turns=[
+            {"ts": "2026-07-02T09:00:00.000Z", "input_tokens": 1_000_000, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            {"ts": "2026-07-03T09:00:00.000Z", "input_tokens": 2_000_000, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        ],
+    )
+    rep = cost_tracker.build_report(refresh=True, day="2026-07-02")
+    assert rep["day_requested"] == "2026-07-02"
+    day_span = rep["agents"]["ben"]["day"]
+    # only the 07-02 message's 1M input tokens at $3/1M sonnet == $3.00 —
+    # NOT the combined 3M tokens from both days.
+    assert day_span["cost"] == pytest.approx(3.0, abs=0.01)
+    assert day_span["tokens"] == 1_000_000
+    assert day_span["runs"] == 1
+
+
+def test_day_filter_touched_old_file_not_miscounted_as_today(fake_projects, monkeypatch):
+    """The motivating bug: a session file's mtime says "today" (because it was
+    edited/touched today) but its actual messages are timestamped on an OLDER
+    day. Under the default mtime-based "today" bucket this file wrongly counts
+    as today's spend. Under day=<that older day>, it correctly isolates to
+    that day and does NOT show up in the (separate) mtime "today" bucket
+    confusion — i.e. the day= figure reflects message content, not mtime."""
+    f = fake_projects / "-home-claude-agents-bubble-ops-ben" / "old.jsonl"
+    _session_with_ts(
+        f, model="claude-sonnet-4-6",
+        turns=[{"ts": "2026-07-02T09:00:00.000Z", "input_tokens": 500_000, "output_tokens": 0,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+    )
+    # Simulate the file being touched/edited "today" (mtime = now) even though
+    # its one message is timestamped 2026-07-02.
+    now = time.time()
+    import os
+    os.utime(f, (now, now))
+
+    rep = cost_tracker.build_report(refresh=True, day="2026-07-02")
+    day_span = rep["agents"]["ben"]["day"]
+    assert day_span["tokens"] == 500_000
+    assert day_span["cost"] == pytest.approx(1.5, abs=0.01)  # 0.5M x $3/1M sonnet
+
+
+def test_day_filter_no_matching_messages_is_empty_not_error(fake_projects):
+    """A day with zero matching messages must not raise and must not appear
+    under any agent (parse_session_for_day returns None → skipped)."""
+    _session_with_ts(
+        fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+        model="claude-sonnet-4-6",
+        turns=[{"ts": "2026-07-02T09:00:00.000Z", "input_tokens": 100, "output_tokens": 50,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+    )
+    rep = cost_tracker.build_report(refresh=True, day="1999-01-01")
+    assert rep["day_requested"] == "1999-01-01"
+    # ben still appears (from the today/week mtime pass) but its "day" span is blank
+    assert rep["agents"]["ben"]["day"] == {
+        "cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}
+    }
+
+
+def test_day_filter_deepseek_still_zero_priced_in_day_span(fake_projects):
+    """The day= path must still flow through the SAME pricing table — an
+    unknown/non-Anthropic model on the isolated day still prices at $0, not
+    some Anthropic default (ties residual #1 and #2 together end-to-end)."""
+    _session_with_ts(
+        fake_projects / "-home-claude-agents-bubble-ops-ben" / "s1.jsonl",
+        model="deepseek-v4-pro",
+        turns=[{"ts": "2026-07-02T09:00:00.000Z", "input_tokens": 1_000_000, "output_tokens": 1_000_000,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+    )
+    rep = cost_tracker.build_report(refresh=True, day="2026-07-02")
+    day_span = rep["agents"]["ben"]["day"]
+    assert day_span["cost"] == 0.0
+
+
+def test_parse_session_for_day_unit(tmp_path):
+    """Unit-level check on parse_session_for_day directly (bypassing
+    build_report): only entries whose timestamp[:10] == day are accumulated."""
+    f = tmp_path / "s.jsonl"
+    _session_with_ts(
+        f, model="claude-haiku-4-5",
+        turns=[
+            {"ts": "2026-07-01T00:00:00.000Z", "input_tokens": 10, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            {"ts": "2026-07-02T23:59:59.999Z", "input_tokens": 20, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            {"ts": "2026-07-03T00:00:00.000Z", "input_tokens": 40, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        ],
+    )
+    parsed = cost_tracker.parse_session_for_day(f, "2026-07-02")
+    assert parsed is not None
+    assert parsed["model_usage"]["claude-haiku-4-5"]["input"] == 20
+    assert parsed["n_turns"] == 1
+
+
+def test_parse_session_for_day_missing_file_returns_none(tmp_path):
+    assert cost_tracker.parse_session_for_day(tmp_path / "nope.jsonl", "2026-07-02") is None
+
+
+def test_parse_session_for_day_no_match_returns_none(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _session_with_ts(
+        f, model="claude-sonnet-4-6",
+        turns=[{"ts": "2026-07-01T00:00:00.000Z", "input_tokens": 10, "output_tokens": 0,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+    )
+    assert cost_tracker.parse_session_for_day(f, "2026-07-02") is None

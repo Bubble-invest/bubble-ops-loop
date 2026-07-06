@@ -263,6 +263,76 @@ def parse_session(filepath: Path) -> Optional[dict]:
     }
 
 
+def parse_session_for_day(filepath: Path, day: str) -> Optional[dict]:
+    """Like parse_session, but bucket by the MESSAGE timestamp inside each
+    JSONL entry (not file mtime) and only accumulate model_usage for entries
+    whose timestamp falls on `day` (format "YYYY-MM-DD", UTC).
+
+    Used ONLY by the optional day= path in build_report — for an exceptional-
+    day reconciliation (e.g. #496) where a session file was edited/touched on
+    a LATER day than the messages it contains, so mtime bucketing would
+    misattribute (or miss) that day's actual spend. The default (day=None)
+    build_report path never calls this — it keeps using file mtime, which is
+    fast and correct for the common "today vs 7d" case.
+
+    Session timestamps look like "2026-06-23T09:22:55.380Z" (see
+    agent_session.py / concierge_reader.py for the same convention) — the
+    first 10 chars are the calendar date, so a plain string slice + compare
+    is enough; no datetime parsing needed.
+    """
+    model_usage: dict[str, dict] = {}
+    first_user_text = ""
+    n_turns = 0
+    try:
+        with open(filepath, "r", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not first_user_text and d.get("type") == "user":
+                    msg = d.get("message")
+                    if isinstance(msg, dict):
+                        c = msg.get("content")
+                        if isinstance(c, str):
+                            first_user_text = c[:2000]
+                        elif isinstance(c, list):
+                            first_user_text = " ".join(
+                                it.get("text", "") for it in c if isinstance(it, dict)
+                            )[:2000]
+                if d.get("type") != "assistant":
+                    continue
+                ts = d.get("timestamp")
+                if not isinstance(ts, str) or ts[:10] != day:
+                    continue  # message not on the requested day — skip
+                msg = d.get("message")
+                if isinstance(msg, dict):
+                    u = msg.get("usage")
+                    if isinstance(u, dict):
+                        model = msg.get("model", "unknown")
+                        mu = model_usage.setdefault(
+                            model, {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
+                        )
+                        mu["input"] += u.get("input_tokens", 0) or 0
+                        mu["output"] += u.get("output_tokens", 0) or 0
+                        mu["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
+                        mu["cache_create"] += u.get("cache_creation_input_tokens", 0) or 0
+                        n_turns += 1
+    except FileNotFoundError:
+        return None
+    if not model_usage:
+        return None
+    return {
+        "model_usage": model_usage,
+        "first_user_text": first_user_text,
+        "n_turns": n_turns,
+        "mtime": filepath.stat().st_mtime,
+    }
+
+
 def _load_cache() -> dict:
     try:
         return json.loads(CACHE_FILE.read_text())
@@ -302,18 +372,37 @@ def _store_report(report: dict) -> None:
     _report_cache["built_at"] = time.monotonic()
 
 
-def build_report(refresh: bool = False) -> dict:
-    if not refresh:
+def build_report(refresh: bool = False, day: Optional[str] = None) -> dict:
+    """Build the /costs report.
+
+    day: OPTIONAL "YYYY-MM-DD" (UTC). When set, ADDITIONALLY buckets by the
+    per-MESSAGE timestamp inside each JSONL (not file mtime) into a "day"
+    span per agent + totals, isolating that exact calendar day's spend for an
+    exceptional-day reconciliation (e.g. #496, 2026-07-02) — a session file
+    touched/edited today would otherwise wrongly count as "today"'s spend
+    under plain mtime bucketing, and mtime bucketing alone can't isolate one
+    arbitrary past day at all.
+
+    When day=None (the default), behavior is COMPLETELY UNCHANGED from
+    before this param existed: only "today" (mtime, UTC-midnight-relative)
+    and "week" (mtime, 7d) spans are computed, exactly as before. The day=
+    path never touches or bypasses the existing mtime cache — it always
+    re-reads matching files fresh via parse_session_for_day (see there for
+    why: an exceptional-day audit is rare and wants ground truth, not a
+    cached mtime-keyed parse).
+    """
+    if day is None and not refresh:
         cached = _cached_report()
         if cached is not None:
             return cached
 
-    report = _build_report_uncached(refresh=refresh)
-    _store_report(report)
+    report = _build_report_uncached(refresh=refresh, day=day)
+    if day is None:
+        _store_report(report)
     return report
 
 
-def _build_report_uncached(refresh: bool = False) -> dict:
+def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> dict:
     pricing = _load_pricing()
     cache = {} if refresh else _load_cache()
     new_cache: dict = {}
@@ -323,18 +412,26 @@ def _build_report_uncached(refresh: bool = False) -> dict:
     cutoff_7d = (now - timedelta(days=7)).timestamp()
     start_today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp()
 
-    # agent -> {today:{...}, week:{...}} accumulators
+    # agent -> {today:{...}, week:{...}[, day:{...}]} accumulators. The "day"
+    # span only appears/accumulates when the optional day= param is set —
+    # additive, see build_report docstring.
     def _blank():
-        return {
+        span = {
             "today": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
             "week": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
         }
+        if day is not None:
+            span["day"] = {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}}
+        return span
 
     agents: dict[str, dict] = {}
 
     if not PROJECTS_DIR.is_dir():
-        return {"scanned_at": now.isoformat(), "agents": {}, "totals": _blank(),
-                "note": "no projects dir"}
+        empty = {"scanned_at": now.isoformat(), "agents": {}, "totals": _blank(),
+                  "note": "no projects dir"}
+        if day is not None:
+            empty["day_requested"] = day
+        return empty
 
     # Build (label, jsonl-files) work units. Flat dirs map directly; the nested
     # Mac caches (_mac-{{OPERATOR_USER}}/<ws>, _mac-{{OPERATOR_2_USER}}/<ws>) are descended one level.
@@ -356,14 +453,23 @@ def _build_report_uncached(refresh: bool = False) -> dict:
                 continue
             work.append((label0, proj.glob("*.jsonl")))
 
-    for label0, files in work:
+    # When day= is set we need every file whose CONTENT might touch that day,
+    # regardless of file mtime (that's the whole point — mtime is exactly
+    # what's unreliable for an exceptional-day audit). So the day pass below
+    # re-globs `work` separately rather than reusing the mtime-filtered files
+    # from the today/week pass. `work` holds generators (proj.glob(...)), which
+    # are single-use, so re-derive the file list once up front and reuse it for
+    # both passes instead of re-globbing the filesystem.
+    work_files = [(label0, list(files)) for label0, files in work]
+
+    for label0, files in work_files:
         for f in files:
             try:
                 mtime = f.stat().st_mtime
             except OSError:
                 continue
             if mtime < cutoff_7d:
-                continue  # only last 7d matters for the panel
+                continue  # only last 7d matters for the today/week panel
             key = f"{f}"
             cached = cache.get(key)
             if cached and cached.get("mtime") == mtime:
@@ -404,10 +510,48 @@ def _build_report_uncached(refresh: bool = False) -> dict:
 
     _save_cache(new_cache)
 
+    # ── Optional day= pass: bucket by MESSAGE timestamp, not file mtime.
+    # Independent of the mtime cache above (never reads/writes it) — always
+    # re-parses matching files fresh via parse_session_for_day, since an
+    # exceptional-day audit wants ground truth over the (fast but here
+    # unreliable) mtime cache. Runs over ALL files regardless of mtime — a
+    # session file touched long after `day` still has to be inspected, since
+    # its content may include messages timestamped on `day`.
+    if day is not None:
+        for label0, files in work_files:
+            for f in files:
+                parsed = parse_session_for_day(f, day)
+                if parsed is None:
+                    continue
+                label = label0
+                if label0 == "_p_crons":
+                    label = _detect_job(parsed.get("first_user_text", ""))
+
+                _split = _cost_split(parsed["model_usage"], pricing)
+                cost = _split["real"]
+                cache_cost = _split["cache"]
+                toks = sum(sum(mu.values()) for mu in parsed["model_usage"].values())
+
+                ag = agents.setdefault(label, _blank())
+                b = ag["day"]
+                b["cost"] += cost
+                b["cache_cost"] += cache_cost
+                b["tokens"] += toks
+                b["runs"] += 1
+                for model, mu in parsed["model_usage"].items():
+                    if "synthetic" in model or sum(mu.values()) == 0:
+                        continue
+                    short = ("opus" if "opus" in model else "sonnet" if "sonnet" in model
+                             else "haiku" if "haiku" in model else model)
+                    bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
+                    bm["tokens"] += sum(mu.values())
+                    bm["cost"] += _cost_of({model: mu}, pricing)
+
     # round + totals
+    _spans = ("today", "week", "day") if day is not None else ("today", "week")
     totals = _blank()
     for ag in agents.values():
-        for span in ("today", "week"):
+        for span in _spans:
             ag[span]["cost"] = round(ag[span]["cost"], 3)
             ag[span]["cache_cost"] = round(ag[span]["cache_cost"], 3)
             totals[span]["cost"] += ag[span]["cost"]
@@ -416,19 +560,22 @@ def _build_report_uncached(refresh: bool = False) -> dict:
             totals[span]["runs"] += ag[span]["runs"]
             for m, bm in ag[span]["by_model"].items():
                 bm["cost"] = round(bm["cost"], 3)
-    for span in ("today", "week"):
+    for span in _spans:
         totals[span]["cost"] = round(totals[span]["cost"], 3)
         totals[span]["cache_cost"] = round(totals[span]["cache_cost"], 3)
 
     # sort agents by week cost desc
     agents_sorted = dict(sorted(agents.items(), key=lambda kv: kv[1]["week"]["cost"], reverse=True))
-    return {
+    out = {
         "scanned_at": now.isoformat(),
         "today_date": today,
         "agents": agents_sorted,
         "totals": totals,
         "pricing_note": "Estimate from token counts × public list prices — for trend/relative cost, not billing.",
     }
+    if day is not None:
+        out["day_requested"] = day
+    return out
 
 
 # ── Budget (read-only operator steer, board #524d) ──────────────────────
@@ -524,8 +671,11 @@ def budget_status(spent: float, budget: Optional[float]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--day", default=None,
+                    help="YYYY-MM-DD: isolate that day's spend by message timestamp "
+                         "(for an exceptional-day reconciliation), additive to today/week")
     a = ap.parse_args()
-    print(json.dumps(build_report(refresh=a.refresh), indent=2))
+    print(json.dumps(build_report(refresh=a.refresh, day=a.day), indent=2))
     return 0
 
 
