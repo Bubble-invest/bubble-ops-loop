@@ -914,6 +914,70 @@ else
 fi
 unset BUBBLE_BACKUP_LAYER_OFFSET_H BUBBLE_BACKUP_BRIEF_NOTIFY_CMD
 
+# L6 (board #529 regression lock, board #541): the eligibility probe ITSELF
+# THROWS (the real-world trigger — e.g. `import yaml` failing on a bare venv,
+# per the #529 postmortem) rather than cleanly returning PREREQ (L5, above).
+# The script's `... <<'PYEOF2' 2>/dev/null || echo "ERR"` fallback must catch
+# this and treat it EXACTLY like L5's PREREQ case:
+#   (a) fail-OPEN on EXECUTION — the tick still runs (dept never goes silent).
+#   (b) fail-CLOSED on RELAY — notify_floor_layer_brief is NOT called (no
+#       fresh brief exists to vouch for).
+# Forcing mechanism: PYTHONPATH prepends a directory with a stub `yaml.py`
+# that raises ImportError on import. The probe's heredoc does
+# `sys.path.insert(0, "/home/claude/bubble-ops-loop")` (a path absent in this
+# hermetic test) then `from scripts.lib.dispatch_helpers import ...`, which
+# resolves via the CWD (repo root) fallback and hits `import yaml` at module
+# load — so this reproduces the ACTUAL board #529 failure mode, not a
+# synthetic stand-in. BUBBLE_BACKUP_LAYER_OFFSET_H=0 clears the EARLY gate so
+# the probe actually runs instead of short-circuiting on time-of-day.
+#
+# RED->GREEN reasoning (why this locks in #529): before the #529 fix, ERR on
+# --layer 4 fell through to the bare `print("OK")` path (fail-OPEN on the
+# eligibility read), which would have let notify_floor_layer_brief fire on
+# L4 as if prereqs were verified — this exact assertion (BRIEF_NOTIFY_LOG
+# must stay empty) would have FAILED against that old behavior.
+YAML_BREAK_DIR="$WORK/yaml-break"
+mkdir -p "$YAML_BREAK_DIR"
+cat > "$YAML_BREAK_DIR/yaml.py" <<'EOF'
+raise ImportError("yaml import forced-broken for test (board #541 L6 fixture)")
+EOF
+
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_BRIEF_NOTIFY_CMD="$BRIEF_NOTIFY_STUB"
+export BUBBLE_BACKUP_LAYER_OFFSET_H=0
+export PYTHONPATH="$YAML_BREAK_DIR${PYTHONPATH:+:$PYTHONPATH}"
+# Heartbeat is stale but need NOT satisfy any PREREQ shape — the probe throws
+# before it ever gets far enough to check L1/2/3 fired-today status.
+make_dept errdept 10800; make_layer errdept 4
+set_enabled errdept
+export BUBBLE_BACKUP_DEPTS="errdept"
+: > "$BRIEF_NOTIFY_LOG"; : > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+unset PYTHONPATH
+
+# L6a: the ERR branch (not PREREQ) was actually taken — distinguishable log line.
+if [[ "$ALL" == *"DEGRADED backup L4 — eligibility probe errored"* ]]; then
+    ok "L6a forced probe ERR (not PREREQ) correctly detected + logged"
+else
+    bad "L6a expected the ERR-probe DEGRADED log line; got: $ALL"
+fi
+
+# L6b: fail-OPEN on execution — the tick still ran despite the probe error.
+if [[ "$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)" == "1" ]]; then
+    ok "L6b probe-ERR still runs the tick (fail-open on execution — dept not silenced)"
+else
+    bad "L6b expected 1 claude tick despite probe ERR; claude.log=$(cat "$CLAUDE_LOG" 2>/dev/null)"
+fi
+
+# L6c: fail-CLOSED on relay — no fresh brief relayed for a probe-ERR degraded L4.
+if [[ ! -s "$BRIEF_NOTIFY_LOG" ]]; then
+    ok "L6c probe-ERR degraded L4 does NOT trigger a brief relay (locks in #529 fix)"
+else
+    bad "L6c unexpected brief relay after a probe-ERR degraded L4; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG")"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H BUBBLE_BACKUP_BRIEF_NOTIFY_CMD
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]
