@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from console import settings
 from console.services import (
     backup_history,
     concierge_reader,
@@ -222,17 +223,22 @@ def _group_decision_cards_by_dept(cards: list) -> list:
 
 
 def _dept_budgets(columns: list) -> list:
-    """Per-LIVE-dept budget-vs-spend rows for the home 'Coûts' section (#524d).
+    """Per-LIVE-dept budget-vs-spend rows for the home 'Coûts' section (#524d,
+    fixed 2026-07-06 — board #550 — see settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT
+    docstring for why).
 
-    For each live dept: budget = Σ budget_usd across its recurring_missions[]
-    (read-only, operator-set, via cost_tracker.mission_budget_total on its
-    dept.yaml); spent = its real-$ week spend rolled up from the cost report.
-    Returns [{slug, display_name, spent, budget, pct, level, defined}], sorted
+    For each live dept: budget = the dept's WEEKLY OPERATING ENVELOPE from
+    settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT, looked up by dept SLUG;
+    spent = its real-$ week spend rolled up from the cost report. Returns
+    [{slug, display_name, spent, budget, pct, level, defined}], sorted
     over-budget first then by spend desc so the tightest budgets surface on top.
 
-    Fully guarded: a cost-scan error, a missing dept.yaml, or an unset budget
-    never raises — the whole thing degrades to [] (on report failure) or to
-    individual "budget non défini" rows.
+    This is DELIBERATELY NOT cost_tracker.mission_budget_total (that sums
+    budget_usd across ONE daily mission cycle in dept.yaml — comparing a WEEK
+    of spend against it produced nonsense like tony $185.92 / $8 = 2324%).
+    A dept slug not in the envelope map gets a defined=False row ("budget non
+    défini"). Fully guarded: a cost-scan error never raises — the whole thing
+    degrades to [] (on report failure) or to individual "budget non défini" rows.
     """
     try:
         report = cost_tracker.build_report(refresh=False)
@@ -245,11 +251,7 @@ def _dept_budgets(columns: list) -> list:
         d = col["dept"]
         if not d.is_live:
             continue
-        try:
-            dept_yaml = github_reader.load_dept_yaml(d.slug)
-            budget = cost_tracker.mission_budget_total(dept_yaml)
-        except Exception:  # noqa: BLE001 — a bad yaml on one dept must not sink the row
-            budget = None
+        budget = settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT.get(d.slug)
         spent = spent_map.get(d.slug, 0.0)
         status = cost_tracker.budget_status(spent, budget)
         rows.append({
@@ -318,12 +320,13 @@ def home(request: Request):
     # Recent decisions tray — last ~10 decisions across all live depts, newest first.
     all_slugs = [col["dept"].slug for col in columns]
     recent_decisions = github_reader.list_recent_decisions(all_slugs, limit=10)
-    # Per-dept BUDGET vs SPEND this week (board #524d). One row per LIVE dept:
-    # budget = Σ budget_usd across its recurring_missions[] (operator-set, read-
-    # only); spent = its real-$ week cost from cost_tracker. Fully guarded — a
-    # cost-scan or missing-budget hiccup degrades to [] / "budget non défini",
-    # never a 500. Budgets are unset in most dept.yaml today → the bars render
-    # "budget non défini" until Joris sets them (graceful degradation).
+    # Per-dept BUDGET vs SPEND this week (board #524d, fixed #550). One row per
+    # LIVE dept: budget = its weekly OPERATING ENVELOPE from
+    # settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT (operator-set, read-only —
+    # NOT a Σ of one daily mission cycle's budget_usd, see #550); spent = its
+    # real-$ week cost from cost_tracker. Fully guarded — a cost-scan hiccup
+    # degrades to [], and a dept slug with no envelope renders "budget non
+    # défini" (graceful degradation), never a 500.
     dept_budgets = _dept_budgets(columns)
     # Cartes riches (board #533) — REAL pending gate-proposals featured on the
     # home page, replacing the old hardcoded illustrative INDA/EEM/SPY chart.

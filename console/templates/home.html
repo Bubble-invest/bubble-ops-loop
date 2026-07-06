@@ -288,13 +288,14 @@
 </section>
 {% endif %}
 
-{# ═══ 04 — COÛTS — budget par dept (#524d) ═══════════════════════
-   Budget hebdomadaire par collègue + ce qu'il a dépensé jusqu'ici cette
-   semaine. Le budget est un cadrage READ-ONLY posé par l'opérateur dans
-   chaque dept.yaml (recurring_missions[].budget_usd) ; la dépense vient du
-   vrai relevé de coûts (cost_tracker, coût réel-équivalent API). Barre
-   verte <80%, ambre 80–100%, rouge >100%. Tant qu'aucun budget n'est posé,
-   la ligne affiche "budget non défini" (dégradation gracieuse). #}
+{# ═══ 04 — COÛTS — budget par dept (#524d, fixé #550) ═════════════
+   Enveloppe opérationnelle HEBDOMADAIRE par collègue + ce qu'il a dépensé
+   cette semaine. L'enveloppe est un cadrage READ-ONLY posé par l'opérateur
+   (settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT, PAS le budget d'une seule
+   mission quotidienne — voir #550) ; la dépense vient du vrai relevé de
+   coûts (cost_tracker, coût réel-équivalent API). Barre verte <80%, ambre
+   80–100%, rouge >100%. Tant qu'aucune enveloppe n'est posée pour un
+   collègue, la ligne affiche "budget non défini" (dégradation gracieuse). #}
 <section class="cabinet-section m4-section" aria-labelledby="costs-heading">
   <div class="section-head">
     <span class="section-num">04</span>
