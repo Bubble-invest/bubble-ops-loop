@@ -76,7 +76,13 @@
                   <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
                 </div>
               {% else %}
-                <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+                {# #547 fix 2 — items grouped by kind+channel (research/
+                   editorial kinds: idea_item, narrative_script,
+                   pillar_review, voice_challenge) carry group_count > 1;
+                   the pre-formatted "kind · channel ×N" label already lives
+                   in item.title (mirrors #459's _mgmt_queue_items pattern),
+                   this class is purely a styling hook. #}
+                <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}{% if item.group_count and item.group_count > 1 %} desk-queue-item--grouped{% endif %}">
                   <span class="desk-queue-title">{{ item.title }}</span>
                   {% if item.pending_human %}
                     <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
@@ -116,7 +122,7 @@
               <span class="desk-queue-title desk-queue-title--muted">{{ item.title }}</span>
             </div>
           {% else %}
-            <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}">
+            <div class="desk-queue-item{% if item.pending_human %} desk-queue-item--human{% endif %}{% if item.group_count and item.group_count > 1 %} desk-queue-item--grouped{% endif %}">
               <span class="desk-queue-title">{{ item.title }}</span>
               {% if item.pending_human %}
                 <span class="desk-queue-badge" title="En attente de validation humaine">👀</span>
