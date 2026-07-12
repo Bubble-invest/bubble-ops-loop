@@ -276,6 +276,169 @@ def test_fresh_terminal_item_not_filtered(tmp_path, monkeypatch):
     assert "today-trade" in l2_ids, "a same-day terminal item must NOT be filtered"
 
 
+def test_stale_content_kind_filtered_by_age():
+    """#547 fix 3a: an idea_item older than the content stale window (7d)
+    is stale; content kinds get a LONGER window than the trade/wrapup
+    terminal kinds (1d) since research ideas legitimately sit pending
+    longer. Unit-tested directly on the predicate (display-grouping
+    collapses same-kind items, which would obscure per-item assertions at
+    the list_layer_queues() level — see test_latest_snapshot_* and the
+    grouping tests below for the integration-level coverage)."""
+    from console.services.github_reader import _is_stale_terminal_item
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    assert _is_stale_terminal_item("idea_item", "2026-01-01T09:00:00Z", now=now) is True
+    assert _is_stale_terminal_item(
+        "idea_item", datetime.now(timezone.utc).isoformat(), now=now
+    ) is False
+
+
+def test_content_kind_within_window_not_filtered():
+    """An idea_item just 2 days old must NOT be filtered (well within the
+    7-day content stale window) — only genuinely old items age out."""
+    from console.services.github_reader import _is_stale_terminal_item
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).isoformat()
+    assert _is_stale_terminal_item("idea_item", two_days_ago, now=now) is False
+    # Sanity: past the 7-day window, same kind, it flips to stale.
+    eight_days_ago = (now - timedelta(days=8)).isoformat()
+    assert _is_stale_terminal_item("idea_item", eight_days_ago, now=now) is True
+
+
+def test_stale_content_kind_unparseable_date_fails_open():
+    """An idea_item with a malformed created_at must be KEPT (fail-open),
+    never hidden — mirrors the existing terminal-kind contract."""
+    from console.services.github_reader import _is_stale_terminal_item
+    assert _is_stale_terminal_item("idea_item", "not-a-real-date") is False
+    assert _is_stale_terminal_item("idea_item", "") is False
+
+
+def test_stale_content_kind_future_date_not_filtered():
+    """An item dated in the future must never be treated as stale (negative
+    age) — sanity/edge-case for the reviewer's adversarial pass."""
+    from console.services.github_reader import _is_stale_terminal_item
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    future = (now + timedelta(days=30)).isoformat()
+    assert _is_stale_terminal_item("idea_item", future, now=now) is False
+
+
+def test_stale_content_kind_integration_via_list_layer_queues(tmp_path, monkeypatch):
+    """Integration-level check that the age filter actually reaches
+    list_layer_queues(): with only ONE old idea_item present (no grouping
+    ambiguity — a single stale item), the layer's item count for research/
+    drops to just the always-present base-fixture items."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    baseline_count = len(
+        __import__("console.services.github_reader", fromlist=["list_layer_queues"])
+        .list_layer_queues("qtest")[1]
+    )
+    (repo / "queues" / "research" / "old-idea-solo.yaml").write_text(
+        yaml.safe_dump({"id": "old-idea-solo", "kind": "idea_item",
+                        "created_at": "2026-01-01T09:00:00Z",
+                        "title": "An old idea nobody triaged"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    after_count = len(list_layer_queues("qtest")[1])
+    assert after_count == baseline_count, (
+        "a stale idea_item must be filtered before it ever reaches the "
+        "grouping pass — item count must not grow"
+    )
+
+
+def test_other_content_stale_kinds_also_filtered(tmp_path, monkeypatch):
+    """narrative_script / pillar_review / voice_challenge all use the same
+    content stale window, not just idea_item."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    for kind in ("narrative_script", "pillar_review", "voice_challenge"):
+        (repo / "queues" / "research" / f"old-{kind}.yaml").write_text(
+            yaml.safe_dump({"id": f"old-{kind}", "kind": kind,
+                            "created_at": "2026-01-01T09:00:00Z",
+                            "title": f"old {kind}"}),
+            encoding="utf-8",
+        )
+    from console.services.github_reader import list_layer_queues
+    l1_titles = [i["title"] for i in list_layer_queues("qtest")[1]]
+    for kind in ("narrative_script", "pillar_review", "voice_challenge"):
+        assert not any(f"old {kind}" in t.lower() for t in l1_titles), (
+            f"old {kind} must be filtered as stale, got {l1_titles}"
+        )
+
+
+# ── *-latest.yaml snapshot exclusion (#547 fix 3b) ────────────────────────────
+
+
+def test_latest_snapshot_files_excluded_from_pending_queue(tmp_path, monkeypatch):
+    """`*-latest.yaml` files (e.g. external-signal-latest.yaml,
+    linkedin-sage-scan-latest.yaml) are STATE snapshots a scan mission
+    overwrites each run, not pending to-dos — must be excluded entirely
+    from list_layer_queues(), regardless of their created_at/kind."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "external-signal-latest.yaml").write_text(
+        yaml.safe_dump({"id": "external-signal-latest", "kind": "scan_state",
+                        "created_at": "2026-06-28T09:00:00Z",
+                        "summary": "latest scan snapshot"}),
+        encoding="utf-8",
+    )
+    (repo / "queues" / "research" / "linkedin-sage-scan-latest.yaml").write_text(
+        yaml.safe_dump({"id": "linkedin-sage-scan-latest", "kind": "scan_state",
+                        "created_at": "2026-06-28T09:00:00Z"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    l1_ids = [i["id"] for i in list_layer_queues("qtest")[1]]
+    assert "external-signal-latest" not in l1_ids, "-latest.yaml snapshot must be excluded"
+    assert "linkedin-sage-scan-latest" not in l1_ids, "-latest.yaml snapshot must be excluded"
+    # Sanity: the normal research item still shows.
+    assert "ri-1" in l1_ids
+
+
+def test_latest_snapshot_excluded_from_gates_dir_too(tmp_path, monkeypatch):
+    """A real -latest.yaml pattern is unlikely in queues/gates/, but the
+    exclusion is a generic filename rule applied at the same glob site as
+    every non-gate queue dir — verify a non-gate dir (management-like)
+    beyond research/ is also covered so the fix isn't accidentally scoped
+    to one directory."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "inbox" / "decisions" / "some-thing-latest.yaml").write_text(
+        yaml.safe_dump({"id": "some-thing-latest", "kind": "approved_action",
+                        "description": "should not show"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    l3_ids = [i["id"] for i in list_layer_queues("qtest")[3]]
+    assert "some-thing-latest" not in l3_ids
+
+
 def test_list_layer_queues_empty_for_unknown_slug(tmp_path, monkeypatch):
     """list_layer_queues returns empty dicts for a slug with no repo."""
     monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
@@ -348,6 +511,277 @@ def test_list_layer_queues_malformed_item_logs_warning(tmp_path, monkeypatch, ca
         "broken.yaml" in rec.message and rec.levelno == logging.WARNING
         for rec in caplog.records
     ), f"expected a WARNING log naming broken.yaml, got: {[r.message for r in caplog.records]}"
+
+
+# ─── Queue-item grouping by kind + channel (#547 fix 2, mirrors #459's
+#     _mgmt_queue_items grouping pattern for style consistency) ──────────────
+
+
+def test_queue_items_grouped_by_kind_and_channel(tmp_path, monkeypatch):
+    """3 idea_item/linkedin items in the same layer collapse into ONE grouped
+    row 'idea_item · linkedin ×3', not three separate flat rows."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    for i in range(3):
+        (repo / "queues" / "research" / f"grp-idea-{i}.yaml").write_text(
+            yaml.safe_dump({
+                "id": f"grp-idea-{i}", "kind": "idea_item", "channel": "linkedin",
+                "created_at": fresh,
+                "title": f"idea number {i}",
+            }),
+            encoding="utf-8",
+        )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    grouped = [t for t in titles if "idea_item" in t and "linkedin" in t and "×3" in t]
+    assert grouped, f"expected a grouped 'idea_item · linkedin ×3' row, got titles={titles}"
+    # The 3 individual items must NOT also appear as separate ungrouped rows.
+    assert titles.count("idea number 0") == 0
+
+
+def test_queue_items_different_channel_not_grouped_together(tmp_path, monkeypatch):
+    """idea_item/linkedin and idea_item/substack_note are DIFFERENT groups —
+    channel is part of the group key, not just kind."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "li-1.yaml").write_text(
+        yaml.safe_dump({"id": "li-1", "kind": "idea_item", "channel": "linkedin",
+                        "created_at": fresh, "title": "a"}),
+        encoding="utf-8",
+    )
+    (repo / "queues" / "research" / "li-2.yaml").write_text(
+        yaml.safe_dump({"id": "li-2", "kind": "idea_item", "channel": "linkedin",
+                        "created_at": fresh, "title": "b"}),
+        encoding="utf-8",
+    )
+    (repo / "queues" / "research" / "sn-1.yaml").write_text(
+        yaml.safe_dump({"id": "sn-1", "kind": "idea_item", "channel": "substack_note",
+                        "created_at": fresh, "title": "c"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert any("linkedin" in t and "×2" in t for t in titles), titles
+    assert any("substack_note" in t for t in titles), titles
+    # substack_note group must not carry ×2 (only 1 item)
+    substack_titles = [t for t in titles if "substack_note" in t]
+    assert not any("×2" in t for t in substack_titles), titles
+
+
+def test_queue_item_mission_name_shown_when_source_parses(tmp_path, monkeypatch):
+    """When an item's `source:` field cleanly names a mission (regex
+    narrative_script-<mission_id> or missions/<id>/), the mission name is
+    shown instead of a bare kind+channel group."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "ns-1.yaml").write_text(
+        yaml.safe_dump({
+            "id": "ns-1", "kind": "narrative_script", "channel": "linkedin",
+            "source": "narrative_script-weekly_thesis_writeup",
+            "created_at": fresh, "title": "script body",
+        }),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert any("weekly_thesis_writeup" in t for t in titles), (
+        f"expected the parsed mission name in a title, got {titles}"
+    )
+
+
+def test_queue_item_mission_name_parses_missions_slash_id_form(tmp_path, monkeypatch):
+    """The alternate source shape `missions/<id>/...` also resolves a
+    mission name."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "pr-1.yaml").write_text(
+        yaml.safe_dump({
+            "id": "pr-1", "kind": "pillar_review", "channel": "substack_note",
+            "source": "missions/quarterly_pillar_audit/output.yaml",
+            "created_at": fresh, "title": "review body",
+        }),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert any("quarterly_pillar_audit" in t for t in titles), (
+        f"expected the parsed mission name, got {titles}"
+    )
+
+
+def test_queue_item_no_clean_mission_falls_back_to_kind_channel_group(tmp_path, monkeypatch):
+    """When `source` doesn't cleanly name a mission (or is absent), items
+    group under kind+channel — never crash, never show a garbled label."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "vc-1.yaml").write_text(
+        yaml.safe_dump({
+            "id": "vc-1", "kind": "voice_challenge", "channel": "linkedin",
+            "source": "some_unrelated_free_text_no_pattern",
+            "created_at": fresh, "title": "challenge body",
+        }),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert any("voice_challenge" in t and "linkedin" in t for t in titles), titles
+
+
+def test_queue_item_grouping_no_channel_field_groups_by_kind_only(tmp_path, monkeypatch):
+    """Items with no `channel` field (the ~1/3 that don't carry one) still
+    group cleanly by kind alone — must not crash on a missing key."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    for i in range(2):
+        (repo / "queues" / "research" / f"nochan-{i}.yaml").write_text(
+            yaml.safe_dump({
+                "id": f"nochan-{i}", "kind": "idea_item",
+                "created_at": fresh, "title": f"no channel {i}",
+            }),
+            encoding="utf-8",
+        )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert any("idea_item" in t and "×2" in t for t in titles), titles
+
+
+def test_queue_item_grouping_missing_kind_does_not_crash(tmp_path, monkeypatch):
+    """An item entirely missing `kind` must not crash the grouping pass —
+    falls back to whatever the existing title-derivation already produces,
+    grouped under an empty/'item' kind bucket."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "nokind-1.yaml").write_text(
+        yaml.safe_dump({"id": "nokind-1", "created_at": "2026-06-28T09:00:00Z",
+                        "title": "mystery item"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    # Must not raise.
+    items = list_layer_queues("qtest")[1]
+    assert isinstance(items, list)
+
+
+def test_single_ungrouped_item_still_renders_normally(tmp_path, monkeypatch):
+    """A single item (group size 1) should not show a '×1' — sanity so the
+    grouping doesn't uglify the common single-item case."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "solo-idea.yaml").write_text(
+        yaml.safe_dump({"id": "solo-idea", "kind": "idea_item", "channel": "linkedin",
+                        "created_at": fresh, "title": "solo"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert not any("×1" in t for t in titles), f"a single item must not show ×1: {titles}"
+
+
+def test_gate_items_not_grouped_pending_human_preserved(tmp_path, monkeypatch):
+    """Gate queue items (queues/gates/) are cross-cutting decision cards, not
+    content research items — they must keep their existing ungrouped
+    rendering + pending_human flag untouched by the new grouping."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    _make_queue_repo(tmp_path)
+    from console.services.github_reader import list_layer_queues
+    result = list_layer_queues("qtest")
+    gate_item = next(i for i in result[1] if i["id"] == "gate-1")
+    assert gate_item["pending_human"] is True
+
+
+def test_grouping_does_not_break_existing_stale_and_processed_filters(tmp_path, monkeypatch):
+    """Regression: the new grouping pass must run AFTER stale/.processed
+    filtering, not resurrect filtered-out items into a group."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+    repo = _make_queue_repo(tmp_path)
+    (repo / "queues" / "research" / "old-idea-a.yaml").write_text(
+        yaml.safe_dump({"id": "old-idea-a", "kind": "idea_item", "channel": "linkedin",
+                        "created_at": "2026-01-01T09:00:00Z", "title": "old a"}),
+        encoding="utf-8",
+    )
+    (repo / "queues" / "research" / "old-idea-b.yaml").write_text(
+        yaml.safe_dump({"id": "old-idea-b", "kind": "idea_item", "channel": "linkedin",
+                        "created_at": "2026-01-02T09:00:00Z", "title": "old b"}),
+        encoding="utf-8",
+    )
+    from console.services.github_reader import list_layer_queues
+    items = list_layer_queues("qtest")[1]
+    titles = [i["title"] for i in items]
+    assert not any("idea_item" in t and "linkedin" in t for t in titles), (
+        f"both idea_items are stale (>7d) and must be filtered out before "
+        f"grouping — got {titles}"
+    )
 
 
 # ─── Integration tests for the HTTP endpoints ────────────────────────────────
@@ -472,3 +906,44 @@ def test_inbox_fragment_caps_queue_and_collapses_overflow(tmp_path, monkeypatch)
         "queue overflow past the cap must collapse behind a <details>, not dump"
     )
     assert "de plus" in body, "overflow summary must read '+N de plus'"
+
+
+def test_inbox_fragment_renders_grouped_content_items_with_css_hook(tmp_path, monkeypatch):
+    """#547 fix 2 — end-to-end: 3 idea_item/linkedin items render as one
+    'idea_item · linkedin ×3' row carrying the desk-queue-item--grouped
+    styling hook, not three flat rows."""
+    monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "test-token-xyz")
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    repo = _make_queue_repo(tmp_path)
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    for i in range(3):
+        (repo / "queues" / "research" / f"grp-render-{i}.yaml").write_text(
+            yaml.safe_dump({
+                "id": f"grp-render-{i}", "kind": "idea_item", "channel": "linkedin",
+                "created_at": fresh, "title": f"idea render {i}",
+            }),
+            encoding="utf-8",
+        )
+
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+    from console.main import create_app
+    from fastapi.testclient import TestClient
+    c = TestClient(create_app())
+    c.headers.update({"Authorization": "Bearer test-token-xyz"})
+
+    r = c.get("/dept/qtest/inbox-fragment")
+    assert r.status_code == 200
+    body = r.text
+    assert "idea_item · linkedin ×3" in body, (
+        f"expected the grouped label in the rendered fragment, body snippet missing it"
+    )
+    assert "desk-queue-item--grouped" in body, (
+        "grouped rows must carry the desk-queue-item--grouped styling hook"
+    )
+    # The 3 individual item titles must not appear as separate flat rows.
+    assert "idea render 0" not in body

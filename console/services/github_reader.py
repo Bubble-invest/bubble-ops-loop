@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import base64
 import os
+import re
 import subprocess
 import tempfile
 from datetime import date, datetime, timezone
@@ -757,6 +758,24 @@ def repo_path_for_org_repo(org_repo: str) -> Optional[Path]:
     return None
 
 
+def _normalize_filename_mission_id(stem: str) -> str:
+    """Normalize a filename-stem-derived mission id so it can collide
+    correctly with an inline `dept.yaml::recurring_missions[].id` (#547).
+
+    Mission files are conventionally named with hyphens
+    (`missions/newsletter-redaction.yaml`) while inline ids use underscores
+    (`newsletter_redaction`) — same mission, two spellings. Without this
+    normalization the file-derived id never matched the inline id, so the
+    dedupe-by-id dict in list_missions()/list_missions_full() treated them
+    as two DISTINCT missions and the cockpit "À traiter" column double-
+    counted (~20 shown for 10 real missions).
+
+    Only applied to the FILENAME-STEM fallback — a mission file's own
+    explicit `id:` field is authoritative and used verbatim, un-normalized
+    (some ids are legitimately hyphenated)."""
+    return stem.replace("-", "_")
+
+
 def list_missions(slug: str) -> List[Dict[str, str]]:
     """Return all recurring missions declared by the dept.
 
@@ -791,13 +810,17 @@ def list_missions(slug: str) -> List[Dict[str, str]]:
                     doc = yaml.safe_load(p.read_text(encoding="utf-8"))
                 except yaml.YAMLError:
                     doc = None
-                # Prefer the id declared inside the file, else stem of filename
+                # Prefer the id declared inside the file (verbatim, authoritative),
+                # else the filename stem — normalized (#547) so a hyphenated
+                # filename (missions/newsletter-redaction.yaml) collides
+                # correctly with the inline underscore id (newsletter_redaction).
                 mid = None
                 if isinstance(doc, dict):
                     mid = doc.get("id")
-                if not mid:
-                    mid = p.stem
-                mid = str(mid)
+                if mid:
+                    mid = str(mid)
+                else:
+                    mid = _normalize_filename_mission_id(p.stem)
                 # Inline wins on id collision; file fills in otherwise.
                 out.setdefault(mid, {"id": mid, "source": "file"})
 
@@ -848,8 +871,15 @@ def list_missions_full(slug: str) -> List[Dict[str, Any]]:
                     continue
                 if not isinstance(doc, dict):
                     continue
-                mid = doc.get("id") or p.stem
-                mid = str(mid)
+                # File's own id: field is authoritative + verbatim; else
+                # derive from filename stem, NORMALIZED (#547 — hyphen to
+                # underscore) so it collides correctly with an inline id
+                # instead of silently double-counting the same mission.
+                mid = doc.get("id")
+                if mid:
+                    mid = str(mid)
+                else:
+                    mid = _normalize_filename_mission_id(p.stem)
                 if mid in out:
                     continue  # inline wins
                 doc["id"] = mid
@@ -1559,15 +1589,42 @@ _QUEUE_TERMINAL_KINDS: set = {
 }
 _QUEUE_TERMINAL_STALE_DAYS: int = 1
 
+# Content-dept research/editorial kinds are not "already-acted RECORDS" the
+# way a posted trade is — an idea_item can legitimately sit pending for a
+# few days awaiting an editorial slot. But left unfiltered they accumulate
+# forever (research ideas nobody triaged in weeks still show as "À traiter"),
+# so a LONGER display-only staleness window applies (#547 fix 3a). This is
+# purely a cockpit display guard, same fail-open contract as the terminal
+# kinds above — it does NOT touch the underlying dept repo, and an agent
+# that later drains these into `.processed/` is the durable fix (tracked
+# separately).
+_QUEUE_CONTENT_STALE_KINDS: set = {
+    "idea_item", "narrative_script", "pillar_review", "voice_challenge",
+}
+_QUEUE_CONTENT_STALE_DAYS: int = 7
+
 
 def _is_stale_terminal_item(kind: str, created_at: str, now=None) -> bool:
-    """True if an item is an already-acted RECORD older than the stale window.
+    """True if an item is old enough that the cockpit should stop showing it
+    as "À traiter", per one of two fail-open, age-based windows:
 
-    Only terminal kinds (a trade that executed, a wrap-up already drafted) are
-    eligible — a normal pending item is never filtered by age. Items with an
-    unparseable/absent created_at are kept (fail-open: never hide real work).
+      - `_QUEUE_TERMINAL_KINDS` (a trade that executed, a wrap-up already
+        drafted): already-acted RECORDS an agent forgot to move to
+        `.processed/` — short window (`_QUEUE_TERMINAL_STALE_DAYS`).
+      - `_QUEUE_CONTENT_STALE_KINDS` (idea_item, narrative_script,
+        pillar_review, voice_challenge): research/editorial items that are
+        still nominally "pending" but pile up forever if never triaged —
+        longer window (`_QUEUE_CONTENT_STALE_DAYS`).
+
+    A normal pending item outside both sets is never filtered by age. Items
+    with an unparseable/absent created_at are kept (fail-open: never hide
+    real work) — this applies to BOTH windows identically.
     """
-    if kind not in _QUEUE_TERMINAL_KINDS:
+    if kind in _QUEUE_TERMINAL_KINDS:
+        stale_days = _QUEUE_TERMINAL_STALE_DAYS
+    elif kind in _QUEUE_CONTENT_STALE_KINDS:
+        stale_days = _QUEUE_CONTENT_STALE_DAYS
+    else:
         return False
     if not created_at:
         return False
@@ -1585,7 +1642,7 @@ def _is_stale_terminal_item(kind: str, created_at: str, now=None) -> bool:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     ref = now or datetime.now(timezone.utc)
-    return (ref - dt) > timedelta(days=_QUEUE_TERMINAL_STALE_DAYS)
+    return (ref - dt) > timedelta(days=stale_days)
 
 _QUEUE_TITLE_FIELDS: List[str] = [
     "question_text", "post_body", "title", "subject", "summary",
@@ -1698,6 +1755,134 @@ def _derive_queue_item_title(doc: Dict[str, Any], kind: str, max_len: int = 60) 
     # one path added by #460/#213 that forgot to route through _fmt).
     # Both this and _fmt's tail now call the shared _cap() helper (#540).
     return _cap(full, max_len)
+
+
+# The content-dept queue kinds eligible for kind+channel grouping (#547 fix
+# 2). Gate items (queues/gates/) and the #459 mgmt-note path are handled by
+# their own dedicated logic and never go through this grouping — this set
+# only fires for the generic (queues/research, inbox/decisions, …) path.
+_QUEUE_GROUPABLE_KINDS: set = {
+    "idea_item", "narrative_script", "pillar_review", "voice_challenge",
+}
+
+# Regex forms that cleanly name a mission_id inside an item's `source:`
+# field, per #547 fix 2 spec:
+#   "narrative_script-<mission_id>"   (kind-prefixed source id)
+#   "missions/<mission_id>/..."       (path-shaped source)
+# Order matters: the more specific kind-prefixed form is tried first so a
+# source like "narrative_script-weekly_thesis" doesn't fall through to a
+# looser match.
+_SOURCE_MISSION_PATTERNS = [
+    re.compile(r"^(?:idea_item|narrative_script|pillar_review|voice_challenge)-(?P<mid>[\w-]+)$"),
+    re.compile(r"^missions/(?P<mid>[^/]+)/"),
+]
+
+
+def _extract_mission_name_from_source(source: Any) -> Optional[str]:
+    """Regex-extract a mission id from an item's `source:` field when it
+    cleanly names one (#547 fix 2). Returns None (never raises) when
+    `source` is missing, not a string, or doesn't match either known shape
+    — callers must fall back to a kind+channel group label in that case.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return None
+    s = source.strip()
+    for pat in _SOURCE_MISSION_PATTERNS:
+        m = pat.match(s)
+        if m:
+            mid = m.group("mid").strip()
+            if mid:
+                return mid
+    return None
+
+
+def _group_queue_items_by_kind_channel(items: List[Dict[str, Any]],
+                                        docs_by_id: Dict[str, Dict[str, Any]],
+                                        ) -> List[Dict[str, Any]]:
+    """Collapse queue items sharing the same (kind, channel) into a single
+    grouped row, e.g. "idea_item · linkedin ×3" (#547 fix 2). Mirrors the
+    #459 `_mgmt_queue_items` grouping pattern for style consistency: group,
+    build a pre-formatted label, keep a `group_count`.
+
+    Only items whose `kind` is in `_QUEUE_GROUPABLE_KINDS` are grouped —
+    everything else (research_item, approved_action, gate items, etc.)
+    passes through unchanged so existing behaviour/tests are untouched.
+
+    When a group member's `source:` field cleanly names a mission (see
+    `_extract_mission_name_from_source`), that mission name is shown instead
+    of the bare kind+channel label — but members are still grouped by the
+    SAME (kind, channel) key regardless of whether their source parses, so a
+    mix of parseable/unparseable sources within one kind+channel bucket
+    still collapses to one row (using the first parseable mission name
+    found, else the generic label).
+
+    Never crashes on a missing `kind`/`channel`/`source` — those all
+    fail-open to falsy defaults and the item still groups (under kind="" or
+    channel="" if truly absent) rather than being dropped.
+    """
+    groupable: List[Dict[str, Any]] = []
+    passthrough: List[Dict[str, Any]] = []
+    for item in items:
+        kind = item.get("kind") or ""
+        if kind in _QUEUE_GROUPABLE_KINDS:
+            groupable.append(item)
+        else:
+            passthrough.append(item)
+
+    if not groupable:
+        return items
+
+    buckets: Dict[tuple, List[Dict[str, Any]]] = {}
+    order: List[tuple] = []
+    for item in groupable:
+        kind = item.get("kind") or ""
+        # `channel` lives on the ORIGINAL yaml doc, not on the trimmed item
+        # dict (id/kind/title/created_at/pending_human) — look it up via
+        # docs_by_id, the same way source is resolved below.
+        doc = docs_by_id.get(item["id"], {})
+        channel = doc.get("channel") or ""
+        key = (kind, channel)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(item)
+
+    grouped_out: List[Dict[str, Any]] = []
+    for key in order:
+        members = buckets[key]
+        kind, channel = key
+        base_label = f"{kind} · {channel}" if channel else kind
+
+        # Try to find a mission name from any member's source field — the
+        # first one that parses wins (members share the same kind+channel
+        # bucket regardless of whether their own source parses).
+        mission_name = None
+        for m in members:
+            doc = docs_by_id.get(m["id"], {})
+            mission_name = _extract_mission_name_from_source(doc.get("source"))
+            if mission_name:
+                break
+
+        label = mission_name if mission_name else base_label
+        count = len(members)
+        if count > 1:
+            title = f"{label} ×{count}"
+        else:
+            title = label
+
+        latest = max((m.get("created_at") or "" for m in members), default="")
+        # pending_human is never True for this path (only gates set it) —
+        # keep the field for template compatibility.
+        grouped_out.append({
+            "id": f"{kind or 'item'}-{channel or 'nochannel'}-group",
+            "kind": kind,
+            "title": title,
+            "created_at": latest,
+            "pending_human": False,
+            "group_count": count,
+        })
+
+    return passthrough + grouped_out
 
 
 # Sentinel `kind` for the one synthetic "N notes traitées" summary item
@@ -1850,6 +2035,15 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
                 # those have already been handled by the dept agent.
                 if ".processed" in p.parts:
                     continue
+                # Skip *-latest.yaml snapshot files (#547 fix 3b) — these are
+                # STATE snapshots a scan mission overwrites in place each run
+                # (e.g. external-signal-latest.yaml, linkedin-sage-scan-
+                # latest.yaml), not pending to-dos. They carry no queue-item
+                # shape (no per-run id/created_at a human would triage) and
+                # would otherwise inflate the "À traiter" count with a file
+                # that is always present by design.
+                if p.stem.endswith("-latest"):
+                    continue
                 try:
                     doc = yaml.safe_load(p.read_text(encoding="utf-8"))
                 except yaml.YAMLError as exc:
@@ -1858,6 +2052,7 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
                 file_entries.append((p, doc))
 
         items: List[Dict[str, Any]] = []
+        docs_by_id: Dict[str, Dict[str, Any]] = {}
         for p, doc in file_entries:
             if not isinstance(doc, dict):
                 continue
@@ -1869,6 +2064,7 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
             # Skip already-acted records (executed trades, posted wrap-ups) that
             # an agent forgot to move to .processed/ — they are not pending work
             # and otherwise clutter "À traiter" with day-old artifacts (#391).
+            # Also covers the longer content-kind window (#547 fix 3a).
             if _is_stale_terminal_item(kind, created_at):
                 continue
 
@@ -1888,6 +2084,15 @@ def list_layer_queues(slug: str) -> Dict[int, List[Dict[str, Any]]]:
                 "created_at": created_at,
                 "pending_human": pending_human,
             })
+            docs_by_id[item_id] = doc
+
+        if not is_gate:
+            # #547 fix 2 — collapse content research/editorial items sharing
+            # the same (kind, channel) into one grouped row. Gates are
+            # cross-cutting decision cards and are exempt (checked above);
+            # queues/management/ never reaches this branch (handled by
+            # _mgmt_queue_items above, `continue`d before this loop).
+            items = _group_queue_items_by_kind_channel(items, docs_by_id)
 
         if is_gate:
             # Gates are cross-cutting: add them to ALL layers so they

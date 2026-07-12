@@ -668,3 +668,197 @@ def test_onboarding_consolidates_missions_under_moments(client, fixture_root):
         "onboarding page. Per msg 3142, the section was consolidated "
         "under 'Moments de la journée' with missions nested inline."
     )
+
+
+# ---------------------------------------------------------------------------
+# F. Mission dedupe by id (cockpit "N missions récurrentes" double-count fix)
+# ---------------------------------------------------------------------------
+#
+# Bug: dept.yaml::recurring_missions[] declares `newsletter_redaction`
+# (underscore) inline, AND missions/newsletter-redaction.yaml (hyphenated
+# filename, no explicit `id:` field inside) exists on disk. list_missions_full
+# derived the file's id from the filename stem verbatim ("newsletter-redaction",
+# with a hyphen) instead of normalizing it, so it never collided with the
+# inline "newsletter_redaction" key — the same mission counted TWICE in the
+# UI. Fix: normalize the filename-derived id (hyphen -> underscore) before
+# using it as the collision key. The file's own `id:` field (when present)
+# is authoritative verbatim — no normalization is applied to it.
+
+
+def _reload_console_modules():
+    import sys
+    for k in list(sys.modules):
+        if k.startswith("console"):
+            del sys.modules[k]
+
+
+def test_inline_and_hyphenated_file_mission_dedupe_to_one(tmp_path, monkeypatch):
+    """Inline `newsletter_redaction` + file `missions/newsletter-redaction.yaml`
+    (no internal `id:` field) must collapse to ONE mission, not two."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    _reload_console_modules()
+
+    repo = tmp_path / "bubble-ops-dedupe-test"
+    repo.mkdir()
+    (repo / "dept.yaml").write_text(
+        yaml.safe_dump({
+            "department": {"slug": "dedupe-test", "level": "ops", "mandate": "m"},
+            "layers": {"subscribed": [1]},
+            "recurring_missions": [
+                {"id": "newsletter_redaction", "layer": 1, "cadence": "daily",
+                 "description": "inline authoritative version"},
+            ],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    (repo / "missions").mkdir()
+    # File has NO internal id: field -> id must derive from stem, normalized.
+    (repo / "missions" / "newsletter-redaction.yaml").write_text(
+        yaml.safe_dump({
+            "layer": 1, "cadence": "daily",
+            "description": "file version - should merge extra fields only",
+            "extra_field_only_in_file": "keep-me",
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from console.services import github_reader
+    missions = github_reader.list_missions_full("dedupe-test")
+    ids = [m["id"] for m in missions]
+    assert ids.count("newsletter_redaction") == 1, (
+        f"expected exactly one 'newsletter_redaction' entry, got {ids}"
+    )
+    assert len(missions) == 1, f"expected 1 deduped mission, got {len(missions)}: {ids}"
+
+    # Inline wins on the fields it declares (authoritative), but the file's
+    # extra field is not required to merge per spec ("file version merges its
+    # extra fields") — we just assert no double-count and inline's own fields
+    # are preserved.
+    m = missions[0]
+    assert m["description"] == "inline authoritative version"
+
+
+def test_file_mission_with_no_id_field_derives_from_filename_normalized(tmp_path, monkeypatch):
+    """A missions/*.yaml with NO inline counterpart and no internal id: field
+    still gets a normalized (underscore) id derived from its hyphenated
+    filename — so it doesn't silently create an orphan hyphenated id that
+    could mismatch an inline entry added later."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    _reload_console_modules()
+
+    repo = tmp_path / "bubble-ops-solo-file-test"
+    repo.mkdir()
+    (repo / "dept.yaml").write_text(
+        yaml.safe_dump({
+            "department": {"slug": "solo-file-test", "level": "ops", "mandate": "m"},
+            "layers": {"subscribed": [1]},
+            "recurring_missions": [],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    (repo / "missions").mkdir()
+    (repo / "missions" / "weekly-audit.yaml").write_text(
+        yaml.safe_dump({"layer": 1, "cadence": "weekly",
+                        "description": "solo file mission"}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from console.services import github_reader
+    missions = github_reader.list_missions_full("solo-file-test")
+    ids = [m["id"] for m in missions]
+    assert "weekly_audit" in ids, (
+        f"expected normalized id 'weekly_audit' (underscore), got {ids}"
+    )
+    assert "weekly-audit" not in ids
+
+
+def test_file_mission_own_id_field_is_authoritative_not_normalized(tmp_path, monkeypatch):
+    """When missions/*.yaml declares its own `id:` field, that value is used
+    VERBATIM (no normalization) — normalization only applies to the
+    filename-stem fallback."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    _reload_console_modules()
+
+    repo = tmp_path / "bubble-ops-explicit-id-test"
+    repo.mkdir()
+    (repo / "dept.yaml").write_text(
+        yaml.safe_dump({
+            "department": {"slug": "explicit-id-test", "level": "ops", "mandate": "m"},
+            "layers": {"subscribed": [1]},
+            "recurring_missions": [],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    (repo / "missions").mkdir()
+    (repo / "missions" / "some-file.yaml").write_text(
+        yaml.safe_dump({"id": "weird-id-with-hyphens", "layer": 1,
+                        "cadence": "daily", "description": "x"}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from console.services import github_reader
+    missions = github_reader.list_missions_full("explicit-id-test")
+    ids = [m["id"] for m in missions]
+    assert "weird-id-with-hyphens" in ids, (
+        f"an explicit id: field must be used verbatim (not normalized), got {ids}"
+    )
+
+
+def test_mission_dedupe_no_false_collision_between_distinct_ids(tmp_path, monkeypatch):
+    """Sanity: two genuinely distinct missions must NOT collapse into one."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    _reload_console_modules()
+
+    repo = tmp_path / "bubble-ops-no-collision-test"
+    repo.mkdir()
+    (repo / "dept.yaml").write_text(
+        yaml.safe_dump({
+            "department": {"slug": "no-collision-test", "level": "ops", "mandate": "m"},
+            "layers": {"subscribed": [1]},
+            "recurring_missions": [
+                {"id": "morning_sync", "layer": 1, "cadence": "daily", "description": "a"},
+            ],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    (repo / "missions").mkdir()
+    (repo / "missions" / "evening-wrap.yaml").write_text(
+        yaml.safe_dump({"layer": 1, "cadence": "daily",
+                        "description": "distinct mission"}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from console.services import github_reader
+    missions = github_reader.list_missions_full("no-collision-test")
+    ids = sorted(m["id"] for m in missions)
+    assert ids == ["evening_wrap", "morning_sync"], f"got {ids}"
+
+
+def test_list_missions_also_dedupes_normalized_ids(tmp_path, monkeypatch):
+    """The abbreviated list_missions() (kept for back-compat) must apply the
+    same normalization/dedupe rule as list_missions_full()."""
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+    _reload_console_modules()
+
+    repo = tmp_path / "bubble-ops-abbrev-dedupe-test"
+    repo.mkdir()
+    (repo / "dept.yaml").write_text(
+        yaml.safe_dump({
+            "department": {"slug": "abbrev-dedupe-test", "level": "ops", "mandate": "m"},
+            "layers": {"subscribed": [1]},
+            "recurring_missions": [
+                {"id": "newsletter_redaction", "layer": 1},
+            ],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    (repo / "missions").mkdir()
+    (repo / "missions" / "newsletter-redaction.yaml").write_text(
+        yaml.safe_dump({"layer": 1, "description": "file"}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from console.services import github_reader
+    missions = github_reader.list_missions("abbrev-dedupe-test")
+    ids = [m["id"] for m in missions]
+    assert ids.count("newsletter_redaction") == 1, f"got {ids}"
