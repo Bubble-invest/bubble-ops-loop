@@ -1,5 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Kanban — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin home/dept pages use (#562: bring legacy pages into the
+   approved design system — no behavior change, styling/markup only). The
+   .vp-* board component system below already uses the shared CSS vars
+   (--paper/--ink/--line/--ochre/...) so it is untouched; only the page
+   chrome (hero + section wrapper) is restyled to match. #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'kanban' %}
 
 {% block head_extra %}
 <!-- Mermaid diagram renderer (client-side, CDN + SRI) — visual-planning ROUND2 B1 -->
@@ -238,16 +246,17 @@
 
 {% block content %}
 
-<header class="dept-header">
-  <h1 class="dept-title">Kanban</h1>
-  <p class="dept-subtitle">
+<section class="page-hero m4-hero" aria-labelledby="kanban-hero-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>KANBAN</div>
+  <h1 class="page-hero-title" id="kanban-hero-title">Kanban</h1>
+  <p class="page-hero-lede">
     Tableau de bord visuel — toutes les cartes actives.
     {% if generated_at %}Mis à jour {{ generated_at[:19] }}.{% endif %}
   </p>
-</header>
+</section>
 
 {% if error %}
-<div class="cabinet-section" style="padding:24px; background:var(--paper-soft); border:1px solid var(--line); border-radius:2px; margin-bottom:24px;">
+<div class="cabinet-section m4-section" style="padding:24px; background:var(--paper-soft); border:1px solid var(--line); border-radius:2px; margin-bottom:24px;">
   <p style="color:#d32f2f;">{{ error }}</p>
   <p class="muted-italic" style="font-size:13px;">Le dashboard (port 3847 sur le Mac) doit être accessible.</p>
 </div>

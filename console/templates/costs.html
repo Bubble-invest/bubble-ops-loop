@@ -1,12 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Coûts — qui dépense quoi{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin home/dept pages use (#562: bring legacy pages into the
+   approved design system — no behavior change, styling/markup only). The
+   .budget-* classes below are already body.m4-agnostic (shared with home's
+   Coûts widget — see style.css comment above .budget-list), so the table
+   markup/text/classes are untouched; only the page chrome is restyled. #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'costs' %}
 {% block content %}
 
-<section class="page-hero">
-  <h1 class="page-hero-title">Coûts de l'équipe</h1>
+<section class="page-hero m4-hero" aria-labelledby="costs-hero-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>COÛTS</div>
+  <h1 class="page-hero-title" id="costs-hero-title">Coûts de l'équipe</h1>
   <p class="page-hero-lede">
-    Aujourd'hui&nbsp;: <span class="ochre-num">${{ '%.2f'|format(report.totals.today.cost) }}</span>
-    · 7&nbsp;derniers jours&nbsp;: <span class="ochre-num">${{ '%.2f'|format(report.totals.week.cost) }}</span>
+    Aujourd'hui&nbsp;: <b class="ochre-num">${{ '%.2f'|format(report.totals.today.cost) }}</b>
+    · 7&nbsp;derniers jours&nbsp;: <b class="ochre-num">${{ '%.2f'|format(report.totals.week.cost) }}</b>
     · {{ report.totals.week.runs }} sessions.
   </p>
   <p class="page-hero-lede" style="font-size:.85em;opacity:.75">
@@ -18,7 +27,7 @@
   {% if fleet and fleet.defined %}
   <p class="page-hero-lede budget-fleet-total">
     Enveloppe opérationnelle cette semaine&nbsp;:
-    dépensé <span class="ochre-num">${{ '%.2f'|format(fleet.spent) }}</span>
+    dépensé <b class="ochre-num">${{ '%.2f'|format(fleet.spent) }}</b>
     sur ${{ '%.2f'|format(fleet.budget) }} d'enveloppe
     <span class="budget-pct budget-pct--{{ fleet.level }}">{{ '%.0f'|format(fleet.pct) }}%</span>.
   </p>
@@ -34,11 +43,11 @@
   </p>
 </section>
 
-<section class="cabinet-section" aria-labelledby="costs-heading">
-  <h2 id="costs-heading" class="section-heading">
-    <span class="section-heading-number">€</span>
-    Par agent / par job
-  </h2>
+<section class="cabinet-section m4-section" aria-labelledby="costs-heading">
+  <div class="section-head">
+    <span class="section-num">01</span>
+    <h2 id="costs-heading" class="section-title">Par agent / par job</h2>
+  </div>
 
   {% if not report.agents %}
     <p>Aucune activité mesurée sur 7&nbsp;jours.</p>
@@ -46,7 +55,7 @@
   <div class="table-scroll">
   <table class="costs-table" style="width:100%;border-collapse:collapse">
     <thead>
-      <tr style="text-align:left;border-bottom:2px solid #ccc">
+      <tr style="text-align:left;border-bottom:2px solid var(--line)">
         <th style="padding:.5em .6em">Agent / Job</th>
         <th style="padding:.5em .6em;text-align:right">Aujourd'hui</th>
         <th style="padding:.5em .6em;text-align:right">7&nbsp;jours</th>
@@ -60,7 +69,7 @@
     <tbody>
       {% for name, a in report.agents.items() %}
       {% set bud = agent_budgets.get(name) if agent_budgets else None %}
-      <tr style="border-bottom:1px solid #eee">
+      <tr style="border-bottom:1px solid var(--line-soft)">
         <td style="padding:.5em .6em;font-weight:600">{{ name }}</td>
         <td style="padding:.5em .6em;text-align:right">
           {% if a.today.cost > 0 %}${{ '%.2f'|format(a.today.cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}
@@ -88,7 +97,7 @@
       {% endfor %}
     </tbody>
     <tfoot>
-      <tr style="border-top:2px solid #ccc;font-weight:700">
+      <tr style="border-top:2px solid var(--line);font-weight:700">
         <td style="padding:.5em .6em">Total</td>
         <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.today.cost) }}</td>
         <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.week.cost) }}</td>

@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Carnet de bord — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin home/dept pages use (#562: bring legacy pages into the
+   approved design system — no behavior change, styling/markup only). #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'health' %}
 {% block content %}
 
 {% set moment_names = {
@@ -9,18 +14,19 @@
   4: 'Le débrief du soir',
 } %}
 
-<section class="page-hero">
-  <h1 class="page-hero-title">Carnet de bord</h1>
+<section class="page-hero m4-hero" aria-labelledby="carnet-hero-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>CARNET DE BORD</div>
+  <h1 class="page-hero-title" id="carnet-hero-title">Carnet de bord</h1>
   <p class="page-hero-lede">
     Comment l'organisation est faite, et quand chaque collègue a été actif pour la dernière fois.
   </p>
 </section>
 
-<section class="cabinet-section" aria-labelledby="carnet-activite-heading">
-  <h2 id="carnet-activite-heading" class="section-heading">
-    <span class="section-heading-number">1.</span>
-    Activité en direct
-  </h2>
+<section class="cabinet-section m4-section" aria-labelledby="carnet-activite-heading">
+  <div class="section-head">
+    <span class="section-num">01</span>
+    <h2 id="carnet-activite-heading" class="section-title">Activité en direct</h2>
+  </div>
 
 {% if not depts %}
   {% with title="Le cabinet n'a pas encore de collègues.",

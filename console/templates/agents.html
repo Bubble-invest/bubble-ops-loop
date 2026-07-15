@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}L'équipe — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin home/dept pages use (#562: bring legacy pages into the
+   approved design system — no behavior change, styling/markup only). #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'agents' %}
 {% block content %}
 
 {# Hidden compatibility sentinel for the legacy test_agents_nav suite which
@@ -7,45 +12,47 @@
    in the visible copy is "Accueillir un nouveau collègue". #}
 <!-- compat: new department · live · eclore -->
 
-<section class="page-hero">
+<section class="page-hero m4-hero" aria-labelledby="equipe-hero-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>L'ÉQUIPE</div>
   <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:24px; flex-wrap:wrap;">
     <div>
-      <h1 class="page-hero-title">L'équipe</h1>
+      <h1 class="page-hero-title" id="equipe-hero-title">L'équipe</h1>
       <p class="page-hero-lede">
-        <span class="ochre-num">{{ live|length }}</span>
+        <b class="ochre-num">{{ live|length }}</b>
         collègue{{ '' if live|length == 1 else 's' }} en poste ·
-        {% if concierges %}<span class="ochre-num">{{ concierges|length }}</span>
+        {% if concierges %}<b class="ochre-num">{{ concierges|length }}</b>
         concierge{{ '' if concierges|length == 1 else 's' }} ·{% endif %}
-        <span class="ochre-num">{{ eclore|length }}</span>
+        <b class="ochre-num">{{ eclore|length }}</b>
         en éclosion
         {% if eclore|length > 0 %}<span class="muted">(à éclore)</span>{% endif %}
       </p>
     </div>
-    <a href="/agents/new" class="btn-ochre">+ Accueillir un nouveau collègue</a>
+    <a href="/agents/new" class="btn primary">+ Accueillir un nouveau collègue</a>
   </div>
 </section>
 
-{# ─── Collègues en poste ──────────────────────────────────────── #}
-<section class="cabinet-section">
-  <h2 class="section-heading">
-    <span class="section-heading-number">1.</span>
-    Collègues en poste
-  </h2>
+{# ─── Collègues en poste — same dept-card/team-grid shape as HOME's
+   "Les concierges" grid (home.html #201-222), so a colleague reads
+   identically here and there. #}
+<section class="cabinet-section m4-section" aria-labelledby="equipe-live-heading">
+  <div class="section-head">
+    <span class="section-num">01</span>
+    <h2 id="equipe-live-heading" class="section-title">Collègues en poste</h2>
+  </div>
 
   {% if live %}
-    <div class="equipe-list">
+    <div class="team-grid">
       {% for d in live %}
         {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
-        {% set href = "/dept/" ~ d.slug %}
-        {% set role = "Collègue en poste — au cabinet depuis peu." %}
-        {% set state_html %}
-          <span class="en-poste-dot" aria-hidden="true"></span>
-          <span class="en-poste-label">En poste</span>
-        {% endset %}
-        {% with variant='live', name=d.display_name, initial=initial,
-                href=href, role=role, state_html=state_html, cta="Voir →" %}
-          {% include "components/collegue-card.html" %}
-        {% endwith %}
+        <a class="card dept-card" href="/dept/{{ d.slug }}">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en poste <span class="live-dot" aria-hidden="true"></span> en poste</div>
+            </div>
+          </div>
+        </a>
       {% endfor %}
     </div>
   {% else %}
@@ -61,108 +68,71 @@
    part of the team; shown with the same card + a link to their live
    session page ({{OPERATOR}} 2026-06-01). #}
 {% if concierges %}
-<section class="cabinet-section">
-  <h2 class="section-heading">
-    <span class="section-heading-number">2.</span>
-    Les concierges
-  </h2>
-  <p class="muted-italic" style="font-size:13px; margin:-4px 0 12px;">
-    Assistants réactifs — ils répondent quand on les sollicite, sans boucle.
-  </p>
-  <div class="equipe-list">
+<section class="cabinet-section m4-section" aria-labelledby="equipe-concierges-heading">
+  <div class="section-head">
+    <span class="section-num">02</span>
+    <h2 id="equipe-concierges-heading" class="section-title">Les concierges</h2>
+    <span class="section-sub">assistants réactifs — sans boucle</span>
+  </div>
+  <div class="team-grid">
     {% for c in concierges %}
       {% set status = c.metadata.get('service_status', 'unknown') %}
       {% set initial = c.name[0]|upper %}
-      {% set state_html %}
-        <span class="en-poste-dot" aria-hidden="true"
-              style="background: {{ '#2e7d32' if status == 'active' else '#b71c1c' }};"></span>
-        <span class="en-poste-label">{{ 'En service' if status == 'active' else status }}</span>
-        {% if c.last_activity_iso %} &middot; actif {{ c.last_activity_iso }}{% endif %}
-      {% endset %}
-      {% with variant='live', name=c.name|capitalize, initial=initial,
-              href="/concierge/" ~ c.name,
-              role="Concierge — assistant réactif.",
-              state_html=state_html, cta="Voir la session →" %}
-        {% include "components/collegue-card.html" %}
-      {% endwith %}
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-{# ─── Anciens collègues ──────────────────────────────────────────
-   Sprint Lifecycle (2026-05-21): collapsible 3rd section for depts
-   that have been Cancelled (eclosure abandoned) or Retired
-   (decommissioned post-Live). Empty most of the time; expands when
-   the operator has retired/cancelled at least one dept. Uses the
-   `--ancien` muted variant of the collegue-card to visually de-emphasize.
-#}
-{% if anciens and anciens|length > 0 %}
-<section class="cabinet-section anciens-collegues">
-  <h2 class="section-heading">
-    <span class="section-heading-number">3.</span>
-    Anciens collègues
-    <span class="muted" style="font-size:14px; font-weight:400;">
-      — archive lecture seule
-    </span>
-  </h2>
-
-  <div class="equipe-list">
-    {% for d in anciens %}
-      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
-      {% set href = "/dept/" ~ d.slug %}
-      {% set role = "Ancien collègue — ne fait plus partie de l'équipe active." %}
-      {% set state_html %}
-        {% if d.status == 'Cancelled' %}
-          <span class="ancien-label">Éclosion annulée</span>
-        {% elif d.status == 'Retired' %}
-          <span class="ancien-label">À la retraite</span>
-        {% else %}
-          <span class="ancien-label">Inactif</span>
-        {% endif %}
-      {% endset %}
-      <a class="collegue-row collegue-row--ancien"
-         href="{{ href }}">
-        <span class="collegue-avatar collegue-avatar--ancien" aria-hidden="true">{{ initial }}</span>
-        <span class="collegue-body">
-          <span class="collegue-name">{{ d.display_name }}</span>
-          <span class="collegue-role">{{ role }}</span>
-          <span class="collegue-state">{{ state_html|safe }}</span>
-        </span>
-        <span class="collegue-cta">Consulter →</span>
+      <a class="card dept-card" href="/concierge/{{ c.name }}">
+        <div class="dept-card-top">
+          <span class="avatar" aria-hidden="true">{{ initial }}</span>
+          <div>
+            <div class="dept-name-lg">{{ c.name|capitalize }}</div>
+            <div class="dept-role">concierge — assistant réactif
+              <span class="live-dot" aria-hidden="true"
+                    style="background: {{ '#a7e8d7' if status == 'active' else '#c0392b' }};"></span>
+              {{ 'en service' if status == 'active' else status }}
+              {% if c.last_activity_iso %} · actif {{ c.last_activity_iso }}{% endif %}
+            </div>
+          </div>
+        </div>
       </a>
     {% endfor %}
   </div>
 </section>
 {% endif %}
 
-{# ─── Collègues en éclosion ───────────────────────────────────── #}
-<section class="cabinet-section">
-  <h2 class="section-heading">
-    <span class="section-heading-number">2.</span>
-    Collègues en éclosion
-  </h2>
+{# ─── Collègues en éclosion — same "en éclosion" widget shape HOME uses
+   for a dept still onboarding (home.html dept-decisions-widget--eclosion),
+   percent stat-tile included. #}
+<section class="cabinet-section m4-section" aria-labelledby="equipe-eclosion-heading">
+  <div class="section-head">
+    <span class="section-num">03</span>
+    <h2 id="equipe-eclosion-heading" class="section-title">Collègues en éclosion</h2>
+  </div>
 
   {% if eclore %}
-    <div class="equipe-list">
+    <div class="team-grid">
       {% for d in eclore %}
         {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
-        {% set href = "/agents/" ~ d.slug ~ "/onboarding" %}
-        {% set role = "Collègue en éclosion — apprend son métier." %}
-        {% set state_html %}
-          {% if d.status == 'Idea' %}À peine annoncée
-          {% elif d.status == 'Configuring' %}Prend ses marques
-          {% elif d.status == 'Drafting' %}Apprend à se présenter
-          {% elif d.status == 'Needs validation' %}Attend ton avis sur ce qu'elle a écrit
-          {% elif d.status == 'Dry run' %}En répétition à blanc
-          {% elif d.status == 'Ready to activate' %}Prête à rejoindre l'équipe
-          {% else %}En cours d'éclosion{% endif %}
-        {% endset %}
-        {% with variant='eclosion', name=d.display_name, initial=initial,
-                href=href, role=role, state_html=state_html,
-                percent=d.percent_complete, cta="Continuer son éclosion →" %}
-          {% include "components/collegue-card.html" %}
-        {% endwith %}
+        <a class="card dept-card dept-card--eclosion" href="/agents/{{ d.slug }}/onboarding">
+          <div class="dept-card-top">
+            <span class="avatar" aria-hidden="true">{{ initial }}</span>
+            <div>
+              <div class="dept-name-lg">{{ d.display_name }}</div>
+              <div class="dept-role">collègue en éclosion — apprend son métier</div>
+            </div>
+          </div>
+          <div class="stat-strip">
+            <div class="stat-tile">
+              <span class="stat-num">{{ d.percent_complete }}%</span>
+              <span class="stat-lbl">éclosion
+                {%- if d.status == 'Idea' %} · à peine annoncée
+                {%- elif d.status == 'Configuring' %} · prend ses marques
+                {%- elif d.status == 'Drafting' %} · apprend à se présenter
+                {%- elif d.status == 'Needs validation' %} · attend ton avis
+                {%- elif d.status == 'Dry run' %} · répétition à blanc
+                {%- elif d.status == 'Ready to activate' %} · prête à rejoindre
+                {%- else %} · en cours{% endif -%}
+              </span>
+            </div>
+          </div>
+        </a>
       {% endfor %}
     </div>
   {% else %}
@@ -172,5 +142,40 @@
     {% endwith %}
   {% endif %}
 </section>
+
+{# ─── Anciens collègues ──────────────────────────────────────────
+   Sprint Lifecycle (2026-05-21): section for depts that have been
+   Cancelled (eclosure abandoned) or Retired (decommissioned post-Live).
+   Empty most of the time; expands when the operator has retired/cancelled
+   at least one dept. Muted dept-card so it visually de-emphasizes. #}
+{% if anciens and anciens|length > 0 %}
+<section class="cabinet-section m4-section anciens-collegues" aria-labelledby="equipe-anciens-heading">
+  <div class="section-head">
+    <span class="section-num">04</span>
+    <h2 id="equipe-anciens-heading" class="section-title">Anciens collègues</h2>
+    <span class="section-sub">archive lecture seule</span>
+  </div>
+
+  <div class="team-grid">
+    {% for d in anciens %}
+      {% set initial = d.display_name[0]|upper if d.display_name else d.slug[0]|upper %}
+      <a class="card dept-card dept-card--ancien" href="/dept/{{ d.slug }}" style="opacity:.68;">
+        <div class="dept-card-top">
+          <span class="avatar" aria-hidden="true">{{ initial }}</span>
+          <div>
+            <div class="dept-name-lg">{{ d.display_name }}</div>
+            <div class="dept-role">
+              ancien collègue —
+              {% if d.status == 'Cancelled' %}éclosion annulée
+              {% elif d.status == 'Retired' %}à la retraite
+              {% else %}inactif{% endif %}
+            </div>
+          </div>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {% endblock %}
