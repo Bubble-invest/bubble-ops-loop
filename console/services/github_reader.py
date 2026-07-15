@@ -230,6 +230,111 @@ def load_layer_prompt_md(slug: str, layer_num: int) -> Optional[str]:
         return None
 
 
+# Max bytes read into the mission-file viewer — mirrors loop_history's
+# _MAX_FILE_BYTES guard against a runaway file.
+_MISSION_FILE_MAX_BYTES = 256 * 1024
+
+# Suffix -> viewer "kind", reusing the same rendering classes as
+# loop_history._KIND_BY_SUFFIX / output_file.html (output-content--{{kind}}).
+_MISSION_FILE_KIND_BY_SUFFIX: Dict[str, str] = {
+    ".md": "markdown",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+
+
+def list_mission_files(slug: str) -> List[Dict[str, str]]:
+    """Return the dept's L1/L2 mission files available for async read-only
+    review (card #622) — MANDATE.md, each subscribed layer's PROMPT.md, each
+    mission's PROMPT.md, plus the dept's free-form working memory and config,
+    when present on disk. Read-only: this never returns a write/edit affordance.
+
+    Each entry is {"label", "rel_path", "group"} — `rel_path` is what
+    `read_mission_file` accepts (repo-relative, from this same allowlist).
+    Missing files are silently skipped (a dept without a given file just
+    doesn't show that row).
+    """
+    root = repo_path(slug)
+    if root is None:
+        return []
+
+    out: List[Dict[str, str]] = []
+
+    def _add(rel: str, label: str, group: str) -> None:
+        if (root / rel).is_file():
+            out.append({"rel_path": rel, "label": label, "group": group})
+
+    _add("MANDATE.md", "MANDATE.md", "mandat")
+
+    layers_dir = root / "layers"
+    if layers_dir.is_dir():
+        for layer_dir in sorted(layers_dir.iterdir()):
+            if layer_dir.is_dir() and layer_dir.name.isdigit():
+                _add(f"layers/{layer_dir.name}/PROMPT.md",
+                     f"Moment {layer_dir.name} — PROMPT.md", "layers")
+
+    missions_dir = root / "missions"
+    if missions_dir.is_dir():
+        for mission_dir in sorted(missions_dir.iterdir()):
+            if mission_dir.is_dir():
+                _add(f"missions/{mission_dir.name}/PROMPT.md",
+                     f"{mission_dir.name} — PROMPT.md", "missions")
+
+    _add("WORKING_MEMORY.md", "WORKING_MEMORY.md", "memoire")
+    _add("whiteboard.yaml", "whiteboard.yaml", "config")
+
+    config_dir = root / "config"
+    if config_dir.is_dir():
+        for p in sorted(config_dir.iterdir()):
+            if p.is_file() and p.suffix in (".yaml", ".yml"):
+                _add(f"config/{p.name}", f"config/{p.name}", "config")
+
+    return out
+
+
+def read_mission_file(slug: str, rel_path: str) -> Optional[Dict[str, Any]]:
+    """Safely read one L1/L2 mission file for the read-only viewer (#622).
+
+    Unlike `loop_history.read_output_file` (which allows anything under
+    outputs/), this only serves files that `list_mission_files` would itself
+    surface — i.e. `rel_path` must match the SAME allowlist, re-derived here
+    rather than trusted from the caller. That's a tighter guard than a
+    subtree check: these files live scattered across the repo root,
+    layers/, missions/, and config/, not under one shared parent, so a
+    generic "stay under X" check isn't enough by itself.
+
+    Returns {name, rel_path, kind, content, empty} or None if the dept/file
+    is missing, unreadable, or not on the allowlist.
+    """
+    allowed = {f["rel_path"] for f in list_mission_files(slug)}
+    if rel_path not in allowed:
+        return None
+
+    root = repo_path(slug)
+    if root is None:
+        return None
+    target = root / rel_path
+    if not target.is_file():
+        return None
+
+    size = target.stat().st_size
+    if size == 0:
+        return {"name": target.name, "rel_path": rel_path, "kind": "text",
+                "content": "", "empty": True}
+
+    raw = target.read_bytes()[:_MISSION_FILE_MAX_BYTES]
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8", errors="replace")
+    if size > _MISSION_FILE_MAX_BYTES:
+        content += f"\n\n… (tronqué — fichier de {size} octets)"
+
+    kind = _MISSION_FILE_KIND_BY_SUFFIX.get(target.suffix, "text")
+    return {"name": target.name, "rel_path": rel_path, "kind": kind,
+            "content": content, "empty": False}
+
+
 def _parse_gate_files(gates_dir: Path) -> List[tuple]:
     """Glob + parse every queues/gates/*.yaml once. Returns a list of
     (path, doc_or_None, yaml_error_or_None) tuples — doc is the parsed dict

@@ -573,6 +573,55 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   {% endif %}
 </section>
 
+{# ═══ 04b — MISSION FILES (L1/L2), read-only async review pane ═══
+   Card #622: Jade wants Miranda's L1/L2 mission files reviewable async in
+   the cockpit, independent of a live R&D session — today they're only
+   readable while a session is up. This pane lists them; each opens in a
+   dedicated read view (mirrors /dept/<slug>/output — see mission_file.html).
+   READ-ONLY: no write/edit affordance anywhere on this pane or its viewer.
+   Scoped to content/Miranda only (mission_files is [] for every other dept —
+   see routes/dept.py) so other dept pages render exactly as before. #}
+{% if dept.slug == 'content' %}
+<section class="cabinet-section m4-section" aria-labelledby="dept-mission-files-heading">
+  <div class="section-head">
+    <span class="section-num">04b</span>
+    <h2 id="dept-mission-files-heading" class="section-title">Fichiers de mission (L1/L2)</h2>
+    <span class="section-sub">lecture seule — pour relecture asynchrone</span>
+  </div>
+
+  {% if mission_files %}
+    {% set _group_labels = {
+      'mandat': 'Mandat',
+      'layers': 'Prompts de moment (layers)',
+      'missions': 'Prompts de mission',
+      'memoire': 'Mémoire de travail',
+      'config': 'Configuration',
+    } %}
+    {% for grp in ['mandat', 'layers', 'missions', 'memoire', 'config'] %}
+      {% set _files = mission_files|selectattr('group', 'equalto', grp)|list %}
+      {% if _files %}
+        <div class="history-subsection">
+          <h3 class="dept-detail-subhead">{{ _group_labels.get(grp, grp) }}</h3>
+          <ul class="loop-files">
+            {% for mf in _files %}
+              <li>
+                <a class="loop-file" href="/dept/{{ dept.slug }}/mission-file?f={{ mf.rel_path | urlencode }}">
+                  {{ mf.label }}
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <p class="prose-block muted-italic">
+      Aucun fichier de mission trouvé pour l'instant.
+    </p>
+  {% endif %}
+</section>
+{% endif %}
+
 {# ═══ 05 — SON MANDAT + HISTORIQUE (secondary — collapsed detail) ═══
    #534: the mandate one-liner stays visible; the full MANDATE.md, the loop
    cadence, the safety-net, the decision timeline and the loop-run history
