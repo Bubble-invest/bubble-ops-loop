@@ -78,6 +78,29 @@ deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --activa
 Uninstall: `install-local-loop.sh --uninstall --slug content` (removes the plist
 + wrapper; add `--activate` to also `launchctl unload`).
 
+## No-sudo tmux (M5 hosts without Homebrew)
+
+The main runner wants tmux so a human can `tmux attach -t ops-loop-<slug>` to
+**watch and type to** the agent live. On a Mac with no admin rights ("M5": no
+sudo → no Homebrew → no tmux) that used to force a `/usr/bin/script` fallback
+wrapper — viewable via `tail -f` of the transcript but **not** attachable.
+
+`install-tmux-nosudo.sh` closes the gap: it builds tmux (+ static libevent) from
+upstream source into `~/.local`, needing only the Xcode CLT (`cc`/`make`). Then
+render the wrapper with that tmux — no `script` fallback:
+
+```sh
+deploy/local/install-tmux-nosudo.sh                       # → ~/.local/bin/tmux
+
+deploy/local/install-local-loop.sh \
+    --dept-dir ~/claude-workspaces/bubble-ops-accountant --slug accountant \
+    --claude-bin ~/.local/bin/claude --tmux-bin ~/.local/bin/tmux \
+    --telegram-state-dir ~/.claude/channels/telegram-accountant --activate
+```
+
+Note: the accountant wrapper also exports `PYTHONPATH` for the
+`department-onboarding-guide` skill — preserve it when re-rendering.
+
 ## Mac-asleep catch-up — no special code
 
 When the Mac is closed/asleep through one or more scheduled windows and is then
