@@ -178,6 +178,15 @@ def dept_detail(slug: str, request: Request):
     # a graceful platform-default fallback when undeclared. Card: surface
     # agent deployment metadata on /dept/<slug> (2026-07-02).
     agent_model_info = github_reader.load_agent_model_info(dept_yaml)
+    # L1/L2 mission files (MANDATE.md, layer PROMPT.mds, mission PROMPT.mds,
+    # working memory, config) — read-only async review pane, card #622. The
+    # reader is dept-generic (same style as load_mandate_md et al) but the
+    # pane itself is only rendered on /dept/content in the template: Jade's
+    # ask was scoped to Miranda/content, and other dept pages must stay
+    # unchanged.
+    mission_files = (
+        github_reader.list_mission_files(slug) if slug == "content" else []
+    )
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -205,6 +214,7 @@ def dept_detail(slug: str, request: Request):
             "loop_runtime_prompt": loop_runtime_prompt,
             "kanban_summary": kanban_summary,
             "layer_queues": layer_queues,
+            "mission_files": mission_files,
         },
     )
 
@@ -263,6 +273,33 @@ def output_file(slug: str, f: str, request: Request):
         )
     return request.app.state.templates.TemplateResponse(
         "output_file.html",
+        {"request": request, "dept": d, "file": fileinfo},
+    )
+
+
+@router.get("/dept/{slug}/mission-file", response_class=HTMLResponse)
+def mission_file(slug: str, f: str, request: Request):
+    """View a single L1/L2 mission file in-browser, read-only (card #622).
+
+    `f` is a repo-relative path that must be one of the files
+    `github_reader.list_mission_files` would itself surface for this dept
+    (MANDATE.md, layers/<n>/PROMPT.md, missions/<name>/PROMPT.md,
+    WORKING_MEMORY.md, whiteboard.yaml, config/*.yaml) — the reader
+    re-derives and checks against that same allowlist, it does not trust
+    the query param. No write/edit affordance exists on this route or its
+    template.
+    """
+    d = dept_registry.get_department(slug)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
+    fileinfo = github_reader.read_mission_file(slug, f)
+    if fileinfo is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Fichier introuvable ou hors de la liste des fichiers de mission : {f}",
+        )
+    return request.app.state.templates.TemplateResponse(
+        "mission_file.html",
         {"request": request, "dept": d, "file": fileinfo},
     )
 
