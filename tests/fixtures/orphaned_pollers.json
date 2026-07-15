@@ -1,0 +1,14 @@
+[
+  {"pid": 1, "ppid": 0, "pcpu": 0.0, "command": "/sbin/launchd"},
+  {"pid": 1048, "ppid": 1, "pcpu": 0.0, "command": "/opt/homebrew/bin/tmux new-session -d -s claude-ricky"},
+  {"pid": 1060, "ppid": 1048, "pcpu": 0.0, "command": "claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"},
+  {"pid": 1629, "ppid": 1060, "pcpu": 0.0, "command": "bun run --cwd /Users/joris/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 --shell=bun --silent start"},
+  {"pid": 1636, "ppid": 1629, "pcpu": 0.1, "command": "/Users/joris/.bun/bin/bun server.ts"},
+
+  {"pid": 1312, "ppid": 1048, "pcpu": 0.4, "command": "claude --agent rnd --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"},
+  {"pid": 1857, "ppid": 1312, "pcpu": 0.0, "command": "bun run --cwd /Users/joris/.claude/plugins/cache/claude-plugins-official/imessage/0.1.0 --shell=bun --silent start"},
+  {"pid": 1882, "ppid": 1857, "pcpu": 0.0, "command": "/Users/joris/.bun/bin/bun server.ts"},
+
+  {"pid": 9101, "ppid": 1, "pcpu": 94.2, "command": "/Users/joris/.bun/bin/bun server.ts"},
+  {"pid": 9202, "ppid": 1, "pcpu": 93.8, "command": "/Users/joris/.bun/bin/bun server.ts"}
+]
