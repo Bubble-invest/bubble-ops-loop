@@ -70,3 +70,19 @@ def test_mandate_template_includes_forbidden_list_when_provided(stub_agent_conte
     forb = doc["department"].get("forbidden", [])
     assert "publier informations confidentielles" in forb
     assert len(forb) == 3
+
+
+def test_mandate_template_documents_budget_weekly_usd(stub_agent_context):
+    """Board #466 (child of #404): the scaffold's dept.yaml template must
+    document the new per-dept `budget_weekly_usd:` field (commented-out,
+    like `brief_artifacts:` above it) so operators onboarding a new dept know
+    it exists — same convention as mission `budget_usd:` but for the WHOLE
+    dept's week. It's OPTIONAL: rendering with the stub context (which
+    doesn't set it) must still parse to valid YAML with no such key present
+    (nothing forces it on)."""
+    ctx = stub_agent_context("step1_mandate")
+    rendered = render_template("dept.yaml", ctx)
+    assert "budget_weekly_usd" in rendered
+    doc = yaml.safe_load(rendered)
+    # Commented-out by default → not actually a live key in the parsed doc.
+    assert "budget_weekly_usd" not in doc["department"]

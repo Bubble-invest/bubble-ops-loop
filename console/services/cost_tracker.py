@@ -439,6 +439,29 @@ def _build_report_uncached(refresh: bool = False) -> dict:
 _BUDGET_MISSION_KEYS = ("layers", "recurring_missions", "missions")
 
 
+def dept_weekly_envelope(dept_yaml: Optional[dict]) -> Optional[float]:
+    """Read `department.budget_weekly_usd` from a dept.yaml (board #466, child
+    of #404). This is a NEW, distinct field from mission `budget_usd` above —
+    it lives once on the `department:` block (operator-owned, push-locked,
+    same convention as mission budget_usd) and is the per-dept WEEKLY envelope
+    itself, not a mission-cycle amount to sum.
+
+    Returns the float, or None when absent/malformed (missing dept_yaml, no
+    `department` block, no `budget_weekly_usd`, or a non-numeric/bool value)
+    so the caller can render "non défini" instead of a misleading $0 or
+    crashing. Never raises.
+    """
+    if not isinstance(dept_yaml, dict):
+        return None
+    dept = dept_yaml.get("department")
+    if not isinstance(dept, dict):
+        return None
+    v = dept.get("budget_weekly_usd")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return round(float(v), 2)
+    return None
+
+
 def mission_budget_total(dept_yaml: Optional[dict]) -> Optional[float]:
     """Sum `budget_usd` across a dept.yaml's mission entries.
 

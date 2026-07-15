@@ -43,6 +43,65 @@
   </p>
 </section>
 
+<section class="cabinet-section" aria-labelledby="dept-budgets-heading">
+  <h2 id="dept-budgets-heading" class="section-heading">
+    <span class="section-heading-number">€</span>
+    Enveloppe par dept
+  </h2>
+  {% set dept_rows = (dept_budgets.items() | rejectattr('0', 'equalto', '__fleet__') | list) if dept_budgets else [] %}
+  {% if not dept_rows %}
+    <p>Aucun dept live avec une dépense mesurée.</p>
+  {% else %}
+  <div class="table-scroll">
+  <table class="costs-table" style="width:100%;border-collapse:collapse">
+    <thead>
+      <tr style="text-align:left;border-bottom:2px solid #ccc">
+        <th style="padding:.5em .6em">Dept</th>
+        <th style="padding:.5em .6em;text-align:right">Dépensé&nbsp;(7j)</th>
+        <th style="padding:.5em .6em;text-align:right"
+            title="department.budget_weekly_usd dans le dept.yaml du dept si posé, sinon settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT">
+          Enveloppe&nbsp;(hebdo)</th>
+        <th style="padding:.5em .6em" title="Dépense de la semaine vs l'enveloppe hebdomadaire du dept — alerte à partir de 80%">
+          Budget&nbsp;dept&nbsp;(7j)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for slug, bud in dept_rows %}
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:.5em .6em;font-weight:600">{{ bud.display_name }}</td>
+        <td style="padding:.5em .6em;text-align:right;font-weight:600">${{ '%.2f'|format(bud.spent) }}</td>
+        <td style="padding:.5em .6em;text-align:right">
+          {% if bud.defined %}${{ '%.2f'|format(bud.budget) }}{% else %}<span style="opacity:.4" title="aucune enveloppe posée pour ce dept (ni dept.yaml, ni settings)">non définie</span>{% endif %}
+        </td>
+        <td style="padding:.5em .6em;min-width:120px">
+          {% if bud.defined %}
+          <div class="budget-bar" role="progressbar"
+               aria-valuenow="{{ '%.0f'|format(bud.pct) }}" aria-valuemin="0" aria-valuemax="100"
+               aria-label="{{ bud.display_name }} — {{ '%.0f'|format(bud.pct) }}% de l'enveloppe">
+            <span class="budget-bar-fill budget-bar-fill--{{ bud.level }}" style="width: {{ [bud.pct, 100]|min }}%;"></span>
+          </div>
+          <span class="budget-pct budget-pct--{{ bud.level }}" style="font-size:.8em">{{ '%.0f'|format(bud.pct) }}%</span>
+          {% if bud.level in ('warn', 'over') %}
+          <span class="budget-alert budget-alert--{{ bud.level }}" style="font-size:.8em;margin-left:.4em"
+                title="Dept à {{ '%.0f'|format(bud.pct) }}% de son enveloppe hebdomadaire">
+            {% if bud.level == 'over' %}⚠︎ dépassé{% else %}⚠︎ ≥80%{% endif %}
+          </span>
+          {% endif %}
+          {% else %}<span style="opacity:.4">—</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:.8em;opacity:.6;margin-top:.5em">
+    Enveloppe&nbsp;: <code>department.budget_weekly_usd</code> dans le <code>dept.yaml</code> du dept (push-locked,
+    posé par l'opérateur) — sinon la valeur par défaut de <code>settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT</code>.
+    Warn-only&nbsp;: aucune coupure automatique, juste une alerte visuelle à partir de 80%.
+  </p>
+  {% endif %}
+</section>
+
 <section class="cabinet-section m4-section" aria-labelledby="costs-heading">
   <div class="section-head">
     <span class="section-num">01</span>
