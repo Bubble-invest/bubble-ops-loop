@@ -898,6 +898,11 @@ def materialize_due_missions_for_tick(
         dept = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
+    # #593: a top-level-LIST (or other non-dict) dept.yaml is truthy, so
+    # `or {}` does not catch it — `.get()` would then raise AttributeError.
+    # Treat it the same as the unparseable case above.
+    if not isinstance(dept, dict):
+        return []
 
     missions = dept.get("recurring_missions") or []
     if not missions:

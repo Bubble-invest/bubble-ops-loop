@@ -1,5 +1,6 @@
 """Tests for #593 — materialize_due_missions_for_tick crashes on a non-dict
-top-level queue YAML document.
+top-level YAML document, at any of the three yaml.safe_load(...) call sites
+that live inside (or are called from within) that function.
 
 LIVE bug (verified on the VPS, not re-litigated here): the idempotency
 queue-scan inside materialize_due_missions_for_tick does
@@ -19,6 +20,24 @@ Fix: guard the scan with `isinstance(existing_data, dict)` so a non-dict
 document is treated like any other unreadable item — skipped via the same
 skip-and-continue behavior the adjacent `except Exception: continue` already
 establishes as the intended pattern for a malformed queue item.
+
+SIBLING SITES within materialize_due_missions_for_tick's own body/call-graph
+(grepped `sed -n '868,1225p' scripts/lib/dispatch_helpers.py | grep -n
+yaml.safe_load`, function body confirmed 868->1225 via the next `def` at
+1226):
+  - line 898  — `dept = yaml.safe_load(dept_yaml_path.read_text(...)) or {}`
+    then `dept.get("recurring_missions")` at line 902. Same crash shape,
+    reading dept.yaml itself. Defense-in-depth (not a live incident — nothing
+    programmatically writes dept.yaml; migrate.py only writes
+    dept.yaml.draft, and all live dept.yamls are dict-shaped). Guarded the
+    same way the adjacent `except Exception: return []` already does:
+    `if not isinstance(dept, dict): return []`.
+  - line 1287 (via `_queue_has_items`, called from materialize_due_missions_
+    for_tick's `_mat_has_research` computation at ~line 946) — already fixed
+    in the first pass of this card.
+Other `yaml.safe_load(...) or {}` sites in this file (244, 1310, 1361, 1419)
+are in OTHER functions, out of scope for #593, left untouched per explicit
+instruction (separate sweep card).
 """
 from __future__ import annotations
 
@@ -162,3 +181,37 @@ def test_wellformed_items_alongside_poison_item_still_dedupe(tmp_path: Path):
     yaml_files = [f for f in research_dir.iterdir()
                   if f.is_file() and not f.name.startswith(".")]
     assert len(yaml_files) == 2  # poison item + the pre-existing legit item, untouched
+
+
+def test_list_shaped_dept_yaml_does_not_crash_the_tick(tmp_path: Path):
+    """dept.yaml itself as a top-level LIST (instead of a dict with a
+    recurring_missions key) must not raise AttributeError. This is
+    defense-in-depth, not a reproduction of a live incident: nothing in this
+    repo programmatically writes dept.yaml (migrate.py only ever writes
+    dept.yaml.draft), and every live dept.yaml on the VPS is dict-shaped. The
+    fix mirrors the adjacent `except Exception: return []` — a non-dict
+    top-level document is treated the same as an unparseable one.
+
+    FAILS on main (no isinstance guard): yaml.safe_load(...) or {} lets the
+    truthy list through, then dept.get("recurring_missions") raises
+    AttributeError('list' object has no attribute 'get'), propagating out of
+    materialize_due_missions_for_tick before any mission is inspected.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    # dept.yaml is a top-level LIST, not a dict.
+    (repo / "dept.yaml").write_text(
+        yaml.dump([{"id": "content_daily_rotation"}], allow_unicode=True,
+                  default_flow_style=False),
+        encoding="utf-8",
+    )
+    today_dir = _today_dir(repo)
+
+    # Must not raise.
+    created = materialize_due_missions_for_tick(repo, today_dir, _NOW)
+
+    assert created == [], (
+        "a list-shaped dept.yaml has no readable recurring_missions — "
+        "must be treated as if there are none, not crash the tick"
+    )
