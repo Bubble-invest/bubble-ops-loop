@@ -246,6 +246,12 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
             # Unreadable YAML → we can't determine id, so we can't consumed-
             # check it. Fall through to unconsumed (fail-open).
             return True
+        # #593: a top-level-LIST (or other non-dict) YAML document is truthy,
+        # so `or {}` does not catch it — the `.get()` calls below would then
+        # raise AttributeError. Treat it like the unreadable case above:
+        # fail-open, treat as unconsumed.
+        if not isinstance(data, dict):
+            return True
 
         # Fix #198 — consumed check BEFORE created_at parse:
         # If the note's id appears in .consumed.json, L1 has already acted on
@@ -1315,6 +1321,11 @@ def _drainable_kinds_for_layer(repo_dir: Path, layer: int) -> "set[str]":
         dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
     except Exception:
         return set()
+    # #593: a top-level-LIST (or other non-dict) dept.yaml is truthy, so `or {}`
+    # does not catch it — `.get()` below would then raise AttributeError. Treat
+    # it the same as the absent/unreadable case above.
+    if not isinstance(dept, dict):
+        return set()
     kinds: set[str] = set()
     for m in dept.get("recurring_missions") or []:
         if int(m.get("layer", 0)) == layer:
@@ -1365,6 +1376,11 @@ def _drainable_kinds_for_queue(repo_dir: Path, queue_rel_path: str) -> "set[str]
     try:
         dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
     except Exception:
+        return set()
+    # #593: a top-level-LIST (or other non-dict) dept.yaml is truthy, so `or {}`
+    # does not catch it — `.get()` below would then raise AttributeError. Treat
+    # it the same as the absent/unreadable case above.
+    if not isinstance(dept, dict):
         return set()
     target = queue_rel_path.rstrip("/")
     kinds: set[str] = set()
@@ -1423,6 +1439,11 @@ def _any_mission_fired_today_for_layer(
     try:
         dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
     except Exception:
+        return False
+    # #593: a top-level-LIST (or other non-dict) dept.yaml is truthy, so `or {}`
+    # does not catch it — `.get()` below would then raise AttributeError. Treat
+    # it the same as the absent/unreadable case above.
+    if not isinstance(dept, dict):
         return False
     today_dir = Path(today_dir)
     for m in dept.get("recurring_missions") or []:
