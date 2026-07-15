@@ -898,6 +898,11 @@ def materialize_due_missions_for_tick(
         dept = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
+    # #593: a top-level-LIST (or other non-dict) dept.yaml is truthy, so
+    # `or {}` does not catch it — `.get()` would then raise AttributeError.
+    # Treat it the same as the unparseable case above.
+    if not isinstance(dept, dict):
+        return []
 
     missions = dept.get("recurring_missions") or []
     if not missions:
@@ -1093,6 +1098,12 @@ def materialize_due_missions_for_tick(
                 ) or {}
             except Exception:
                 continue
+            # #593: a top-level-LIST (or other non-dict) YAML document is
+            # truthy, so `or {}` does not catch it — `.get()` would then raise
+            # AttributeError and kill the whole tick. Treat a non-dict document
+            # the same as an unparseable one: skip and continue.
+            if not isinstance(existing_data, dict):
+                continue
             if existing_data.get("mission_id") == mid:
                 already_queued = True
                 break
@@ -1281,6 +1292,11 @@ def _queue_has_items(queue_dir: Path,
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         except Exception:
             # Unparseable → fail-open, count it (don't silently drop real work).
+            return True
+        # #593: a top-level-LIST (or other non-dict) YAML document is truthy,
+        # so `or {}` does not catch it. Treat it like the unparseable case
+        # above — fail-open, count it — rather than let `.get()` raise.
+        if not isinstance(data, dict):
             return True
         kind = data.get("kind")
         if kind is None or kind in drainable_kinds:
