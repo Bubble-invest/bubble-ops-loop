@@ -173,6 +173,56 @@ make_layer() {
     echo "Layer $n mission for $slug." > "$dir/PROMPT.md"
 }
 
+make_dept_yaml_l4_two_missions() {
+    # make_dept_yaml_l4_two_missions <slug> <first_time_HH:MM> <second_time_HH:MM>
+    # Writes a dept.yaml with TWO Layer-4 recurring_missions at the given
+    # Paris-local times (card #518 fixture: risk_control + market_wrapup).
+    local slug="$1" t1="$2" t2="$3"
+    local wd="$AGENTS_ROOT/bubble-ops-$slug"
+    mkdir -p "$wd"
+    cat > "$wd/dept.yaml" <<YAML
+recurring_missions:
+- id: risk_control
+  layer: 4
+  cadence: daily
+  time: "$t1"
+  output_queue: queues/research/
+  creates: []
+- id: market_wrapup
+  layer: 4
+  cadence: daily
+  time: "$t2"
+  output_queue: queues/research/
+  creates: []
+YAML
+}
+
+make_mission_marker() {
+    # make_mission_marker <slug> <mission_id> [when_epoch]  → stamp the
+    # per-mission .last-run marker (simulates that mission having already
+    # fired today, e.g. earlier in the day via its own real run).
+    local slug="$1" mid="$2" when="${3:-$(date -u +%s)}"
+    local wd="$AGENTS_ROOT/bubble-ops-$slug"
+    local today; today="$(date -u +%Y-%m-%d)"
+    local dir="$wd/outputs/$today/missions/$mid"
+    mkdir -p "$dir"
+    date -u -d "@$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
+}
+
+make_layer_marker() {
+    # make_layer_marker <slug> <N> [when_epoch]  → stamp the LAYER-level
+    # .last-run marker (simulates the legacy monolithic layer prompt's own
+    # STEP-1 stamp, which a primary mission using the legacy shim still
+    # writes in production). Used to prove the floor selector is not fooled
+    # by a layer-level marker into thinking every mission on the layer is done.
+    local slug="$1" n="$2" when="${3:-$(date -u +%s)}"
+    local wd="$AGENTS_ROOT/bubble-ops-$slug"
+    local today; today="$(date -u +%Y-%m-%d)"
+    local dir="$wd/outputs/$today/$n"
+    mkdir -p "$dir"
+    date -u -d "@$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
+}
+
 make_host() {
     # make_host <slug> <vps|local|MALFORMED>  → write onboarding/STATE.yaml host.
     # "MALFORMED" writes an unparseable STATE.yaml to prove fail-safe→vps.
@@ -977,6 +1027,140 @@ else
     bad "L6c unexpected brief relay after a probe-ERR degraded L4; brief-notify.log=$(cat "$BRIEF_NOTIFY_LOG")"
 fi
 unset BUBBLE_BACKUP_LAYER_OFFSET_H BUBBLE_BACKUP_BRIEF_NOTIFY_CMD
+
+# =============================================================================
+# M. Mission-granular floor dispatch (card #508 Fix B / #518) — THE PRIMARY
+#    CORRECTNESS TEST for this card. Drives the REAL floor dispatch path
+#    (loop-backup.sh --layer 4) end-to-end against a dept whose dept.yaml
+#    declares TWO Layer-4 missions (risk_control + market_wrapup, mirroring
+#    Ben's real dept.yaml shape). risk_control already fired earlier today
+#    (per-mission marker present, AND the legacy layer-level marker present —
+#    proving the selector isn't fooled by that); market_wrapup has not.
+#
+#    A naive/rejected fix ("just add a late timer that re-runs Layer 4
+#    generically") would either (a) see the layer-level .last-run and skip
+#    entirely — market_wrapup never fires — or (b) blindly re-run
+#    risk_control. THIS test proves the late floor tick dispatches
+#    market_wrapup SPECIFICALLY: the claude stub is invoked with a prompt
+#    naming market_wrapup by id, risk_control is NOT re-ticked, and the
+#    fired-ping is tagged with the mission name.
+# =============================================================================
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48   # neutralize the EARLY/head-start gate deterministically
+mkdir -p "$WORK/lock"
+
+# risk_control's slot: 5 minutes ago (Paris-local). market_wrapup's slot: 2
+# minutes ago. Both are "due" by wall-clock time regardless of what hour this
+# suite runs at; risk_control gets a marker (fired), market_wrapup does not.
+NOW_EPOCH="$(date -u +%s)"
+RISK_TIME="$(TZ=Europe/Paris date -d "@$((NOW_EPOCH - 300))" +%H:%M)"
+WRAPUP_TIME="$(TZ=Europe/Paris date -d "@$((NOW_EPOCH - 120))" +%H:%M)"
+
+make_dept m4 10800                              # stale loop → floor intervenes
+make_layer m4 4                                 # legacy shim path still present
+make_dept_yaml_l4_two_missions m4 "$RISK_TIME" "$WRAPUP_TIME"
+make_layer_marker   m4 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker   m4 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker   m4 3 "$((NOW_EPOCH - 3600))"  # L1/2/3 prereq for L4 eligibility
+make_mission_marker m4 risk_control "$((NOW_EPOCH - 300))"   # risk_control already fired
+make_layer_marker   m4 4 "$((NOW_EPOCH - 300))"               # legacy layer marker too — must NOT mask market_wrapup
+set_enabled m4
+export BUBBLE_BACKUP_DEPTS="m4"
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+
+# M1: exactly ONE claude tick ran (market_wrapup only — risk_control must not re-fire).
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "1" ]]; then
+    ok "M1 exactly one floor tick ran (market_wrapup only, risk_control not re-ticked)"
+else
+    bad "M1 expected exactly 1 tick; ran=$ran claude.log=$(cat "$CLAUDE_LOG" 2>/dev/null)"
+fi
+
+# M2: THE key assertion — the prompt handed to claude names market_wrapup
+#     SPECIFICALLY (mission id + its resolved prompt path), not a generic
+#     "run Layer 4" instruction. This is what distinguishes a real fix from
+#     the rejected naive one (a static timer that re-runs L4 generically).
+if grep -q 'mission `market_wrapup`' "$CLAUDE_ARGS" 2>/dev/null \
+   && grep -q 'layers/4/PROMPT.md' "$CLAUDE_ARGS" 2>/dev/null \
+   && ! grep -q 'mission `risk_control`' "$CLAUDE_ARGS" 2>/dev/null; then
+    ok "M2 floor tick prompt names market_wrapup SPECIFICALLY (not a generic 'run Layer 4', not risk_control)"
+else
+    bad "M2 prompt did not name market_wrapup specifically; claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
+fi
+
+# M3: the fired ping is tagged with the mission name (visible signal a human
+#     reading the Telegram ping can trust: WHICH mission fired).
+if grep -q '(mission=market_wrapup)' "$NOTIFY_LOG" 2>/dev/null; then
+    ok "M3 fired ping is tagged with the specific mission (mission=market_wrapup)"
+else
+    bad "M3 ping not tagged with mission name; notify.log=$(cat "$NOTIFY_LOG" 2>/dev/null)"
+fi
+
+# M4: per-mission marker for market_wrapup is what the dept's own mission
+#     PROMPT.md would stamp on a real run — the floor's ENUMERATION step
+#     itself (select_forced_layer_missions) must NOT have pre-stamped it
+#     (that's the mission's own job on its real run, #454 discipline). Since
+#     the claude stub here is a no-op (does not stamp anything), the marker
+#     must still be ABSENT after this tick — proving the floor script itself
+#     never writes it as a side effect of enumeration.
+marker="$AGENTS_ROOT/bubble-ops-m4/outputs/$(date -u +%Y-%m-%d)/missions/market_wrapup/.last-run"
+if [[ ! -f "$marker" ]]; then
+    ok "M4 floor script does not stamp the per-mission marker itself (read-only enumeration, #454 discipline)"
+else
+    bad "M4 floor script stamped market_wrapup's marker itself — enumeration must be read-only"
+fi
+
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# M5: back-compat — a dept with NO dept.yaml (legacy, non-migrated) under
+#     --layer 4 still gets the single generic "run Layer 4" tick, unchanged.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept legacy4 10800
+make_layer legacy4 4
+make_layer_marker legacy4 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker legacy4 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker legacy4 3 "$((NOW_EPOCH - 3600))"
+set_enabled legacy4
+export BUBBLE_BACKUP_DEPTS="legacy4"
+: > "$CLAUDE_ARGS"; : > "$CLAUDE_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+if grep -q 'Run Layer 4 NOW' "$CLAUDE_ARGS" 2>/dev/null \
+   && [[ "$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)" == "1" ]]; then
+    ok "M5 back-compat: dept without dept.yaml gets the legacy generic 'Run Layer 4 NOW' tick, unchanged"
+else
+    bad "M5 legacy fallback broken; claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null) claude.log=$(cat "$CLAUDE_LOG" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# M6: a dept whose dept.yaml declares L4 missions but ALL are already fired
+#     today (both markers present) → SKIP, no tick, no re-fire.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept m4done 10800
+make_layer m4done 4
+make_dept_yaml_l4_two_missions m4done "$RISK_TIME" "$WRAPUP_TIME"
+make_layer_marker   m4done 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker   m4done 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker   m4done 3 "$((NOW_EPOCH - 3600))"
+make_mission_marker m4done risk_control  "$((NOW_EPOCH - 300))"
+make_mission_marker m4done market_wrapup "$((NOW_EPOCH - 120))"
+set_enabled m4done
+export BUBBLE_BACKUP_DEPTS="m4done"
+: > "$CLAUDE_LOG"; : > "$WORK/loop-backup.jsonl"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "0" ]] && grep -q 'all L4 missions already fired today' "$WORK/loop-backup.jsonl" 2>/dev/null; then
+    ok "M6 all L4 missions already fired today → skip, no re-fire, no tick"
+else
+    bad "M6 expected a clean skip with no tick; ran=$ran jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="

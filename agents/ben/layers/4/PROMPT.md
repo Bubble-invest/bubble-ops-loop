@@ -12,13 +12,28 @@ your own positions and convictions.
 
 ## Why you were called
 
-This is the mandatory daily audit — **once per day**, no parallelism. You ran
-because the day's window opened AND `outputs/<today>/4/.last-run` does not exist.
+This is the mandatory daily audit for the `risk_control` mission (dept.yaml's
+Layer 4 `recurring_missions` entry `id: risk_control`) — **once per day**, no
+parallelism for THIS mission. You ran because the day's window opened AND
+this mission has not fired today.
+
+Idempotence is **per-mission**, not per-layer: Layer 4 can have more than one
+recurring mission (e.g. this dept's `weekly_review`, or a same-layer daily
+mission at a later time on another dept) — each fires on its own schedule and
+its own marker. `outputs/<today>/4/.last-run` (below) is this file's own
+legacy-shim marker for `risk_control` specifically; it does NOT mean "Layer 4
+is done for the day" — a sibling Layer-4 mission with a later `time:` may
+still be pending after this file has run. See
+`scripts/lib/dispatch_helpers.py::select_due_missions` /
+`select_due_missions_for_forced_layer` for the canonical per-mission
+selection logic (card #277 / #518).
 
 ## First mandatory action (STEP 1 — idempotence)
 
 Write **immediately** `outputs/<today>/4/.last-run` — BEFORE any work, so a later
-tick the same day does not launch a second L4.
+tick the same day does not re-launch `risk_control`. (This is the legacy
+layer-shim marker path for this mission; it gates ONLY `risk_control`, not
+other Layer-4 missions.)
 
 ## Required reads at start (STEP 0) — exhaustive
 

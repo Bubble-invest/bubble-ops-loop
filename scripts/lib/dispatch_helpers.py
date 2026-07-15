@@ -2190,6 +2190,86 @@ def select_due_missions(
     return due
 
 
+def select_due_missions_for_forced_layer(
+    repo_dir: "Path | str",
+    layer: int,
+    *,
+    now_utc: "datetime | None" = None,
+) -> "list[dict]":
+    """Floor-tick counterpart to `select_due_missions` (card #518).
+
+    `select_due_missions(ctx, missions)` answers "what's due on the layer
+    `decide_dispatch` picked" — it will never enumerate Layer 4 while the
+    highest-priority eligible layer is something else. The LAYER-FLOOR path
+    (`loop-backup.sh --layer N`, one static cron per layer) instead FORCES a
+    specific layer regardless of dispatch priority: at the L4 floor tick, L4
+    is due by definition (the cron only fires at/after its own min-time), so
+    the floor needs "which of THIS layer's missions are still pending today",
+    not "is this layer the dispatcher's current pick".
+
+    Before this function, the floor path did not call into per-mission
+    selection AT ALL: `loop-backup.sh` handed a fresh Claude session a
+    generic "read layers/<N>/PROMPT.md, run Layer N" prompt (see
+    `build_tick_prompt`), and the legacy monolithic layer prompts (e.g.
+    `agents/ben/layers/4/PROMPT.md`) gate on a single LAYER-level
+    `outputs/<today>/<N>/.last-run` marker — "once per day, no parallelism".
+    That collapses distinct same-layer missions (e.g. a 21:00 risk debrief
+    and a 22:30 market wrap-up, both L4) into one: once ANY L4 work fires,
+    the layer marker is written and every other pending L4 mission is
+    invisible to a later floor tick the same day. This function is the fix:
+    it enumerates dept.yaml's `recurring_missions` on the forced layer and
+    keeps only the ones `is_mission_due()` says are still pending, using
+    each mission's OWN per-mission `outputs/<today>/missions/<id>/.last-run`
+    marker — exactly the idempotence model `select_due_missions` already
+    uses on the live-loop path (see its docstring; this is additive, not a
+    parallel model).
+
+    Depts with no `recurring_missions` in dept.yaml (or none on this layer)
+    return [] — the caller falls back to the legacy generic "run Layer N"
+    tick, so a dept that hasn't migrated to the mission-centric model is
+    completely unaffected (zero-regression, mirrors `resolve_mission_prompt`'s
+    per-mission-first/legacy-shim-fallback contract).
+
+    Read-only: builds its own ctx with `materialize=False` (same #454
+    discipline as the loop-backup.sh eligibility probe — a gate/enumeration
+    call must never stamp a `.last-run` marker as a side effect; only the
+    mission's real run may do that).
+    """
+    repo = Path(repo_dir)
+    dept_yaml = repo / "dept.yaml"
+    if not dept_yaml.exists():
+        return []
+    try:
+        dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    missions = dept.get("recurring_missions") or []
+    layer_missions = [m for m in missions if int(m.get("layer", 0)) == int(layer)]
+    if not layer_missions:
+        return []
+
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    ctx = build_dispatch_ctx(repo, now_utc=now_utc, materialize=False)
+
+    due: list[dict] = []
+    for m in layer_missions:
+        last_fired = _mission_last_fired(ctx, m)
+        if not is_mission_due(m, now=now_utc, last_fired=last_fired):
+            continue
+        if not _mission_input_ready(ctx, m):
+            continue
+        if m.get("cadence") == "event":
+            today_dir = Path(ctx["today_dir"]) if ctx.get("today_dir") else None
+            if today_dir is not None:
+                if not _event_pending_trigger_ids(repo, today_dir, m, now_utc=now_utc):
+                    continue
+        due.append(m)
+
+    due.sort(key=lambda m: m.get("id", ""))
+    return due
+
+
 def resolve_mission_prompt(repo_dir: "Path | str", mission: dict) -> Path:
     """Return the Path to the PROMPT.md for a given mission.
 
