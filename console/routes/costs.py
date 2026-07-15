@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from console import settings
-from console.services import cost_tracker
+from console.services import cost_tracker, dept_registry, github_reader
 
 router = APIRouter()
 
@@ -60,6 +60,62 @@ def _agent_budgets(report: dict) -> dict:
     return out
 
 
+def _dept_budgets(report: dict) -> dict:
+    """Per-dept SPEND-vs-ENVELOPE for /costs (board #466, child of #404).
+
+    budget = the dept's WEEKLY envelope, preferring the operator-set
+    `department.budget_weekly_usd` field in the dept's OWN dept.yaml
+    (cost_tracker.dept_weekly_envelope — new, board #466) and falling back
+    to settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT (the pre-existing
+    central-dict envelope, board #550) when the dept.yaml field is absent —
+    so nothing regresses for depts that haven't set the new field yet.
+
+    spent = the dept's rolled-up week real-$ spend (cost_tracker.spent_by_dept
+    — UNCHANGED attribution logic, just consumed here). Returns
+    {dept_slug: budget_status_dict} plus a fleet-total under "__fleet__"
+    (Σ envelopes of depts that have one defined, from EITHER source).
+
+    Only live, non-concierge depts are included (concierges have no
+    dept.yaml to carry the field, and a-eclore/ancien depts aren't
+    operationally spending against an envelope yet). Fully guarded: any
+    lookup failure for one dept degrades that dept to no-envelope, never a
+    500 for the whole page.
+    """
+    try:
+        depts = [
+            d for d in dept_registry.list_departments()
+            if d.is_live and d.slug not in dept_registry.KNOWN_CONCIERGE_SLUGS
+        ]
+        spent_map = cost_tracker.spent_by_dept(report, span="week")
+    except Exception:  # noqa: BLE001 — dept envelope overlay must never 500 /costs
+        return {"__fleet__": cost_tracker.budget_status(0.0, None)}
+
+    out: dict = {}
+    fleet_spent = 0.0
+    fleet_budget = 0.0
+    any_budget = False
+    for d in depts:
+        try:
+            dept_yaml = github_reader.load_dept_yaml(d.slug)
+            budget = cost_tracker.dept_weekly_envelope(dept_yaml)
+            if budget is None:
+                budget = settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT.get(d.slug)
+            spent = float(spent_map.get(d.slug, 0.0))
+        except Exception:  # noqa: BLE001 — one dept's failure never sinks the rest
+            budget = None
+            spent = float(spent_map.get(d.slug, 0.0)) if isinstance(spent_map, dict) else 0.0
+        out[d.slug] = {"display_name": d.display_name, **cost_tracker.budget_status(spent, budget)}
+        fleet_spent += spent
+        if budget is not None and budget > 0:
+            fleet_budget += budget
+            any_budget = True
+
+    out["__fleet__"] = cost_tracker.budget_status(
+        fleet_spent, fleet_budget if any_budget else None
+    )
+    return out
+
+
 @router.get("/costs.json")
 def costs_json(refresh: bool = False) -> JSONResponse:
     """Raw cost report (per-agent + totals, today/7d, per-model)."""
@@ -74,7 +130,16 @@ def costs_page(request: Request) -> HTMLResponse:
         agent_budgets = _agent_budgets(report)
     except Exception:  # noqa: BLE001 — budget overlay must never 500 /costs
         agent_budgets = {"__fleet__": cost_tracker.budget_status(0.0, None)}
+    try:
+        dept_budgets = _dept_budgets(report)
+    except Exception:  # noqa: BLE001 — dept envelope overlay must never 500 /costs
+        dept_budgets = {"__fleet__": cost_tracker.budget_status(0.0, None)}
     return request.app.state.templates.TemplateResponse(
         "costs.html",
-        {"request": request, "report": report, "agent_budgets": agent_budgets},
+        {
+            "request": request,
+            "report": report,
+            "agent_budgets": agent_budgets,
+            "dept_budgets": dept_budgets,
+        },
     )

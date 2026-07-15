@@ -386,3 +386,220 @@ def test_operating_envelope_json_malformed_falls_back_to_defaults(monkeypatch):
             del sys.modules[mod]
     from console import settings as settings2
     assert settings2.OPERATING_ENVELOPE_WEEKLY_USD["ben"] == 90
+
+
+# ── cost_tracker.dept_weekly_envelope: dept.yaml `department.budget_weekly_usd` ──
+# Board #466 (child of #404). NEW field, distinct from mission `budget_usd`
+# (mission_budget_total above): lives once on the `department:` block as the
+# dept's own WEEKLY envelope, operator-set + push-locked, same convention as
+# mission budget_usd. /costs' per-dept envelope column reads this FIRST and
+# falls back to settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT when absent.
+def test_dept_weekly_envelope_reads_department_block():
+    doc = {"department": {"slug": "tony", "budget_weekly_usd": 250}}
+    assert cost_tracker.dept_weekly_envelope(doc) == 250.0
+
+
+def test_dept_weekly_envelope_none_when_field_absent():
+    doc = {"department": {"slug": "tony"}}
+    assert cost_tracker.dept_weekly_envelope(doc) is None
+
+
+def test_dept_weekly_envelope_none_when_no_department_block():
+    assert cost_tracker.dept_weekly_envelope({"recurring_missions": []}) is None
+
+
+def test_dept_weekly_envelope_malformed_is_none():
+    assert cost_tracker.dept_weekly_envelope(None) is None
+    assert cost_tracker.dept_weekly_envelope("not a dict") is None
+    assert cost_tracker.dept_weekly_envelope({}) is None
+    assert cost_tracker.dept_weekly_envelope({"department": "not a dict"}) is None
+
+
+def test_dept_weekly_envelope_ignores_bool_budget():
+    """A YAML `budget_weekly_usd: true` must not be counted as 1.0 (same
+    guard as mission_budget_total's bool trap)."""
+    doc = {"department": {"budget_weekly_usd": True}}
+    assert cost_tracker.dept_weekly_envelope(doc) is None
+
+
+# ── /costs._dept_budgets: dept.yaml-first, settings.py fallback (board #466) ──
+class _FakeDept:
+    def __init__(self, slug, name, live=True):
+        self.slug = slug
+        self.display_name = name
+        self._live = live
+
+    @property
+    def is_live(self):
+        return self._live
+
+
+def test_costs_dept_budgets_prefers_dept_yaml_over_settings(monkeypatch):
+    """A dept.yaml `budget_weekly_usd` wins over the settings.py default
+    when both are present."""
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("tony", "Tony")])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml",
+                        lambda slug: {"department": {"budget_weekly_usd": 999}})
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {"tony": 220})
+
+    report = {"agents": {"tony": {"week": {"cost": 100.0}}}}
+    out = costs._dept_budgets(report)
+    assert out["tony"]["budget"] == 999.0  # dept.yaml wins, not settings' 220
+    assert out["tony"]["spent"] == 100.0
+
+
+def test_costs_dept_budgets_falls_back_to_settings_when_dept_yaml_absent(monkeypatch):
+    """No `budget_weekly_usd` in dept.yaml (or no dept.yaml at all) → falls
+    back to settings.OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT, unchanged from
+    the pre-#466 behaviour — no regression for depts that haven't set the
+    new field yet."""
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("tony", "Tony")])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml", lambda slug: None)
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {"tony": 220})
+
+    report = {"agents": {"tony": {"week": {"cost": 186.0}}}}
+    out = costs._dept_budgets(report)
+    assert out["tony"]["budget"] == 220.0
+    assert out["tony"]["level"] == "warn"  # 84.5%, same sane result as home.py's #550 fix
+
+
+def test_costs_dept_budgets_undefined_when_neither_source_set(monkeypatch):
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("brandnew", "BrandNew")])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml", lambda slug: None)
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {})
+
+    out = costs._dept_budgets({"agents": {"brandnew": {"week": {"cost": 5.0}}}})
+    assert out["brandnew"]["defined"] is False
+    assert out["brandnew"]["spent"] == 5.0
+
+
+def test_costs_dept_budgets_over_80pct_flags_warn_level(monkeypatch):
+    """The ≥80% alert boundary: exactly 80% is 'warn' (amber), matching
+    cost_tracker.budget_status's existing threshold (< 80 ok, 80-100 warn,
+    > 100 over) — this is the alert card #466 asks for."""
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("maya", "Maya")])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml",
+                        lambda slug: {"department": {"budget_weekly_usd": 100}})
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {})
+
+    out = costs._dept_budgets({"agents": {"maya": {"week": {"cost": 80.0}}}})
+    assert out["maya"]["pct"] == 80.0
+    assert out["maya"]["level"] == "warn"
+
+    out_under = costs._dept_budgets({"agents": {"maya": {"week": {"cost": 79.0}}}})
+    assert out_under["maya"]["level"] == "ok"
+
+    out_over = costs._dept_budgets({"agents": {"maya": {"week": {"cost": 150.0}}}})
+    assert out_over["maya"]["level"] == "over"
+
+
+def test_costs_dept_budgets_skips_non_live_and_concierges(monkeypatch):
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("live1", "L", live=True),
+                                 _FakeDept("dead1", "D", live=False),
+                                 _FakeDept("morty", "Morty", live=True)])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {"morty": "Morty"})
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml", lambda slug: None)
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT", {})
+
+    out = costs._dept_budgets({"agents": {}})
+    assert set(out.keys()) == {"live1", "__fleet__"}
+
+
+def test_costs_dept_budgets_degrades_to_fleet_only_on_registry_failure(monkeypatch):
+    from console.routes import costs
+
+    def _boom():
+        raise RuntimeError("disk scan blew up")
+    monkeypatch.setattr(costs.dept_registry, "list_departments", _boom)
+
+    out = costs._dept_budgets({"agents": {}})
+    assert list(out.keys()) == ["__fleet__"]
+    assert out["__fleet__"]["defined"] is False
+
+
+def test_costs_dept_budgets_fleet_sums_envelopes_from_either_source(monkeypatch):
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.dept_registry, "list_departments",
+                        lambda: [_FakeDept("tony", "Tony"), _FakeDept("maya", "Maya"),
+                                 _FakeDept("nobudget", "NoBudget")])
+    monkeypatch.setattr(costs.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+
+    def _load(slug):
+        if slug == "tony":
+            return {"department": {"budget_weekly_usd": 999}}  # dept.yaml source
+        return None
+
+    monkeypatch.setattr(costs.github_reader, "load_dept_yaml", _load)
+    monkeypatch.setattr(costs.settings, "OPERATING_ENVELOPE_WEEKLY_USD_BY_DEPT",
+                        {"maya": 100})  # settings.py source, nobudget excluded
+
+    report = {"agents": {
+        "tony": {"week": {"cost": 10.0}},
+        "maya": {"week": {"cost": 20.0}},
+        "nobudget": {"week": {"cost": 5.0}},
+    }}
+    out = costs._dept_budgets(report)
+    fleet = out["__fleet__"]
+    assert fleet["defined"] is True
+    assert fleet["budget"] == 1099.0  # 999 (dept.yaml) + 100 (settings), nobudget excluded
+    assert fleet["spent"] == 35.0     # ALL spend counted regardless of envelope source
+
+
+def test_costs_page_renders_dept_envelope_column(monkeypatch, tmp_path):
+    """End-to-end: /costs renders the per-dept envelope section with a dept.yaml
+    -sourced budget, and flags the ≥80% alert copy for an over-envelope dept."""
+    import sys
+
+    home = tmp_path / "home"
+    proj = home / ".claude" / "projects"
+    proj.mkdir(parents=True)
+    _write_session(proj, "-home-claude-agents-bubble-ops-maya", "claude-sonnet-4-6",
+                    {"input_tokens": 1_000_000, "output_tokens": 0,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0})
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "test-token-xyz")
+    monkeypatch.delenv("READ_FROM_DISK", raising=False)
+
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console.main import create_app
+    from fastapi.testclient import TestClient
+    from console.routes import costs as costs_module
+
+    # Force a single live dept with a tiny dept.yaml envelope so 1M sonnet
+    # input tokens ($3.00) blows past it → the ≥80%/over alert renders.
+    monkeypatch.setattr(costs_module.dept_registry, "list_departments",
+                        lambda: [_FakeDept("maya", "Maya")])
+    monkeypatch.setattr(costs_module.dept_registry, "KNOWN_CONCIERGE_SLUGS", {})
+    monkeypatch.setattr(costs_module.github_reader, "load_dept_yaml",
+                        lambda slug: {"department": {"budget_weekly_usd": 1}})
+
+    c = TestClient(create_app())
+    c.headers.update({"Authorization": "Bearer test-token-xyz"})
+    r = c.get("/costs")
+    assert r.status_code == 200
+    body = r.text
+    assert "Enveloppe par dept" in body
+    assert "budget-bar-fill--over" in body
+    assert "dépassé" in body

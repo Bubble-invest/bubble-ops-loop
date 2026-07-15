@@ -65,6 +65,27 @@ department:
 {% endfor %}
 {% endif %}
 
+  # budget_weekly_usd: 100                 # OPTIONAL (board #466, child of
+                                            # #404). The dept's WEEKLY spend
+                                            # envelope in real-equivalent USD
+                                            # (cache-excluded), operator-owned
+                                            # and push-locked — same convention
+                                            # as a mission's `budget_usd:`
+                                            # below, but this ONE value covers
+                                            # the dept's WHOLE week, not a
+                                            # single mission cycle. /costs'
+                                            # per-dept envelope column reads
+                                            # THIS field first (via
+                                            # cost_tracker.dept_weekly_envelope)
+                                            # and falls back to the console's
+                                            # own settings.py default map when
+                                            # absent — so leaving it unset is
+                                            # safe (renders "non définie" only
+                                            # if the console has no fallback
+                                            # either). Warn-only: crossing it
+                                            # flags a ≥80% alert on /costs,
+                                            # nothing is ever blocked.
+
   # brief_artifacts:                     # OPTIONAL (board #521, 2026-07-04).
   #   "1": morning_brief.md              # Declares WHICH file, inside each
   #   "4": telegram_message.md           # layer's own outputs/<date>/<N>/

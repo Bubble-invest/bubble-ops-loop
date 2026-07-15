@@ -3360,6 +3360,9 @@ body.m4 .cost-delta { font-family: var(--font-mono); font-size: 10px; color: var
 .budget-pct--warn { color: #b07d1f; background: rgba(217,164,65,.16); }
 .budget-pct--over { color: #c0392b; background: rgba(192,57,43,.12); }
 .budget-fleet-total { margin-top: 4px; }
+.budget-alert { font-weight: 600; }
+.budget-alert--warn { color: #b07d1f; }
+.budget-alert--over { color: #c0392b; }
 
 /* ── KPI grid (kept for tests) — glassified ───────────────────────────── */
 body.m4 #dept-kpi-grid.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px,1fr)); gap: 14px; }
