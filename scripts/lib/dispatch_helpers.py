@@ -2699,6 +2699,35 @@ def _restore_unreadable_tracked_paths(repo_dir, paths: "list[str]") -> "tuple[li
     return restored, excluded
 
 
+def _resolve_push_branch(repo_dir: "Path | str") -> str:
+    """Which branch does the runtime push land on?
+
+    host:vps (default): always "main" — the doctrine/guard push target,
+    unchanged (card #620 forbids touching this).
+
+    host:local (BUBBLE_HOST=local, set by deploy/local/lib/local_loop_lib.sh
+    on the dept's loop wrapper): a host:local dept works on a feature branch,
+    not main, so pushing "main" either fails (branch doesn't exist locally)
+    or silently pushes the wrong ref. Push the CURRENTLY CHECKED-OUT branch
+    instead — that's what the dept actually has commits on.
+    """
+    import os
+    import subprocess
+
+    if os.environ.get("BUBBLE_HOST") != "local":
+        return "main"
+    cur = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    )
+    branch = cur.stdout.strip()
+    # Fall back to "main" if HEAD is detached or the lookup failed — never
+    # push an empty/garbage ref.
+    if cur.returncode != 0 or not branch or branch == "HEAD":
+        return "main"
+    return branch
+
+
 def force_commit_and_push(
     repo_dir: Path,
     message: str,
@@ -2760,8 +2789,9 @@ def force_commit_and_push(
         capture_output=True, text=True,
     ).stdout.strip()
     if _remote_url.startswith("file://"):
+        push_branch = _resolve_push_branch(repo_dir)
         push = subprocess.run(
-            ["git", "-C", str(repo_dir), "push", "origin", "main"],
+            ["git", "-C", str(repo_dir), "push", "origin", push_branch],
             capture_output=True, text=True,
         )
         return (push.returncode == 0, None if push.returncode == 0 else f"git push failed (rc={push.returncode}): {(push.stderr or push.stdout).strip()[:200]}")
@@ -2919,13 +2949,16 @@ def force_commit_and_push(
             ["git", "-C", str(repo_dir), "-c", "credential.helper=",
              "push",
              f"https://x-access-token:{token}@github.com/Bubble-invest/{repo_name}.git",
-             "main"],
+             _resolve_push_branch(repo_dir)],
             capture_output=True, text=True,
         )
     else:
         # Last resort: bare push (relies on a credential helper in git config).
+        # This is the branch host:local depts actually take — they push via
+        # the Mac's own ambient gh/git credential (no broker, no sudo helper;
+        # deploy/local/lib/local_loop_lib.sh: "NO SOPS / NO token-broker").
         push = subprocess.run(
-            ["git", "-C", str(repo_dir), "push", "origin", "main"],
+            ["git", "-C", str(repo_dir), "push", "origin", _resolve_push_branch(repo_dir)],
             capture_output=True, text=True,
             env=_env,
         )

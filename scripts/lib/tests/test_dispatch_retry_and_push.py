@@ -253,3 +253,200 @@ def test_force_commit_and_push_returns_error_on_push_failure(
     assert ok is False
     assert err is not None
     assert "push" in err.lower() or "non-fast-forward" in err.lower()
+
+
+# ── _resolve_push_branch (card #620: host:local pushes its own branch) ──
+#
+# host:vps (default, no BUBBLE_HOST or BUBBLE_HOST != "local") must ALWAYS
+# resolve to "main" — this is the guard rail: it must be provably unchanged
+# by this card. host:local (BUBBLE_HOST=local, set by
+# deploy/local/lib/local_loop_lib.sh on the dept's loop wrapper) resolves to
+# the repo's currently checked-out branch instead, since a host:local dept
+# works on a feature branch, not main.
+
+def test_resolve_push_branch_defaults_to_main_without_bubble_host(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("BUBBLE_HOST", raising=False)
+    assert dh._resolve_push_branch(tmp_path) == "main"
+
+
+def test_resolve_push_branch_is_main_for_host_vps(tmp_path, monkeypatch):
+    monkeypatch.setenv("BUBBLE_HOST", "vps")
+    assert dh._resolve_push_branch(tmp_path) == "main"
+
+
+def test_resolve_push_branch_uses_current_branch_for_host_local(
+    tmp_path, monkeypatch,
+):
+    import subprocess
+    monkeypatch.setenv("BUBBLE_HOST", "local")
+
+    def fake_run(cmd, **kw):
+        assert cmd[:4] == ["git", "-C", str(tmp_path), "rev-parse"]
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="fix/620-host-local-push\n", stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert dh._resolve_push_branch(tmp_path) == "fix/620-host-local-push"
+
+
+def test_resolve_push_branch_falls_back_to_main_on_detached_head(
+    tmp_path, monkeypatch,
+):
+    import subprocess
+    monkeypatch.setenv("BUBBLE_HOST", "local")
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout="HEAD\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert dh._resolve_push_branch(tmp_path) == "main"
+
+
+# ── force_commit_and_push: host:local pushes current branch, host:vps main ──
+
+def test_force_commit_and_push_file_url_pushes_current_branch_for_host_local(
+    tmp_path, monkeypatch,
+):
+    """file:// remote (local-bare) branch: host:local pushes the current
+    branch, not hardcoded 'main'."""
+    import subprocess
+    monkeypatch.setenv("BUBBLE_HOST", "local")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if "status" in cmd and "--porcelain" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=" M outputs/thing.md\n", stderr="",
+            )
+        if "remote" in cmd and "get-url" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="file:///tmp/bare/bubble-ops-maya.git\n", stderr="",
+            )
+        if cmd[:4] == ["git", "-C", str(tmp_path), "rev-parse"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="dept-feature-branch\n", stderr="",
+            )
+        if "push" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, err = dh.force_commit_and_push(repo_dir=tmp_path, message="test")
+    assert ok is True
+    assert err is None
+    push_calls = [c for c in calls if "push" in c]
+    assert push_calls, calls
+    assert push_calls[0][-2:] == ["origin", "dept-feature-branch"], push_calls
+
+
+def test_force_commit_and_push_file_url_still_pushes_main_for_host_vps(
+    tmp_path, monkeypatch,
+):
+    """Guard rail: file:// remote branch on host:vps/default is UNCHANGED —
+    still pushes 'main', never the current branch."""
+    import subprocess
+    monkeypatch.delenv("BUBBLE_HOST", raising=False)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if "status" in cmd and "--porcelain" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=" M outputs/thing.md\n", stderr="",
+            )
+        if "remote" in cmd and "get-url" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="file:///tmp/bare/bubble-ops-tony.git\n", stderr="",
+            )
+        if "push" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, err = dh.force_commit_and_push(repo_dir=tmp_path, message="test")
+    assert ok is True
+    assert err is None
+    push_calls = [c for c in calls if "push" in c]
+    assert push_calls, calls
+    assert push_calls[0][-2:] == ["origin", "main"], push_calls
+
+
+def test_force_commit_and_push_last_resort_pushes_current_branch_for_host_local(
+    tmp_path, monkeypatch,
+):
+    """Last-resort bare-push branch (no guard, no resolvable repo_name): this
+    is what host:local actually exercises on the Mac (ambient gh/git
+    credential, no broker). Must push the current branch, not 'main'."""
+    import subprocess
+    import shutil
+    monkeypatch.setenv("BUBBLE_HOST", "local")
+    monkeypatch.setattr(dh, "resolve_push_target", lambda repo_dir: (None, None))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if "status" in cmd and "--porcelain" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=" M outputs/thing.md\n", stderr="",
+            )
+        if "remote" in cmd and "get-url" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="https://github.com/Bubble-invest/bubble-ops-maya.git\n",
+                stderr="",
+            )
+        if cmd[:4] == ["git", "-C", str(tmp_path), "rev-parse"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="dept-feature-branch\n", stderr="",
+            )
+        if "push" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, err = dh.force_commit_and_push(repo_dir=tmp_path, message="test")
+    assert ok is True
+    assert err is None
+    push_calls = [c for c in calls if "push" in c and "bubble-git-guard" not in " ".join(c)]
+    assert push_calls, calls
+    assert push_calls[-1][-2:] == ["origin", "dept-feature-branch"], push_calls
+
+
+def test_force_commit_and_push_last_resort_still_pushes_main_for_host_vps(
+    tmp_path, monkeypatch,
+):
+    """Guard rail: last-resort bare-push branch on host:vps/default is
+    UNCHANGED — still pushes 'main'."""
+    import subprocess
+    import shutil
+    monkeypatch.delenv("BUBBLE_HOST", raising=False)
+    monkeypatch.setattr(dh, "resolve_push_target", lambda repo_dir: (None, None))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if "status" in cmd and "--porcelain" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=" M outputs/thing.md\n", stderr="",
+            )
+        if "remote" in cmd and "get-url" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="https://github.com/Bubble-invest/bubble-ops-tony.git\n",
+                stderr="",
+            )
+        if "push" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, err = dh.force_commit_and_push(repo_dir=tmp_path, message="test")
+    assert ok is True
+    assert err is None
+    push_calls = [c for c in calls if "push" in c and "bubble-git-guard" not in " ".join(c)]
+    assert push_calls, calls
+    assert push_calls[-1][-2:] == ["origin", "main"], push_calls
