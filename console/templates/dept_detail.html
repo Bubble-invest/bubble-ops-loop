@@ -505,6 +505,19 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
              cards (description, produit, gate rule) are the drill-down, so
              they collapse behind a compact "N missions →" summary. Keeps the
              4-moments overview a screenful instead of a wall of cards. #}
+          {# #642 PR-A: for content/Miranda, each mission card gets its
+             layered piece grid (mission/skill/tool/config/memory/voice
+             tiles) in place of the plain description+meta body — folds
+             #622's read-only mission-file pane INTO the per-mission card
+             instead of a separate section-04b list. Every other dept
+             keeps the pre-#642 plain mission-card body unchanged (PR-A
+             scope; PR-B rolls the piece grid out fleet-wide). #}
+          {% set _pieces_by_mission = {} %}
+          {% if mission_pieces_by_layer and mission_pieces_by_layer.get(l) %}
+            {% for _entry in mission_pieces_by_layer[l] %}
+              {% set _ = _pieces_by_mission.__setitem__(_entry.mission.id, _entry.pieces) %}
+            {% endfor %}
+          {% endif %}
           {% if _ms %}
             <details class="moment-missions-details" style="margin-top:14px;">
               <summary class="moment-missions-summary">{{ _ms|length }} mission{{ 's' if _ms|length != 1 else '' }} dans ce moment</summary>
@@ -519,23 +532,45 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
                     <span class="mission-cadence-icon" aria-hidden="true">⏱</span>
                     {{ humanize_cadence(m) }}
                   </p>
-                  {% if m.description %}
-                    <p class="mission-desc">{{ m.description|trim }}</p>
+                  {% if _pieces_by_mission.get(m.id) %}
+                    {% set _pieces = _pieces_by_mission[m.id] %}
+                    <div class="piece-grid" role="list" aria-label="Pièces de la mission {{ m.id }}">
+                      {% for pc in _pieces %}
+                        {% if pc.clickable %}
+                          <a role="listitem" class="piece-tile piece-{{ pc.kind }}"
+                             href="/dept/{{ dept.slug }}/mission-file?f={{ pc.rel_path | urlencode }}">
+                            <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
+                            <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
+                            <span class="piece-name">{{ pc.label }}</span>
+                          </a>
+                        {% else %}
+                          <span role="listitem" class="piece-tile piece-{{ pc.kind }} piece-tile--muted">
+                            <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
+                            <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
+                            <span class="piece-name">{{ pc.label }}</span>
+                          </span>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    {% if m.description %}
+                      <p class="mission-desc">{{ m.description|trim }}</p>
+                    {% endif %}
+                    <dl class="mission-meta">
+                      {% if m.creates %}
+                        <dt>Produit</dt>
+                        <dd>
+                          {% for c in m.creates %}
+                            <span class="slug-ref">{{ c }}</span>{% if not loop.last %} · {% endif %}
+                          {% endfor %}
+                        </dd>
+                      {% endif %}
+                      {% if m.gate_policy_id %}
+                        <dt>Règle de gate</dt>
+                        <dd><span class="slug-ref">{{ m.gate_policy_id }}</span></dd>
+                      {% endif %}
+                    </dl>
                   {% endif %}
-                  <dl class="mission-meta">
-                    {% if m.creates %}
-                      <dt>Produit</dt>
-                      <dd>
-                        {% for c in m.creates %}
-                          <span class="slug-ref">{{ c }}</span>{% if not loop.last %} · {% endif %}
-                        {% endfor %}
-                      </dd>
-                    {% endif %}
-                    {% if m.gate_policy_id %}
-                      <dt>Règle de gate</dt>
-                      <dd><span class="slug-ref">{{ m.gate_policy_id }}</span></dd>
-                    {% endif %}
-                  </dl>
                 </li>
               {% endfor %}
             </ul>
@@ -573,15 +608,20 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   {% endif %}
 </section>
 
-{# ═══ 04b — MISSION FILES (L1/L2), read-only async review pane ═══
-   Card #622: Jade wants Miranda's L1/L2 mission files reviewable async in
-   the cockpit, independent of a live R&D session — today they're only
-   readable while a session is up. This pane lists them; each opens in a
-   dedicated read view (mirrors /dept/<slug>/output — see mission_file.html).
-   READ-ONLY: no write/edit affordance anywhere on this pane or its viewer.
-   Scoped to content/Miranda only (mission_files is [] for every other dept —
-   see routes/dept.py) so other dept pages render exactly as before. #}
-{% if dept.slug == 'content' %}
+{# ═══ 04b — MISSION FILES (L1/L2), read-only fallback pane ═══
+   Card #622 shipped this as a flat file list; #642 PR-A folds that
+   experience INTO each mission card in §04 as clickable piece tiles for
+   content/Miranda (the richest dept — see the piece-grid block above).
+   This section now only renders for depts where #642's piece view is
+   NOT yet active (mission_pieces_by_layer is only populated for
+   `content` in PR-A) — so a dept with mission_files but no piece grid
+   still gets the flat read-only list rather than losing the #622
+   pane outright. For `content` today mission_pieces_by_layer is always
+   populated, so this section is effectively dormant on that page (kept,
+   not deleted, so a mission with zero resolvable pieces at all — e.g. a
+   future dept-shape gap — still has a fallback listing). READ-ONLY: no
+   write/edit affordance anywhere on this pane or its viewer. #}
+{% if mission_files and not mission_pieces_by_layer %}
 <section class="cabinet-section m4-section" aria-labelledby="dept-mission-files-heading">
   <div class="section-head">
     <span class="section-num">04b</span>
@@ -589,36 +629,32 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     <span class="section-sub">lecture seule — pour relecture asynchrone</span>
   </div>
 
-  {% if mission_files %}
-    {% set _group_labels = {
-      'mandat': 'Mandat',
-      'layers': 'Prompts de moment (layers)',
-      'missions': 'Prompts de mission',
-      'memoire': 'Mémoire de travail',
-      'config': 'Configuration',
-    } %}
-    {% for grp in ['mandat', 'layers', 'missions', 'memoire', 'config'] %}
-      {% set _files = mission_files|selectattr('group', 'equalto', grp)|list %}
-      {% if _files %}
-        <div class="history-subsection">
-          <h3 class="dept-detail-subhead">{{ _group_labels.get(grp, grp) }}</h3>
-          <ul class="loop-files">
-            {% for mf in _files %}
-              <li>
-                <a class="loop-file" href="/dept/{{ dept.slug }}/mission-file?f={{ mf.rel_path | urlencode }}">
-                  {{ mf.label }}
-                </a>
-              </li>
-            {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-    {% endfor %}
-  {% else %}
-    <p class="prose-block muted-italic">
-      Aucun fichier de mission trouvé pour l'instant.
-    </p>
-  {% endif %}
+  {% set _group_labels = {
+    'mandat': 'Mandat',
+    'layers': 'Prompts de moment (layers)',
+    'missions': 'Prompts de mission',
+    'memoire': 'Mémoire de travail',
+    'config': 'Configuration',
+    'skills': 'Compétences',
+    'voice': 'Voix',
+  } %}
+  {% for grp in ['mandat', 'layers', 'missions', 'memoire', 'config', 'skills', 'voice'] %}
+    {% set _files = mission_files|selectattr('group', 'equalto', grp)|list %}
+    {% if _files %}
+      <div class="history-subsection">
+        <h3 class="dept-detail-subhead">{{ _group_labels.get(grp, grp) }}</h3>
+        <ul class="loop-files">
+          {% for mf in _files %}
+            <li>
+              <a class="loop-file" href="/dept/{{ dept.slug }}/mission-file?f={{ mf.rel_path | urlencode }}">
+                {{ mf.label }}
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  {% endfor %}
 </section>
 {% endif %}
 

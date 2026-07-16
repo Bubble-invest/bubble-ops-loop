@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -17,6 +18,7 @@ from console.services import (
     loop_history,
     loop_runtime,
     markdown_render,
+    mission_pieces,
     whiteboard_series,
 )
 from console.services.gate_grouping import group_gates_by_kind
@@ -187,6 +189,27 @@ def dept_detail(slug: str, request: Request):
     mission_files = (
         github_reader.list_mission_files(slug) if slug == "content" else []
     )
+    # #642 PR-A: layered clickable piece view — per-mission piece tiles
+    # (mission/skill/tool/config/memory/voice), replacing §04/§04b's raw
+    # mission-prompt section. PR-A scopes this to /dept/content only (the
+    # richest dept — exercises all 6 piece kinds); PR-B rolls it out to the
+    # other 5 dept pages. The allowlist is built ONCE per request (reusing
+    # mission_files above, since it's the exact same list_mission_files()
+    # allowlist) and passed into the resolver so a 10-mission dept doesn't
+    # re-walk the repo's directories per mission (§0-bis refinement 5).
+    mission_pieces_by_layer: Dict[int, List[Dict[str, Any]]] = {}
+    if slug == "content":
+        piece_allowlist = {f["rel_path"] for f in mission_files}
+        for layer_num, layer_missions in missions_by_layer.items():
+            mission_pieces_by_layer[layer_num] = [
+                {
+                    "mission": m,
+                    "pieces": mission_pieces.resolve_mission_pieces(
+                        slug, m, allowlist=piece_allowlist
+                    ),
+                }
+                for m in layer_missions
+            ]
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -215,6 +238,9 @@ def dept_detail(slug: str, request: Request):
             "kanban_summary": kanban_summary,
             "layer_queues": layer_queues,
             "mission_files": mission_files,
+            "mission_pieces_by_layer": mission_pieces_by_layer,
+            "piece_glyph": mission_pieces.PIECE_GLYPH,
+            "piece_label": mission_pieces.PIECE_LABEL,
         },
     )
 
