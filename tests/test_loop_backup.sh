@@ -56,6 +56,22 @@ PY="${BUBBLE_OPS_LOOP_PY:-$REPO_ROOT/venv/bin/python}"
 [[ -f "$SCRIPT" ]] || { echo "FATAL: script not found: $SCRIPT"; exit 2; }
 [[ -x "$PY"     ]] || { echo "FATAL: venv python not found: $PY"; exit 2; }
 
+# ── GNU/BSD date+touch portability shim (#675) ──────────────────────────────
+# This harness only ever needs "format an epoch as text" (date -d "@EPOCH")
+# and "set a file's mtime to an epoch" (touch -d "@EPOCH") — both GNU-only
+# spellings. GNU coreutils is untouched (detected via `date -d @0` succeeding);
+# the BSD/macOS branch reimplements the same two operations with `date -r`
+# and `touch -t`, so Linux CI keeps the exact original commands byte-for-byte.
+if date -d "@0" >/dev/null 2>&1; then
+    date_from_epoch() { date -u -d "@$1" "${2:-+%Y-%m-%dT%H:%M:%SZ}"; }
+    date_from_epoch_tz() { local tz="$1" epoch="$2" fmt="$3"; TZ="$tz" date -d "@$epoch" "$fmt"; }
+    touch_at_epoch() { touch -d "@$1" "$2"; }
+else
+    date_from_epoch() { date -u -r "$1" "${2:-+%Y-%m-%dT%H:%M:%SZ}"; }
+    date_from_epoch_tz() { local tz="$1" epoch="$2" fmt="$3"; TZ="$tz" date -r "$epoch" "$fmt"; }
+    touch_at_epoch() { touch -t "$(date -r "$1" "+%Y%m%d%H%M.%S")" "$2"; }
+fi
+
 PASS=0; FAIL=0
 ok()  { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
@@ -162,7 +178,7 @@ make_dept() {
     local hb="$hbdir/heartbeat.log"
     echo "heartbeat" > "$hb"
     # backdate the file mtime by <age> seconds so latest_heartbeat_epoch sees it stale/fresh
-    touch -d "@$(( $(date -u +%s) - age ))" "$hb"
+    touch_at_epoch "$(( $(date -u +%s) - age ))" "$hb"
 }
 
 make_layer() {
@@ -206,7 +222,7 @@ make_mission_marker() {
     local today; today="$(date -u +%Y-%m-%d)"
     local dir="$wd/outputs/$today/missions/$mid"
     mkdir -p "$dir"
-    date -u -d "@$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
+    date_from_epoch "$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
 }
 
 make_layer_marker() {
@@ -220,7 +236,7 @@ make_layer_marker() {
     local today; today="$(date -u +%Y-%m-%d)"
     local dir="$wd/outputs/$today/$n"
     mkdir -p "$dir"
-    date -u -d "@$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
+    date_from_epoch "$when" +%Y-%m-%dT%H:%M:%S+00:00 > "$dir/.last-run"
 }
 
 make_host() {
@@ -381,7 +397,7 @@ else
 fi
 
 # B3: NO ping for the fresh dept anywhere.
-if ! grep -qP '^fresh\t' "$NOTIFY_LOG"; then
+if ! grep -q $'^fresh\t' "$NOTIFY_LOG"; then
     ok "B3 fresh (healthy) dept never pinged"
 else
     bad "B3 fresh dept was pinged; notify.log=$(cat "$NOTIFY_LOG")"
@@ -1054,8 +1070,8 @@ mkdir -p "$WORK/lock"
 # minutes ago. Both are "due" by wall-clock time regardless of what hour this
 # suite runs at; risk_control gets a marker (fired), market_wrapup does not.
 NOW_EPOCH="$(date -u +%s)"
-RISK_TIME="$(TZ=Europe/Paris date -d "@$((NOW_EPOCH - 300))" +%H:%M)"
-WRAPUP_TIME="$(TZ=Europe/Paris date -d "@$((NOW_EPOCH - 120))" +%H:%M)"
+RISK_TIME="$(date_from_epoch_tz Europe/Paris "$((NOW_EPOCH - 300))" +%H:%M)"
+WRAPUP_TIME="$(date_from_epoch_tz Europe/Paris "$((NOW_EPOCH - 120))" +%H:%M)"
 
 make_dept m4 10800                              # stale loop → floor intervenes
 make_layer m4 4                                 # legacy shim path still present
