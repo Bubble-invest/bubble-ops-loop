@@ -417,6 +417,24 @@ def _parse_hhmm(s: str) -> _time:
     return _time(int(h), int(m))
 
 
+def _normalize_weekday_set(raw_day: "str | list | None") -> "set[str]":
+    """Normalise a mission's `day:` field into a set of valid lowercase
+    weekday names, for the weekday-membership test.
+
+    `raw_day` may be a single weekday string ("monday") or a list of weekday
+    strings (["monday", "thursday"]); either shape is normalised uniformly.
+    Unknown names (typos) and an absent/empty value are filtered out, so a
+    caller checking `now_paris.weekday() not in {_WEEKDAY_NAMES[d] for d in
+    valid_days}` for an empty result correctly treats it as "no valid day
+    specified".
+    """
+    if isinstance(raw_day, list):
+        day_names = {d.lower() for d in raw_day if isinstance(d, str)}
+    else:
+        day_names = {raw_day.lower()} if raw_day else set()
+    return {d for d in day_names if d in _WEEKDAY_NAMES}
+
+
 def is_mission_due(mission: dict, *, now: datetime,
                    last_fired: datetime | None) -> bool:
     """Return True iff the mission's cadence says it should fire RIGHT NOW.
@@ -472,17 +490,8 @@ def is_mission_due(mission: dict, *, now: datetime,
     if cadence == "weekly":
         t_str = mission.get("time")
         # `day` may be a single string ("monday") or a list (["tuesday", "friday"]).
-        # Normalise to a set of lowercase weekday names so the membership test
-        # works uniformly for both shapes.  An absent or empty value produces an
-        # empty set, which correctly falls through to the "not in _WEEKDAY_NAMES"
-        # guard below and returns False (no valid day specified).
         raw_day = mission.get("day", "")
-        if isinstance(raw_day, list):
-            day_names = {d.lower() for d in raw_day if isinstance(d, str)}
-        else:
-            day_names = {raw_day.lower()} if raw_day else set()
-        # Filter to only known weekday names (guards against typos / empty strings).
-        valid_days = {d for d in day_names if d in _WEEKDAY_NAMES}
+        valid_days = _normalize_weekday_set(raw_day)
         if not t_str or not valid_days:
             return False
         if now_paris.weekday() not in {_WEEKDAY_NAMES[d] for d in valid_days}:
@@ -630,11 +639,7 @@ def next_pending_mission_time_today(
 
         if cadence == "weekly":
             raw_day = m.get("day", "")
-            if isinstance(raw_day, list):
-                day_names = {d.lower() for d in raw_day if isinstance(d, str)}
-            else:
-                day_names = {raw_day.lower()} if raw_day else set()
-            valid_days = {d for d in day_names if d in _WEEKDAY_NAMES}
+            valid_days = _normalize_weekday_set(raw_day)
             if not valid_days:
                 continue
             if now_paris.weekday() not in {_WEEKDAY_NAMES[d] for d in valid_days}:
