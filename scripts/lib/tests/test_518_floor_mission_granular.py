@@ -202,3 +202,145 @@ def test_selector_is_read_only_no_marker_stamped(tmp_path: Path):
         "select_due_missions_for_forced_layer must be read-only — it must not "
         "stamp the per-mission marker itself as a side effect of enumeration"
     )
+
+
+# ── 6. LEGACY-SHIM-MARKER regression (independent-reviewer finding, post-merge) ──
+#
+# `_mission_last_fired` deliberately does NOT fall back to the layer-level
+# marker (see its own docstring) because `materialize_due_missions_for_tick`
+# is supposed to guarantee every due L4 mission gets its own per-mission
+# marker EVERY tick (#277) — but that guarantee only holds when the
+# materializer actually RUNS, i.e. build_dispatch_ctx(materialize=True), the
+# live-loop default. select_due_missions_for_forced_layer deliberately calls
+# build_dispatch_ctx(materialize=False) (the #454 read-only-probe discipline
+# — an enumeration must never stamp a marker as a side effect), so that
+# guarantee does NOT hold on the floor path. A mission resolving to the
+# LEGACY layers/<N>/PROMPT.md shim (no dedicated missions/<id>/PROMPT.md —
+# Ben's ACTUAL dept.yaml shape today: neither risk_control nor weekly_review
+# has one) fires via that shim, whose STEP 1 stamps ONLY the shared layer
+# marker, never the per-mission one. Without a fallback, a floor tick
+# running AFTER the live loop already ran risk_control via the shim would
+# see "never fired" and wrongly re-select it.
+#
+# _mission_last_fired_with_shim_fallback closes this gap, gated on
+# resolve_mission_prompt's OWN legacy-shim test (so the two can never
+# diverge) AND disambiguated by comparing the layer marker's timestamp
+# against EACH mission's own scheduled time: (so a marker stamped at 21:00
+# cannot be mistaken for a LATER same-layer shim mission's own fire — the
+# defect an earlier draft of this fix had, where BOTH risk_control and
+# market_wrapup resolved to the shim and the layer marker satisfied both).
+
+def test_legacy_shim_marker_excludes_already_fired_shim_mission(tmp_path: Path):
+    """PRIMARY regression test: risk_control has NO dedicated
+    missions/risk_control/PROMPT.md (Ben's real shape) — it fires via the
+    legacy layers/4/PROMPT.md shim, whose STEP 1 stamps ONLY the layer
+    marker (outputs/<today>/4/.last-run), never
+    outputs/<today>/missions/risk_control/.last-run. At 22:31 Paris, with
+    ONLY the layer marker present (stamped at 21:00, risk_control's own
+    slot), the floor selector must exclude risk_control (it fired, via the
+    shim) and still return market_wrapup (still pending) — NOT both, and
+    NOT neither.
+    """
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    # Deliberately NO missions/ dir at all — mirrors Ben's real dept.yaml,
+    # where BOTH L4 missions resolve to the shim (no per-mission prompts).
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30")
+    _write_dept_yaml(repo, [risk_control, market_wrapup])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    # ONLY the layer marker is stamped (the shim's real STEP 1 behavior) —
+    # deliberately NOT stamping outputs/<today>/missions/risk_control/.last-run.
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
+    ids = [m["id"] for m in due]
+
+    assert ids == ["market_wrapup"], (
+        f"expected ONLY market_wrapup (risk_control fired via the legacy shim "
+        f"— its per-mission marker is absent by design, but the layer marker "
+        f"at 21:00 covers it); got {ids}. If risk_control appears, the "
+        f"shim-marker fallback is missing. If market_wrapup is ALSO missing, "
+        f"the fallback is wrongly bleeding across same-layer shim missions."
+    )
+
+
+def test_legacy_shim_marker_does_not_mask_a_later_pending_shim_mission(tmp_path: Path):
+    """Narrower isolation of the disambiguation logic: at 21:01 Paris (just
+    after risk_control's shim run stamps the layer marker, well before
+    market_wrapup's 22:30 slot), the floor selector must return risk_control
+    (its own slot just opened, shim not yet run) and NOT prematurely treat
+    market_wrapup as fired just because SOME layer marker exists."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30")
+    _write_dept_yaml(repo, [risk_control, market_wrapup])
+    _fire_prereqs(repo, AT_21_00_UTC)
+    # No layer marker yet at all (nothing has fired) — risk_control's slot
+    # just opened.
+    at_21_01 = datetime(2026, 6, 23, 19, 1, tzinfo=timezone.utc)  # 21:01 Paris
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=at_21_01)
+    ids = [m["id"] for m in due]
+    assert ids == ["risk_control"], f"expected only risk_control due at 21:01; got {ids}"
+
+
+def test_dedicated_prompt_mission_unaffected_by_shim_fallback(tmp_path: Path):
+    """If market_wrapup HAS its own missions/market_wrapup/PROMPT.md (a dept
+    that migrated it off the shim), the shim fallback must never apply to
+    it — resolve_mission_prompt resolves it to the dedicated prompt, not the
+    shim, so _mission_last_fired_with_shim_fallback short-circuits to the
+    plain per-mission-marker behavior regardless of any layer marker."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    (repo / "missions" / "market_wrapup").mkdir(parents=True)
+    (repo / "missions" / "market_wrapup" / "PROMPT.md").write_text("dedicated prompt")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30")
+    _write_dept_yaml(repo, [risk_control, market_wrapup])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)  # shim marker (risk_control)
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
+    assert [m["id"] for m in due] == ["market_wrapup"], (
+        "dedicated-prompt market_wrapup must still be selected — its own "
+        "resolve_mission_prompt path bypasses the shim fallback entirely"
+    )
+
+
+def test_shim_marker_stamped_after_second_missions_slot_covers_it_too(tmp_path: Path):
+    """If the layer marker's timestamp is AFTER market_wrapup's own slot
+    (e.g. the shim happened to run at 22:35, after BOTH slots had opened),
+    the fallback correctly treats market_wrapup as fired too (the marker
+    COULD represent either mission having fired via the shared shim — this
+    is the accepted ambiguity of two same-layer shim missions; a dept
+    needing true disambiguation should use dedicated prompts). This test
+    documents that boundary rather than asserting a specific "right"
+    mission — it is the shim's own structural limit, not a selector bug.
+    """
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    market_wrapup = _mk_daily("market_wrapup", layer=4, time="22:30")
+    _write_dept_yaml(repo, [risk_control, market_wrapup])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    after_both_slots = datetime(2026, 6, 23, 20, 35, tzinfo=timezone.utc)  # 22:35 Paris
+    write_last_run(repo / "outputs" / today / "4", after_both_slots)
+
+    later = datetime(2026, 6, 23, 21, 0, tzinfo=timezone.utc)  # 23:00 Paris
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=later)
+    assert due == [], (
+        "a shim marker stamped AFTER both missions' slots opened plausibly "
+        "covers both — this is the shim's structural ambiguity, not a bug"
+    )

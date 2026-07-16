@@ -1162,6 +1162,45 @@ else
 fi
 unset BUBBLE_BACKUP_LAYER_OFFSET_H
 
+# M7: LEGACY-SHIM-MARKER regression (independent-reviewer finding). Ben's
+#     REAL dept.yaml has NEITHER risk_control NOR weekly_review with a
+#     dedicated missions/<id>/PROMPT.md — BOTH resolve to the legacy
+#     layers/4/PROMPT.md shim. risk_control fires via ONLY the shared layer
+#     marker (outputs/<today>/4/.last-run) — its per-mission marker is NEVER
+#     stamped by the shim. Without a fallback, the floor's per-mission
+#     selector would see "risk_control never fired" (no per-mission marker)
+#     and wrongly re-select it on a later floor tick. Drives the REAL
+#     end-to-end path (no dedicated risk_control prompt written — the dept's
+#     layers/4/PROMPT.md is its ONLY L4 prompt file) and proves the tick
+#     still dispatches market_wrapup specifically, NOT risk_control.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept m4shim 10800
+make_layer m4shim 4                              # the dept's ONLY L4 prompt (the shim)
+make_dept_yaml_l4_two_missions m4shim "$RISK_TIME" "$WRAPUP_TIME"
+make_layer_marker m4shim 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker m4shim 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker m4shim 3 "$((NOW_EPOCH - 3600))"
+# risk_control fired via the shim: ONLY the layer marker is stamped, at
+# risk_control's own slot time — deliberately NO per-mission marker at all.
+make_layer_marker m4shim 4 "$((NOW_EPOCH - 300))"
+set_enabled m4shim
+export BUBBLE_BACKUP_DEPTS="m4shim"
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "1" ]] \
+   && grep -q 'mission `market_wrapup`' "$CLAUDE_ARGS" 2>/dev/null \
+   && ! grep -q 'mission `risk_control`' "$CLAUDE_ARGS" 2>/dev/null; then
+    ok "M7 legacy-shim marker (risk_control, no per-mission marker) correctly excludes it; market_wrapup dispatches"
+else
+    bad "M7 shim-marker fallback broken; ran=$ran claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]

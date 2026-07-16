@@ -2028,6 +2028,123 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     return marker
 
 
+def _mission_last_fired_with_shim_fallback(
+    repo_dir: "Path | str",
+    ctx: "dict[str, Any]",
+    mission: dict,
+) -> "datetime | None":
+    """`_mission_last_fired`, PLUS a fallback to the layer-level marker for a
+    mission that resolves to the legacy `layers/<N>/PROMPT.md` shim (card #518
+    follow-up).
+
+    WHY this exists (the gap `_mission_last_fired` documents but does not
+    close): `_mission_last_fired`'s docstring claims "For L4:
+    materialize_due_missions_for_tick now stamps the per-mission marker for
+    every due L4 mission (fix #277), so all L4 missions have their own
+    per-mission marker and do not need a layer-marker fallback." That
+    guarantee depends on `materialize_due_missions_for_tick` having actually
+    RUN this tick (`build_dispatch_ctx(..., materialize=True)`, the live-loop
+    default). The LAYER-FLOOR path's read-only enumeration
+    (`select_due_missions_for_forced_layer`) deliberately calls
+    `build_dispatch_ctx(..., materialize=False)` (the #454 discipline — an
+    enumeration/gate probe must never stamp a marker as a side effect), so
+    the materializer never runs there and the guarantee does not hold.
+
+    Concretely: a mission with NO dedicated `missions/<id>/PROMPT.md` (e.g.
+    Ben's `risk_control`, which resolves to the legacy `layers/4/PROMPT.md`
+    shim via `resolve_mission_prompt`) fires through that shim, whose own
+    STEP 1 stamps ONLY the shared layer marker
+    (`outputs/<today>/<N>/.last-run`) — it has no per-mission awareness and
+    never writes `outputs/<today>/missions/<id>/.last-run`. Without this
+    fallback, a floor tick that runs AFTER the live loop already ran that
+    mission via the shim would see `_mission_last_fired` return None (no
+    per-mission marker) and wrongly re-select an already-fired mission.
+
+    Fallback rule (mirrors `resolve_mission_prompt`'s OWN legacy-shim test,
+    so the two functions can never diverge on "is this mission on the
+    shim"): if `resolve_mission_prompt(repo_dir, mission)` resolves to the
+    layer shim path (i.e. no dedicated per-mission prompt file exists) AND
+    the per-mission marker is absent, fall back to the layer-level marker
+    (via `_layer_fired_today_marker`, reading the same ctx key
+    `_layer_fired_today` uses — no same-tick exclusion needed here, since
+    nothing on the floor path stamps the layer marker mid-tick).
+
+    Multiple shim missions on the SAME layer (Ben's actual dept.yaml shape
+    TODAY: neither `risk_control` nor `weekly_review` has a dedicated
+    `missions/<id>/PROMPT.md`, so BOTH resolve to the shim): the shared layer
+    marker alone cannot say WHICH shim mission fired — a naive "any shim
+    mission on this layer, marker present -> fired" would wrongly exclude a
+    still-pending later mission too (this was caught by the M-section test
+    below: a first draft of this fallback returned [] instead of
+    [market_wrapup] because BOTH risk_control and market_wrapup resolved to
+    the same shim and the layer marker satisfied both). The fix: gate the
+    fallback on the marker's OWN timestamp vs. THIS mission's scheduled
+    `time:` (Paris-local, daily/weekly cadence only) — the layer marker can
+    only plausibly represent THIS mission having fired if the marker was
+    stamped AT OR AFTER this mission's slot opened today. A marker stamped
+    at 21:00 cannot be "for" a mission whose slot is 22:30 (that slot hadn't
+    opened yet), so the fallback correctly does NOT apply to market_wrapup
+    even though it does apply to risk_control (21:00 marker >= risk_control's
+    own 21:00 slot). Two same-layer shim missions with the SAME `time:` are
+    still ambiguous (a structural limit of the shim — a generic prompt has no
+    mission identity to stamp); a dept that needs to disambiguate that case
+    should give each mission its own `missions/<id>/PROMPT.md` instead.
+
+    A per-mission marker (even a stale one) always wins over the layer
+    fallback — this function only consults the layer marker when the
+    per-mission marker is genuinely absent.
+    """
+    per_mission = _mission_last_fired(ctx, mission)
+    if per_mission is not None:
+        return per_mission
+
+    prompt_path = resolve_mission_prompt(repo_dir, mission)
+    layer = int(mission.get("layer", 0))
+    is_shim = prompt_path == Path(repo_dir) / "layers" / str(layer) / "PROMPT.md"
+    if not is_shim:
+        return None
+
+    layer_marker = _layer_fired_today_marker(ctx, layer)
+    if layer_marker is None:
+        return None
+
+    # Disambiguation: the layer marker can only represent THIS mission if its
+    # own scheduled slot (daily/weekly `time:`, Paris-local) had already
+    # opened by the time the marker was stamped. hourly/every_Nh/every_Nm/
+    # event cadences have no fixed daily slot to compare against, so for
+    # those we conservatively apply the fallback unconditionally (matches
+    # is_mission_due's own "date-only" daily check — see below).
+    t_str = mission.get("time")
+    cadence = mission.get("cadence", "")
+    if cadence in ("daily", "weekly") and t_str:
+        try:
+            target = _parse_hhmm(t_str)
+        except Exception:
+            return layer_marker
+        marker_paris_t = _to_paris(layer_marker).time()
+        if marker_paris_t < target:
+            # The marker was stamped BEFORE this mission's slot opened today
+            # — it cannot be this mission's own fire, so no fallback signal.
+            return None
+
+    return layer_marker
+
+
+def _layer_fired_today_marker(ctx: "dict[str, Any]", layer: int) -> "datetime | None":
+    """The layer-level `.last-run` timestamp, returned as a value (not a bool)
+    so `_mission_last_fired_with_shim_fallback` can feed it straight into
+    `is_mission_due`'s `last_fired` parameter.
+
+    Reads the SAME ctx key `_layer_fired_today` uses
+    (`layer_{layer}_last_run_today`, populated by `build_dispatch_ctx` from
+    `outputs/<today>/<N>/.last-run`) — no same-tick exclusion, because unlike
+    the per-mission materializer, nothing on the floor path stamps this
+    marker mid-tick as a side effect; it only ever reflects a PRIOR run
+    (the mission's own legacy-shim STEP 1, on an earlier tick).
+    """
+    return ctx.get(f"layer_{layer}_last_run_today")
+
+
 def _due_scheduled_catchup_layer(
     ctx: "dict[str, Any]",
     missions: "list[dict]",
@@ -2254,7 +2371,19 @@ def select_due_missions_for_forced_layer(
 
     due: list[dict] = []
     for m in layer_missions:
-        last_fired = _mission_last_fired(ctx, m)
+        # Shim-fallback idempotence (card #518 follow-up): unlike the
+        # live-loop path (build_dispatch_ctx(materialize=True), which
+        # guarantees every due L4 mission gets its own per-mission marker
+        # via materialize_due_missions_for_tick — see _mission_last_fired's
+        # docstring), this floor enumeration runs with materialize=False (the
+        # #454 read-only-probe discipline), so that guarantee does NOT hold
+        # here. A mission with no dedicated missions/<id>/PROMPT.md (e.g.
+        # Ben's risk_control) fires via the legacy layers/<N>/PROMPT.md shim,
+        # whose STEP 1 stamps ONLY the layer marker — never the per-mission
+        # one. Plain _mission_last_fired would then report "never fired" for
+        # an already-fired shim mission, re-selecting it on a later floor
+        # tick. _mission_last_fired_with_shim_fallback closes that gap.
+        last_fired = _mission_last_fired_with_shim_fallback(repo, ctx, m)
         if not is_mission_due(m, now=now_utc, last_fired=last_fired):
             continue
         if not _mission_input_ready(ctx, m):
