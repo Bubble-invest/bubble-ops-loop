@@ -1,0 +1,15 @@
+# /etc/systemd/system/cloud-wiki-compile-pruning.timer
+# Managed by bubble-vps-platform / Lab. Do not edit by hand.
+#
+# Weekly pruning — Sunday 19:00 UTC. Runs AFTER synthesis (18:00) so the
+# synthesis sees the full week before stale pages get archived.
+[Unit]
+Description=Weekly shared-wiki pruning (TTL staleness + per-agent cap)
+
+[Timer]
+OnCalendar=Sun *-*-* 19:00:00 UTC
+Persistent=true
+Unit=cloud-wiki-compile@pruning.service
+
+[Install]
+WantedBy=timers.target

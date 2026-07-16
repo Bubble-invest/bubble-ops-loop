@@ -1,0 +1,15 @@
+# /etc/systemd/system/cloud-wiki-compile-synthesis.timer
+# Managed by bubble-vps-platform / Lab. Do not edit by hand.
+#
+# Weekly synthesis — Sunday 18:00 UTC. Runs BEFORE pruning (19:00) so the
+# synthesis reads the week's pages before any get archived.
+[Unit]
+Description=Weekly shared-wiki synthesis (thesis on what the system learned)
+
+[Timer]
+OnCalendar=Sun *-*-* 18:00:00 UTC
+Persistent=true
+Unit=cloud-wiki-compile@synthesis.service
+
+[Install]
+WantedBy=timers.target
