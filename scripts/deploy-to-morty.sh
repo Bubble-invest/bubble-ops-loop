@@ -10,6 +10,12 @@
 #   - DO NOT use tmux (Step 4 documented 404 regression)
 #   - DO NOT use `claude -p` (becomes paid June 15)
 #   - DO use script(1) for pty allocation + plugin:telegram channel
+#   - DO NOT hand-edit unit files or drop-ins on the box with a manual
+#     `cp foo foo.bak-$(date +%Y%m%d)` copy. Re-run this provisioner instead
+#     (or the relevant boot-inject/template regen). Hand-copy-with-.bak is
+#     the root cause of the recurring `.bak` fossil sprawl swept in
+#     bubble-ops-board#685 — every stray .bak in /etc/systemd/system or
+#     /usr/local/bin came from this pattern, not from the provisioner.
 #
 # Usage:
 #   ./deploy-to-morty.sh --slug=<kebab> [--remote=user@host] [--dry-run]
