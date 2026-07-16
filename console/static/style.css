@@ -1083,7 +1083,7 @@ code, .code {
    onerror on the attachment <img> (gate_card.html / gate_batch.html)
    adds .gate-attachment-broken to the enclosing <figure> instead of
    leaving the browser's broken-image glyph. Hide the broken <img>
-   and swap the caption to "aperçu indisponible". #}
+   and swap the caption to "aperçu indisponible". */
 .gate-attachment-broken img { display: none; }
 .gate-attachment-caption-broken { display: none; }
 .gate-attachment-broken .gate-attachment-caption-ok { display: none; }
@@ -3127,7 +3127,7 @@ body.m4 {
    overlay painted OVER the entire shell — including the open sidebar —
    and silently ate every nav tap (#642 W19 Issue 2). 102 clears the
    toggle label (101), the highest fixed mobile control, while still
-   clearing the decorative `.bubble-float` blobs (z:0) it was added for. #}
+   clearing the decorative `.bubble-float` blobs (z:0) it was added for. */
 body.m4 .app-shell { position: relative; z-index: 102; }
 body.m4 .content { background: transparent; padding: 52px clamp(24px,4.5vw,72px) 96px; }
 
