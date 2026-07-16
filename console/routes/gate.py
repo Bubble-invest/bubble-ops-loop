@@ -50,6 +50,58 @@ def _attach_thesis_rendered(gate: dict) -> dict:
     return gate
 
 
+def _attach_payload_rendered(slug: str, gate: dict) -> dict:
+    """Mutate `gate` in place, adding `payload_rendered` — the sanitized
+    HTML of the artifact `gate.approval_bridge` actually points at, so the
+    gate DETAIL view can show what {{OPERATOR}} is being asked to approve
+    (card #642 follow-up: Jade reported the cockpit rendered only the
+    thesis/summary for gates whose real content — e.g. the 7 tweets of an
+    X-thread gate — lives in a separate payload file).
+
+    Two payload shapes, both read-only, both allowlisted server-side
+    (github_reader.resolve_gate_payload_path / read_substack_queue_note —
+    same containment model as the #622 mission-file reader and the existing
+    chart/attachment resolvers):
+      - source: payload             — item_ref is a repo-relative .md/.txt
+        path under outputs/; rendered as sanitized markdown->HTML.
+      - source: substack_queue_json — item_ref is a Note id looked up in
+        substack/data/queue.json; rendered as sanitized markdown->HTML of
+        the note's plain-text `text` field (markdown renderer handles plain
+        text fine — no markdown syntax expected, but any incidental
+        characters still go through the same sanitize path, not raw).
+
+    Sets `gate.payload_rendered` to a Markup on success, or a short French
+    "introuvable" message (also markupsafe-safe, plain text) on any failure
+    — the card must never look broken because a file moved. No-op (None)
+    when the gate has no approval_bridge or an unrecognized source.
+    """
+    bridge = gate.get("approval_bridge")
+    gate["payload_rendered"] = None
+    if not isinstance(bridge, dict):
+        return gate
+    source = bridge.get("source")
+    item_ref = bridge.get("item_ref")
+    if not item_ref or not isinstance(item_ref, str):
+        return gate
+
+    if source == "payload":
+        text = github_reader.read_gate_payload_text(slug, item_ref)
+    elif source == "substack_queue_json":
+        text = github_reader.read_substack_queue_note(slug, item_ref)
+    else:
+        return gate
+
+    if text is None:
+        gate["payload_rendered"] = render_markdown_safe(
+            "_Contenu à valider introuvable — le fichier source a peut-être bougé "
+            "ou été renommé. Vérifie `queues/gates/" + gate.get("id", "") + ".yaml` "
+            "(champ `approval_bridge`)._"
+        )
+    else:
+        gate["payload_rendered"] = render_markdown_safe(text)
+    return gate
+
+
 SORT_DATE_ASC = "date_asc"
 SORT_DATE_DESC = "date_desc"
 ALLOWED_SORTS = {SORT_DATE_ASC, SORT_DATE_DESC}
@@ -209,6 +261,7 @@ def gate_card(slug: str, gate_id: str, request: Request):
     if gate is None or raw is None:
         raise HTTPException(404, f"Gate not found: {gate_id}")
     gate = _attach_thesis_rendered(gate)
+    gate = _attach_payload_rendered(slug, gate)
     return request.app.state.templates.TemplateResponse(
         "gate_card.html",
         {

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import base64
+import json
 import os
 import re
 import subprocess
@@ -836,6 +837,155 @@ def resolve_attachment_path(slug: str, rel_path: str) -> Optional[Path]:
         return None
 
     return target_abs
+
+
+# ── Gate payload resolver (approval_bridge, #642/gate-payload) ──────────────
+# A gate's `approval_bridge.item_ref` points at the file that actually holds
+# what {{OPERATOR}} is approving — e.g. Miranda's X-thread gates carry only the
+# thesis in `summary`; the 7 tweets live in a separate markdown file under
+# outputs/<date>/<layer>/*.md. Until this reader existed the cockpit had no
+# way to show that file's content, so the gate detail view rendered only the
+# summary — Jade could not see what she was approving (live report, 2026-07-16).
+#
+# Modelled on resolve_attachment_path/read_mission_file: same layered
+# containment checks, but additionally bound to files inside the dept's
+# outputs/ tree with a text-only extension allowlist (this is a body of prose
+# to render as markdown, not a general attachment).
+_PAYLOAD_ALLOWED_EXTS = frozenset({".md", ".txt"})
+_PAYLOAD_MAX_BYTES = 100 * 1024  # 100KB size cap (task spec)
+
+
+def resolve_gate_payload_path(slug: str, rel_path: str) -> Optional[Path]:
+    """Securely resolve a gate's `approval_bridge.item_ref` (source: payload)
+    to an on-disk text file, or None.
+
+    A path is served ONLY when ALL of the following hold:
+      1. `slug` resolves to a real dept repo on disk (dept-scoping).
+      2. `rel_path` is relative, contains no parent refs, no absolute/drive
+         forms.
+      3. `rel_path` sits inside <repo_root>/outputs/ (the fixed root every
+         dept writes drafts under — mirrors loop_history.read_output_file's
+         containment rule).
+      4. The resolved real path (symlinks followed) is STILL inside
+         outputs/ — symlink-escape defence, same pattern as
+         resolve_attachment_path.
+      5. The extension (last suffix, case-insensitive) is in
+         _PAYLOAD_ALLOWED_EXTS (.md/.txt only — this renders as markdown
+         prose, not a general file download).
+      6. The file actually exists and is a regular file.
+
+    Returns the resolved Path on success, or None on ANY failure. The caller
+    treats None as "payload introuvable" (never raises, never echoes why).
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        return None
+
+    root = repo_path(slug)
+    if root is None:
+        return None
+    root = root.resolve()
+
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or candidate.drive or candidate.root:
+        return None
+    if ".." in candidate.parts:
+        return None
+
+    if candidate.suffix.lower() not in _PAYLOAD_ALLOWED_EXTS:
+        return None
+
+    parts = candidate.parts
+    if not parts or parts[0] != "outputs":
+        return None
+
+    outputs_dir = (root / "outputs").resolve()
+    if not _is_within(outputs_dir, root):
+        return None
+
+    target = root / candidate
+    try:
+        target_abs = target.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not _is_within(target_abs, outputs_dir):
+        return None
+
+    # Symlink-escape defence: the original path must not be a symlink
+    # pointing outside outputs/.
+    try:
+        if target.is_symlink():
+            real = target.resolve()
+            if not _is_within(real, outputs_dir):
+                return None
+    except OSError:
+        return None
+
+    if not target_abs.is_file():
+        return None
+
+    return target_abs
+
+
+def read_gate_payload_text(slug: str, rel_path: str) -> Optional[str]:
+    """Read a gate payload file's text content (UTF-8, size-capped), or None.
+
+    Truncates at _PAYLOAD_MAX_BYTES with a trailing marker — same convention
+    as loop_history.read_output_file / read_mission_file. Never raises.
+    """
+    target = resolve_gate_payload_path(slug, rel_path)
+    if target is None:
+        return None
+    try:
+        size = target.stat().st_size
+        raw = target.read_bytes()[:_PAYLOAD_MAX_BYTES]
+    except OSError:
+        return None
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8", errors="replace")
+    if size > _PAYLOAD_MAX_BYTES:
+        content += f"\n\n… (tronqué — fichier de {size} octets)"
+    return content
+
+
+def read_substack_queue_note(slug: str, note_id: str) -> Optional[str]:
+    """Look up a Substack Note's `text` by id in substack/data/queue.json
+    (approval_bridge.source == 'substack_queue_json').
+
+    Read-only, id-keyed lookup — never writes, never returns anything but the
+    note's text field. `note_id` is matched exactly against `notes[].id`; no
+    path construction from caller input (defeats traversal by construction —
+    the file path itself, substack/data/queue.json, is fixed and never
+    derived from `note_id`).
+
+    Returns the note text, or None if the dept/file/id is missing or the
+    JSON is malformed.
+    """
+    if not note_id or not isinstance(note_id, str):
+        return None
+
+    root = repo_path(slug)
+    if root is None:
+        return None
+    queue_path = root / "substack" / "data" / "queue.json"
+    if not queue_path.is_file():
+        return None
+
+    try:
+        doc = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    notes = doc.get("notes") if isinstance(doc, dict) else None
+    if not isinstance(notes, list):
+        return None
+
+    for note in notes:
+        if isinstance(note, dict) and note.get("id") == note_id:
+            text = note.get("text")
+            return text if isinstance(text, str) else None
+    return None
 
 
 # ── Kanban attachment resolver ──────────────────────────────────────────────
