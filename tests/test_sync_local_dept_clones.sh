@@ -57,6 +57,8 @@ want()   { if grep -q "$2" "$3" 2>/dev/null; then echo "  PASS: $1"; PASS=$((PAS
 nowant() { if grep -q "$2" "$3" 2>/dev/null; then echo "  FAIL: $1 (unexpected '$2' in $3)"; FAIL=$((FAIL+1)); else echo "  PASS: $1"; PASS=$((PASS+1)); fi; }
 
 WORK="$(mktemp -d /tmp/sync-local.XXXXXX)"
+export BUBBLE_SYNC_UNSAFE_ROOT=1   # fixture roots are throwaway (T5); the containment FATAL is tested explicitly in T12a with the var unset
+export BUBBLE_SYNC_ORIGIN_ALLOW="^/|^file://"   # fixture origins are local paths; T12b tests the guard with a NON-matching https origin
 trap 'rm -rf "$WORK"' EXIT
 
 AGENTS="$WORK/agents"; mkdir -p "$AGENTS"
@@ -76,6 +78,7 @@ FAIL_FILE="$WORK/fail-depts.txt"; : > "$FAIL_FILE"
 cat > "$STUBS/git" <<EOF
 #!/usr/bin/env bash
 # args we care about: git -C <dir> <verb> ...
+case " \$* " in *" remote get-url origin "*) echo "/fixture/origin.git"; exit 0 ;; esac
 dir=""
 i=1
 for a in "\$@"; do

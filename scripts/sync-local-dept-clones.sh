@@ -78,7 +78,9 @@ AGENTS_ROOT="${BUBBLE_SYNC_AGENTS_ROOT:-/home/claude/agents}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agents-root) AGENTS_ROOT="${2:?--agents-root needs a value}"; shift 2 ;;
-        --agents-root=*) AGENTS_ROOT="${1#--agents-root=}"; shift ;;
+        --agents-root=*) AGENTS_ROOT="${1#--agents-root=}"
+                         [ -n "$AGENTS_ROOT" ] || { echo "FATAL: --agents-root= needs a value" >&2; exit 1; }
+                         shift ;;
         *) echo "ERR: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -188,11 +190,35 @@ clear_merge_debris() {
     echo "$found"
 }
 
+# ── Destructive-blast-radius containment (r16 review, 2026-07-16) ──────────
+# This script runs reset --hard + clean -fd unattended. Two independent guards:
+#  (a) a NON-DEFAULT agents root requires BUBBLE_SYNC_UNSAFE_ROOT=1 — a mistyped
+#      --agents-root must fail loudly, never silently converge a workspace;
+#  (b) per-repo (below): only dirs whose origin is a Bubble-invest/* GitHub repo
+#      are ever touched — a foreign clone matching the glob is SKIPPED with a WARN.
+DEFAULT_ROOT="/home/claude/agents"
+if [ "$AGENTS_ROOT" != "$DEFAULT_ROOT" ] && [ "${BUBBLE_SYNC_UNSAFE_ROOT:-0}" != "1" ]; then
+    echo "FATAL: agents-root '$AGENTS_ROOT' != $DEFAULT_ROOT — refusing destructive sync (set BUBBLE_SYNC_UNSAFE_ROOT=1 to override for tests)" >&2
+    exit 1
+fi
+
 log "START agents_root=${AGENTS_ROOT}"
 
 LOCAL_COUNT=0
 FAIL_COUNT=0
 for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
+    # Guard (b): never converge a repo whose origin is not a Bubble-invest remote.
+    _origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+    # BUBBLE_SYNC_ORIGIN_ALLOW: extra grep -E pattern for test fixtures (local bare
+    # repos). NEVER set in production units — the Bubble-invest match is the prod rule.
+    if printf '%s' "$_origin" | grep -qE 'github\.com[:/]Bubble-invest/'; then
+        :
+    elif [ -n "${BUBBLE_SYNC_ORIGIN_ALLOW:-}" ] && printf '%s' "$_origin" | grep -qE "${BUBBLE_SYNC_ORIGIN_ALLOW}"; then
+        :
+    else
+        log "WARN $(basename "$dir"): origin '$_origin' is not a Bubble-invest repo — SKIPPED (containment guard)"
+        continue
+    fi
     [[ -d "$dir" ]] || continue          # no match → glob stays literal; -d guards it
     slug="$(basename "$dir")"; slug="${slug#bubble-ops-}"
 
