@@ -104,6 +104,42 @@ LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
 # real systemd (BUBBLE_BACKUP_SYSTEMCTL="$STUB"). Default = the real binary.
 SYSTEMCTL="${BUBBLE_BACKUP_SYSTEMCTL:-systemctl}"
 
+# ── flock portability shim (#675) ───────────────────────────────────────────
+# Production always runs on Linux (util-linux `flock` present) — this branch
+# is a NO-OP there (real `flock` wins) and only engages the mkdir-based
+# fallback where the binary is genuinely missing (e.g. running the harness
+# locally on macOS, which has no `flock`). Interface: `bkp_flock -n FD LOCKPATH`
+# (non-blocking acquire) and `bkp_flock -u FD` (release) — callers pass the
+# lock's own path explicitly since a portable shim can't always recover a
+# filename from an fd (no /proc on macOS).
+if command -v flock >/dev/null 2>&1; then
+    bkp_flock() {
+        local opt="$1" fd="$2"
+        command flock "$opt" "$fd"
+    }
+else
+    # mkdir is atomic on every POSIX filesystem, making it a safe substitute
+    # for the non-blocking acquire; release just removes the marker dir. This
+    # approximates flock's per-lockfile mutex closely enough for this script's
+    # one-lock-per-dept use, but is NOT a general replacement.
+    bkp_flock() {
+        local opt="$1" _fd="$2" lockpath="${3:-}"
+        local mkdir_lock="${lockpath}.d"
+        case "$opt" in
+            -n)
+                mkdir "$mkdir_lock" 2>/dev/null
+                ;;
+            -u)
+                rmdir "$mkdir_lock" 2>/dev/null || true
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+fi
+
 # ── DRY_RUN resolution (footgun fix) ────────────────────────────────────────
 # Historical incident: someone set `DRY_RUN=1` expecting the safety net to no-op,
 # but the script only honored `BUBBLE_BACKUP_DRY_RUN` — so `DRY_RUN` was silently
@@ -794,7 +830,7 @@ run_backup_tick() {
     # to be airtight; until then, the freshness gate is the primary guard and
     # flock prevents two BACKUP ticks from overlapping.
     exec 9>"$lock"
-    if ! flock -n 9; then
+    if ! bkp_flock -n 9 "$lock"; then
         log "$slug: lock held (a tick is already running) — skipping backup"
         return 99   # sentinel: skipped (no tick ran) → caller must NOT notify
     fi
@@ -870,7 +906,7 @@ except Exception:
 PYEOF
     )"
     rm -f "$runlog"
-    flock -u 9 || true
+    bkp_flock -u 9 "$lock" || true
     return $exit
 }
 
