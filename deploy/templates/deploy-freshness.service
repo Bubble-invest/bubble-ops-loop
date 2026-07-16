@@ -1,0 +1,16 @@
+[Unit]
+Description=Bubble Deploy — freshness watchdog (silent-miss: timer stopped firing)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/claude-agent/env
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+EnvironmentFile=-/run/claude-agent/env
+ExecStart=/home/claude/scripts/deploy-freshness.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploy-freshness
