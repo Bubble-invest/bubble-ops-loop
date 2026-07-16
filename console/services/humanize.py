@@ -10,6 +10,7 @@ no enum slug).
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 _HUMAN_KIND: dict[str, str] = {
@@ -512,5 +513,50 @@ def humanize_queue_item(doc: dict | None, key: str | None) -> str | None:
             excerpt = text.strip().replace("\n", " ")
             return "Directive — " + (excerpt[:57] + "…" if len(excerpt) > 57 else excerpt)
         return "Nouvelle directive"
+
+
+# ---------------------------------------------------------------------------
+# Gate anteriority — compact "how old is this pending decision" display
+# (board #666, Jade's triage need: see at a glance which gates have waited
+# longest). Pairs with github_reader._attach_gate_date, which stamps every
+# gate dict with `_gate_date` (a `date` or None) and `_gate_age_days`.
+# ---------------------------------------------------------------------------
+
+# Age (days) at which a pending gate is flagged as stale in the UI.
+GATE_AGE_WARNING_DAYS = 7
+
+
+def format_gate_age(gate: dict | None) -> str | None:
+    """Return a compact "12/07 · il y a 4 j" string for a gate's `_gate_date`,
+    or None when no date could be determined (graceful no-op — caller must
+    not render an age chip in that case).
+
+    >>> format_gate_age({"_gate_date": date(2026, 7, 12), "_gate_age_days": 4})
+    '12/07 · il y a 4 j'
+    """
+    if not gate:
+        return None
+    d = gate.get("_gate_date")
+    if not isinstance(d, date):
+        return None
+    age = gate.get("_gate_age_days")
+    if not isinstance(age, int):
+        age = 0
+    if age <= 0:
+        when = "aujourd'hui"
+    elif age == 1:
+        when = "il y a 1 j"
+    else:
+        when = f"il y a {age} j"
+    return f"{d:%d/%m} · {when}"
+
+
+def gate_age_is_stale(gate: dict | None) -> bool:
+    """True when a pending gate's age crosses GATE_AGE_WARNING_DAYS — used to
+    apply the amber "getting old" highlight in list/batch views."""
+    if not gate:
+        return False
+    age = gate.get("_gate_age_days")
+    return isinstance(age, int) and age > GATE_AGE_WARNING_DAYS
 
     return None

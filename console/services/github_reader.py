@@ -419,12 +419,16 @@ def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> Lis
             # is exactly how a TLT trade gate disappeared from the UI on
             # 2026-06-06 (unquoted colon in `instrument:`), so {{OPERATOR}} never saw it
             # to approve it. Surface it as an error card instead of swallowing it.
-            out.append(_malformed_gate_card(slug, p, str(err).splitlines()[0]))
+            bad = _malformed_gate_card(slug, p, str(err).splitlines()[0])
+            _attach_gate_date(bad, p)
+            out.append(bad)
             continue
         if doc is None:
             # Parsed but not a mapping → surface a synthetic error card so a
             # malformed gate is VISIBLE in the cockpit, never silently dropped.
-            out.append(_malformed_gate_card(slug, p, "not a YAML mapping"))
+            bad = _malformed_gate_card(slug, p, "not a YAML mapping")
+            _attach_gate_date(bad, p)
+            out.append(bad)
             continue
         # Skip gates that have been decided — they are no longer "pending."
         # Gate resolution writes `resolved: true` + `decided_by` (not
@@ -452,11 +456,66 @@ def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> Lis
                 # the UI can show the "En révision" banner.
                 doc["_revision_requested"] = True
                 doc["_revision_comment"] = ddoc.get("comment", "")
+                _attach_gate_date(doc, p)
                 out.append(doc)
             # approve / reject / defer → hide (terminal decisions)
             continue
+        _attach_gate_date(doc, p)
         out.append(doc)
+    # Oldest-first: a gate that has waited longest for a decision floats to
+    # the top of every list/batch view (board #666, Jade's "how old is this"
+    # triage need). `_gate_date` is None only for a card with no `created`,
+    # no dated id, and an unreadable mtime — vanishingly rare; those sort
+    # last (treated as "just now") rather than crashing the sort.
+    out.sort(key=lambda g: g.get("_gate_date") or date.max)
     return out
+
+
+# Matches a YYYY-MM-DD date embedded anywhere in a gate id, e.g.
+# "publish-linkedin-agent-muet-tuyau-pas-source-2026-07-12" -> 2026-07-12.
+_ID_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _attach_gate_date(doc: Dict[str, Any], path: "Path") -> None:
+    """Mutate `doc` in place, adding `_gate_date` (a `date` or None) and
+    `_gate_age_days` (an int or None) — when the gate was first created and
+    how many days ago, for the cockpit's anteriority display (board #666).
+
+    Resolution order, first hit wins:
+      1. the gate's own `created: 'YYYY-MM-DD'` field — every real gate YAML
+         checked (Ben's trade proposals, Miranda's content gates) sets this;
+      2. a YYYY-MM-DD embedded in the gate's `id` (content-dept ids always
+         end with the creation date, e.g. ...-2026-07-12);
+      3. the gate YAML file's mtime on disk, as a last-resort fallback for a
+         gate that somehow has neither — still better than showing nothing.
+    Never raises: a malformed `created` value or unreadable mtime just falls
+    through to the next source, and both fields end up None if all three fail.
+    """
+    created = doc.get("created")
+    d: Optional[date] = None
+    if isinstance(created, date):  # PyYAML parses unquoted YYYY-MM-DD as date
+        d = created
+    elif isinstance(created, str):
+        try:
+            d = date.fromisoformat(created.strip())
+        except ValueError:
+            d = None
+    if d is None:
+        gate_id = doc.get("id")
+        if isinstance(gate_id, str):
+            m = _ID_DATE_RE.search(gate_id)
+            if m:
+                try:
+                    d = date.fromisoformat(m.group(1))
+                except ValueError:
+                    d = None
+    if d is None:
+        try:
+            d = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).date()
+        except OSError:
+            d = None
+    doc["_gate_date"] = d
+    doc["_gate_age_days"] = (date.today() - d).days if d is not None else None
 
 
 def _malformed_gate_card(slug: str, path: "Path", err: str) -> Dict[str, Any]:
@@ -660,24 +719,57 @@ def attachment_media_type(path: Path) -> str:
     return _ATTACHMENT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
+
+# Known attachment-root shapes across the fleet's dept repos. A path is only
+# ever served from inside one of these, each rooted from the dept repo root:
+#
+#   - ("outputs", "*", "attachments")  — Ben/trading-style depts:
+#       outputs/<YYYY-MM-DD>/attachments/<NAME>.<ext>
+#   - ("queues", "gates", "assets")    — Content-dept-style gates (Miranda):
+#       queues/gates/assets/<NAME>.<ext>  (no per-date subdir — the gate YAML
+#       itself carries `created`, so assets are pooled flat under one dir;
+#       confirmed against the real bubble-ops-content repo, board #666).
+#
+# "*" means any single path segment is accepted there (matches the date
+# component in the outputs/ shape). Each tuple is fixed-depth and fixed-name
+# everywhere else, so this stays exactly as tight as the single-shape check
+# it replaces — just no longer blind to a second, equally real, convention.
+_ATTACHMENT_ROOT_SHAPES: tuple[tuple[str, ...], ...] = (
+    ("outputs", "*", "attachments"),
+    ("queues", "gates", "assets"),
+)
+
+
+def _match_attachment_root(parts: tuple[str, ...]) -> Optional[tuple[str, ...]]:
+    """If `parts` starts with one of _ATTACHMENT_ROOT_SHAPES (plus >=1 filename
+    segment after it), return the concrete root segments (with "*" resolved to
+    the actual path component). Otherwise None."""
+    for shape in _ATTACHMENT_ROOT_SHAPES:
+        if len(parts) < len(shape) + 1:
+            continue
+        candidate_root = parts[: len(shape)]
+        if all(seg == "*" or seg == have for seg, have in zip(shape, candidate_root)):
+            return candidate_root
+    return None
+
+
 def resolve_attachment_path(slug: str, rel_path: str) -> Optional[Path]:
     """Securely resolve a gate attachment path to an on-disk file, or None.
 
-    Attachments live at:
+    Attachments live under one of the fixed root shapes in
+    _ATTACHMENT_ROOT_SHAPES, relative to the dept repo root — e.g.
         outputs/<YYYY-MM-DD>/attachments/<NAME>.<ext>
-    relative to the dept repo root.  The cockpit serves them via
-    GET /gate/<slug>/attachment?path=<rel_path>.
+        queues/gates/assets/<NAME>.<ext>
+    The cockpit serves them via GET /gate/<slug>/attachment?path=<rel_path>.
 
     Modelled EXACTLY on resolve_chart_path; the same layered checks apply.
     A path is served ONLY when ALL of the following hold:
 
       1. `slug` resolves to a real dept repo on disk (dept-scoping).
-      2. `rel_path` is relative, contains no parent refs, and resolves to a
-         path still inside <repo_root>/outputs/<date>/attachments/ — mirrors
-         the charts/ containment check (parts[0]=="outputs", parts[2]=="attachments",
-         depth >= 4).
+      2. `rel_path` is relative, contains no parent refs, and matches one of
+         the fixed attachment-root shapes above (depth >= shape+1).
       3. The resolved real path (symlinks followed) is STILL inside that
-         attachments dir — so a symlink planted inside attachments/ that points
+         resolved root dir — so a symlink planted inside it that points
          outside is rejected.
       4. The file extension (last suffix, case-insensitive) is in the
          _ATTACHMENT_ALLOWED_EXTS allowlist. A double-extension like
@@ -708,14 +800,14 @@ def resolve_attachment_path(slug: str, rel_path: str) -> Optional[Path]:
     if candidate.suffix.lower() not in _ATTACHMENT_ALLOWED_EXTS:
         return None
 
-    # Structural check: must be outputs/<something>/attachments/<name>.<ext>
-    # (>= 4 parts: outputs, <date>, attachments, <filename>).
+    # Structural check: must match one of the known attachment-root shapes.
     parts = candidate.parts
-    if len(parts) < 4 or parts[0] != "outputs" or parts[2] != "attachments":
+    root_parts = _match_attachment_root(parts)
+    if root_parts is None:
         return None
 
     # Resolve the containing directory and confirm it stays inside repo root.
-    attachments_dir = (root / parts[0] / parts[1] / parts[2]).resolve()
+    attachments_dir = root.joinpath(*root_parts).resolve()
     if not _is_within(attachments_dir, root):
         return None
 

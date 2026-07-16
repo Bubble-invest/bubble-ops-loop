@@ -1124,6 +1124,24 @@ code, .code {
   color: #fff;
   text-transform: uppercase;
 }
+/* Anteriority chip (#666) — "12/07 · il y a 4 j". Neutral hairline by
+   default (same treatment as --source); crosses into an explicit amber
+   once a gate has waited past humanize.GATE_AGE_WARNING_DAYS, so an aging
+   pile is visible without opening every card. Deliberately NOT var(--ochre)
+   — that token now resolves to the signature violet, not a warning color,
+   so a real amber is spelled out here instead of borrowing it. */
+.gate-chip--age {
+  background: var(--paper-soft);
+  color: var(--body-muted);
+  border: 1px solid var(--line);
+  font-weight: 500;
+  text-transform: none;
+}
+.gate-chip--age-stale {
+  background: #fdf3e0;
+  color: #92620a;
+  border: 1px solid #d99a2b;
+}
 .gate-chip--source {
   background: var(--paper-soft);
   color: var(--body-muted);

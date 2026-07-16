@@ -288,7 +288,10 @@
   {# ─── General attachments (additive, back-compat — chart_path still works) ─
      An agent may attach images or files to a gate via the `attachments:` list
      in the gate YAML.  Each item has a `path` (dept-repo-relative, must be
-     inside outputs/<date>/attachments/) and an optional `caption`.
+     inside one of the fixed shapes github_reader._ATTACHMENT_ROOT_SHAPES
+     resolves — outputs/<date>/attachments/ for Ben-style depts, or
+     queues/gates/assets/ for content-dept-style gates, #666) and an optional
+     `caption`.
      Images (.png .jpg .jpeg .gif .svg .webp) render inline; everything else
      (.pdf .csv .txt .md) renders as a labeled download/open link.
      Served by the auth-gated, path-traversal-proof /gate/<slug>/attachment

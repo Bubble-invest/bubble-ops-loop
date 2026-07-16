@@ -37,8 +37,23 @@
      'essay_free': 'Essai',
      'investment_case_paid': 'Investment Case',
    }.get(gate.content_type) %}
-{% if gate.kind or _chip_channel or _chip_source or _content_type_label %}
+{# ─── Anteriority chip (#666) ──────────────────────────────────────────
+   Every pending gate must show at a glance when it was created, so Jade
+   can spot the oldest proposals without opening each card. format_gate_age
+   reads gate._gate_date (stamped by github_reader._attach_gate_date from
+   created: / the id's embedded date / file mtime, in that order) and
+   returns None when no date could be determined — graceful no-op, same
+   contract as every other chip here. Gates older than
+   humanize.GATE_AGE_WARNING_DAYS (7d) get the amber "stale" treatment. #}
+{% set _chip_age = format_gate_age(gate) %}
+{% if gate.kind or _chip_channel or _chip_source or _content_type_label or _chip_age %}
 <div class="gate-identity-chips">
+  {% if _chip_age %}
+  <span class="gate-chip gate-chip--age{{ ' gate-chip--age-stale' if gate_age_is_stale(gate) else '' }}"
+        title="Créée le {{ '%04d-%02d-%02d' | format(gate._gate_date.year, gate._gate_date.month, gate._gate_date.day) }}">
+    🕒 {{ _chip_age }}
+  </span>
+  {% endif %}
   {% if gate.kind %}
   <span class="gate-chip gate-chip--type" title="Type d'artefact">
     {{ humanize_kind(gate.kind) }}

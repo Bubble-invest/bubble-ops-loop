@@ -121,9 +121,10 @@ def gate_attachment(slug: str, path: str, request: Request):
     SECURITY — same model as /gate/{slug}/chart:
       - bearer auth enforced globally by middleware;
       - `github_reader.resolve_attachment_path` strictly validates the path is
-        inside THIS dept's <repo>/outputs/*/attachments/, extension is in the
-        allowlist, no traversal, no symlink escape, no cross-dept reach.
-        Returns None on ANY doubt.
+        inside THIS dept's repo, under one of the known fixed attachment-root
+        shapes (outputs/*/attachments/ or queues/gates/assets/, #666),
+        extension is in the allowlist, no traversal, no symlink escape, no
+        cross-dept reach. Returns None on ANY doubt.
     None → opaque 404 without echoing path or reason (no oracle).
     """
     if dept_registry.get_department(slug) is None:
