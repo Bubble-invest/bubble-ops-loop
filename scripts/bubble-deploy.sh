@@ -71,7 +71,13 @@ sync_repo_reset(){ # $1=dir  — hard-reset to origin/main (infra: no local work
   if [[ "$ahead" != "0" ]]; then log "WARN $d is $ahead AHEAD — has local commits; reset would lose them. SKIPPING."; return 2; fi
   if [[ "$behind" == "0" ]]; then log "$d already current"; return 0; fi
   if [[ "$DRY_RUN" == "1" ]]; then log "[dry-run] would reset $d ($behind behind)"; return 0; fi
-  g "$d" reset --hard origin/main >/dev/null && log "$d reset to origin/main ($behind applied)"
+  if g "$d" reset --hard origin/main >/dev/null; then
+    log "$d reset to origin/main ($behind applied)"
+    return 0
+  else
+    log "FAIL $d: git reset --hard origin/main failed"
+    return 1
+  fi
 }
 
 # health_check_dept $slug $dir $unit — is-active + a python import-smoke of the
