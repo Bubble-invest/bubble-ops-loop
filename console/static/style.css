@@ -3131,6 +3131,16 @@ body.m4 {
    the fixed z:99/z:101 controls correctly paint above. (#642 W19 / r19b) */
 body.m4 .app-shell { position: relative; isolation: isolate; }
 body.m4 .content { background: transparent; padding: 52px clamp(24px,4.5vw,72px) 96px; }
+/* MOBILE override (must come AFTER the global rule to win): app-shell must NOT
+   form a stacking context on mobile, so the position:fixed .sidebar (z:100)
+   escapes into the ROOT context and paints above the fixed .sidebar-overlay
+   (z:99). With isolate ON, the sidebar's z-index is trapped inside app-shell's
+   layer and the root-level overlay wins → nav taps die (#642 W19 / r19b / r19c).
+   Root-level mobile z-order: blobs(0) < content < overlay(99) < sidebar(100) <
+   toggle-label(101). Desktop keeps isolate (no fixed nav controls to compete). */
+@media (max-width: 768px) {
+  body.m4 .app-shell { isolation: auto; }
+}
 
 /* ── Frosted glass sidebar ────────────────────────────────────────────── */
 body.m4 .sidebar {
