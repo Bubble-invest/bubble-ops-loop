@@ -44,6 +44,14 @@
 #       THREE failure modes on unrelated depts simultaneously still preserves
 #       an inbox/decisions hide-marker on the (unaffected) dept that converges
 #       cleanly.
+#   T12a destructive-blast-radius containment (r16 review, board #667): a
+#       NON-DEFAULT agents-root without BUBBLE_SYNC_UNSAFE_ROOT=1 set FATALs
+#       before touching anything — a mistyped --agents-root must never
+#       silently converge (reset --hard) an arbitrary workspace.
+#   T12b destructive-blast-radius containment (r16 review, board #667): a
+#       mirror whose origin is NOT a Bubble-invest/* GitHub repo is SKIPPED
+#       with a WARN and no reset is attempted, even though its agents-root
+#       and STATE.yaml otherwise look like a normal host:local dept.
 #   T13 review-round-2 (endangered-state quarantine): a dirty TRACKED file at
 #       HEAD (uncommitted hot-patch) gets stashed BEFORE the reset and the
 #       loud "DISCARDED" WARN fires — distinct from the benign self-heal
@@ -631,6 +639,99 @@ chk_eq "T11b merge-debris dept converged despite the aborted-merge debris" "$mer
 want "T11d skip-worktree dept's own WARN/log line present" "skipwt" "$WORK/run-real6.log"
 want "T11e merge-debris dept's own log line present" "merged" "$WORK/run-real6.log"
 want "T11f healthy dept synced cleanly and independently" "healthy" "$WORK/run-real6.log"
+
+# -----------------------------------------------------------------------------
+# T12a: destructive-blast-radius containment (r16 review, board #667) — a
+#      NON-DEFAULT agents-root without BUBBLE_SYNC_UNSAFE_ROOT=1 must FATAL
+#      before touching anything (no fetch/reset attempted on any dept), never
+#      silently converge an arbitrary workspace just because a caller
+#      mistyped --agents-root. Every other test in this suite runs with
+#      BUBBLE_SYNC_UNSAFE_ROOT=1 exported globally (line 70) precisely so the
+#      fixture's throwaway root is allowed through this same gate — this test
+#      is the one place that var is deliberately unset to exercise the FATAL.
+# -----------------------------------------------------------------------------
+rm -rf "$AGENTS"; mkdir -p "$AGENTS"; : > "$GIT_LOG"; : > "$FAIL_FILE"
+make_dept content local
+rc12a="$(env BUBBLE_SYNC_UNSAFE_ROOT='' "$SCRIPT_UNDER_TEST" --agents-root "$AGENTS" >"$WORK/run-12a.log" 2>&1; echo $?)"
+chk "T12a non-default agents-root without opt-in FATALs (non-zero exit)" 1 "$rc12a"
+want "T12a FATAL names the containment reason" "FATAL.*refusing destructive sync" "$WORK/run-12a.log"
+want "T12a FATAL names the opt-in var" "BUBBLE_SYNC_UNSAFE_ROOT" "$WORK/run-12a.log"
+chk_eq "T12a no dept was ever touched (FATAL fires before the dept loop)" "" "$(cat "$GIT_LOG")"
+nowant "T12a no 'START' log line (guard fires before the run even logs its start)" "START agents_root" "$WORK/run-12a.log"
+
+# -----------------------------------------------------------------------------
+# T12b: destructive-blast-radius containment (r16 review, board #667) — a
+#      mirror whose origin is NOT a github.com/Bubble-invest/* remote is
+#      SKIPPED with a WARN and no reset is attempted, even though it otherwise
+#      looks like a normal host:local dept (present .git, STATE.yaml says
+#      host: local). Real-git fixture: the git stub's `remote get-url origin`
+#      always answers a fixed local path (matching BUBBLE_SYNC_ORIGIN_ALLOW),
+#      so this guard needs a genuine per-dir origin — hence real git here,
+#      with BUBBLE_SYNC_ORIGIN_ALLOW explicitly UNSET so the fixture-allow
+#      escape hatch can't rescue the foreign origin.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS12B="$WORK/agents-real12b"; rm -rf "$REALGIT_AGENTS12B"; mkdir -p "$REALGIT_AGENTS12B"
+
+# Foreign dept: a real local repo whose origin is a non-Bubble-invest GitHub URL
+# (the containment guard greps the LITERAL `remote get-url origin` output for
+# `github.com[:/]Bubble-invest/`, so a URL that merely LOOKS like GitHub but
+# names a different org must not match).
+FOREIGN12B="$REALGIT_AGENTS12B/bubble-ops-foreign"
+mkdir -p "$FOREIGN12B/onboarding"
+"${real_git_env[@]}" git init -q "$FOREIGN12B"
+printf 'v: 1\n' > "$FOREIGN12B/framework.txt"
+printf 'slug: foreign\nstatus: Live\nhost: local\n' > "$FOREIGN12B/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$FOREIGN12B" add -A
+"${real_git_env[@]}" git -C "$FOREIGN12B" commit -qm "seed foreign"
+"${real_git_env[@]}" git -C "$FOREIGN12B" remote add origin "https://github.com/some-other-org/unrelated-repo.git"
+foreign12b_head_before="$("${real_git_env[@]}" git -C "$FOREIGN12B" rev-parse HEAD)"
+
+# A SECOND, healthy dept in the SAME run whose origin DOES match the
+# Bubble-invest allow-rule — proves the foreign-origin dept is skipped
+# without wedging the others (fail-safe, same invariant as T3/T9). Its bare
+# "origin" is a real local repo whose PATH literally contains
+# github.com/Bubble-invest/ so the guard's string match passes for real,
+# with BUBBLE_SYNC_ORIGIN_ALLOW unset for this whole block so nothing here
+# depends on the fixture-only escape hatch.
+ORIGIN12B="$WORK/github.com/Bubble-invest/bubble-ops-healthy12b.git"
+WORKTREE12B="$WORK/seed-healthy12b"
+mkdir -p "$(dirname "$ORIGIN12B")"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN12B"
+"${real_git_env[@]}" git clone -q "$ORIGIN12B" "$WORKTREE12B" 2>/dev/null
+mkdir -p "$WORKTREE12B/onboarding"
+printf 'v: 1\n' > "$WORKTREE12B/framework.txt"
+printf 'slug: healthy12b\nstatus: Live\nhost: local\n' > "$WORKTREE12B/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE12B" add -A
+"${real_git_env[@]}" git -C "$WORKTREE12B" commit -qm "seed healthy12b"
+"${real_git_env[@]}" git -C "$WORKTREE12B" push -q origin HEAD:main
+MIRROR12B="$REALGIT_AGENTS12B/bubble-ops-healthy12b"
+"${real_git_env[@]}" git clone -q "$ORIGIN12B" "$MIRROR12B"
+# origin advances so there's real convergence work for the healthy dept to prove.
+printf 'v: 2\n' > "$WORKTREE12B/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE12B" commit -qam "advance healthy12b"
+"${real_git_env[@]}" git -C "$WORKTREE12B" push -q origin HEAD:main
+healthy12b_origin_head="$("${real_git_env[@]}" git -C "$WORKTREE12B" rev-parse HEAD)"
+
+: > "$GIT_LOG"
+env BUBBLE_SYNC_ORIGIN_ALLOW='' "${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS12B" >"$WORK/run-12b.log" 2>&1
+rc12b=$?
+chk "T12b run with a foreign-origin dept in the mix still exits 0 (fail-safe, no timer flap)" 0 "$rc12b"
+want "T12b foreign-origin dept WARN names the containment guard" "containment guard" "$WORK/run-12b.log"
+want "T12b foreign-origin dept slug named in the WARN" "foreign" "$WORK/run-12b.log"
+foreign12b_head_after="$("${real_git_env[@]}" git -C "$FOREIGN12B" rev-parse HEAD)"
+chk_eq "T12b foreign-origin dept HEAD unchanged (no reset attempted)" "$foreign12b_head_before" "$foreign12b_head_after"
+nowant "T12b foreign-origin dept never reached the fetch stage" "foreign.*fast-forward\|foreign.*self-healed\|foreign.*up to date" "$WORK/run-12b.log"
+# Stronger discriminator than the above: the guard must skip BEFORE any git
+# fetch is attempted on the foreign dept at all (success OR failure) — if the
+# guard were silently removed, the loop would still reach `git fetch` against
+# the (unreachable) foreign URL and fail there instead, which would ALSO
+# produce a "foreign" WARN line but for the wrong reason (network error, not
+# containment). Assert the ONLY log line naming "foreign" is the containment
+# WARN, never a "git fetch failed" line.
+nowant "T12b foreign-origin dept never even attempted a git fetch (skipped pre-fetch by the guard, not a fetch failure)" "foreign.*fetch failed" "$WORK/run-12b.log"
+want "T12b healthy Bubble-invest dept in the same run still synced (foreign-origin skip didn't wedge it)" "healthy12b" "$WORK/run-12b.log"
+healthy12b_head="$("${real_git_env[@]}" git -C "$MIRROR12B" rev-parse HEAD 2>/dev/null || echo "")"
+chk_eq "T12b healthy dept converged to its real origin despite the foreign dept's skip" "$healthy12b_origin_head" "$healthy12b_head"
 
 # -----------------------------------------------------------------------------
 # T13: review-round-2 — dirty TRACKED file at HEAD (uncommitted hot-patch).
