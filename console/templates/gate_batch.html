@@ -99,8 +99,11 @@
           {# ─── General attachments (additive — back-compat with chart_path) ─
              Mirrors gate_card.html's attachments block. Image types render
              inline; everything else renders as a labeled download link.
-             Served via auth-gated /gate/<slug>/attachment route. Graceful
-             no-op when list absent or file missing. #}
+             Served via auth-gated /gate/<slug>/attachment route, which
+             resolves both known attachment-root shapes (Ben-style
+             outputs/<date>/attachments/ and content-dept-style
+             queues/gates/assets/, #666). Graceful no-op when list absent or
+             file missing. #}
           {% if gate.attachments %}
           <div class="gate-attachments" style="margin:10px 0 0;">
             {% for att in gate.attachments %}

@@ -344,3 +344,92 @@ def test_gate_batch_renders_pièces_jointes_label(client, ben_root):
     r = client.get("/gate/fixture/kind/trade_proposal")
     assert r.status_code == 200, r.text
     assert "pièces jointes" in r.text
+
+
+# ── 11. Content-dept asset shape — queues/gates/assets/ (board #666) ─────────
+#
+# The `outputs/<date>/attachments/` shape above is Ben's (trading-dept)
+# convention. The real bubble-ops-content repo uses a DIFFERENT shape:
+# `attachments:` entries point at `queues/gates/assets/<NAME>.<ext>` — a flat
+# pool, no per-date subdir (the gate YAML's own `created:` field already
+# carries the date). Before this fix, resolve_attachment_path only knew the
+# outputs/ shape, so every real content-gate image 404'd — Jade's reported
+# "broken image previews" bug. These tests pin the second shape end-to-end.
+
+def _write_content_asset(repo_root: Path, fname: str, data: bytes = _PNG_BYTES) -> Path:
+    """Drop a file into queues/gates/assets/<fname> under a dept repo root —
+    mirrors the REAL bubble-ops-content layout (confirmed against the live
+    repo's queues/gates/assets/*.png, board #666)."""
+    assets_dir = repo_root / "queues" / "gates" / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    p = assets_dir / fname
+    p.write_bytes(data)
+    return p
+
+
+def test_attachment_route_serves_content_dept_asset_png(client, ben_root):
+    """The real content-dept shape (queues/gates/assets/, no date subdir)
+    must resolve and serve, not just Ben's outputs/<date>/attachments/ shape."""
+    _write_content_asset(ben_root, "publish-linkedin-samedi-2026-07-16.png", _PNG_BYTES)
+    rel = "queues/gates/assets/publish-linkedin-samedi-2026-07-16.png"
+    r = client.get(f"/gate/fixture/attachment?path={rel}")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("image/png")
+    assert r.content == _PNG_BYTES
+    # CSP/nosniff still applied — same code path, same headers, both shapes.
+    assert "content-security-policy" in r.headers
+    assert r.headers.get("x-content-type-options", "").lower() == "nosniff"
+
+
+def test_attachment_route_content_asset_traversal_rejected(client, ben_root):
+    _write_content_asset(ben_root, "legit.png", _PNG_BYTES)
+    for bad in (
+        "queues/gates/assets/../../dept.yaml",
+        "queues/gates/../assets/x.png",  # wrong depth into assets
+        "queues/gates/assets/evil.png.html",
+        "queues/assets/x.png",  # missing the "gates" segment
+    ):
+        r = client.get("/gate/fixture/attachment", params={"path": bad})
+        assert r.status_code in (400, 403, 404), f"bad path {bad!r} returned {r.status_code}"
+
+
+def test_attachment_route_content_asset_404_on_missing_file(client, ben_root):
+    r = client.get(
+        "/gate/fixture/attachment",
+        params={"path": "queues/gates/assets/does-not-exist.png"},
+    )
+    assert r.status_code == 404
+
+
+def test_gate_detail_renders_content_dept_asset_image(client, ben_root):
+    """gate_card.html must render <img> for a gate using the content-dept
+    attachments shape (attachments: [queues/gates/assets/<NAME>.png])."""
+    _write_content_asset(ben_root, "curve-content.png", _PNG_BYTES)
+    rel = "queues/gates/assets/curve-content.png"
+    _add_gate_with_attachments(ben_root, "att-content-img-1", [{"path": rel, "caption": "Hook visual"}])
+    r = client.get("/gate/fixture/att-content-img-1")
+    assert r.status_code == 200, r.text
+    assert "/gate/fixture/attachment?path=" in r.text
+    assert rel in r.text
+    assert "<img" in r.text.lower()
+
+
+def test_resolve_attachment_path_both_shapes_unit(ben_root, monkeypatch):
+    """Unit-level: resolve_attachment_path must accept BOTH known shapes and
+    still reject anything matching neither (e.g. a bare queues/gates/*.yaml,
+    or the charts/ dir which belongs to resolve_chart_path)."""
+    import sys
+    monkeypatch.setenv("READ_FROM_DISK", str(ben_root.parent))
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "tok")
+    from console.services.github_reader import resolve_attachment_path
+
+    _write_attachment(ben_root, "2026-06-19", "a.png", _PNG_BYTES)
+    _write_content_asset(ben_root, "b.png", _PNG_BYTES)
+
+    assert resolve_attachment_path("fixture", "outputs/2026-06-19/attachments/a.png") is not None
+    assert resolve_attachment_path("fixture", "queues/gates/assets/b.png") is not None
+    assert resolve_attachment_path("fixture", "queues/gates/dept.yaml") is None
+    assert resolve_attachment_path("fixture", "outputs/2026-06-19/charts/a.png") is None

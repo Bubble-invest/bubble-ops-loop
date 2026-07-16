@@ -40,9 +40,9 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(settings.TEMPLATES_DIR))
     # Expose humanize_kind helper to all templates (Item E1 polish, msg 2709).
     from console.services.humanize import (  # noqa: WPS433
-        capitalize_fr, humanize_cadence, humanize_future_modes,
-        humanize_kind, humanize_mode, humanize_risk, humanize_substep,
-        shadow_autonomy_label,
+        capitalize_fr, format_gate_age, gate_age_is_stale, humanize_cadence,
+        humanize_future_modes, humanize_kind, humanize_mode, humanize_risk,
+        humanize_substep, shadow_autonomy_label,
     )
     templates.env.globals["humanize_kind"] = humanize_kind
     templates.env.globals["humanize_risk"] = humanize_risk
@@ -52,6 +52,8 @@ def create_app() -> FastAPI:
     templates.env.globals["humanize_cadence"] = humanize_cadence
     templates.env.globals["shadow_autonomy_label"] = shadow_autonomy_label
     templates.env.globals["capitalize_fr"] = capitalize_fr
+    templates.env.globals["format_gate_age"] = format_gate_age
+    templates.env.globals["gate_age_is_stale"] = gate_age_is_stale
     # Expose dept_registry + sidebar_agents for navigation ({{OPERATOR}} 2026-06-09)
     from console.services import dept_registry  # noqa: WPS433
     templates.env.globals["dept_registry"] = dept_registry

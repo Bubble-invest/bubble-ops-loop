@@ -179,9 +179,12 @@ class TestIdentityChips:
         assert chips_pos < meta_pos, \
             "identity chips must render before the stacked gate-meta block"
 
-    def test_no_chips_container_when_nothing_to_show(self, client, fixture_repo):
-        """A gate with no kind, no channel, no source must render no empty
-        chip container (no layout shift from an empty box)."""
+    def test_only_age_chip_when_nothing_else_to_show(self, client, fixture_repo):
+        """A gate with no kind, no channel, no source still gets the identity
+        chips row — but now only for the anteriority chip (#666: every
+        pending gate always has SOME date, at minimum from the YAML file's
+        own mtime, so the age chip is never absent). The type/channel/source/
+        content-type chips remain individually optional and stay absent here."""
         doc = {
             "id": "chip-none-1",
             "source_layer": 2, "target_layer": 3, "risk_level": "low",
@@ -191,7 +194,11 @@ class TestIdentityChips:
         _write_gate(fixture_repo, "chip-none-1", doc)
         r = client.get("/gate/fixture/chip-none-1")
         assert r.status_code == 200, r.text
-        assert "gate-identity-chips" not in r.text
+        assert "gate-identity-chips" in r.text
+        assert "gate-chip--age" in r.text
+        assert "gate-chip--type" not in r.text
+        assert "gate-chip--channel" not in r.text
+        assert "gate-chip--source" not in r.text
 
     def test_source_chip_absent_when_no_approval_bridge(self, client, fixture_repo):
         _write_gate(fixture_repo, "chip-nosrc-1", _base_gate(
