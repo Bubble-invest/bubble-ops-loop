@@ -31,9 +31,9 @@ properties:
     pattern: "^(daily|weekly|hourly|every_\\d+h|every_\\d+m|cron:.+)$"
     description: |
       Documented cadence patterns:
-        daily          — once per UTC day at `time:`
-        weekly         — once per UTC week on `day:` at `time:`
-        hourly         — top of every UTC hour
+        daily          — once per Paris-local day at `time:`
+        weekly         — once per Paris-local week on `day:` at `time:`
+        hourly         — top of every Paris-local hour
         every_<N>h     — every N hours (e.g. every_2h)
         every_<N>m     — every N minutes (e.g. every_30m)
         cron:<expr>    — 5-field cron expression (escape hatch)
