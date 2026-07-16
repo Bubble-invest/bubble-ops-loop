@@ -301,7 +301,15 @@ def gate_channel(gate: dict | None) -> str:
     raw = gate.get("channel")
     if raw:
         ch = str(raw).strip().lower()
-        return ch if ch in GATE_CHANNELS else ch or "other"
+        if ch in GATE_CHANNELS:
+            return ch
+        # Prefix-normalize dept variants (real data: substack_post,
+        # substack_note, x_thread, ...) onto their canonical channel so the
+        # filter buckets them correctly instead of losing them.
+        for known in GATE_CHANNELS:
+            if known != "other" and ch.startswith(known):
+                return known
+        return "other"
     if gate.get("kind") in _LINKEDIN_DEFAULT_KINDS:
         return "linkedin"
     return "other"

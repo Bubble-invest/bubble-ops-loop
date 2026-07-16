@@ -275,3 +275,34 @@ def test_batch_view_still_lists_every_gate_and_has_inline_actions(tmp_path, monk
     for n in range(1, 4):
         assert f"prospect_dm-person-{n:03d}" in body
         assert f'hx-post="/gate/fixture/prospect_dm-person-{n:03d}/decide"' in body
+
+
+# ── review fixes (r8, 2026-07-16): channel normalization + title precedence ──
+
+def test_gate_channel_prefix_normalizes_dept_variants():
+    """Real content-dept gates use channel: substack_post / substack_note —
+    they must bucket under 'substack', not leak raw or fall to 'other'."""
+    from console.services.humanize import gate_channel
+    assert gate_channel({"channel": "substack_post"}) == "substack"
+    assert gate_channel({"channel": "substack_note"}) == "substack"
+    assert gate_channel({"channel": "x_thread"}) == "x"
+    assert gate_channel({"channel": "newsletter_release"}) == "newsletter"
+
+
+def test_gate_channel_unknown_value_falls_to_other():
+    """A truthy-but-unknown channel must return 'other' (docstring contract),
+    never the raw value (the `ch or "other"` bug)."""
+    from console.services.humanize import gate_channel
+    assert gate_channel({"channel": "tiktok"}) == "other"
+    assert gate_channel({"channel": "SOMETHING_ELSE"}) == "other"
+
+
+def test_gate_card_title_uses_slug_even_without_kind():
+    """Jinja precedence fix: a slugged gate with falsy kind must still show
+    its slug as the title, not the generic fallback."""
+    from jinja2 import Environment
+    env = Environment()
+    tpl = env.from_string(
+        "{{ gate.slug or (('Une ' ~ kind_h) if gate.kind else \"Une décision t'attend\") }}")
+    assert tpl.render(gate={"slug": "my-gate", "kind": ""}, kind_h="x") == "my-gate"
+    assert "décision t'attend" in tpl.render(gate={"slug": "", "kind": ""}, kind_h="x")

@@ -12,7 +12,7 @@
      is generic prose that told the operator nothing about WHICH decision;
      the id stays, but demoted to a small secondary slug-ref. #}
   <h1 class="page-hero-title dept-title" id="gate-card-title">
-    {{ gate.slug or ('Une ' ~ humanize_kind(gate.kind)) if gate.kind else "Une décision t'attend" }}
+    {{ gate.slug or (('Une ' ~ humanize_kind(gate.kind)) if gate.kind else "Une décision t'attend") }}
   </h1>
   <p class="page-hero-lede dept-subtitle">
     {{ slug }} te demande ton avis
