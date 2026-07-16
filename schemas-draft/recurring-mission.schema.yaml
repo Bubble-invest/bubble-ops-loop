@@ -43,9 +43,19 @@ properties:
     description: |
       HH:MM Paris-local time. REQUIRED when cadence ∈ {daily, weekly}.
   day:
-    type: string
-    enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
-    description: REQUIRED when cadence = weekly. Lowercase English day name.
+    description: |
+      REQUIRED when cadence = weekly. Lowercase English day name, either a
+      single weekday string or an array of weekday strings to fire on more
+      than one day per week (e.g. ["monday", "thursday"]).
+    oneOf:
+      - type: string
+        enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+      - type: array
+        items:
+          type: string
+          enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        minItems: 1
+        uniqueItems: true
   active_hours:
     type: string
     pattern: "^([01]\\d|2[0-3]):[0-5]\\d-([01]\\d|2[0-3]):[0-5]\\d$"
