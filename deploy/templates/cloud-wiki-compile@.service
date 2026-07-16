@@ -1,0 +1,23 @@
+# /etc/systemd/system/cloud-wiki-compile.service
+# Managed by bubble-vps-platform / Lab. Do not edit by hand.
+#
+# Single always-on wiki COMPILE (nightly transcript mining). One-shot per timer
+# tick. Mirrors morty-agentic-audit.service: headless `claude -p` against a SKILL.
+# %i = mode (compile | synthesis | pruning) via the templated instance name.
+[Unit]
+Description=Cloud wiki compile (%i mode, one-shot per timer tick)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+# Optional env (leading dash) — decrypted into /run/claude-agent/env at agent
+# boot. Provides TELEGRAM_BOT_TOKEN for the optional report. Script handles absence.
+EnvironmentFile=-/run/claude-agent/env
+# Bun on PATH (Telegram MCP / plugins) + standard bins. Same as other claude crons.
+Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/claude/scripts/cloud-wiki-compile.sh %i
+# Generous timeout — a full compile spawns 9 extraction subagents + 1 synthesis.
+TimeoutStartSec=2700
+StandardOutput=journal
+StandardError=journal

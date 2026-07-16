@@ -1,0 +1,16 @@
+# /etc/systemd/system/cloud-wiki-compile-compile.timer
+# Managed by bubble-vps-platform / Lab. Do not edit by hand.
+#
+# Nightly wiki compile — the single always-on compiler. 22:00 UTC (00:00 CEST).
+# Staggered clear of the old Mac compile (20:30 UTC) and of any 30-min
+# cloud-wiki-sync push window, so compile output and sync never race.
+[Unit]
+Description=Nightly shared-wiki compile (transcript mining)
+
+[Timer]
+OnCalendar=*-*-* 22:00:00 UTC
+Persistent=true
+Unit=cloud-wiki-compile@compile.service
+
+[Install]
+WantedBy=timers.target
