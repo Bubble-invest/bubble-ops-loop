@@ -1,12 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Décision {{ gate_id }} — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" design (style.css),
+   the SAME skin the home page + dept pages use (Jade, wave 2). #}
+{% block body_class %}m4{% endblock %}
 {% block content %}
 
-<header class="dept-header">
-  <h1 class="dept-title">
-    Une décision t'attend
+<header class="page-hero m4-hero dept-header" aria-labelledby="gate-card-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>{{ slug }} — décision</div>
+  {# Title is the dominant element (Jade: card titles need to stand out).
+     The gate's own name (slug) leads when available — "Une décision t'attend"
+     is generic prose that told the operator nothing about WHICH decision;
+     the id stays, but demoted to a small secondary slug-ref. #}
+  <h1 class="page-hero-title dept-title" id="gate-card-title">
+    {{ gate.slug or (('Une ' ~ humanize_kind(gate.kind)) if gate.kind else "Une décision t'attend") }}
   </h1>
-  <p class="dept-subtitle">
+  <p class="page-hero-lede dept-subtitle">
     {{ slug }} te demande ton avis
     {% if gate.kind %} sur une {{ humanize_kind(gate.kind) }}{% endif %}.
     <br>

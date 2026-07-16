@@ -11,13 +11,13 @@ POST /gate/<dept>/<id>/decide   — writes inbox/decisions/<id>.yaml
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from console.services import dept_registry, github_reader
-from console.services.humanize import humanize_kind
+from console.services.humanize import GATE_CHANNELS, gate_channel, humanize_kind
 from console.services.markdown_render import render_markdown_safe
 
 router = APIRouter()
@@ -50,17 +50,57 @@ def _attach_thesis_rendered(gate: dict) -> dict:
     return gate
 
 
+SORT_DATE_ASC = "date_asc"
+SORT_DATE_DESC = "date_desc"
+ALLOWED_SORTS = {SORT_DATE_ASC, SORT_DATE_DESC}
+
+
 # IMPORTANT: this MUST be declared before /gate/{slug}/{gate_id} — otherwise
 # FastAPI would match "kind" as a gate_id. Specific routes before catch-all.
 @router.get("/gate/{slug}/kind/{kind}", response_class=HTMLResponse)
-def gate_batch(slug: str, kind: str, request: Request):
+def gate_batch(
+    slug: str, kind: str, request: Request,
+    sort: str = Query(SORT_DATE_ASC),
+    channel: str = Query(""),
+):
     """List every pending gate of `kind` for the dept, each with an inline
     decision form. Fixes the two triage pains (2026-06-01): see all at once,
-    and act-then-advance in place instead of being stranded on gate #1."""
+    and act-then-advance in place instead of being stranded on gate #1.
+
+    Jade's triage-UX ask (wave 2, card #666 follow-up): the pile of gates for
+    a busy kind (e.g. 35 prospect_dm) needed a way to sort and narrow it down
+    beyond scrolling. Adds two OPTIONAL query params, both graceful no-op
+    when absent/invalid — the pre-existing behaviour (oldest-first, all
+    channels) is the default, so a bookmarked/shared /gate/<slug>/kind/<kind>
+    link keeps working exactly as before:
+      sort    — "date_asc" (default, oldest first — matches list_pending_gates'
+                own ordering, card #666) or "date_desc" (newest first). Any
+                other value falls back to date_asc rather than erroring.
+      channel — one of humanize.GATE_CHANNELS (linkedin/substack/x/newsletter/
+                other). Empty/unknown value = no filter (show every channel).
+    """
     if dept_registry.get_department(slug) is None:
         raise HTTPException(404, f"Unknown dept: {slug}")
+    if sort not in ALLOWED_SORTS:
+        sort = SORT_DATE_ASC
+    channel = (channel or "").strip().lower()
+    if channel not in GATE_CHANNELS:
+        channel = ""
+
     gates = [_attach_thesis_rendered(g) for g in github_reader.list_pending_gates(slug)
              if (g.get("kind") or "decision") == kind]
+    total_count = len(gates)
+
+    if channel:
+        gates = [g for g in gates if gate_channel(g) == channel]
+
+    # list_pending_gates already returns oldest-first (board #666) — that IS
+    # date_asc, so no re-sort needed for the default. date_desc reverses it.
+    # `_gate_date` is None for the rare gate with no determinable date; those
+    # sort last in both directions (never crowd out dated gates at the top).
+    if sort == SORT_DATE_DESC:
+        gates = sorted(gates, key=lambda g: g.get("_gate_date") or date.min, reverse=True)
+
     return request.app.state.templates.TemplateResponse(
         "gate_batch.html",
         {
@@ -70,7 +110,11 @@ def gate_batch(slug: str, kind: str, request: Request):
             "kind_label": humanize_kind(kind),
             "gates": gates,
             "count": len(gates),
+            "total_count": total_count,
             "actions": sorted(ALLOWED_ACTIONS),
+            "sort": sort,
+            "channel": channel,
+            "channels": GATE_CHANNELS,
         },
     )
 

@@ -18,8 +18,10 @@
    renders nothing (no empty container, no layout shift). flex-wrap lets this
    restack on mobile without ever needing display:none (mobile CSS contract,
    test_mobile_responsive_css.py). #}
-{% set _chip_channel = gate.channel or ('linkedin' if gate.kind in
-     ('news_post', 'news_post_task', 'prospect_dm', 'followup_draft') else None) %}
+{# One definition: channel comes from humanize.gate_channel() (the same
+   helper the batch-view filter uses) — 'other' renders no chip. #}
+{% set _gc = gate_channel(gate) %}
+{% set _chip_channel = None if _gc == 'other' else _gc %}
 {% set _chip_source = none %}
 {% if gate.approval_bridge and gate.approval_bridge.item_ref %}
   {% set _chip_source = gate.approval_bridge.item_ref | string | replace('\\', '/') %}

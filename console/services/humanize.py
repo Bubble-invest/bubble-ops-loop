@@ -270,6 +270,51 @@ def humanize_kind(kind: str | None) -> str:
     return raw.replace("_", " ").strip().lower()
 
 
+# Kinds that default to the linkedin channel when a gate doesn't set
+# `channel` explicitly — mirrors the inference every content-proposal
+# template already applied ad hoc (gate_card.html, gate_batch.html,
+# gate-identity-chips.html). Centralized here (card #666 wave 2) so the
+# batch-view channel filter and the identity chip agree on one definition.
+_LINKEDIN_DEFAULT_KINDS = ("news_post", "news_post_task", "prospect_dm", "followup_draft")
+
+# Channels a gate can be filtered by in the batch triage view, in display
+# order. "other" is the catch-all bucket for anything not in this list
+# (or with no channel at all) — see gate_channel().
+GATE_CHANNELS = ("linkedin", "substack", "x", "newsletter", "other")
+
+
+def gate_channel(gate: dict | None) -> str:
+    """Return the channel a gate belongs to, for display and filtering.
+
+    Resolution order:
+      1. `gate.channel`, if set (lowercased).
+      2. "linkedin" for the content kinds that historically implied it
+         without setting the field (Maya's LinkedIn post / prospect-DM /
+         follow-up proposals).
+      3. "other" — the gate has no channel and none can be inferred.
+
+    Always returns a non-empty string from GATE_CHANNELS, so callers never
+    need a None-guard (unlike the raw `gate.channel` field).
+    """
+    if not gate:
+        return "other"
+    raw = gate.get("channel")
+    if raw:
+        ch = str(raw).strip().lower()
+        if ch in GATE_CHANNELS:
+            return ch
+        # Prefix-normalize dept variants (real data: substack_post,
+        # substack_note, x_thread, ...) onto their canonical channel so the
+        # filter buckets them correctly instead of losing them.
+        for known in GATE_CHANNELS:
+            if known != "other" and ch.startswith(known):
+                return known
+        return "other"
+    if gate.get("kind") in _LINKEDIN_DEFAULT_KINDS:
+        return "linkedin"
+    return "other"
+
+
 # ---------------------------------------------------------------------------
 # Cadence humanizer ({{OPERATOR}} flag 2026-05-24 msg 3137)
 # ---------------------------------------------------------------------------
