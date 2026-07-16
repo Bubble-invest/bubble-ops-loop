@@ -44,6 +44,16 @@
 #       THREE failure modes on unrelated depts simultaneously still preserves
 #       an inbox/decisions hide-marker on the (unaffected) dept that converges
 #       cleanly.
+#   T13 review-round-2 (endangered-state quarantine): a dirty TRACKED file at
+#       HEAD (uncommitted hot-patch) gets stashed BEFORE the reset and the
+#       loud "DISCARDED" WARN fires — distinct from the benign self-heal
+#       wording.
+#   T14 review-round-2: a local-only commit (never pushed) gets bundled to
+#       .selfheal-quarantine/<ts>.bundle BEFORE the reset, the bundle
+#       contains the endangered commit, and the loud WARN names its SHA.
+#   T15 review-round-2 regression guard: the benign skip-worktree self-heal
+#       (T8's scenario) still produces the OLD "mirror self-healed" wording,
+#       NOT the new DISCARDED wording — proves the two paths stay distinct.
 # =============================================================================
 set -uo pipefail
 
@@ -263,9 +273,11 @@ fi
   && { echo "  PASS: T6e tracked STATE.yaml still present after converge"; PASS=$((PASS+1)); } \
   || { echo "  FAIL: T6e tracked STATE.yaml destroyed"; FAIL=$((FAIL+1)); }
 # The converge-to-origin (reset past a plain-ff-incompatible local state) was
-# logged (visible, not silent) — the new strategy's WARN, replacing the old
-# "discarded tracked change" checkout-based wording.
-want "T6f self-heal reset is logged" "reset required to converge\|self-healed" "$WORK/run-real.log"
+# logged (visible, not silent). This scenario's tracked dirt (the deleted-but-
+# tracked draft-1.yaml) IS a genuine "endangered state" per the review-round-2
+# quarantine feature, so it now gets the loud DISCARDED wording rather than
+# the generic self-heal WARN — that's the intended, more precise signal.
+want "T6f endangered-state (tracked dirt) reset is logged distinctly" "DISCARDED" "$WORK/run-real.log"
 
 # -----------------------------------------------------------------------------
 # T7: REAL-GIT regression for #405 case (b) — an UNTRACKED file in the mirror at
@@ -619,6 +631,158 @@ chk_eq "T11b merge-debris dept converged despite the aborted-merge debris" "$mer
 want "T11d skip-worktree dept's own WARN/log line present" "skipwt" "$WORK/run-real6.log"
 want "T11e merge-debris dept's own log line present" "merged" "$WORK/run-real6.log"
 want "T11f healthy dept synced cleanly and independently" "healthy" "$WORK/run-real6.log"
+
+# -----------------------------------------------------------------------------
+# T13: review-round-2 — dirty TRACKED file at HEAD (uncommitted hot-patch).
+#      Must be (a) quarantined via `git stash` BEFORE the reset, and (b) the
+#      post-reset log line uses the DISTINCT loud "DISCARDED" wording, never
+#      the generic "mirror self-healed" WARN used for benign drift.
+# -----------------------------------------------------------------------------
+ORIGIN7="$WORK/origin-content7.git"
+WORKTREE7="$WORK/seed-content7"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN7"
+"${real_git_env[@]}" git clone -q "$ORIGIN7" "$WORKTREE7" 2>/dev/null
+mkdir -p "$WORKTREE7/onboarding"
+printf 'v: 1\n' > "$WORKTREE7/framework.txt"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$WORKTREE7/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE7" add -A
+"${real_git_env[@]}" git -C "$WORKTREE7" commit -qm "seed7"
+"${real_git_env[@]}" git -C "$WORKTREE7" push -q origin HEAD:main
+
+REALGIT_AGENTS7="$WORK/agents-real7"; rm -rf "$REALGIT_AGENTS7"; mkdir -p "$REALGIT_AGENTS7"
+MIRROR7="$REALGIT_AGENTS7/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN7" "$MIRROR7"
+
+# origin advances (real convergence work) WHILE the mirror carries an
+# uncommitted edit to the SAME tracked file — the exact "hot patch not yet
+# committed" scenario the review flagged.
+printf 'v: 2\n' > "$WORKTREE7/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE7" commit -qam "advance7"
+"${real_git_env[@]}" git -C "$WORKTREE7" push -q origin HEAD:main
+printf 'HOT PATCH NOT YET COMMITTED\n' > "$MIRROR7/framework.txt"
+
+origin_head7="$("${real_git_env[@]}" git -C "$WORKTREE7" rev-parse HEAD)"
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS7" >"$WORK/run-real7.log" 2>&1
+rc7=$?
+after_head7="$("${real_git_env[@]}" git -C "$MIRROR7" rev-parse HEAD)"
+
+chk "T13 real-git run exits 0" 0 "$rc7"
+chk_eq "T13a mirror still converged to origin/main (quarantine never blocks convergence)" "$origin_head7" "$after_head7"
+want "T13b loud DISCARDED warn fired for the dirty tracked file" "DISCARDED" "$WORK/run-real7.log"
+want "T13c DISCARDED warn names the dept" "content" "$WORK/run-real7.log"
+nowant "T13d DISCARDED case does NOT also use the generic self-heal wording" "mirror self-healed" "$WORK/run-real7.log"
+# The uncommitted hot-patch was quarantined via `git stash` BEFORE the reset —
+# recoverable via `git -C <mirror> stash list` / `stash pop`.
+stash_list7="$("${real_git_env[@]}" git -C "$MIRROR7" stash list 2>/dev/null)"
+if [[ "$stash_list7" == *"selfheal-quarantine-"* ]]; then
+  echo "  PASS: T13e dirty tracked file quarantined via git stash before reset"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13e no quarantine stash found (uncommitted work not recoverable)"; FAIL=$((FAIL+1))
+fi
+
+# -----------------------------------------------------------------------------
+# T14: review-round-2 — a LOCAL-ONLY commit (never pushed to origin, e.g.
+#      `git push` hasn't run yet / is failing). Must be (a) bundled to
+#      .selfheal-quarantine/<ts>.bundle BEFORE the reset with the endangered
+#      commit(s) inside, and (b) the post-reset WARN names the commit SHA.
+# -----------------------------------------------------------------------------
+ORIGIN8="$WORK/origin-content8.git"
+WORKTREE8="$WORK/seed-content8"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN8"
+"${real_git_env[@]}" git clone -q "$ORIGIN8" "$WORKTREE8" 2>/dev/null
+mkdir -p "$WORKTREE8/onboarding"
+printf 'v: 1\n' > "$WORKTREE8/framework.txt"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$WORKTREE8/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE8" add -A
+"${real_git_env[@]}" git -C "$WORKTREE8" commit -qm "seed8"
+"${real_git_env[@]}" git -C "$WORKTREE8" push -q origin HEAD:main
+
+REALGIT_AGENTS8="$WORK/agents-real8"; rm -rf "$REALGIT_AGENTS8"; mkdir -p "$REALGIT_AGENTS8"
+MIRROR8="$REALGIT_AGENTS8/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN8" "$MIRROR8"
+
+# The mirror commits LOCALLY (never pushed) — e.g. a dept committed but its
+# `git push` hasn't run / is failing.
+printf 'LOCAL ONLY COMMIT CONTENT\n' > "$MIRROR8/framework.txt"
+"${real_git_env[@]}" git -C "$MIRROR8" commit -qam "local-only commit, never pushed"
+local_only_sha8="$("${real_git_env[@]}" git -C "$MIRROR8" rev-parse --short HEAD)"
+
+# origin ALSO advances independently, so the mirror's local commit is a true
+# divergence (not just "ahead") and reset --hard will make it unreachable.
+printf 'v: 2\n' > "$WORKTREE8/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE8" commit -qam "advance8"
+"${real_git_env[@]}" git -C "$WORKTREE8" push -q origin HEAD:main
+origin_head8="$("${real_git_env[@]}" git -C "$WORKTREE8" rev-parse HEAD)"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS8" >"$WORK/run-real8.log" 2>&1
+rc8=$?
+after_head8="$("${real_git_env[@]}" git -C "$MIRROR8" rev-parse HEAD)"
+
+chk "T14 real-git run exits 0" 0 "$rc8"
+chk_eq "T14a mirror still converged to origin/main (quarantine never blocks convergence)" "$origin_head8" "$after_head8"
+want "T14b loud DISCARDED warn fired for the local-only commit" "DISCARDED" "$WORK/run-real8.log"
+if grep -q "$local_only_sha8" "$WORK/run-real8.log" 2>/dev/null; then
+  echo "  PASS: T14c DISCARDED warn names the local-only commit's SHA"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T14c DISCARDED warn does not name the local-only commit's SHA ($local_only_sha8)"; FAIL=$((FAIL+1))
+fi
+# The local-only commit was bundled to .selfheal-quarantine/ BEFORE the reset
+# — recoverable via `git bundle verify` / `git fetch <bundle>`.
+bundle8="$(find "$MIRROR8/.selfheal-quarantine" -name '*.bundle' 2>/dev/null | head -n1)"
+if [[ -n "$bundle8" && -f "$bundle8" ]]; then
+  echo "  PASS: T14d local-only commit bundled to .selfheal-quarantine/ before reset"; PASS=$((PASS+1))
+  # -C "$MIRROR8": bundle verify checks prerequisite commits are reachable
+  # from the CURRENT repo's refs/objects, so it must run with the mirror as
+  # context (running from an ambient non-repo cwd would report the
+  # prerequisite "missing" even for a genuinely valid bundle).
+  if "${real_git_env[@]}" git -C "$MIRROR8" bundle verify "$bundle8" >/dev/null 2>&1; then
+    echo "  PASS: T14e quarantine bundle is a valid git bundle"; PASS=$((PASS+1))
+  else
+    echo "  FAIL: T14e quarantine bundle failed git bundle verify"; FAIL=$((FAIL+1))
+  fi
+  if "${real_git_env[@]}" git bundle list-heads "$bundle8" 2>/dev/null | grep -q .; then
+    echo "  PASS: T14f quarantine bundle contains the endangered commit ref"; PASS=$((PASS+1))
+  else
+    echo "  FAIL: T14f quarantine bundle has no heads (empty/broken)"; FAIL=$((FAIL+1))
+  fi
+else
+  echo "  FAIL: T14d no quarantine bundle found (local-only commit not recoverable)"; FAIL=$((FAIL+1))
+  echo "  FAIL: T14e skipped (no bundle)"; FAIL=$((FAIL+1))
+  echo "  FAIL: T14f skipped (no bundle)"; FAIL=$((FAIL+1))
+fi
+
+# -----------------------------------------------------------------------------
+# T15: review-round-2 regression guard — the BENIGN skip-worktree self-heal
+#      (same scenario as T8: a vendored file's skip-worktree bit hid harmless
+#      drift, no real local work involved) must still produce the OLD "mirror
+#      self-healed" wording, NOT the new DISCARDED wording. Proves the two
+#      paths stay genuinely distinct rather than the new check over-firing.
+# -----------------------------------------------------------------------------
+ORIGIN9="$WORK/origin-content9.git"
+WORKTREE9="$WORK/seed-content9"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN9"
+"${real_git_env[@]}" git clone -q "$ORIGIN9" "$WORKTREE9" 2>/dev/null
+mkdir -p "$WORKTREE9/scripts/lib" "$WORKTREE9/onboarding"
+printf 'VENDORED_V=1\n' > "$WORKTREE9/scripts/lib/dispatch_helpers.py"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$WORKTREE9/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE9" add -A
+"${real_git_env[@]}" git -C "$WORKTREE9" commit -qm "seed9"
+"${real_git_env[@]}" git -C "$WORKTREE9" push -q origin HEAD:main
+
+REALGIT_AGENTS9="$WORK/agents-real9"; rm -rf "$REALGIT_AGENTS9"; mkdir -p "$REALGIT_AGENTS9"
+MIRROR9="$REALGIT_AGENTS9/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN9" "$MIRROR9"
+"${real_git_env[@]}" git -C "$MIRROR9" update-index --skip-worktree scripts/lib/dispatch_helpers.py
+printf 'VENDORED_V=LOCAL_DRIFT\n' > "$MIRROR9/scripts/lib/dispatch_helpers.py"
+printf 'VENDORED_V=2\n' > "$WORKTREE9/scripts/lib/dispatch_helpers.py"
+"${real_git_env[@]}" git -C "$WORKTREE9" commit -qam "advance9"
+"${real_git_env[@]}" git -C "$WORKTREE9" push -q origin HEAD:main
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS9" >"$WORK/run-real9.log" 2>&1
+rc9=$?
+chk "T15 real-git run exits 0" 0 "$rc9"
+want "T15a benign skip-worktree self-heal keeps the OLD wording" "mirror self-healed" "$WORK/run-real9.log"
+nowant "T15b benign skip-worktree self-heal does NOT trigger the DISCARDED path" "DISCARDED" "$WORK/run-real9.log"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"

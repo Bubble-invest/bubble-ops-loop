@@ -55,6 +55,23 @@
 # plain fast-forward (i.e. this path did real work beyond what --ff-only would
 # have done) — so a self-heal is visible in the journal, not silent.
 #
+# ── Endangered-state quarantine (review round 2, board #667) ───────────────
+# A converge-to-origin reset --hard can ALSO destroy genuine local work, not
+# just harmless drift: (1) an uncommitted edit to a TRACKED file (a hot-patch
+# not yet committed), or (2) a local commit that never got pushed (HEAD not a
+# strict ancestor of upstream). Both are detected BEFORE the reset. If either
+# is true:
+#   -> quarantine first (best-effort, never blocks convergence):
+#        dirty tracked tree  -> `git stash push --include-untracked`
+#        local-only commit(s) -> `git bundle create
+#          <mirror>/.selfheal-quarantine/<ts>.bundle <upstream>..HEAD`
+#   -> after the reset, log a DISTINCT loud line —
+#        `WARN <dept>: DISCARDED <N> uncommitted change(s) / <M> local-only
+#        commit(s) (<shas>) — verify this wasn't real work` —
+#      instead of the generic "mirror self-healed" WARN used for the benign
+#      skip-worktree/untracked-collision cases, so an operator scanning the
+#      journal can tell "nothing to see here" from "we ate real work".
+#
 # inbox/decisions/* hide-markers (board wiki, 2026-07-12 incident): the cockpit
 # writes an UNTRACKED decision file straight onto the mirror's disk so a
 # resolved gate disappears immediately (list_pending_gates filters on it)
@@ -115,6 +132,47 @@ preserve_hide_markers() {
         cp -a "$src/." "$stash/" 2>/dev/null
     fi
     echo "${n:-0}"
+}
+
+# tracked_dirt_count <dir>: count of TRACKED paths with uncommitted changes
+# (modified/added/deleted/renamed at HEAD) — i.e. `git status --porcelain`
+# lines that are NOT untracked ("??"). Untracked collisions (T7) are a benign,
+# already-handled case (origin's tracked version just wins at that path); a
+# dirty TRACKED file is a local edit that would otherwise be silently
+# clobbered by `reset --hard` with no distinguishing signal.
+tracked_dirt_count() {
+    local dir="$1"
+    git -C "$dir" status --porcelain 2>/dev/null | grep -vc '^?? ' || true
+}
+
+# local_only_commit_shas <dir> <upstream_head>: short SHAs (oldest-first) of
+# commits reachable from HEAD but not from upstream_head — i.e. commits that
+# exist ONLY in this local mirror and would become unreachable (and
+# eventually GC'd) once `reset --hard` moves HEAD to upstream. Empty if HEAD
+# is already an ancestor of upstream (nothing local-only).
+local_only_commit_shas() {
+    local dir="$1" upstream_head="$2"
+    git -C "$dir" log --reverse --format='%h' "${upstream_head}..HEAD" 2>/dev/null
+}
+
+# quarantine_endangered_state <dir> <upstream_head> <quarantine_root> <ts>:
+# best-effort safety net for the two cases that reset --hard would otherwise
+# silently destroy — NEVER blocks convergence (always returns 0, caller
+# ignores failures beyond a WARN). Stashes dirty tracked work; bundles
+# local-only commits so a human can recover them post-hoc.
+quarantine_endangered_state() {
+    local dir="$1" upstream_head="$2" qroot="$3" ts="$4"
+    if [[ "$(tracked_dirt_count "$dir")" -gt 0 ]]; then
+        git -C "$dir" stash push --include-untracked -m "selfheal-quarantine-${ts}" \
+            >/dev/null 2>&1 || log "WARN $(basename "$dir"): quarantine stash FAILED — uncommitted changes could not be saved before reset"
+    fi
+    local shas; shas="$(local_only_commit_shas "$dir" "$upstream_head")"
+    if [[ -n "$shas" ]]; then
+        mkdir -p "${qroot}" 2>/dev/null
+        git -C "$dir" bundle create "${qroot}/${ts}.bundle" "${upstream_head}..HEAD" \
+            >/dev/null 2>&1 || log "WARN $(basename "$dir"): quarantine bundle FAILED — local-only commit(s) ${shas//$'\n'/,} could not be saved before reset"
+    fi
+    return 0
 }
 
 # restore_hide_markers <dir> <stash_dir>: copy the stashed inbox/decisions/*
@@ -262,6 +320,16 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     stash_dir="$(mktemp -d "/tmp/.sync-local-hide-XXXXXX")"
     hide_marker_count="$(preserve_hide_markers "$dir" "$stash_dir")"
 
+    # Snapshot tracked dirt BEFORE clearing skip-worktree flags. A
+    # skip-worktree-flagged vendored file's on-disk drift (failure mode 1) is
+    # NOT real local work — it was hidden from git precisely because it's
+    # mirror/vendored content, and clearing the flag is what makes that drift
+    # visible to `git status`. Snapshotting first means the endangered-state
+    # check below (review round 2) only fires on dirt a plain `git status`
+    # would ALREADY have shown the operator before any of this script's own
+    # bookkeeping ran — i.e. genuine local edits, not self-heal side effects.
+    tracked_dirt_n="$(tracked_dirt_count "$dir")"
+
     # Failure mode 1: clear skip-worktree flags. A read mirror has no business
     # hiding paths from git's own change detection.
     skip_cleared="$(clear_skip_worktree "$dir")"
@@ -307,9 +375,35 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     dirty="$(git -C "$dir" status --porcelain 2>/dev/null)"
     [[ -n "$dirty" ]] && would_have_ff=0
 
+    # ── Endangered-state detection (review round 2, board #667) ────────────
+    # reset --hard is about to run regardless (origin is authoritative for a
+    # read-only mirror) but TWO cases would silently destroy REAL local work
+    # rather than routine drift: (1) a dirty TRACKED file at HEAD (an
+    # uncommitted hot-patch — tracked_dirt_n was snapshotted BEFORE the
+    # skip-worktree clear above, so benign vendored-file drift never counts
+    # here), and (2) HEAD not a strict ancestor of upstream (a local-only
+    # commit that never got pushed). Detect BOTH before the reset so we can
+    # quarantine + WARN distinctly instead of using the same generic
+    # self-heal wording as the benign skip-worktree/collision cases.
+    local_only_shas="$(local_only_commit_shas "$dir" "$upstream_head")"
+    local_only_n=0
+    [[ -n "$local_only_shas" ]] && local_only_n="$(echo "$local_only_shas" | grep -c .)"
+    endangered=0
+    if [[ "${tracked_dirt_n:-0}" -gt 0 || "${local_only_n:-0}" -gt 0 ]]; then
+        endangered=1
+    fi
+
+    if [[ "$endangered" == "1" ]]; then
+        quarantine_ts="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        quarantine_root="${dir}/.selfheal-quarantine"
+        quarantine_endangered_state "$dir" "$upstream_head" "$quarantine_root" "$quarantine_ts" || true
+    fi
+
     # Read-only converge-to-origin: origin is authoritative for this mirror,
     # so reset --hard + clean -fd (excluding inbox/decisions, which we already
-    # stashed above as a second guarantee) instead of a ff-only pull that can
+    # stashed above as a second guarantee, AND .selfheal-quarantine/ — the
+    # bundle we may have just written above is untracked and would otherwise
+    # be deleted by this same clean) instead of a ff-only pull that can
     # freeze forever on any of the three failure modes.
     reset_ok=1
     if ! git -C "$dir" reset --hard "$upstream_head" >/tmp/.sync-local-reset-$$ 2>&1; then
@@ -319,7 +413,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     rm -f /tmp/.sync-local-reset-$$
 
     if [[ "$reset_ok" == "1" ]]; then
-        git -C "$dir" clean -fd --exclude=inbox/decisions >/tmp/.sync-local-clean-$$ 2>&1
+        git -C "$dir" clean -fd --exclude=inbox/decisions --exclude=.selfheal-quarantine >/tmp/.sync-local-clean-$$ 2>&1
         rm -f /tmp/.sync-local-clean-$$
     fi
 
@@ -334,7 +428,14 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     fi
 
     after_head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")"
-    if [[ "$before_head" == "$after_head" ]]; then
+    if [[ "$endangered" == "1" ]]; then
+        # DISTINCT loud line (review round 2): this is NOT routine drift — the
+        # tree had uncommitted tracked edits and/or local-only commits that
+        # reset --hard just discarded. Wording is deliberately different from
+        # the benign self-heal WARN below so an operator scanning the journal
+        # can tell "nothing to see here" from "we ate real work" at a glance.
+        log "WARN ${slug}: DISCARDED ${tracked_dirt_n:-0} uncommitted change(s) / ${local_only_n:-0} local-only commit(s) (${local_only_shas//$'\n'/,}) — verify this wasn't real work (quarantined under ${dir}/.selfheal-quarantine/)"
+    elif [[ "$before_head" == "$after_head" ]]; then
         log "synced ${slug}: already up to date (${after_head:0:12})"
     elif [[ "$would_have_ff" == "1" ]]; then
         log "synced ${slug}: fast-forwarded ${before_head:0:12}..${after_head:0:12}"
