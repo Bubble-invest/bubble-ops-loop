@@ -331,6 +331,20 @@ def list_mission_files(slug: str) -> List[Dict[str, str]]:
             if voice.is_file():
                 _add(f"{child.name}/VOICE.md", f"{child.name}/VOICE.md", "voice")
 
+    # #642 PR-B (item 9): docs/*.md — dept design-spec deep-links (content
+    # has docs/CONTEXT_POOL_SCHEMA.md, docs/L2_DESIGN_SPEC.md,
+    # docs/L4_DESIGN_SPEC.md today). Same allowlist-then-guard pattern as
+    # every other piece class above: only files that actually exist,
+    # scanned by convention (any *.md directly under docs/), not a
+    # hardcoded filename list — a dept adding a new docs/*.md spec is
+    # picked up automatically. Explicitly NOT recursive (docs/sub/x.md is
+    # not on the allowlist) — keeps this a flat, auditable surface.
+    docs_dir = root / "docs"
+    if docs_dir.is_dir():
+        for p in sorted(docs_dir.iterdir()):
+            if p.is_file() and p.suffix == ".md":
+                _add(f"docs/{p.name}", f"docs/{p.name}", "docs")
+
     return out
 
 

@@ -181,35 +181,61 @@ def dept_detail(slug: str, request: Request):
     # agent deployment metadata on /dept/<slug> (2026-07-02).
     agent_model_info = github_reader.load_agent_model_info(dept_yaml)
     # L1/L2 mission files (MANDATE.md, layer PROMPT.mds, mission PROMPT.mds,
-    # working memory, config) — read-only async review pane, card #622. The
-    # reader is dept-generic (same style as load_mandate_md et al) but the
-    # pane itself is only rendered on /dept/content in the template: Jade's
-    # ask was scoped to Miranda/content, and other dept pages must stay
-    # unchanged.
-    mission_files = (
-        github_reader.list_mission_files(slug) if slug == "content" else []
-    )
-    # #642 PR-A: layered clickable piece view — per-mission piece tiles
-    # (mission/skill/tool/config/memory/voice), replacing §04/§04b's raw
-    # mission-prompt section. PR-A scopes this to /dept/content only (the
-    # richest dept — exercises all 6 piece kinds); PR-B rolls it out to the
-    # other 5 dept pages. The allowlist is built ONCE per request (reusing
-    # mission_files above, since it's the exact same list_mission_files()
-    # allowlist) and passed into the resolver so a 10-mission dept doesn't
-    # re-walk the repo's directories per mission (§0-bis refinement 5).
+    # working memory, config) — read-only async review pane, card #622.
+    # #642 PR-B (item 10, fleet rollout): now built for EVERY dept, not
+    # just content — the reader was already dept-generic; only the
+    # template's rendering scope was content-only in PR-A.
+    mission_files = github_reader.list_mission_files(slug)
+    # #642 PR-B: layered clickable piece view — per-mission piece tiles
+    # (mission/skill/tool/config/memory/voice), grouped into
+    # entrées/cœur/sortie (item 2), replacing §04/§04b's raw mission-prompt
+    # section fleet-wide (item 10; PR-A had scoped this to /dept/content
+    # only). The allowlist is built ONCE per request and passed into the
+    # resolver so a 10-mission dept doesn't re-walk the repo's directories
+    # per mission (§0-bis refinement 5). Every resolution step degrades
+    # gracefully (mission_pieces.py never raises), so a lean dept (ben/
+    # maya/tony/cgp/accountant) renders mostly reference chips rather than
+    # crashing — PLAN-642 §5's per-dept shape matrix is the expected
+    # degradation, not a bug.
+    piece_allowlist = {f["rel_path"] for f in mission_files}
     mission_pieces_by_layer: Dict[int, List[Dict[str, Any]]] = {}
-    if slug == "content":
-        piece_allowlist = {f["rel_path"] for f in mission_files}
-        for layer_num, layer_missions in missions_by_layer.items():
-            mission_pieces_by_layer[layer_num] = [
-                {
-                    "mission": m,
-                    "pieces": mission_pieces.resolve_mission_pieces(
-                        slug, m, allowlist=piece_allowlist
-                    ),
-                }
-                for m in layer_missions
-            ]
+    mission_status_by_id: Dict[str, str] = {}
+    mission_tagline_by_id: Dict[str, str] = {}
+    dept_root = dept_registry.repo_path(slug)
+    for layer_num, layer_missions in missions_by_layer.items():
+        mission_pieces_by_layer[layer_num] = [
+            {
+                "mission": m,
+                "pieces": mission_pieces.resolve_mission_pieces(
+                    slug, m, allowlist=piece_allowlist
+                ),
+            }
+            for m in layer_missions
+        ]
+        for m in layer_missions:
+            mid = str(m.get("id") or "")
+            if not mid:
+                continue
+            if dept_root is not None:
+                mission_status_by_id[mid] = mission_pieces.mission_status(dept_root, m)
+            tagline = mission_pieces.mission_tagline(m)
+            if tagline:
+                mission_tagline_by_id[mid] = tagline
+    # #642 PR-B (items 5-7): the POOL band, generic across depts (derived
+    # from L1's own declared output_queue, never a hardcoded per-dept
+    # queue path — see mission_pieces.resolve_layer_band's docstring).
+    # ONLY between Moment 1 and Moment 2, matching the reference
+    # prototype's single "THE POOL" band (build_rebuild_html.py) — every
+    # OTHER layer's missions also declare an output_queue (L2 -> gates,
+    # L3/L4 -> management), but those are the gate band + ordinary
+    # management notes, not a second "pool", so this must not fire for
+    # every layer transition or the page over-renders a band after each
+    # Moment.
+    layer_bands: Dict[int, Dict[str, Any]] = {}
+    l1_band = mission_pieces.resolve_layer_band(slug, missions_by_layer.get(1, []))
+    if l1_band is not None:
+        layer_bands[1] = l1_band
+    gate_band = mission_pieces.resolve_gate_band(missions_full)
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -239,8 +265,13 @@ def dept_detail(slug: str, request: Request):
             "layer_queues": layer_queues,
             "mission_files": mission_files,
             "mission_pieces_by_layer": mission_pieces_by_layer,
+            "mission_status_by_id": mission_status_by_id,
+            "mission_tagline_by_id": mission_tagline_by_id,
+            "layer_bands": layer_bands,
+            "gate_band": gate_band,
             "piece_glyph": mission_pieces.PIECE_GLYPH,
             "piece_label": mission_pieces.PIECE_LABEL,
+            "group_label": mission_pieces.GROUP_LABEL,
         },
     )
 

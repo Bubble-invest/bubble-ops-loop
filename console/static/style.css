@@ -1633,6 +1633,134 @@ a.piece-tile:hover {
   word-break: break-word;
 }
 
+/* #642 PR-B — full architecture view: grouped entrées/cœur/sortie rows
+   (item 2), status badge + tagline (item 8), POOL/GATE inter-layer bands
+   (items 5-7), flow arrows. Same charte tokens only — no new color
+   language, per the card's Forbidden list (mirrors #642 PR-A's own
+   comment above). */
+.piece-groups {
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--line-soft);
+}
+.piece-tgroup { margin: 0; }
+.piece-glabel {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--body-muted);
+  margin: 0 0 4px;
+}
+.piece-tgroup .piece-grid {
+  margin: 0;
+  padding: 0;
+  border-top: none;
+}
+.piece-tarrow {
+  text-align: center;
+  color: var(--line-soft);
+  font-size: 11px;
+  margin: 4px 0;
+}
+.piece-output .piece-name { white-space: normal; }
+
+.mission-card-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mission-status-badge {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  color: var(--body-muted);
+}
+.mission-status-actif {
+  color: var(--sage);
+  border-color: var(--sage);
+  background: rgba(90, 125, 114, 0.08);
+}
+.mission-status-dormant {
+  color: var(--body-muted);
+  border-color: var(--line-soft);
+  background: var(--paper-soft);
+}
+.mission-status-événementiel {
+  color: var(--ochre-deep);
+  border-color: var(--ochre-soft);
+  background: var(--violet-08);
+}
+.mission-tagline {
+  font-family: var(--font-body);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--body-muted);
+  margin: 2px 0 0;
+}
+
+.flow-arrow {
+  text-align: center;
+  color: var(--ochre-soft);
+  font-size: 12px;
+  font-family: var(--font-display);
+  font-style: italic;
+  margin: 4px 0;
+}
+.pool-band {
+  background: var(--paper-soft);
+  border: 1.5px solid var(--ochre-soft);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+}
+.pool-band--generic { border-style: dashed; }
+.pool-band-head {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--ochre-deep);
+}
+.pool-band-head code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+.pool-band-schema {
+  font-size: 12px;
+  color: var(--ochre-deep);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pool-band-schema:hover { text-decoration: underline; }
+
+.gate-band {
+  background: var(--paper-soft);
+  border: 1.5px solid var(--sage);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--body);
+  text-align: center;
+}
+.gate-band a {
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--sage);
+}
+
 /* Legacy backward-compat — preserved for older tests / partials.
    These classes used to drive the dark "operator dashboard" UI;
    they no longer paint anything dark, just no-op so partial
