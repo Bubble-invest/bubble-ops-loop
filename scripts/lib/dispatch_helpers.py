@@ -427,8 +427,12 @@ def is_mission_due(mission: dict, *, now: datetime,
     Supported cadences (from recurring-mission.schema.yaml::cadence):
       daily            — needs `time:` HH:MM Paris. Due once per Paris-local
                          day after that time.
-      weekly           — needs `time:` + `day:` (lowercase English). Due
-                         once per Paris-local week on that day after time.
+      weekly           — needs `time:` + `day:` (lowercase English). `day`
+                         may be a single weekday string ("monday") or a
+                         list of weekday strings (["monday", "thursday"]).
+                         Due once per Paris-local day on each listed day
+                         after time — a single-day mission fires once/week;
+                         a multi-day mission fires once per listed day.
       hourly           — top of every Paris hour.
       every_<N>h       — every N hours since last fire.
       every_<N>m       — every N minutes since last fire.
@@ -486,12 +490,12 @@ def is_mission_due(mission: dict, *, now: datetime,
         target = _parse_hhmm(t_str)
         if now_paris.time() < target:
             return False
-        # Already fired this week (same ISO year+week)?
-        if last_paris:
-            ly, lw, _ = last_paris.isocalendar()
-            ny, nw, _ = now_paris.isocalendar()
-            if (ly, lw) == (ny, nw):
-                return False
+        # Already fired today (same Paris-local date)? A single-day weekly
+        # still fires at most once/week because the weekday-membership check
+        # above already excludes every other day; a multi-day `day:` list
+        # (e.g. ["monday", "thursday"]) fires at most once per listed day.
+        if last_paris and last_paris.date() == now_paris.date():
+            return False
         return True
 
     if cadence == "hourly":
