@@ -505,13 +505,13 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
              cards (description, produit, gate rule) are the drill-down, so
              they collapse behind a compact "N missions →" summary. Keeps the
              4-moments overview a screenful instead of a wall of cards. #}
-          {# #642 PR-A: for content/Miranda, each mission card gets its
-             layered piece grid (mission/skill/tool/config/memory/voice
-             tiles) in place of the plain description+meta body — folds
-             #622's read-only mission-file pane INTO the per-mission card
-             instead of a separate section-04b list. Every other dept
-             keeps the pre-#642 plain mission-card body unchanged (PR-A
-             scope; PR-B rolls the piece grid out fleet-wide). #}
+          {# #642 PR-B (full completion): the piece grid is now fleet-wide
+             (every dept, not just content — item 10), grouped into the
+             reference prototype's 3 rows (entrées ▼ cœur ▼ sortie, item 2)
+             instead of one flat row, with a status badge + tagline per
+             mission card (item 8). Folds #622's read-only mission-file
+             pane INTO the per-mission card instead of a separate
+             section-04b list, for every dept. #}
           {% set _pieces_by_mission = {} %}
           {% if mission_pieces_by_layer and mission_pieces_by_layer.get(l) %}
             {% for _entry in mission_pieces_by_layer[l] %}
@@ -519,38 +519,75 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
             {% endfor %}
           {% endif %}
           {% if _ms %}
-            <details class="moment-missions-details" style="margin-top:14px;">
+            <details class="moment-missions-details" style="margin-top:14px;" open>
               <summary class="moment-missions-summary">{{ _ms|length }} mission{{ 's' if _ms|length != 1 else '' }} dans ce moment</summary>
             <ul class="missions-list" style="margin-top:12px;">
               {% for m in _ms %}
                 <li class="mission-card" data-mission-id="{{ m.id }}" data-layer="{{ m.layer }}">
                   <div class="mission-card-head">
                     <h4 class="mission-nom">{{ m.id.replace('_', ' ')|capitalize_fr }}</h4>
-                    <span class="slug-ref mission-id">{{ m.id }}</span>
+                    <span class="mission-card-head-right">
+                      {% if mission_status_by_id and mission_status_by_id.get(m.id) %}
+                        <span class="mission-status-badge mission-status-{{ mission_status_by_id[m.id] }}">{{ mission_status_by_id[m.id] }}</span>
+                      {% endif %}
+                      <span class="slug-ref mission-id">{{ m.id }}</span>
+                    </span>
                   </div>
                   <p class="mission-cadence">
                     <span class="mission-cadence-icon" aria-hidden="true">⏱</span>
                     {{ humanize_cadence(m) }}
                   </p>
+                  {% if mission_tagline_by_id and mission_tagline_by_id.get(m.id) %}
+                    <p class="mission-tagline">{{ mission_tagline_by_id[m.id] }}</p>
+                  {% endif %}
                   {% if _pieces_by_mission.get(m.id) %}
                     {% set _pieces = _pieces_by_mission[m.id] %}
-                    <div class="piece-grid" role="list" aria-label="Pièces de la mission {{ m.id }}">
-                      {% for pc in _pieces %}
-                        {% if pc.clickable %}
-                          <a role="listitem" class="piece-tile piece-{{ pc.kind }}"
-                             href="/dept/{{ dept.slug }}/mission-file?f={{ pc.rel_path | urlencode }}">
-                            <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
-                            <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
-                            <span class="piece-name">{{ pc.label }}</span>
-                          </a>
-                        {% else %}
-                          <span role="listitem" class="piece-tile piece-{{ pc.kind }} piece-tile--muted">
-                            <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
-                            <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
-                            <span class="piece-name">{{ pc.label }}</span>
-                          </span>
-                        {% endif %}
-                      {% endfor %}
+                    {% set _entrees = _pieces|selectattr('group', 'equalto', 'entrees')|list %}
+                    {% set _coeur = _pieces|selectattr('group', 'equalto', 'coeur')|list %}
+                    {% set _sortie = _pieces|selectattr('group', 'equalto', 'sortie')|list %}
+                    {% macro piece_tile(pc) %}
+                      {% if pc.clickable %}
+                        <a role="listitem" class="piece-tile piece-{{ pc.kind }}"
+                           href="/dept/{{ dept.slug }}/mission-file?f={{ pc.rel_path | urlencode }}">
+                          <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
+                          <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
+                          <span class="piece-name">{{ pc.label }}</span>
+                        </a>
+                      {% else %}
+                        <span role="listitem" class="piece-tile piece-{{ pc.kind }} piece-tile--muted">
+                          <span class="piece-glyph" aria-hidden="true">{{ piece_glyph.get(pc.kind, '') }}</span>
+                          <span class="piece-kind">{{ piece_label.get(pc.kind, pc.kind) }}</span>
+                          <span class="piece-name">{{ pc.label }}</span>
+                        </span>
+                      {% endif %}
+                    {% endmacro %}
+                    <div class="piece-groups">
+                      {% if _entrees %}
+                        <div class="piece-tgroup">
+                          <div class="piece-glabel">{{ group_label.entrees }}</div>
+                          <div class="piece-grid" role="list" aria-label="Entrées de la mission {{ m.id }}">
+                            {% for pc in _entrees %}{{ piece_tile(pc) }}{% endfor %}
+                          </div>
+                        </div>
+                      {% endif %}
+                      {% if _coeur %}
+                        {% if _entrees %}<div class="piece-tarrow">▼</div>{% endif %}
+                        <div class="piece-tgroup">
+                          <div class="piece-glabel">{{ group_label.coeur }}</div>
+                          <div class="piece-grid" role="list" aria-label="Cœur de la mission {{ m.id }}">
+                            {% for pc in _coeur %}{{ piece_tile(pc) }}{% endfor %}
+                          </div>
+                        </div>
+                      {% endif %}
+                      {% if _sortie %}
+                        <div class="piece-tarrow">▼</div>
+                        <div class="piece-tgroup">
+                          <div class="piece-glabel">{{ group_label.sortie }}</div>
+                          <div class="piece-grid" role="list" aria-label="Sortie de la mission {{ m.id }}">
+                            {% for pc in _sortie %}{{ piece_tile(pc) }}{% endfor %}
+                          </div>
+                        </div>
+                      {% endif %}
                     </div>
                   {% else %}
                     {% if m.description %}
@@ -599,6 +636,34 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
             </p>
           {% endif %}
         </li>
+
+        {# #642 PR-B (items 5-7): the connective POOL band + flow arrow
+           between this Moment and the next, and the human GATE band
+           where this Moment's missions write to queues/gates/. Generic:
+           `layer_bands`/`gate_band` are computed once per request in the
+           route from each layer's own declared output_queue — no
+           per-dept hardcoding. Renders nothing when the dept has no
+           equivalent queue at this boundary (item 5's "or no band if
+           none" instruction). #}
+        {% if layer_bands and layer_bands.get(l) %}
+          {% set _band = layer_bands[l] %}
+          <div class="flow-arrow" aria-hidden="true">▼ déposent dans ▼</div>
+          <div class="pool-band{% if not _band.is_pool %} pool-band--generic{% endif %}">
+            <div class="pool-band-head">
+              🗂️ {{ 'LE POOL' if _band.is_pool else 'FILE' }} — <code>{{ _band.queue_path }}/</code>
+            </div>
+            {% if _band.schema_rel_path %}
+              <a class="pool-band-schema" href="/dept/{{ dept.slug }}/mission-file?f={{ _band.schema_rel_path | urlencode }}">📂 schéma du pool</a>
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if gate_band and gate_band.after_layer == l %}
+          <div class="flow-arrow" aria-hidden="true">▼</div>
+          <div class="gate-band">
+            ◇ <b>Gate humaine</b> — validation dans le cockpit (approve · reject · modify · defer) avant publication.
+            <a href="/gate/{{ dept.slug }}/kind/{{ gate_band.gate_url_kind }}">voir les gates en attente →</a>
+          </div>
+        {% endif %}
       {% endfor %}
     </ul>
   {% else %}

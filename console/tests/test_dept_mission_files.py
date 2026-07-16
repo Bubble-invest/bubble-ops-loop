@@ -129,6 +129,12 @@ def _build_content_repo(root: Path) -> Path:
         "# Twitter voice\n\nTerse, contrarian, data-first.\n", encoding="utf-8",
     )
 
+    # #642 PR-B (item 9): docs/*.md — dept design-spec deep-links.
+    (repo / "docs").mkdir()
+    (repo / "docs" / "CONTEXT_POOL_SCHEMA.md").write_text(
+        "# Pool schema\n\nOne file per source.\n", encoding="utf-8",
+    )
+
     return repo
 
 
@@ -295,11 +301,42 @@ def test_mission_file_view_rejects_off_allowlist_piece_classes(content_client):
         assert r.status_code == 404, f"expected 404 for f={bad!r}, got {r.status_code}"
 
 
+def test_mission_file_view_docs_spec_file(content_client):
+    """#642 PR-B (item 9): docs/*.md is now on the allowlist — a dept's
+    design-spec files (content: CONTEXT_POOL_SCHEMA.md, L2_DESIGN_SPEC.md,
+    L4_DESIGN_SPEC.md) are reachable via the same read-only guarded route."""
+    r = content_client.get(
+        "/dept/content/mission-file", params={"f": "docs/CONTEXT_POOL_SCHEMA.md"}
+    )
+    assert r.status_code == 200
+    assert "One file per source." in r.text
+
+
+def test_mission_file_view_rejects_docs_traversal_and_recursive(content_client):
+    """#642 PR-B: docs/*.md is explicitly NOT recursive (a docs/sub/x.md
+    path is not on the allowlist even if it existed) and traversal via
+    the docs/ prefix must still 404 like every other piece class."""
+    for bad in (
+        "docs/../dept.yaml",
+        "docs/sub/nested.md",
+        "docs/CONTEXT_POOL_SCHEMA.yaml",  # right dir, wrong extension
+        "docs/nonexistent.md",
+    ):
+        r = content_client.get(
+            "/dept/content/mission-file", params={"f": bad}
+        )
+        assert r.status_code == 404, f"expected 404 for f={bad!r}, got {r.status_code}"
+
+
 def test_mission_files_pane_absent_on_other_depts(content_client, tmp_path):
-    """The pane must not leak onto non-content depts — a sibling dept in the
-    same disk root without the mission-files scope must render unaffected."""
-    # Build a second, unrelated dept in the same disk root to prove the
-    # `content`-only gate holds even when other depts exist alongside it.
+    """PR-B (item 10, fleet rollout): the old §04b flat file-list pane
+    stays dormant everywhere (superseded fleet-wide by the piece grid,
+    same as on /dept/content) — its heading never appears on ANY dept
+    page. Also proves cross-dept isolation still holds now that every
+    dept gets a piece view: a sibling dept with no missions/pieces at
+    all must render 200 with no crash and no bleed from content's files."""
+    # Build a second, unrelated dept in the same disk root to prove no
+    # cross-dept bleed even when the piece view is active on both pages.
     import os
     root = Path(os.environ["READ_FROM_DISK"])
     other = root / "bubble-ops-other"
@@ -327,3 +364,11 @@ def test_mission_files_pane_absent_on_other_depts(content_client, tmp_path):
     r = content_client.get("/dept/other")
     assert r.status_code == 200
     assert "Fichiers de mission" not in r.text
+    # No cross-dept bleed: content's mission ids/files must not appear on
+    # the unrelated dept's page.
+    assert "draft_x" not in r.text
+    assert "twitter/VOICE.md" not in r.text
+
+    # And the content page itself must never show "other"'s files either.
+    r2 = content_client.get("/dept/content")
+    assert r2.status_code == 200
