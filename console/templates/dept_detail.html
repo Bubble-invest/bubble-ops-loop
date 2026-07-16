@@ -489,8 +489,19 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
           <p class="muted" style="font-size:13px; margin:6px 0 0;">
             {{ moment_what.get(l, '') }}
           </p>
+          {# "Dernier passage" — a compact, markdown-stripped + length-capped
+             (140 chars, github_reader._strip_markdown_to_text/_cap) excerpt
+             of the layer's last run. NEVER the raw runtime summary.md —
+             that leaked **bold**/`code`/table syntax straight into the
+             card as unrendered text (#642 W19 Issue 1). The card above
+             (moment-nom + the muted intent line) stays the curated,
+             version-controlled "what this Moment does"; this block is
+             read-only activity, visually set apart and clipped so a long
+             excerpt can never overflow the card boundary (.moment-last-run
+             CSS: overflow hidden + line-clamp). #}
           {% if _recent %}
             <div class="moment-last-run">
+              <span class="moment-last-run-label">Dernier passage</span>
               {% if _recent.last_run %}
                 <span class="moment-last-run-time">{{ _recent.last_run }}</span>
               {% endif %}

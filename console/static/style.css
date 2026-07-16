@@ -786,6 +786,9 @@ code, .code {
   border: 1px solid var(--line-soft);
   border-radius: 4px;
   padding: 16px 18px;
+  /* #642 W19 Issue 1: a long/raw excerpt (or any other overlong child)
+     must clip to the card, never bleed past its border. */
+  overflow: hidden;
 }
 .moment-num {
   font-family: var(--font-display);
@@ -1080,7 +1083,7 @@ code, .code {
    onerror on the attachment <img> (gate_card.html / gate_batch.html)
    adds .gate-attachment-broken to the enclosing <figure> instead of
    leaving the browser's broken-image glyph. Hide the broken <img>
-   and swap the caption to "aperçu indisponible". #}
+   and swap the caption to "aperçu indisponible". */
 .gate-attachment-broken img { display: none; }
 .gate-attachment-caption-broken { display: none; }
 .gate-attachment-broken .gate-attachment-caption-ok { display: none; }
@@ -1498,6 +1501,9 @@ code, .code {
   border-radius: 4px;
   padding: 14px 16px 12px;
   border-left: 3px solid var(--ochre-soft);
+  /* Guard against any child (piece-grid tiles, description text) pushing
+     past the card boundary on narrow screens (#642 W19 Issue 3). */
+  overflow: hidden;
 }
 .mission-card-head {
   display: flex;
@@ -1594,6 +1600,9 @@ code, .code {
   background: var(--paper);
   text-decoration: none;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
+  /* A long filename must not push the tile past the card edge on narrow
+     screens (#642 W19 Issue 3) — cap at the tile's own containing block. */
+  max-width: 100%;
 }
 a.piece-tile:hover {
   color: var(--ochre);
@@ -1618,6 +1627,10 @@ a.piece-tile:hover {
 .piece-name {
   font-family: var(--font-mono);
   font-size: 11px;
+  /* Long filenames (fetch_received_newsletters.py) must wrap inside the
+     pill, not overflow it, on narrow screens (#642 W19 Issue 3). */
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* Legacy backward-compat — preserved for older tests / partials.
@@ -1663,6 +1676,20 @@ a.piece-tile:hover {
   background: var(--paper-soft);
   border-radius: 3px;
   border-left: 2px solid var(--sage-soft);
+  /* belt-and-suspenders alongside .moment's own overflow:hidden — this
+     block specifically is the one fed by runtime text, so it clips even
+     if the excerpt somehow arrives longer than the 140-char server cap. */
+  overflow: hidden;
+  max-width: 100%;
+}
+.moment-last-run-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--body-muted);
+  margin-bottom: 2px;
 }
 .moment-last-run-time {
   font-size: 11.5px;
@@ -1676,6 +1703,17 @@ a.piece-tile:hover {
   margin: 4px 0 0;
   line-height: 1.45;
   font-style: italic;
+  /* Server already caps this at 140 chars (github_reader._cap) — this is
+     the CSS-side guarantee so the card never leaks regardless of what the
+     backend sends: clip to 3 lines with an ellipsis, wrap long unbroken
+     tokens instead of overflowing the card's border (#642 W19 Issue 1). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* ─── Whiteboard (tableau de bord) ──────────────────────────── */
@@ -3080,8 +3118,29 @@ body.m4 {
     radial-gradient(circle at 70% 50%, rgba(255,247,232,.35), transparent 55%);
   background-attachment: fixed;
 }
-body.m4 .app-shell { position: relative; z-index: 1; }
+/* `.app-shell` must render ABOVE the decorative `.bubble-float` blobs (z:0)
+   but must NOT out-rank the fixed mobile controls that are its root-level
+   siblings — `.sidebar-overlay` (z:99) and `.sidebar-toggle-label` (z:101).
+   The original z:1 lost to the overlay (99>1) → overlay ate nav taps (#642
+   W19 Issue 2). Raising app-shell to z:102 (r19 attempt) INVERTED it → the
+   shell then painted over the z:101 toggle label → `.content` ate taps on
+   the hamburger itself (r19b). The race-free fix: `isolation:isolate` gives
+   app-shell its own stacking context (so blobs stay behind its content) at
+   ZERO z-index cost — it never competes with the fixed controls at all.
+   position:relative (no z-index) keeps it a normal-flow root-context box that
+   the fixed z:99/z:101 controls correctly paint above. (#642 W19 / r19b) */
+body.m4 .app-shell { position: relative; isolation: isolate; }
 body.m4 .content { background: transparent; padding: 52px clamp(24px,4.5vw,72px) 96px; }
+/* MOBILE override (must come AFTER the global rule to win): app-shell must NOT
+   form a stacking context on mobile, so the position:fixed .sidebar (z:100)
+   escapes into the ROOT context and paints above the fixed .sidebar-overlay
+   (z:99). With isolate ON, the sidebar's z-index is trapped inside app-shell's
+   layer and the root-level overlay wins → nav taps die (#642 W19 / r19b / r19c).
+   Root-level mobile z-order: blobs(0) < content < overlay(99) < sidebar(100) <
+   toggle-label(101). Desktop keeps isolate (no fixed nav controls to compete). */
+@media (max-width: 768px) {
+  body.m4 .app-shell { isolation: auto; }
+}
 
 /* ── Frosted glass sidebar ────────────────────────────────────────────── */
 body.m4 .sidebar {
@@ -3789,4 +3848,19 @@ body.m4 .a-pill:hover:not(.active) { border-color: var(--violet); }
   .gate-triage-controls { flex-direction: column; align-items: stretch; gap: 10px; }
   .a-sort { justify-content: space-between; }
   body.m4 .gate-batch-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+
+  /* #642 W19 Issue 3 — the missions disclosure is the tap target that
+     expands each Moment's mission list; on phone it must clear the
+     ~40px minimum touch target (desktop keeps the compact 0.85em/4px
+     density — this only widens the hit area, not the type). */
+  .moment-missions-details > summary {
+    padding: 11px 0;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+  }
+  /* Piece tiles: index/table-content-style pills already wrap
+     (.piece-grid flex-wrap) — bump padding on phone so each tile clears
+     the same ~40px tap-target floor. */
+  .piece-tile { padding: 8px 11px; }
 }
