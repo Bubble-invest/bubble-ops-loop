@@ -19,33 +19,38 @@
   </p>
 </header>
 
-{# ─── Triage controls — sort (date) + channel filter (Jade, wave 2) ──────
-   Plain <select> forms that GET back to this same URL with the new query
-   param — no JS dependency, matches how the rest of the console does
-   server-rendered interactivity. Both controls submit independently
-   (name-only inputs, onchange auto-submits) so changing one doesn't reset
-   the other. total_count (pre-filter) lets the channel <select> show how
-   many gates got filtered out, so "0 résultat" never looks like a bug. #}
+{# ─── Triage controls — channel chip row + 2-state sort toggle ───────────
+   Option A (Jade-validated mockup, gate-list-props-20260716.html,
+   card #666 follow-up): the two native <select> controls are replaced by
+   clickable chip/pill links — one per channel with a count badge, plus
+   "Tous" — and a compact 2-state sort toggle. Every control is a plain GET
+   link/form (no JS dependency beyond what the console already uses
+   elsewhere) carrying the SAME query params as before (sort, channel), so
+   a bookmarked/shared URL still works unchanged. total_count (pre-filter)
+   plus channel_counts (per-channel, pre-filter) drive the badge numbers so
+   "0 résultat" never looks like a bug. #}
 {% if total_count and total_count > 0 %}
-<div class="gate-triage-controls" role="group" aria-label="Trier et filtrer les décisions">
-  <form method="get" action="/gate/{{ slug }}/kind/{{ kind }}" class="gate-triage-form">
-    {% if channel %}<input type="hidden" name="channel" value="{{ channel }}">{% endif %}
-    <label class="gate-triage-label" for="gate-sort-select">Trier</label>
-    <select id="gate-sort-select" name="sort" class="gate-triage-select" onchange="this.form.submit()">
-      <option value="date_asc" {{ 'selected' if sort == 'date_asc' else '' }}>Plus ancien d'abord</option>
-      <option value="date_desc" {{ 'selected' if sort == 'date_desc' else '' }}>Plus récent d'abord</option>
-    </select>
-  </form>
-  <form method="get" action="/gate/{{ slug }}/kind/{{ kind }}" class="gate-triage-form">
-    {% if sort and sort != 'date_asc' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
-    <label class="gate-triage-label" for="gate-channel-select">Canal</label>
-    <select id="gate-channel-select" name="channel" class="gate-triage-select" onchange="this.form.submit()">
-      <option value="" {{ 'selected' if not channel else '' }}>Tous les canaux ({{ total_count }})</option>
-      {% for ch in channels %}
-        <option value="{{ ch }}" {{ 'selected' if channel == ch else '' }}>{{ ch | upper }}</option>
-      {% endfor %}
-    </select>
-  </form>
+<div class="gate-triage-controls a-toolbar" role="group" aria-label="Trier et filtrer les décisions">
+  <a href="/gate/{{ slug }}/kind/{{ kind }}{{ '?sort=' ~ sort if sort and sort != 'date_asc' else '' }}"
+     class="a-pill{{ ' active' if not channel else '' }}">
+    Tous <span class="count">{{ total_count }}</span>
+  </a>
+  {% for ch in channels %}
+    {% set ch_count = channel_counts.get(ch, 0) if channel_counts else 0 %}
+    {% if ch_count > 0 %}
+    <a href="/gate/{{ slug }}/kind/{{ kind }}?channel={{ ch }}{{ '&sort=' ~ sort if sort and sort != 'date_asc' else '' }}"
+       class="a-pill{{ ' active' if channel == ch else '' }}">
+      {{ humanize_channel(ch) }} <span class="count">{{ ch_count }}</span>
+    </a>
+    {% endif %}
+  {% endfor %}
+  <div class="a-sep" aria-hidden="true"></div>
+  <div class="a-sort">Trier
+    <a href="/gate/{{ slug }}/kind/{{ kind }}?sort=date_asc{{ '&channel=' ~ channel if channel else '' }}"
+       class="{{ 'on' if sort == 'date_asc' else '' }}">↑ Plus ancien</a>
+    <a href="/gate/{{ slug }}/kind/{{ kind }}?sort=date_desc{{ '&channel=' ~ channel if channel else '' }}"
+       class="{{ 'on' if sort == 'date_desc' else '' }}">↓ Plus récent</a>
+  </div>
   {% if channel %}
   <span class="gate-triage-count">{{ count }} sur {{ total_count }}</span>
   {% endif %}
@@ -81,17 +86,19 @@
       </div>
       {% endif %}
       <div class="gate-batch-head">
-        {# Title is the dominant element (Jade, wave 2: "les titres ne sont
-           pas assez mis en avant") — the gate slug/name in full display
-           weight; the id + risk are secondary, pushed into a muted line
-           below instead of sharing top billing with the title. #}
+        {# Title is the dominant element — Option A (Jade-validated mockup,
+           card #666 follow-up): a HUMAN headline via gate_human_title(),
+           not the dept slug (always "content" here, zero information) or
+           the raw gate id. The raw id/risk metadata moves to the small
+           mono footer line below (see .a-footer at the bottom of the
+           card) instead of sharing top billing with the title. #}
         <h3 class="gate-batch-title">
-          {{ gate.slug or gid }}
+          {{ gate_human_title(gate) }}
           {% if gate.chosen_variant %}
             <span class="gate-batch-title-sub">· angle {{ gate.chosen_variant }}</span>
           {% endif %}
         </h3>
-        <span class="gate-batch-meta">risque {{ gate.risk_level or 'inconnu' }} · {{ gid }}</span>
+        <span class="gate-batch-meta">risque {{ gate.risk_level or 'inconnu' }}</span>
       </div>
 
       {% include "components/gate-identity-chips.html" %}
@@ -344,6 +351,14 @@
       </div>
       {% endif %}
       {% endif %}
+
+      {# ─── Card footer — raw gate id (debug/reference only) ──────────
+         Option A: the raw id no longer competes with the human title for
+         top billing; it's demoted to small discreet mono text at the
+         bottom of the card, matching the mockup's footer treatment.
+         Reuses gate-batch-meta's existing mono styling (no new .mono
+         class — one mono-text style for the whole batch view). #}
+      <div class="a-footer"><span class="gate-batch-meta">{{ gid }}</span></div>
 
       <form hx-post="/gate/{{ slug }}/{{ gid }}/decide"
             hx-target="#gatecard-{{ gid }}"

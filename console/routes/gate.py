@@ -91,6 +91,13 @@ def gate_batch(
              if (g.get("kind") or "decision") == kind]
     total_count = len(gates)
 
+    # Per-channel counts (pre-filter) for the Option A chip row's count
+    # badges ("LinkedIn 6", "Substack 4", ...) — computed once here so the
+    # template never has to loop `gates` per channel to count.
+    channel_counts: dict[str, int] = {ch: 0 for ch in GATE_CHANNELS}
+    for g in gates:
+        channel_counts[gate_channel(g)] += 1
+
     if channel:
         gates = [g for g in gates if gate_channel(g) == channel]
 
@@ -115,6 +122,7 @@ def gate_batch(
             "sort": sort,
             "channel": channel,
             "channels": GATE_CHANNELS,
+            "channel_counts": channel_counts,
         },
     )
 
