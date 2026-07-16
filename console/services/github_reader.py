@@ -246,14 +246,20 @@ _MISSION_FILE_KIND_BY_SUFFIX: Dict[str, str] = {
 
 def list_mission_files(slug: str) -> List[Dict[str, str]]:
     """Return the dept's L1/L2 mission files available for async read-only
-    review (card #622) — MANDATE.md, each subscribed layer's PROMPT.md, each
-    mission's PROMPT.md, plus the dept's free-form working memory and config,
-    when present on disk. Read-only: this never returns a write/edit affordance.
+    review (card #622), PLUS the piece classes card #642's layered piece
+    view resolves (skills/*/SKILL.md, memory/*.md, <channel>/VOICE.md,
+    missions/*.yaml flat layout) — MANDATE.md, each subscribed layer's
+    PROMPT.md, each mission's PROMPT.md, plus the dept's free-form working
+    memory and config, when present on disk. Read-only: this never returns
+    a write/edit affordance.
 
     Each entry is {"label", "rel_path", "group"} — `rel_path` is what
     `read_mission_file` accepts (repo-relative, from this same allowlist).
     Missing files are silently skipped (a dept without a given file just
-    doesn't show that row).
+    doesn't show that row). This is the SAME function `read_mission_file`
+    re-derives its allowlist from, and now also what #642's piece
+    resolver's clickable surface is checked against (mission_pieces.py) —
+    widening this allowlist widens both guards for free, by construction.
     """
     root = repo_path(slug)
     if root is None:
@@ -280,6 +286,12 @@ def list_mission_files(slug: str) -> List[Dict[str, str]]:
             if mission_dir.is_dir():
                 _add(f"missions/{mission_dir.name}/PROMPT.md",
                      f"{mission_dir.name} — PROMPT.md", "missions")
+            elif mission_dir.is_file() and mission_dir.suffix in (".yaml", ".yml"):
+                # #642: flat missions/<id>.yaml layout (ben/maya/tony/cgp) —
+                # the mission-core piece for depts with no missions/<id>/
+                # PROMPT.md subdirectory.
+                _add(f"missions/{mission_dir.name}",
+                     f"missions/{mission_dir.name}", "missions")
 
     _add("WORKING_MEMORY.md", "WORKING_MEMORY.md", "memoire")
     _add("whiteboard.yaml", "whiteboard.yaml", "config")
@@ -289,6 +301,35 @@ def list_mission_files(slug: str) -> List[Dict[str, str]]:
         for p in sorted(config_dir.iterdir()):
             if p.is_file() and p.suffix in (".yaml", ".yml"):
                 _add(f"config/{p.name}", f"config/{p.name}", "config")
+
+    # #642: skills/<name>/SKILL.md — the "compétence" piece class.
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if skill_dir.is_dir():
+                _add(f"skills/{skill_dir.name}/SKILL.md",
+                     f"skills/{skill_dir.name}/SKILL.md", "skills")
+
+    # #642: memory/*.md — per-mission memory files (plural dir; distinct
+    # from the singular WORKING_MEMORY.md above).
+    memory_dir = root / "memory"
+    if memory_dir.is_dir():
+        for p in sorted(memory_dir.iterdir()):
+            if p.is_file() and p.suffix == ".md":
+                _add(f"memory/{p.name}", f"memory/{p.name}", "memoire")
+
+    # #642: <channel>/VOICE.md — content-only today (twitter/, substack/,
+    # newsletter/). Scanned by convention (top-level dirs with a VOICE.md
+    # directly inside), not hardcoded per-channel names, so a new channel
+    # dir with its own VOICE.md is picked up automatically.
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and child.name not in (
+            "missions", "layers", "skills", "memory", "config",
+            "queues", "outputs", "onboarding", "inbox", ".git",
+        ):
+            voice = child / "VOICE.md"
+            if voice.is_file():
+                _add(f"{child.name}/VOICE.md", f"{child.name}/VOICE.md", "voice")
 
     return out
 

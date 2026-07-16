@@ -1567,6 +1567,59 @@ code, .code {
   color: var(--body);
 }
 
+/* #642 PR-A — layered clickable-piece view: piece tiles inside a mission
+   card (mission/skill/tool/config/memory/voice + the muted "reference"
+   chip for unresolved input_sources keys). Reuses existing charte tokens
+   only (--ochre/--violet family, --ink, --body-muted, --line-soft) — no
+   new color language per the card's Forbidden list. */
+.piece-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--line-soft);
+}
+.piece-tile {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  line-height: 1.3;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--ochre-soft);
+  color: var(--ochre-deep);
+  background: var(--paper);
+  text-decoration: none;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+a.piece-tile:hover {
+  color: var(--ochre);
+  border-color: var(--ochre);
+  background: var(--violet-08);
+}
+.piece-tile--muted {
+  color: var(--body-muted);
+  border-color: var(--line-soft);
+  background: transparent;
+  font-style: italic;
+}
+.piece-glyph { font-size: 12px; }
+.piece-kind {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.75;
+}
+.piece-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* Legacy backward-compat — preserved for older tests / partials.
    These classes used to drive the dark "operator dashboard" UI;
    they no longer paint anything dark, just no-op so partial
