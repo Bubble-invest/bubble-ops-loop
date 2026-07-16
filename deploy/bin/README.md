@@ -176,3 +176,74 @@ this script provides.
   rollback, missing-key/key-count-drop verify failures + rollback, the
   telegram-bot probe (401 rollback / ok success), and confirms the secret
   value never appears in any captured output.
+
+## bubble-secrets
+
+Unified lifecycle tool for per-dept SOPS dotenv secret files: `add` (new key),
+`rotate` (existing key), and `apply` (restart + verify). Absorbs board #676
+and #679; reuses `bubble-rotate-dept-secret`'s proven decrypt→verify→rewrite→
+re-encrypt→verify shape so this is the ONE tool for a secret's whole
+lifecycle instead of three separate ad-hoc invocations.
+
+- **Usage:**
+  - `printf '%s' "$VALUE" | bubble-secrets add <dept> <KEY_NAME> [--file PATH]`
+    — installs a NEW key; fails if the key already exists (use `rotate`).
+  - `printf '%s' "$VALUE" | bubble-secrets rotate <dept> <KEY_NAME> [--expect-len N] [--probe telegram-bot|none] [--restart] [--file PATH]`
+    — replaces an EXISTING key; fails if the key is absent (use `add`).
+    `--expect-len N` asserts the installed value is exactly N chars after
+    the decrypt round-trip, without ever printing the value (#676).
+  - `bubble-secrets apply <dept> [--service-prefix PFX] [--probe telegram-bot|none] [--key KEY]`
+    — restarts `<service-prefix>-<dept>` (default `ops-loop-<dept>`), checks
+    `systemctl is-active`, greps the journal for `sops`/`401` hits, and
+    optionally live-probes a credential. This is the step humans forget: env
+    only materializes at `ExecStartPre`, so a write with no `apply`/restart
+    silently keeps the OLD value live.
+  - New value via **stdin only**, same as `bubble-rotate-dept-secret` —
+    never a CLI arg (argv leaks via `ps`/shell history/logs).
+- **What `add`/`rotate` do, in order:** same proven shape as
+  `bubble-rotate-dept-secret` (decrypt baseline → refuse corrupt-JSON target
+  → grep `age1...` recipient → build new plaintext, value ALWAYS written
+  quoted (`KEY="value"`) and whitespace-stripped (closes #679: an unquoted
+  space-padded value word-splits at runtime, arrives EMPTY, leaks a fragment
+  to logs) → encrypt with explicit `--input-type dotenv --output-type dotenv`
+  → refuse JSON output → backup (mode `0400`) → install (`root:root 0600`) →
+  decrypt the INSTALLED file to a tmpfs FILE (never stdout) and assert the
+  key is present and the total key-count is exactly `+1` for `add` /
+  unchanged for `rotate` → optional `--expect-len` assertion (rotate) →
+  optional live probe → on ANY verify/probe failure, automatic rollback from
+  the backup, nonzero exit. Every write also prunes that file's `.bak-*`
+  backups to the newest 3 (shredded, not just unlinked — they hold real
+  creds).
+- **Config, not hardcode:** default file path is
+  `${BUBBLE_SECRETS_DIR:-/etc/bubble}/secrets-<dept>.sops.env`; override with
+  `--file` or `$BUBBLE_SECRETS_DIR` so a client can point this at their own
+  sops tree. No Bubble-specific literal beyond that configurable default.
+- **Install:** `/usr/local/bin/bubble-secrets`, root-owned `0755` (writes to
+  `/etc/bubble/secrets-<dept>.sops.env` by default, requires root; `apply`
+  additionally needs `systemctl restart` rights for `ops-loop-<dept>`).
+- **Env overrides (tests only):** `SOPS_BIN`, `TMPFS_DIR`, `SYSTEMCTL_BIN`,
+  `CURL_BIN`, `BUBBLE_SECRETS_DIR`, `INSTALL_OWNER`, `INSTALL_GROUP`.
+- **Tests:** `tests/bubble-secrets/test_bubble_secrets.sh` — 22 cases,
+  unprivileged, against fake `sops`/`curl`/`systemctl`/`journalctl` stubs:
+  add/rotate existence contracts, quote-fix + trim, `--expect-len`
+  match/mismatch + rollback, retention prune to newest 3, `apply` restart +
+  is-active + probe (401 rollback / ok success), rollback on post-encrypt
+  JSON corruption and on missing-key verify, illegal-name/unknown-subcommand
+  rejection, empty-stdin refusal, `--help`, and confirms the secret value
+  never appears in captured stdout/stderr. **T22** (added after independent
+  review found the restore chain's exit status went unchecked, board
+  #676-followup): a stub `cp` that fails ONLY the rollback's own restore copy
+  (source `.bak-*` → dest `.rollback.*`) drives a real verify failure through
+  to a genuinely failed restore, and asserts the tool reports the distinct
+  `ABORT-ROLLBACK-FAILED` — never the false "ROLLBACK: restored" — and the
+  target file is provably left untouched (not byte-identical to the backup).
+  Mutation-checked: reverting the fix (dropping the `if`/status-check back to
+  an unconditional `cmd1 && cmd2 && cmd3`) makes T22 fail, confirming the
+  assertion is load-bearing. Also manually verified end-to-end against a real
+  throwaway `sops`+`age`-encrypted dotenv file (not just the stubs) on
+  2026-07-16: real `add`, real `rotate` with a genuine `--expect-len`
+  mismatch-then-rollback-then-correct-retry, real quote-fix round-trip, real
+  retention pruning of 5 backups down to 3, and a real isolated
+  `rollback()`-with-nonexistent-backup call confirming `ROLLBACK-FAILED` +
+  target file left untouched on a real filesystem — all
+  against dummy values only, file shredded after.
