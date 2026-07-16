@@ -78,6 +78,29 @@
     </div>
   </div>
 
+  {# ─── Gate payload — content actually being approved (card #642 follow-up) ──
+     gate.approval_bridge points a gate at the artifact it's really asking
+     {{OPERATOR}} to sign off on (Miranda's X-thread gates, for example, carry
+     only the thesis in `summary` — the 7 tweets live in a separate file).
+     `gate.payload_rendered` is set by routes/gate.py's _attach_payload_rendered
+     — sanitized markdown->HTML (same nh3 pipeline as the thesis block below),
+     already includes a graceful "introuvable" fallback on read failure, so
+     this block has nothing left to guard except "was there a bridge at all".
+     Rendered FIRST, above the thesis, so it's the first thing read — this is
+     the gap Jade hit live: without it she could not see what she was approving. #}
+  {% if gate.payload_rendered %}
+  <div class="gate-payload" style="margin:0 0 18px; padding:14px 16px;
+       background: var(--paper-soft); border:1px solid var(--line);
+       border-left:3px solid var(--ochre); border-radius:2px;">
+    <div class="gate-payload-label muted-italic"
+         style="font-size:11px; margin-bottom:8px; color: var(--body-muted); text-transform:uppercase; letter-spacing:.3px;">
+      Contenu à valider
+    </div>
+    <div class="gate-payload-body markdown-body"
+         style="font-size:15px; line-height:1.65; color: var(--ink);">{{ gate.payload_rendered }}</div>
+  </div>
+  {% endif %}
+
   {# ─── Trade details + thesis (trade_proposal gates) ───────────── #}
   {% include "components/trade-details.html" %}
 
