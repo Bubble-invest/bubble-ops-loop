@@ -3118,17 +3118,18 @@ body.m4 {
     radial-gradient(circle at 70% 50%, rgba(255,247,232,.35), transparent 55%);
   background-attachment: fixed;
 }
-/* z-index: 102 (not the original 1) — `.app-shell` establishes its OWN
-   stacking context here (position:relative + z-index), so a descendant's
-   z-index (e.g. `.sidebar`'s 100) can never out-rank a sibling of
-   `.app-shell` in the root context no matter how high it goes. On mobile
-   the fixed `.sidebar-overlay` (z:99) and `.sidebar-toggle-label` (z:101)
-   live OUTSIDE `.app-shell` as root-level siblings, so at the old z:1 the
-   overlay painted OVER the entire shell — including the open sidebar —
-   and silently ate every nav tap (#642 W19 Issue 2). 102 clears the
-   toggle label (101), the highest fixed mobile control, while still
-   clearing the decorative `.bubble-float` blobs (z:0) it was added for. */
-body.m4 .app-shell { position: relative; z-index: 102; }
+/* `.app-shell` must render ABOVE the decorative `.bubble-float` blobs (z:0)
+   but must NOT out-rank the fixed mobile controls that are its root-level
+   siblings — `.sidebar-overlay` (z:99) and `.sidebar-toggle-label` (z:101).
+   The original z:1 lost to the overlay (99>1) → overlay ate nav taps (#642
+   W19 Issue 2). Raising app-shell to z:102 (r19 attempt) INVERTED it → the
+   shell then painted over the z:101 toggle label → `.content` ate taps on
+   the hamburger itself (r19b). The race-free fix: `isolation:isolate` gives
+   app-shell its own stacking context (so blobs stay behind its content) at
+   ZERO z-index cost — it never competes with the fixed controls at all.
+   position:relative (no z-index) keeps it a normal-flow root-context box that
+   the fixed z:99/z:101 controls correctly paint above. (#642 W19 / r19b) */
+body.m4 .app-shell { position: relative; isolation: isolate; }
 body.m4 .content { background: transparent; padding: 52px clamp(24px,4.5vw,72px) 96px; }
 
 /* ── Frosted glass sidebar ────────────────────────────────────────────── */
