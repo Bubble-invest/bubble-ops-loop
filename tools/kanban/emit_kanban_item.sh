@@ -551,9 +551,23 @@ _resolve_gh_token() {
   #    can never defeat the real token resolution (step 2a) below.
   local _gt="${GH_TOKEN-}"; if [ -z "${_gt//[[:space:]]/}" ]; then unset GH_TOKEN; fi
   local _ght="${GITHUB_TOKEN-}"; if [ -z "${_ght//[[:space:]]/}" ]; then unset GITHUB_TOKEN; fi
-  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    return 0  # gh already authed — _gh_emit uses ambient auth
+  # 1. `gh auth status` alone is NOT sufficient (#536 signature, #673): a
+  #    SCOPED GITHUB_TOKEN (e.g. repo-only, no access to the board org/repo)
+  #    passes `gh auth status` (it's a real, non-empty token) while every
+  #    board API call still 404s — the poisoned-env guard above only catches
+  #    an EMPTY token, not a valid-but-wrong-scope one. This bit Morty for
+  #    ~3 weeks. Ambient auth is trusted ONLY once we've proven it can
+  #    actually reach the board repo via a real API call.
+  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1 \
+     && gh api "repos/${BOARD_REPO}" --jq .name &>/dev/null 2>&1; then
+    return 0  # gh authed AND board-reachable — _gh_emit uses ambient auth
   fi
+  # Ambient auth either isn't present or can't reach the board — make sure a
+  # poisoned/wrong-scope token doesn't leak into the fallback paths below
+  # (step 2a/2b mint their OWN token via GH_TOKEN=; a stale wrong-scope
+  # GH_TOKEN still in the env would keep failing the same way).
+  unset GH_TOKEN
+  unset GITHUB_TOKEN
   # 2a. Preferred VPS path: a root-owned systemd timer (bubble-board-token-refresh)
   #     keeps a fresh short-lived board token at /run/bubble-board/token
   #     (root:claude 0640, ~45min refresh). Reading it needs NO sudo, so it works

@@ -137,21 +137,44 @@ except Exception as e:
 
   echo "drain_kanban_queue: replaying task=${TASK:-?} title=${TITLE:0:60}..." >&2
 
-  # Idempotency: skip if an open issue already carries this task marker.
-  if [ -n "$TASK" ]; then
+  # Idempotency: dedupe on TITLE (normalized), never on task alone.
+  # #673 bug: one existing open issue with task=morty-agentic-audit swallowed
+  # ALL 11 queued cards as "already exists" — task alone is not a valid dedup
+  # key because a recurring task legitimately emits many DISTINCT findings
+  # (each with its own title) under the same task id. A title-normalized
+  # search (case/whitespace-insensitive) is required before archiving a
+  # queued card as a duplicate; task is no longer sufficient on its own.
+  norm_title=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ')
+  norm_title="${norm_title#"${norm_title%%[![:space:]]*}"}"   # trim leading ws
+  norm_title="${norm_title%"${norm_title##*[![:space:]]}"}"  # trim trailing ws
+  existing=""
+  if [ -n "$norm_title" ]; then
     existing=$(gh issue list \
       --repo "$BOARD_REPO" \
       --state open \
-      --search "\"emit-task: ${TASK}\" in:body" \
-      --limit 1 \
-      --json number \
-      --jq '.[0].number' 2>/dev/null || true)
-    if [ -n "$existing" ]; then
-      echo "drain_kanban_queue: issue #${existing} already exists for task=${TASK} — archiving as drained" >&2
-      echo "$line" >> "$DRAINED"
-      DRAINED_COUNT=$((DRAINED_COUNT + 1))
-      continue
-    fi
+      --search "\"${TITLE}\" in:title" \
+      --limit 30 \
+      --json number,title \
+      --jq '.[] | [(.number|tostring), .title] | @tsv' 2>/dev/null | \
+      python3 -c "
+import sys
+target = sys.argv[1]
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line:
+        continue
+    num, _, title = line.partition('\t')
+    t_norm = ' '.join(title.lower().split())
+    if t_norm == target:
+        print(num)
+        break
+" "$norm_title" 2>/dev/null || true)
+  fi
+  if [ -n "$existing" ]; then
+    echo "drain_kanban_queue: issue #${existing} already exists with matching title — archiving as drained (title-dedupe, #673)" >&2
+    echo "$line" >> "$DRAINED"
+    DRAINED_COUNT=$((DRAINED_COUNT + 1))
+    continue
   fi
 
   # Build a minimal issue body (task marker for idempotency; body if available).
