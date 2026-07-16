@@ -90,6 +90,11 @@ PY="${REPO_ROOT}/venv/bin/python"
 # extracted from the claude --output-format json envelope) so the caller can
 # relay it to Telegram. Reset per dept by run_backup_tick. Init for set -u.
 LAST_TICK_SUMMARY=""
+# Holds the mission id of the CURRENT headless tick in mission-granular floor
+# mode (card #518), empty in legacy/generic mode. Set by the per-dept loop
+# before each do_one_tick call; read by notify_backup_fired to tag the fired
+# ping with WHICH mission ran. Init for set -u.
+CURRENT_MISSION_ID=""
 # Per-dept workdir base + flock dir. Overridable (BUBBLE_BACKUP_AGENTS_ROOT /
 # BUBBLE_BACKUP_LOCK_DIR) so the test harness can run hermetically inside a
 # tmpdir; production defaults are unchanged.
@@ -229,6 +234,82 @@ dept_eligible() {
     return 0
 }
 
+# select_forced_layer_missions <slug> <workdir>: mission-granular enumeration
+# for the LAYER-FLOOR path (card #518). Sets two CALLER-visible globals (this
+# function must be called directly, NEVER inside a `< <(...)` process
+# substitution or any other subshell — bash runs the substituted command in a
+# subshell, so a variable assignment inside it is invisible to the parent
+# shell once the subshell exits; that subtlety bit an earlier version of this
+# function, see the M6 test):
+#   _MISSIONS_DEFINED_ON_LAYER — "1" iff dept.yaml declares ANY
+#     recurring_missions on $FORCE_LAYER (a dept that hasn't migrated to the
+#     mission-centric model, e.g. a legacy fixture with only
+#     layers/<N>/PROMPT.md, leaves this "0").
+#   MISSION_IDS / MISSION_PROMPTS — parallel arrays (RESET by this call) of
+#     the missions on $FORCE_LAYER that are still due per their OWN
+#     per-mission .last-run marker.
+#
+# Contract with the caller (the per-dept loop):
+#   - _MISSIONS_DEFINED_ON_LAYER=0 → fall back to the single generic
+#     "run Layer N" tick — zero regression for non-migrated depts.
+#   - _MISSIONS_DEFINED_ON_LAYER=1 and MISSION_IDS empty → every mission on
+#     this layer already fired today — the caller must SKIP (no tick), never
+#     fall back to the generic prompt (that would re-run an already-fired
+#     mission).
+#   - MISSION_IDS non-empty → the caller runs ONE backup tick PER mission,
+#     each with build_mission_tick_prompt naming that specific mission.
+#
+# Never-fatal: any python error yields no missions and
+# _MISSIONS_DEFINED_ON_LAYER=0, so the caller safely falls back to the legacy
+# generic tick rather than silently skipping a dept that needs one.
+select_forced_layer_missions() {
+    local slug="$1" workdir="$2"
+    _MISSIONS_DEFINED_ON_LAYER=0
+    MISSION_IDS=(); MISSION_PROMPTS=()
+    local out
+    out="$("$PY" - "$workdir" "$FORCE_LAYER" <<'PYEOF' 2>/dev/null || true
+import sys
+from datetime import datetime, timezone
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.dispatch_helpers import (
+    select_due_missions_for_forced_layer, resolve_mission_prompt,
+)
+import yaml
+from pathlib import Path
+workdir, layer = sys.argv[1], int(sys.argv[2])
+repo = Path(workdir)
+dept_yaml = repo / "dept.yaml"
+defined = False
+if dept_yaml.exists():
+    try:
+        dept = yaml.safe_load(dept_yaml.read_text(encoding="utf-8")) or {}
+        missions = dept.get("recurring_missions") or []
+        defined = any(int(m.get("layer", 0)) == layer for m in missions)
+    except Exception:
+        defined = False
+print("DEFINED\t" + ("1" if defined else "0"))
+if defined:
+    due = select_due_missions_for_forced_layer(repo, layer, now_utc=datetime.now(timezone.utc))
+    for m in due:
+        prompt_path = resolve_mission_prompt(repo, m)
+        print(f"{m.get('id', '')}\t{prompt_path}")
+PYEOF
+)"
+    [[ -n "$out" ]] || return 0
+    local first=1 line _mid _mprompt
+    while IFS= read -r line; do
+        if [[ "$first" == "1" ]]; then
+            first=0
+            [[ "$line" == "DEFINED"$'\t'"1" ]] && _MISSIONS_DEFINED_ON_LAYER=1
+            continue
+        fi
+        IFS=$'\t' read -r _mid _mprompt <<<"$line"
+        [[ -n "$_mid" ]] || continue
+        MISSION_IDS+=("$_mid")
+        MISSION_PROMPTS+=("$_mprompt")
+    done <<<"$out"
+}
+
 # Append one event to the cockpit log. Never fatal — a logging failure must
 # not abort the safety net itself.
 emit_event() {
@@ -314,8 +395,13 @@ notify_backup_fired() {
     fi
     # Floor mode names the layer that fired; generic mode keeps the original
     # bare line. Either way the prefix stays 🛟 so the cockpit/console keys off it.
+    # Mission-granular mode (card #518) additionally names the SPECIFIC mission
+    # that fired (CURRENT_MISSION_ID, set by the per-dept loop before calling
+    # do_one_tick) — so a human reading the ping knows WHICH same-layer mission
+    # ran, not just that "L<N> fired" (ambiguous when a layer has 2+ missions).
     local what="backup tick"
     [[ -n "$FORCE_LAYER" ]] && what="L${FORCE_LAYER} floor tick"
+    [[ -n "${CURRENT_MISSION_ID:-}" ]] && what="${what} (mission=${CURRENT_MISSION_ID})"
     local msg="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
     # Append the tick's work summary so {{OPERATOR}} sees WHAT the layer mission did,
     # not just that the net fired. Empty summary (parse failed / heartbeat with
@@ -596,7 +682,57 @@ concise report (max ~6 lines) the wrapper will forward verbatim:
 PROMPT
     fi
 }
-TICK_PROMPT="$(build_tick_prompt)"
+# Built ONCE at startup: the legacy generic prompt ("run Layer N" / plain
+# decide_dispatch). Card #518 renamed this from the bare TICK_PROMPT global
+# because TICK_PROMPT is now set FRESH per mission in mission-granular mode
+# (see build_mission_tick_prompt below + the per-dept loop) — GENERIC_TICK_PROMPT
+# is the fallback value the loop restores it to for a non-migrated dept.
+GENERIC_TICK_PROMPT="$(build_tick_prompt)"
+TICK_PROMPT="$GENERIC_TICK_PROMPT"
+
+# ── Mission-granular floor prompt (card #518) ────────────────────────────────
+# Companion to build_tick_prompt's FORCE_LAYER branch, used ONLY when
+# select_forced_layer_missions (below) proves the dept has migrated to
+# per-mission dept.yaml::recurring_missions on this layer. Names the ONE
+# mission this tick must run (mission_id + its resolved prompt path) instead
+# of the generic "read layers/<N>/PROMPT.md" instruction — so a late floor
+# tick can dispatch a SPECIFIC still-pending mission (e.g. market_wrapup)
+# without re-running a mission that already fired earlier today (e.g.
+# risk_control), both on the same layer. Idempotence is the mission's OWN
+# job (its prompt's STEP 1 stamps outs/<today>/missions/<id>/.last-run,
+# exactly like the live-loop mission-centric path — see resolve_mission_prompt).
+build_mission_tick_prompt() {
+    local layer="$1" mission_id="$2" prompt_path="$3"
+    cat <<PROMPT
+You are running as the daily Layer ${layer} FLOOR tick (one of four per-layer
+cron units that guarantee each OODA layer fires at least once a day even if
+your persistent /loop is down or parked).
+
+MISSION-GRANULAR floor tick (card #518): this Layer ${layer} has MORE THAN
+ONE recurring mission in dept.yaml. Per-mission idempotence markers
+(outputs/<today>/missions/<id>/.last-run) show mission \`${mission_id}\` is
+still due — run ONLY that mission now, per ${prompt_path}. Do NOT run any
+other Layer ${layer} mission this tick (a sibling mission that already fired
+today must stay untouched; a sibling not yet due is not yours to run either
+— the next floor tick, or the live loop, will pick it up on its own schedule).
+
+Run mission \`${mission_id}\` NOW: git pull; read ${prompt_path}; spawn its
+subagent; VERIFY the output; validate; commit+push. Do NOT run
+decide_dispatch. Execute EXACTLY ONE tick, then:
+  1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe) — toward the next due layer/mission if work remains, a longer cadence (e.g. 0 */2 * * *) if quiet but more may come, else a one-shot tomorrow 08:03 Paris (3 8 * * *). Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).
+  2. Write heartbeat to outputs/<today>/heartbeat.log.
+  3. Then STOP.
+
+Do NOT send your own Telegram message — the backup wrapper relays your
+final message to {{OPERATOR}} automatically. Instead, END your turn with a
+concise report (max ~6 lines) the wrapper will forward verbatim:
+  • Confirm you ran mission \`${mission_id}\` (Layer ${layer}).
+  • What the mission actually DID — the concrete result/output. Be specific,
+    not "ran L${layer}".
+  • Any gate created or subagent failure (and what it needs from {{OPERATOR}}).
+  • If there was nothing for this mission to do, say so in one line and why.
+PROMPT
+}
 
 
 # ── Wake the LIVE session via bubble-inject, if it's alive ({{OPERATOR}} msg 4045) ──
@@ -736,6 +872,71 @@ PYEOF
     rm -f "$runlog"
     flock -u 9 || true
     return $exit
+}
+
+# do_one_tick <slug> <workdir> <envfile> <age> <reason>: run ONE headless
+# backup tick using the CURRENT $TICK_PROMPT (either GENERIC_TICK_PROMPT or a
+# mission-specific prompt from build_mission_tick_prompt — the caller sets
+# TICK_PROMPT immediately before calling this) and handle its outcome exactly
+# as the pre-#518 inline tail did: lock-held skip, event log, external
+# heartbeat, Telegram fired-ping + brief relay, auto-restart-on-failure.
+# Extracted from the per-dept loop so mission-granular mode can call it once
+# per due mission without duplicating this bookkeeping N times.
+do_one_tick() {
+    local slug="$1" workdir="$2" envfile="$3" age="$4" reason="$5"
+    local tick_exit=0
+    run_backup_tick "$slug" "$workdir" "$envfile" || tick_exit=$?
+    if [[ "$tick_exit" == "99" ]]; then
+        # Lock held by a concurrent (live) tick → no backup tick ran. Record a
+        # skip and do NOT ping — nothing fired.
+        emit_event "$slug" "skip" "lock held (concurrent tick) — $reason" "$age"
+        return 0
+    fi
+    emit_event "$slug" "run" "$reason" "$age" "$tick_exit"
+    [[ "$tick_exit" == "0" ]] || OVERALL=1
+    # Truthful external heartbeat: encode the real OUTCOME of this intervention
+    # into the dept's OWN heartbeat.log so a downstream consumer (watchdog,
+    # cockpit) reading the tail sees whether the dept is actually up — the
+    # "I'm down" signal that was missing when the session that writes the
+    # heartbeat died with the loop (Maya/Ben 2026-06-18). Three cases:
+    #   degraded L4              → DEGRADED-L4 carried-over
+    #   backup ran, exit 0       → BACKUP-RAN-FOR-DEPT layer=N exit=0
+    #   backup tick failed (≠0)  → BACKUP-FAILED exit=N — dept DOWN
+    if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
+        write_external_heartbeat "$slug" "DEGRADED-L4"
+    elif [[ "$tick_exit" == "0" ]]; then
+        write_external_heartbeat "$slug" "BACKUP-RAN-FOR-DEPT" "${FORCE_LAYER:-}" "$tick_exit"
+    else
+        write_external_heartbeat "$slug" "BACKUP-FAILED" "${FORCE_LAYER:-}" "$tick_exit"
+    fi
+    # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
+    # dept in DEPTS, both success and failure exit). Source the dept env in a
+    # subshell so TELEGRAM_BOT_TOKEN is available to the send without leaking
+    # across depts. Lock-held returns above → no ping on a fresh/healthy loop.
+    (
+        set -a
+        # shellcheck disable=SC1090
+        [[ -f "$envfile" ]] && . "$envfile"
+        set +a
+        notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
+        # Board #521 cause 3: on a floor-fired L1/L4 (not degraded), also
+        # relay the REAL brief body — a SEPARATE message from the 🛟 ping
+        # above, via the same canonical send path every dept's live loop
+        # uses. Never blocks/fails the safety net (own subshell + own log
+        # lines only).
+        if [[ -n "$FORCE_LAYER" && "${DEGRADED_L4:-0}" != "1" ]]; then
+            notify_floor_layer_brief "$slug" "$workdir" "$envfile" "$FORCE_LAYER" "$tick_exit"
+        fi
+        # Auto-restart the dead DEPT only when the backup tick FAILED to revive it
+        # (tick_exit != 0 = loop down AND the safety net couldn't run a layer).
+        # The pure decision enforces the concierge guard + the 3/hour guardrail.
+        # A successful backup tick (exit 0) revived the dept's work for this cycle
+        # → no restart needed. Runs in the same env-sourced subshell so the
+        # escalation Telegram ping has the token.
+        if [[ "$tick_exit" != "0" ]]; then
+            maybe_auto_restart "$slug"
+        fi
+    )
 }
 
 OVERALL=0
@@ -883,72 +1084,65 @@ PYEOF2
         # tick), or "ERR" on a non-L4 layer (fail-open: a check error runs the
         # tick as before — no brief-relay invariant depends on L1/2/3's PREREQ).
     fi
+
+    # ── Mission-granular enumeration (card #518) ─────────────────────────────
+    # Forced-layer mode ONLY, and only when we're actually about to run a
+    # (non-degraded) backup tick — a degraded L4 needs its own single carried-
+    # over debrief, not a per-mission split. Called DIRECTLY (never inside a
+    # `< <(...)` process substitution) so its _MISSIONS_DEFINED_ON_LAYER /
+    # MISSION_IDS / MISSION_PROMPTS assignments land in THIS shell, not a
+    # subshell that vanishes on return — see the function's own docstring.
+    MISSION_IDS=(); MISSION_PROMPTS=(); _MISSIONS_DEFINED_ON_LAYER=0
+    if [[ -n "$FORCE_LAYER" && "${DEGRADED_L4:-0}" != "1" ]]; then
+        select_forced_layer_missions "$slug" "$workdir"
+        if [[ "$_MISSIONS_DEFINED_ON_LAYER" == "1" && "${#MISSION_IDS[@]}" == "0" ]]; then
+            # dept.yaml declares mission(s) on this layer but NONE are due —
+            # every mission already has a fresh per-mission marker today.
+            # Do NOT fall back to the generic "run Layer N" prompt (that
+            # would re-run an already-fired mission); just skip cleanly.
+            log "$slug: skip — all Layer $FORCE_LAYER missions already fired today (per-mission markers present)"
+            emit_event "$slug" "skip" "all L$FORCE_LAYER missions already fired today (per-mission)" "$age"
+            continue
+        fi
+    fi
+
     if [[ "$DRY_RUN" == "1" ]]; then
         # Record the decision even in dry-run so a smoke test of the schedule
         # shows up in the cockpit, without spending a real tick.
         emit_event "$slug" "skip" "DRY_RUN — would run a backup tick ($reason)" "$age"
         continue
     fi
-    tick_exit=0
-    # Prefer waking the LIVE session (cheaper, keeps context) when it's alive and
-    # this isn't a degraded-L4 (which needs its own prompt). Fall back to -p.
+
+    # Prefer waking the LIVE session ONCE per dept (cheaper, keeps context) when
+    # it's alive and this isn't a degraded-L4 (which needs its own headless
+    # prompt). This is a per-DEPT decision, not per-mission — the live session's
+    # own /loop protocol (STEP C, mission-centric per scaffold.py's canonical
+    # dispatch) will pick up every pending mission itself once woken, so we must
+    # NOT also spawn N headless mission ticks on top of it.
     if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
         emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
         continue
     fi
-    run_backup_tick "$slug" "$workdir" "$envfile" || tick_exit=$?
-    if [[ "$tick_exit" == "99" ]]; then
-        # Lock held by a concurrent (live) tick → no backup tick ran. Record a
-        # skip and do NOT ping — nothing fired.
-        emit_event "$slug" "skip" "lock held (concurrent tick) — $reason" "$age"
-        continue
-    fi
-    emit_event "$slug" "run" "$reason" "$age" "$tick_exit"
-    [[ "$tick_exit" == "0" ]] || OVERALL=1
-    # Truthful external heartbeat: encode the real OUTCOME of this intervention
-    # into the dept's OWN heartbeat.log so a downstream consumer (watchdog,
-    # cockpit) reading the tail sees whether the dept is actually up — the
-    # "I'm down" signal that was missing when the session that writes the
-    # heartbeat died with the loop (Maya/Ben 2026-06-18). Three cases:
-    #   degraded L4              → DEGRADED-L4 carried-over
-    #   backup ran, exit 0       → BACKUP-RAN-FOR-DEPT layer=N exit=0
-    #   backup tick failed (≠0)  → BACKUP-FAILED exit=N — dept DOWN
-    if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
-        write_external_heartbeat "$slug" "DEGRADED-L4"
-    elif [[ "$tick_exit" == "0" ]]; then
-        write_external_heartbeat "$slug" "BACKUP-RAN-FOR-DEPT" "${FORCE_LAYER:-}" "$tick_exit"
+
+    if [[ "${#MISSION_IDS[@]}" -gt 0 ]]; then
+        # Mission-granular: one HEADLESS backup tick PER due mission, each with
+        # its own mission-specific prompt (build_mission_tick_prompt) so the
+        # dept runs EXACTLY the pending mission — never a sibling that already
+        # fired, never the generic monolithic layer prompt.
+        for _mi in "${!MISSION_IDS[@]}"; do
+            TICK_PROMPT="$(build_mission_tick_prompt "$FORCE_LAYER" "${MISSION_IDS[$_mi]}" "${MISSION_PROMPTS[$_mi]}")"
+            CURRENT_MISSION_ID="${MISSION_IDS[$_mi]}"
+            do_one_tick "$slug" "$workdir" "$envfile" "$age" "$reason (mission=${MISSION_IDS[$_mi]})"
+        done
     else
-        write_external_heartbeat "$slug" "BACKUP-FAILED" "${FORCE_LAYER:-}" "$tick_exit"
+        # Legacy path: no mission-granular data for this layer (either generic
+        # mode, or a forced layer whose dept.yaml has no recurring_missions on
+        # it) — unchanged single generic tick, using the script-global
+        # GENERIC_TICK_PROMPT built once at startup by build_tick_prompt.
+        TICK_PROMPT="$GENERIC_TICK_PROMPT"
+        CURRENT_MISSION_ID=""
+        do_one_tick "$slug" "$workdir" "$envfile" "$age" "$reason"
     fi
-    # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
-    # dept in DEPTS, both success and failure exit). Source the dept env in a
-    # subshell so TELEGRAM_BOT_TOKEN is available to the send without leaking
-    # across depts. Skips/lock-held are handled by `continue` above → no ping
-    # on a fresh/healthy loop.
-    (
-        set -a
-        # shellcheck disable=SC1090
-        [[ -f "$envfile" ]] && . "$envfile"
-        set +a
-        notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
-        # Board #521 cause 3: on a floor-fired L1/L4 (not degraded), also
-        # relay the REAL brief body — a SEPARATE message from the 🛟 ping
-        # above, via the same canonical send path every dept's live loop
-        # uses. Never blocks/fails the safety net (own subshell + own log
-        # lines only).
-        if [[ -n "$FORCE_LAYER" && "${DEGRADED_L4:-0}" != "1" ]]; then
-            notify_floor_layer_brief "$slug" "$workdir" "$envfile" "$FORCE_LAYER" "$tick_exit"
-        fi
-        # Auto-restart the dead DEPT only when the backup tick FAILED to revive it
-        # (tick_exit != 0 = loop down AND the safety net couldn't run a layer).
-        # The pure decision enforces the concierge guard + the 3/hour guardrail.
-        # A successful backup tick (exit 0) revived the dept's work for this cycle
-        # → no restart needed. Runs in the same env-sourced subshell so the
-        # escalation Telegram ping has the token.
-        if [[ "$tick_exit" != "0" ]]; then
-            maybe_auto_restart "$slug"
-        fi
-    )
 done
 
 log "done (mode=${MODE_LABEL} depts=${DEPTS[*]:-<none>})"
