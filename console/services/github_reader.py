@@ -1673,12 +1673,58 @@ def load_management_exports(dept_slug: str) -> Dict[str, Any]:
     }
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_EMPHASIS_RE = re.compile(r"(\*\*\*|\*\*|\*|___|__|_|`)")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s*")
+_MD_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_MD_TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|?\s*$")
+
+
+def _strip_markdown_to_text(raw: str) -> str:
+    """Reduce a chunk of agent-authored markdown to plain, single-line text.
+
+    Runtime artifacts (summary.md, heartbeats) are written as markdown —
+    **bold**, `code`, tables — for a human reading the raw file on disk, but
+    the console renders excerpts of them inline as plain prose (e.g. the
+    Moment card's "dernier passage" line). Rendering that markdown raw
+    inside a plain <p> leaked literal `**`/`` ` ``/table-pipe syntax and
+    unrendered table rows straight into the card (#642 W19 Issue 1). This
+    is a deliberately small, non-HTML stripper — it never needs to be safe
+    against untrusted HTML because the caller renders the result as plain
+    text (Jinja auto-escapes), only readable against markdown syntax noise.
+    """
+    lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _MD_TABLE_SEP_RE.match(stripped):
+            continue  # `| --- | --- |` separator rows carry no content
+        stripped = _MD_HEADING_RE.sub("", stripped)
+        if _MD_TABLE_ROW_RE.match(stripped):
+            # table row → space-joined cells, drop empty edge cells from
+            # the leading/trailing `|`
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            stripped = " ".join(c for c in cells if c)
+        stripped = _MD_LINK_RE.sub(r"\1", stripped)
+        stripped = _MD_EMPHASIS_RE.sub("", stripped)
+        if stripped:
+            lines.append(stripped)
+    return " ".join(lines)
+
+
 def load_recent_layer_output(slug: str, layer_num: int) -> Optional[Dict[str, Any]]:
     """Return recent output info for a specific layer.
 
     Reads .last-run (timestamp) and summary.md (excerpt) from the latest
     output date directory for that layer. Used by the dept detail kanban
     to show activity without reading the full summary.
+
+    `summary_excerpt` is markdown-stripped plain text, capped at 140 chars
+    (`_cap`) — the Moment card renders it as a compact "dernier passage"
+    line, never the raw runtime markdown (#642 W19 Issue 1: a raw
+    summary.md with **bold**/`code`/table syntax was leaking straight into
+    the card, overflowing its border).
 
     Returns dict with {last_run, summary_excerpt, date} or None.
     """
@@ -1712,15 +1758,9 @@ def load_recent_layer_output(slug: str, layer_num: int) -> Optional[Dict[str, An
     summary_path = layer_dir / "summary.md"
     if summary_path.exists():
         try:
-            lines = summary_path.read_text(encoding="utf-8").splitlines()
-            excerpt_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    excerpt_lines.append(stripped)
-                    if len(excerpt_lines) >= 3:
-                        break
-            summary_excerpt = " ".join(excerpt_lines) if excerpt_lines else None
+            raw = summary_path.read_text(encoding="utf-8")
+            plain = _strip_markdown_to_text(raw)
+            summary_excerpt = _cap(plain, 140) if plain else None
         except OSError:
             pass
 
