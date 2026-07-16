@@ -1,0 +1,11 @@
+[Unit]
+Description=Bubble Deploy — freshness watchdog timer (daily, well after the 2h deploy cadence)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

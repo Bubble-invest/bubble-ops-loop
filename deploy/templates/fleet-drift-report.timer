@@ -1,0 +1,12 @@
+[Unit]
+Description=Bubble Fleet — drift report timer (every 30 min)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

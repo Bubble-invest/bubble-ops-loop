@@ -1,0 +1,20 @@
+[Unit]
+Description=Bubble Fleet — per-dept drift report (behind-count + dirty-file-count)
+Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/claude-agent/env
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+EnvironmentFile=-/run/claude-agent/env
+ExecStart=/home/claude/scripts/fleet-drift-report.sh
+# Machine-readable state lives under /run/bubble-fleet — a tmpfs dir this
+# service creates and owns, readable by any dept loop at loop-start.
+RuntimeDirectory=bubble-fleet
+RuntimeDirectoryMode=0755
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fleet-drift-report
