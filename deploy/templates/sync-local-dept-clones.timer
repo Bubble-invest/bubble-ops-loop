@@ -1,17 +1,23 @@
 # /etc/systemd/system/sync-local-dept-clones.timer
-# Fires sync-local-dept-clones.service every ~15 minutes so the cockpit's view
+# Fires sync-local-dept-clones.service every 15 minutes so the cockpit's view
 # of host:local depts (gates / state / heartbeat) stays current.
-# Configurable: change OnUnitActiveSec to adjust the cadence.
+# Configurable: change the OnCalendar cadence expression below.
+#
+# OnCalendar, not OnUnitActiveSec (board #667, Jul-4 gap): OnUnitActiveSec
+# schedules relative to the unit's LAST ACTIVATION, so after downtime +
+# Persistent's catch-up run, the next fire can drift off the intended cadence
+# (observed as a multi-hour gap on 2026-07-04). OnCalendar fires on absolute
+# wall-clock boundaries regardless of when the unit last ran, so the cadence
+# self-corrects every tick — the same durability fix already used by
+# bubble-deploy-infra.timer / notion-kanban-sync.timer for the same interval.
 [Unit]
 Description=Bubble Ops host:local dept mirror-sync timer (every 15 min)
 Documentation=https://github.com/Bubble-Finance-Inc/bubble-ops-loop
 After=network-online.target
 
 [Timer]
-# First run shortly after boot (let the network come up).
-OnBootSec=3min
-# Then every 15 minutes.
-OnUnitActiveSec=15min
+# Every 15 minutes, on the wall clock (:00/:15/:30/:45).
+OnCalendar=*:0/15
 # Randomize by up to 60s to avoid a thundering herd against GitHub.
 RandomizedDelaySec=60
 # Catch up after downtime (e.g. VPS was off) on the next boot.
