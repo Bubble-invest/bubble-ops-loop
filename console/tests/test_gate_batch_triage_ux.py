@@ -16,6 +16,7 @@ separate here so each file stays focused and independently readable).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -115,14 +116,25 @@ def test_gate_card_single_view_uses_m4_charte_skin(tmp_path, monkeypatch):
 def test_batch_card_title_is_visually_dominant_class(tmp_path, monkeypatch):
     """Each card's title renders in gate-batch-title (the dominant element,
     per Jade's direct feedback); the id/risk metadata is demoted to the
-    smaller, muted gate-batch-meta line — not sharing the h3 with the title."""
+    smaller, muted gate-batch-meta line — not sharing the h3 with the title.
+
+    Option A (card #666 follow-up): the h3 content is now the HUMAN title
+    (gate_human_title()), not the raw slug — the raw id moved to the small
+    mono card footer (.a-footer) instead. For this fixture (no summary
+    quote, no image_hook) gate_human_title de-slugifies the id, so
+    'person 001' (space-separated, sentence-cased) still appears inside the
+    dominant h3, and the raw id itself now appears in the footer line.
+    """
     c = _build_app_with_gates(tmp_path, monkeypatch, [_gate(1)])
     body = c.get("/gate/fixture/kind/prospect_dm").text
     assert 'class="gate-batch-title"' in body
     assert 'class="gate-batch-meta"' in body
-    # The title's own text (slug) appears inside the dominant element,
-    # not just anywhere on the page.
-    assert "person-001" in body
+    # The human title (de-slugified fallback) appears inside the dominant h3.
+    title_start = body.index('class="gate-batch-title"')
+    title_chunk = body[title_start:title_start + 300]
+    assert "person 001" in title_chunk.lower()
+    # The raw id is demoted to the footer, not the title.
+    assert "prospect_dm-person-001" in body
 
 
 # ─── 3. Sort — date_asc (default) / date_desc ──────────────────────────────
@@ -168,12 +180,18 @@ def test_batch_invalid_sort_falls_back_to_default(tmp_path, monkeypatch):
     assert i1 < i2  # still oldest-first
 
 
-def test_batch_sort_select_reflects_current_value(tmp_path, monkeypatch):
-    """The sort <select> must mark the active option as selected so the
-    control shows the operator's current view, not always the default."""
+def test_batch_sort_toggle_reflects_current_value(tmp_path, monkeypatch):
+    """The 2-state sort toggle (Option A) must mark the active state with
+    the 'on' class so the control shows the operator's current view, not
+    always the default."""
     c = _build_app_with_gates(tmp_path, monkeypatch, [_gate(1)])
     body = c.get("/gate/fixture/kind/prospect_dm?sort=date_desc").text
-    assert 'value="date_desc" selected' in body
+    m = re.search(r'class="([^"]*)">↓ Plus récent', body)
+    assert m is not None, "sort-desc toggle link not found"
+    assert "on" in m.group(1).split()
+    m_asc = re.search(r'class="([^"]*)">↑ Plus ancien', body)
+    assert m_asc is not None, "sort-asc toggle link not found"
+    assert "on" not in m_asc.group(1).split()
 
 
 # ─── 4. Channel filter ──────────────────────────────────────────────────
@@ -227,13 +245,35 @@ def test_batch_empty_channel_result_offers_reset_link(tmp_path, monkeypatch):
     assert f'href="/gate/fixture/kind/prospect_dm"' in r.text
 
 
-def test_batch_channel_select_offers_all_channels(tmp_path, monkeypatch):
-    """The channel <select> must list every GATE_CHANNELS option so the
-    operator can pick linkedin/substack/x/newsletter/other from one control."""
-    c = _build_app_with_gates(tmp_path, monkeypatch, [_gate(1)])
+def test_batch_channel_pills_offer_every_channel_present(tmp_path, monkeypatch):
+    """Option A: one chip per channel that actually has pending gates, each
+    carrying a real ?channel= link and its count badge — so the operator
+    can jump straight to any populated channel from the toolbar. A channel
+    with zero gates gets no pill (matches the validated mockup: 'Autre'/
+    'other' isn't shown when its count is 0 — a dead 0-count pill is not
+    useful triage UI)."""
+    gates = [
+        _gate(1, kind="prospect_dm"),                       # linkedin (implicit)
+        _gate(2, kind="prospect_dm", channel="substack"),
+        _gate(3, kind="prospect_dm", channel="x"),
+        _gate(4, kind="prospect_dm", channel="newsletter"),
+    ]
+    c = _build_app_with_gates(tmp_path, monkeypatch, gates)
     body = c.get("/gate/fixture/kind/prospect_dm").text
-    for ch in ("linkedin", "substack", "x", "newsletter", "other"):
-        assert f'value="{ch}"' in body
+    for ch in ("linkedin", "substack", "x", "newsletter"):
+        assert f'?channel={ch}' in body, f"no pill link for channel={ch}"
+    # The populated channels' count badges are visible without filtering.
+    assert 'Tous <span class="count">4</span>' in body
+
+
+def test_batch_channel_pill_zero_count_not_rendered(tmp_path, monkeypatch):
+    """A channel with zero pending gates in this kind gets no pill at all —
+    prevents a dead '0' pill from cluttering the toolbar."""
+    gates = [_gate(1, kind="prospect_dm")]  # linkedin only
+    c = _build_app_with_gates(tmp_path, monkeypatch, gates)
+    body = c.get("/gate/fixture/kind/prospect_dm").text
+    assert '?channel=newsletter' not in body
+    assert '?channel=x' not in body
 
 
 # ─── 5. Sort + filter combine, and #255 behaviour survives untouched ──────

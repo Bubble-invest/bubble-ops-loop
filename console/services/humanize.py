@@ -10,6 +10,7 @@ no enum slug).
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -281,6 +282,31 @@ _LINKEDIN_DEFAULT_KINDS = ("news_post", "news_post_task", "prospect_dm", "follow
 # order. "other" is the catch-all bucket for anything not in this list
 # (or with no channel at all) — see gate_channel().
 GATE_CHANNELS = ("linkedin", "substack", "x", "newsletter", "other")
+
+# Display label per channel for the Option A chip row (card #666 follow-up,
+# Jade-validated mockup). "X" is already the correct casing on both axes so
+# it needs no entry — the fallback (.title()/upper handled by the caller)
+# covers it and "other" identically.
+CHANNEL_LABEL: dict[str, str] = {
+    "linkedin": "LinkedIn",
+    "substack": "Substack",
+    "x": "X",
+    "newsletter": "Newsletter",
+    "other": "Autre",
+}
+
+
+def humanize_channel(channel: str | None) -> str:
+    """Return the display label for a GATE_CHANNELS value.
+
+    >>> humanize_channel("linkedin")
+    'LinkedIn'
+    >>> humanize_channel("x")
+    'X'
+    >>> humanize_channel(None)
+    'Autre'
+    """
+    return CHANNEL_LABEL.get((channel or "").strip().lower(), "Autre")
 
 
 def gate_channel(gate: dict | None) -> str:
@@ -605,3 +631,164 @@ def gate_age_is_stale(gate: dict | None) -> bool:
     return isinstance(age, int) and age > GATE_AGE_WARNING_DAYS
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Gate human title — Option A (Jade-validated mockup, card #666 follow-up,
+# 2026-07-16). No gate carries its own `title:` field; the batch/decision
+# cards used to lead with the dept slug ("content") or the raw gate id
+# (publish-linkedin-org-100-agents-2026-07-02), neither of which is
+# something {{OPERATOR}} can read at a glance. gate_human_title() derives a
+# real headline server-side, in this priority order:
+#
+#   1. A NAMED title quoted in `summary`, but ONLY when a title-bearing noun
+#      (essay/essai/article/note/post) appears earlier in the same clause —
+#      an essay literally titled "Deux cartes pour la même décennie" is a
+#      title; a hook or reported line quoted mid-thesis ("l'agent n'a rien
+#      fait" = FAUX, or a « Impact / résultat » archetype label) is NOT.
+#      Verified against all 12 real pending content gates (2026-07-16):
+#      this tier fires exactly once (the Substack essay) — everything else
+#      correctly falls through, because a naive "first quote in the first
+#      two lines" rule (the mockup's original wording) mis-fired on 2/12
+#      real gates that quote a claim being refuted or an archetype label,
+#      not a title.
+#   2. `image_hook` — LinkedIn content gates already write a short,
+#      standalone, publish-ready phrase here for the card visual; it reads
+#      as a headline even though it wasn't authored as one.
+#   3. De-slugified `id` — strip the `publish-<channel>-` prefix and the
+#      trailing `-YYYY-MM-DD`, hyphens -> spaces, sentence-case. Covers X
+#      threads, Substack notes, and anything with neither a named title nor
+#      an image_hook.
+#   4. Newsletter special case — a newsletter gate's id/summary never carry
+#      a topical title (batch id + date only), so it gets a dedicated
+#      "Newsletter — <created>" fallback ahead of the generic de-slug tier.
+#
+# The dept slug never appears in the returned title — callers move it out
+# of the heading entirely (Option A mockup: gate.slug/kind used only for
+# the chip row, never the H-tag).
+# ---------------------------------------------------------------------------
+
+# A quoted span counts as a NAMED TITLE only when introduced by one of these
+# nouns earlier in the same clause (one parenthetical aside tolerated in
+# between, e.g. 'essay (thought-leadership, FR) "Title"').
+_TITLE_INTRO_RE = re.compile(
+    r"(essay|essai|article|note|post)\b(\s*\([^)]{0,40}\))?[^.\"\n]{0,15}$",
+    re.IGNORECASE,
+)
+# A quote preceded by one of these within the lookback window is illustrative
+# (an archetype label, reported speech, a claim being refuted) — never a
+# title, even if a title-intro noun appears further back in the same window.
+_NOT_TITLE_BEFORE_RE = re.compile(
+    r"(arch[ée]type|hook\b|concluait|disait|r[ée]pondait)[^.\"\n]{0,30}$",
+    re.IGNORECASE,
+)
+# French guillemets or straight double quotes, 4-90 chars inside.
+_QUOTE_RE = re.compile(r"«\s*([^»]{4,90})\s*»|\"\s*([^\"]{4,90})\s*\"")
+# Trailing `-YYYY-MM-DD` on a gate id.
+_ID_TRAILING_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+# `publish-<channel>-<rest>` prefix on a gate id.
+_ID_PUBLISH_PREFIX_RE = re.compile(r"^publish-[a-z0-9]+-(.*)$")
+
+
+def _quoted_named_title(summary: str) -> str | None:
+    """Return the first quoted span in `summary` that reads as a NAMED
+    title (not a hook/label/reported-speech quote), or None."""
+    window = summary[:260]
+    for m in _QUOTE_RE.finditer(window):
+        title = (m.group(1) or m.group(2) or "").strip()
+        if not title:
+            continue
+        preceding = window[max(0, m.start() - 70):m.start()]
+        if _NOT_TITLE_BEFORE_RE.search(preceding):
+            continue
+        if _TITLE_INTRO_RE.search(preceding):
+            return title
+    return None
+
+
+def _deslug_gate_id(gate_id: str) -> str | None:
+    """De-slugify a gate id into sentence-case prose.
+
+    >>> _deslug_gate_id("publish-x-le-plus-gros-modele-2026-07-16")
+    'Le plus gros modele'
+    >>> _deslug_gate_id("publish-linkedin-org-100-agents-2026-07-02")
+    'Org 100 agents'
+    """
+    if not gate_id:
+        return None
+    m = _ID_PUBLISH_PREFIX_RE.match(gate_id)
+    rest = m.group(1) if m else gate_id
+    rest = _ID_TRAILING_DATE_RE.sub("", rest)
+    rest = rest.replace("-", " ").replace("_", " ").strip()
+    if not rest:
+        return None
+    return rest[:1].upper() + rest[1:]
+
+
+def gate_human_title(gate: dict | None) -> str:
+    """Return a human, publish-ready headline for a gate card (Option A).
+
+    See the module comment above this function for the full priority-order
+    rationale. Always returns a non-empty string — the final fallback is
+    the raw gate id (or a generic label if even that is missing), so a
+    caller never needs a None-guard.
+
+    Examples (real gate shapes, verified 2026-07-16):
+        >>> gate_human_title({
+        ...     "id": "publish-substack-essay-two-maps-ai-decade-2026-06-27",
+        ...     "channel": "substack_post",
+        ...     "summary": 'FREE Substack essay (thought-leadership, FR) '
+        ...                '"Deux cartes pour la même décennie". Meta-frame...',
+        ... })
+        'Deux cartes pour la même décennie'
+        >>> gate_human_title({
+        ...     "id": "publish-linkedin-org-100-agents-2026-07-02",
+        ...     "channel": "linkedin",
+        ...     "summary": "LinkedIn post — compte JORIS, archétype "
+        ...                '« Ce qu\\'on a construit » (build-in-public...).',
+        ...     "image_hook": "Une société d'investissement dans quelques agents.",
+        ... })
+        "Une société d'investissement dans quelques agents."
+        >>> gate_human_title({
+        ...     "id": "publish-x-le-plus-gros-modele-2026-07-16",
+        ...     "channel": "x",
+        ...     "summary": "X thread (7 tweets, FR)...",
+        ... })
+        'Le plus gros modele'
+        >>> gate_human_title({
+        ...     "id": "publish-newsletter-ai-cost-war-2026-07-10",
+        ...     "channel": "newsletter",
+        ...     "created": "2026-07-10",
+        ... })
+        'Newsletter — 2026-07-10'
+        >>> gate_human_title({})
+        'Décision'
+    """
+    if not gate:
+        return "Décision"
+    gate_id = str(gate.get("id") or "").strip()
+    channel = str(gate.get("channel") or "").strip().lower()
+
+    # Newsletter special case — no topical title exists anywhere on this
+    # kind (id is batch+date only); dedicated fallback ahead of de-slug.
+    if channel.startswith("newsletter") or gate_id.startswith("publish-newsletter"):
+        created = gate.get("created")
+        if created:
+            return f"Newsletter — {created}"
+        return "Newsletter"
+
+    summary = gate.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        named = _quoted_named_title(summary)
+        if named:
+            return named
+
+    image_hook = gate.get("image_hook")
+    if isinstance(image_hook, str) and image_hook.strip():
+        return image_hook.strip()
+
+    fallback = _deslug_gate_id(gate_id)
+    if fallback:
+        return fallback
+
+    return gate_id or "Décision"
