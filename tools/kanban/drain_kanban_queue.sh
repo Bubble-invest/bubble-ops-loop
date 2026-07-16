@@ -37,9 +37,15 @@ DRY_RUN="${DRAIN_DRY_RUN:-0}"
 # ── Auth resolution (same logic as emit_kanban_item.sh) ──────────────────────
 
 _resolve_gh_token() {
-  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+  # Ambient auth is trusted ONLY if the board repo is actually reachable —
+  # `gh auth status` alone passes with a scoped/poisoned token that 404s the
+  # board (#536 class; same gate as emit_kanban_item.sh, r15 review).
+  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1 \
+     && gh api "repos/${BOARD_REPO}" --jq .name &>/dev/null; then
     return 0
   fi
+  # A poisoned env token must not shadow the fallback paths.
+  unset GH_TOKEN GITHUB_TOKEN 2>/dev/null || true
   local minter=/usr/local/bin/bubble-board-token.sh
   if command -v gh &>/dev/null && [ -x "$minter" ]; then
     local tok
@@ -137,21 +143,47 @@ except Exception as e:
 
   echo "drain_kanban_queue: replaying task=${TASK:-?} title=${TITLE:0:60}..." >&2
 
-  # Idempotency: skip if an open issue already carries this task marker.
-  if [ -n "$TASK" ]; then
+  # Idempotency: dedupe on TITLE (normalized), never on task alone.
+  # #673 bug: one existing open issue with task=morty-agentic-audit swallowed
+  # ALL 11 queued cards as "already exists" — task alone is not a valid dedup
+  # key because a recurring task legitimately emits many DISTINCT findings
+  # (each with its own title) under the same task id. A title-normalized
+  # search (case/whitespace-insensitive) is required before archiving a
+  # queued card as a duplicate; task is no longer sufficient on its own.
+  norm_title=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ')
+  norm_title="${norm_title#"${norm_title%%[![:space:]]*}"}"   # trim leading ws
+  norm_title="${norm_title%"${norm_title##*[![:space:]]}"}"  # trim trailing ws
+  # collapse internal whitespace runs to single spaces (r15 review: a title with
+  # irregular internal ws must still substring-match the board's stored title)
+  norm_title=$(printf '%s' "$norm_title" | tr -s '[:space:]' ' ')
+  existing=""
+  if [ -n "$norm_title" ]; then
     existing=$(gh issue list \
       --repo "$BOARD_REPO" \
       --state open \
-      --search "\"emit-task: ${TASK}\" in:body" \
-      --limit 1 \
-      --json number \
-      --jq '.[0].number' 2>/dev/null || true)
-    if [ -n "$existing" ]; then
-      echo "drain_kanban_queue: issue #${existing} already exists for task=${TASK} — archiving as drained" >&2
-      echo "$line" >> "$DRAINED"
-      DRAINED_COUNT=$((DRAINED_COUNT + 1))
-      continue
-    fi
+      --search "\"${norm_title}\" in:title" \
+      --limit 30 \
+      --json number,title \
+      --jq '.[] | [(.number|tostring), .title] | @tsv' 2>/dev/null | \
+      python3 -c "
+import sys
+target = sys.argv[1]
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line:
+        continue
+    num, _, title = line.partition('\t')
+    t_norm = ' '.join(title.lower().split())
+    if t_norm == target:
+        print(num)
+        break
+" "$norm_title" 2>/dev/null || true)
+  fi
+  if [ -n "$existing" ]; then
+    echo "drain_kanban_queue: issue #${existing} already exists with matching title — archiving as drained (title-dedupe, #673)" >&2
+    echo "$line" >> "$DRAINED"
+    DRAINED_COUNT=$((DRAINED_COUNT + 1))
+    continue
   fi
 
   # Build a minimal issue body (task marker for idempotency; body if available).
