@@ -37,9 +37,15 @@ DRY_RUN="${DRAIN_DRY_RUN:-0}"
 # ── Auth resolution (same logic as emit_kanban_item.sh) ──────────────────────
 
 _resolve_gh_token() {
-  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+  # Ambient auth is trusted ONLY if the board repo is actually reachable —
+  # `gh auth status` alone passes with a scoped/poisoned token that 404s the
+  # board (#536 class; same gate as emit_kanban_item.sh, r15 review).
+  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1 \
+     && gh api "repos/${BOARD_REPO}" --jq .name &>/dev/null; then
     return 0
   fi
+  # A poisoned env token must not shadow the fallback paths.
+  unset GH_TOKEN GITHUB_TOKEN 2>/dev/null || true
   local minter=/usr/local/bin/bubble-board-token.sh
   if command -v gh &>/dev/null && [ -x "$minter" ]; then
     local tok
@@ -147,12 +153,15 @@ except Exception as e:
   norm_title=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ')
   norm_title="${norm_title#"${norm_title%%[![:space:]]*}"}"   # trim leading ws
   norm_title="${norm_title%"${norm_title##*[![:space:]]}"}"  # trim trailing ws
+  # collapse internal whitespace runs to single spaces (r15 review: a title with
+  # irregular internal ws must still substring-match the board's stored title)
+  norm_title=$(printf '%s' "$norm_title" | tr -s '[:space:]' ' ')
   existing=""
   if [ -n "$norm_title" ]; then
     existing=$(gh issue list \
       --repo "$BOARD_REPO" \
       --state open \
-      --search "\"${TITLE}\" in:title" \
+      --search "\"${norm_title}\" in:title" \
       --limit 30 \
       --json number,title \
       --jq '.[] | [(.number|tostring), .title] | @tsv' 2>/dev/null | \

@@ -258,6 +258,70 @@ echo "$DRAIN_OUT2" | grep -qi "already exists with matching title" \
   && ok "Card C was logged as archived via title-dedupe" \
   || bad "Card C's title-dedupe archive log line not found. Output: $DRAIN_OUT2"
 
+# ── Card F (r15 review): INTERNAL-whitespace duplicate ───────────────────────
+# The board holds "Fleet  audit:   gh   RCE  pending" (irregular internal ws).
+# A queued card titled "Fleet audit: gh RCE pending" (normal ws) is the SAME
+# card and must be archived, not double-created. This is the raw-$TITLE-search
+# bug: pre-fix, the gh-side search used the unnormalized queue title and could
+# miss the stored variant.
+QUEUE3="$WORK/queue3.jsonl"
+CREATED3="$WORK/created3.txt"
+FAKEBIN3="$WORK/fakebin3"; mkdir -p "$FAKEBIN3"
+cat > "$FAKEBIN3/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "auth status") exit 0 ;;
+  "api repos/Bubble-invest/bubble-ops-board") echo bubble-ops-board; exit 0 ;;
+  "api "*) exit 0 ;;
+esac
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then
+  printf '77\tFleet  audit:   gh   RCE  pending\n'
+  exit 0
+fi
+if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then
+  while [ \$# -gt 0 ]; do [ "\$1" = "--title" ] && echo "\$2" >> "$CREATED3"; shift; done
+  echo "https://github.com/Bubble-invest/bubble-ops-board/issues/999"
+  exit 0
+fi
+exit 0
+GHEOF
+chmod +x "$FAKEBIN3/gh"
+cat > "$QUEUE3" <<'EOF3'
+{"task":"morty-agentic-audit","severity":"kanban_only","message":"m","steps":[],"kanban_items":[{"title":"Fleet audit: gh RCE pending","type":"incident","priority":"normal","owner":"rnd"}]}
+EOF3
+DRAIN_OUT3=$(PATH="$FAKEBIN3:$PATH" KANBAN_QUEUE="$QUEUE3" DRAIN_DRY_RUN=0 bash "$DRAIN" 2>&1)
+if [ -f "$CREATED3" ] && grep -qi "fleet audit" "$CREATED3"; then
+  bad "Card F: internal-ws duplicate was double-created (raw-title search bug). Output: $DRAIN_OUT3"
+else
+  echo "$DRAIN_OUT3" | grep -qi "already exists with matching title" \
+    && ok "Card F: internal-whitespace duplicate correctly archived (normalized search+compare)" \
+    || bad "Card F: no dedupe archive logged. Output: $DRAIN_OUT3"
+fi
+
+# ── Card G (r15 review): drain's own resolver rejects a poisoned token ───────
+# fake gh: auth status OK, board api 404 → resolver must NOT return 0 on the
+# ambient path (it falls to minter/queue); we assert the poisoned env is unset
+# in the resolver path by checking the drain still completes without creating
+# via the poisoned ambient auth.
+FAKEBIN4="$WORK/fakebin4"; mkdir -p "$FAKEBIN4"
+cat > "$FAKEBIN4/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "auth status") exit 0 ;;
+  "api repos/Bubble-invest/bubble-ops-board") echo "Not Found" >&2; exit 1 ;;
+esac
+# any issue create under poisoned ambient auth = the bug
+if [ "\$1" = "issue" ]; then echo POISONED_CREATE >> "$WORK/poisoned4.txt"; exit 1; fi
+exit 1
+GHEOF
+chmod +x "$FAKEBIN4/gh"
+QUEUE4="$WORK/queue4.jsonl"
+printf '{"task":"t","severity":"kanban_only","message":"m","steps":[],"kanban_items":[{"title":"G case title","type":"incident","priority":"normal","owner":"rnd"}]}\n' > "$QUEUE4"
+DRAIN_OUT4=$(PATH="$FAKEBIN4:$PATH" GH_TOKEN=poisoned GITHUB_TOKEN=poisoned KANBAN_QUEUE="$QUEUE4" DRAIN_DRY_RUN=0 bash "$DRAIN" 2>&1)
+grep -q "POISONED_CREATE" "$WORK/poisoned4.txt" 2>/dev/null \
+  && bad "Card G: drain attempted create on the poisoned ambient path" \
+  || ok "Card G: drain resolver refused the poisoned ambient token (board-reachability gate)"
+
 DRAINED2="${QUEUE2%.jsonl}.drained"
 if [ -f "$DRAINED2" ]; then
   grep -qi "DUPLICATE finding X" "$DRAINED2" \
