@@ -451,6 +451,64 @@ if [[ $RC21 -eq 0 && "$HELP_OUT" == *"add"* && "$HELP_OUT" == *"rotate"* && "$HE
   ok "T21 --help exits 0 and documents add/rotate/apply"
 else bad "T21 (rc=$RC21)"; fi
 
+# ---- T22: rollback itself fails (unreadable/absent backup) -> ROLLBACK-FAILED,
+#           never claims "restored", INSTALLED_UNVERIFIED stays set -------------
+# Independent-reviewer finding: the old rollback() never checked the
+# cp/chmod/mv chain's exit status, so a failed restore (backup gone/unreadable,
+# disk full, permission race) still printed "ROLLBACK: restored" and cleared
+# the safety flag — a false-safety-signal in the exact mechanism this tool
+# exists to guarantee. Repro here: drive a REAL verify failure (--expect-len
+# mismatch) so the script takes its normal rollback path, but make the
+# restore's `cp` step fail deterministically by shadowing `cp` on PATH with a
+# stub that fails ONLY when copying FROM a `.bak-*` backup file (i.e. only the
+# rollback's own restore copy, not any other cp usage). Assert: nonzero exit,
+# ABORT-ROLLBACK-FAILED (not the original ABORT-VERIFY-LENGTH), stderr never
+# claims "restored", and — the sharpest check — the target file is NOT
+# byte-identical to the backup (proving the restore genuinely did not happen,
+# not just that the message changed).
+STUB_CP_FAIL_BACKUP="$WORK/cp"
+cat > "$STUB_CP_FAIL_BACKUP" <<'EOF'
+#!/usr/bin/env bash
+# Fails ONLY the rollback restore's own copy step — source is a `.bak-*`
+# file AND destination is a `.rollback.` tmp file (the exact shape
+# `rollback()` uses: `cp -p "$BACKUP" "$tmp"`). The forward backup-creation
+# step (`cp -p "$F" "$BACKUP"`, destination matches .bak-* but SOURCE does
+# not) must keep working — that has to succeed first for this failure mode
+# to be reachable at all. Every other cp invocation passes through to the
+# real /bin/cp untouched.
+src=""
+dst=""
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *) if [[ -z "$src" ]]; then src="$a"; else dst="$a"; fi ;;
+  esac
+done
+if [[ "$src" == *.bak-* && "$dst" == *.rollback.* ]]; then
+  echo "stub-cp: forced failure restoring backup ($src -> $dst)" >&2
+  exit 1
+fi
+exec /bin/cp "$@"
+EOF
+chmod +x "$STUB_CP_FAIL_BACKUP"
+
+F22="$WORK/rollbackfail-secrets-fixture.sops.env"
+mk_fixture "$F22" 'TELEGRAM_BOT_TOKEN="oldtoken000"' 'OTHER_KEY="keepme"'
+BEFORE22="$(cat "$F22")"
+printf '%s' "twelvechars1" | PATH="$WORK:$PATH" SOPS_BIN="$STUB_SOPS" CURL_BIN="$STUB_CURL" \
+  SYSTEMCTL_BIN="$STUB_SYSTEMCTL" TMPFS_DIR="$TMPFS" \
+  INSTALL_OWNER="$INSTALL_OWNER_TEST" INSTALL_GROUP="$INSTALL_GROUP_TEST" \
+  "$SCRIPT" rotate fixture TELEGRAM_BOT_TOKEN --expect-len 99 --file "$F22" \
+  > "$WORK/out22" 2> "$WORK/err22"
+RC22=$?
+OUT22="$(cat "$WORK/out22")"; ERR22="$(cat "$WORK/err22")"
+AFTER22="$(cat "$F22")"
+if [[ $RC22 -ne 0 && "$ERR22" == *"ABORT-ROLLBACK-FAILED"* && "$ERR22" == *"ROLLBACK-FAILED"* \
+   && "$ERR22" != *"ROLLBACK: restored"* && "$OUT22" != *"ROLLBACK: restored"* \
+   && "$BEFORE22" != "$AFTER22" ]]; then
+  ok "T22 rollback failure (unreadable backup) -> ROLLBACK-FAILED, never claims restored, file left in unverified state (not silently 'fixed')"
+else bad "T22 (rc=$RC22 err=$ERR22 unchanged=$([[ "$BEFORE22" == "$AFTER22" ]] && echo yes || echo no))"; fi
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]
