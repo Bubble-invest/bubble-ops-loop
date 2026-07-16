@@ -2089,6 +2089,118 @@ a.piece-tile:hover {
   margin: 6px 0 2px;
 }
 
+/* ─── NAV-over-time chart (board #364, PR-A) ────────────────────────────
+   Same visual system as .kpi-chart-* above (inline SVG, 100x32 viewbox,
+   ochre line) but full-width and with its own range toggle + degraded
+   markers, so it reads as the headline chart, not one KPI tile among many. */
+.nav-chart-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 18px 20px 14px;
+  margin-bottom: 20px;
+}
+.nav-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.nav-chart-heading {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  color: var(--ink);
+  margin: 0;
+}
+.nav-chart-degraded-note {
+  display: block;
+  font-size: 11.5px;
+  color: #c75f5f;
+  margin-top: 2px;
+}
+.nav-chart-range-toggle {
+  display: flex;
+  gap: 4px;
+}
+.nav-chart-range-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--body-muted);
+  text-decoration: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+}
+.nav-chart-range-link:hover { color: var(--ink); border-color: var(--line); }
+.nav-chart-range-link--active {
+  color: var(--ink);
+  background: var(--paper-soft);
+  border-color: var(--ochre);
+  font-weight: 600;
+}
+.nav-chart-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.nav-chart-value {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 500;
+  color: var(--ochre-deep);
+  line-height: 1;
+}
+.nav-chart-minmax {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--body-muted);
+}
+.nav-chart-svg {
+  display: block;
+  width: 100%;
+  height: 110px;
+  overflow: visible;
+}
+.nav-chart-line {
+  fill: none;
+  stroke: var(--ochre);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.nav-chart-degraded-marker {
+  fill: var(--paper);
+  stroke: #c75f5f;
+  stroke-width: 1;
+  stroke-dasharray: 1.2 1;
+  vector-effect: non-scaling-stroke;
+}
+.nav-chart-hit {
+  fill: transparent;
+  stroke: none;
+  cursor: default;
+}
+.nav-chart-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--body-muted);
+}
+.nav-chart-empty {
+  font-size: 12.5px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 6px 0 2px;
+}
+
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
 

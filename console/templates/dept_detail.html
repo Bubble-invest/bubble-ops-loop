@@ -306,6 +306,13 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     {% endif %}
   </div>
 
+  {# NAV-over-time chart (#364, PR-A) — only meaningful for depts with a
+     fund DB (Ben today); nav_chart.has_chart is False (graceful no-op) for
+     every other dept, so this never renders an empty shell fleet-wide. #}
+  {% if nav_chart and nav_chart.has_chart %}
+    {% include "components/nav-chart.html" %}
+  {% endif %}
+
   {% if whiteboard and whiteboard.kpis %}
     {# #534 (Joris): only ONE row of KPI tiles visible by default; the rest
        tuck behind the same "+N de plus" collapse used for loop-runs overflow.
