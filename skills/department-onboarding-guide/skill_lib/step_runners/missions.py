@@ -32,6 +32,7 @@ sub-agent #1's MandateRunner uses for `mandate`.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,6 +41,23 @@ import yaml
 
 from ..artifact_tests import test_artifact
 from .base import Action, StepRunner, register_runner
+
+# card #688: mission_scaffold.py (scripts/lib/) is the single shared
+# emitter that materializes #642's frozen piece-view conventions
+# (missions/<id>/PROMPT.md, own-skill/config/memory/voice) for a
+# mission dict. scaffold.py's bootstrap path and THIS conversational
+# Step-2 "+ add mission" path both call it, so a dept hatched purely
+# through Step 2 (no --starter-missions at bootstrap) still gets the
+# full cockpit architecture view natively. Path surgery mirrors
+# scaffold.py's own sys.path insert for its sibling scripts/lib
+# imports — this module may be imported by a caller that never set up
+# scripts/lib on sys.path (e.g. the skill's own test conftest only
+# inserts SKILL_ROOT), so we add it defensively here rather than
+# assume it.
+_SCRIPTS_LIB = Path(__file__).resolve().parent.parent.parent.parent.parent / "scripts" / "lib"
+if str(_SCRIPTS_LIB) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_LIB))
+import mission_scaffold  # noqa: E402
 
 
 # ----- Constants -----
@@ -505,6 +523,23 @@ class MissionsRunner(StepRunner):
         self._current_status = "awaiting_validation"
         self._persist_progress()
 
+    def _dept_display_name(self, dept_root: Path) -> str:
+        """Best-effort display name for the mission_scaffold piece emitter
+        (used in rendered comments/headers only, never validated). Prefers
+        STATE.yaml::display_name (the source of truth per mandate.py),
+        falls back to dept.yaml.draft::department.display_name, else the
+        dept root dirname."""
+        if self.state_path is not None:
+            state_doc = _read_yaml(self.state_path)
+            name = state_doc.get("display_name")
+            if isinstance(name, str) and name:
+                return name
+        draft = _read_yaml(self.dept_yaml_draft_path) if self.dept_yaml_draft_path else {}
+        name = (draft.get("department") or {}).get("display_name")
+        if isinstance(name, str) and name:
+            return name
+        return dept_root.name
+
     def _commit_current_mission(self) -> bool:
         """Test the current mission and, on PASS, write it to disk.
 
@@ -526,6 +561,20 @@ class MissionsRunner(StepRunner):
         _atomic_write_yaml(mission_path, dict(self._current_mission))
         if mission_path not in self._artifacts_written:
             self._artifacts_written.append(mission_path)
+        # card #688: emit the full #642 piece-view convention set for this
+        # mission (missions/<id>/PROMPT.md, own-skill/config/memory/voice)
+        # so the cockpit renders it natively — not a retrofit — the SAME
+        # emitter scaffold.py's bootstrap --starter-missions path uses.
+        display_name = self._dept_display_name(dept_root)
+        for written in mission_scaffold.scaffold_mission_pieces(
+            dept_root, self._current_mission, dept_root.name, display_name,
+        ):
+            if written not in self._artifacts_written:
+                self._artifacts_written.append(written)
+        if str(self._current_mission.get("output_queue") or "").rstrip("/") == "queues/research":
+            schema_path = mission_scaffold.scaffold_pool_schema(dept_root, display_name)
+            if schema_path is not None and schema_path not in self._artifacts_written:
+                self._artifacts_written.append(schema_path)
         # Append to sub_validated.
         self._sub_validated.append({
             "id": self._current_mission["id"],
