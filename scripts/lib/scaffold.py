@@ -30,6 +30,7 @@ if str(_HERE) not in sys.path:
 from skill_lib.templates import render_template  # noqa: E402
 import state_yaml  # noqa: E402
 from layer_templates import render_layer_prompt  # noqa: E402
+import mission_scaffold  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1328,7 +1329,8 @@ def _build_settings(slug: str, level: str = "ops") -> dict:
 
 def scaffold(root: Path, slug: str, display_name: str, owner: str,
              level: str = "ops",
-             children: list | None = None) -> None:
+             children: list | None = None,
+             starter_missions: list | None = None) -> None:
     """Materialize the full onboarding skeleton under `root`.
 
     Args:
@@ -1341,6 +1343,20 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
                       allow-list.
         children:     List of child dept slugs. Required when level="management"
                       (must be non-empty). Must be empty when level="ops".
+        starter_missions: Optional list of recurring-mission dicts (same
+                      shape as recurring-mission.schema.yaml) to bootstrap
+                      into `dept.yaml.draft::recurring_missions` AND fully
+                      scaffold via mission_scaffold.py (card #688) --
+                      missions/<id>/PROMPT.md, own-skill/config/memory/
+                      voice pieces per each mission's declared shape --
+                      so the cockpit's #642 layered piece view renders
+                      the FULL architecture natively from bootstrap,
+                      never as a manual retrofit. Optional: a dept with
+                      no starter missions still gets the bare skeleton
+                      (Step 2 of onboarding fills missions in
+                      conversationally via MissionsRunner, which now
+                      calls the SAME mission_scaffold emitter — see
+                      step_runners/missions.py).
     """
     root = root.resolve()
     if not root.exists():
@@ -1367,10 +1383,23 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     write_with_dirs(root / ".gitignore", GITIGNORE_CONTENT)
 
     # 3. dept.yaml.draft (rendered via UX-1 template, branching on level).
-    write_with_dirs(
-        root / "dept.yaml.draft",
-        render_dept_yaml_draft(slug, display_name, owner, level=level, children=children),
-    )
+    dept_draft_text = render_dept_yaml_draft(slug, display_name, owner, level=level, children=children)
+    starter_missions = list(starter_missions) if starter_missions else []
+    if starter_missions:
+        # Fold the starter missions into recurring_missions alongside the
+        # always-on daily_risk_audit (card #688) — same precedent as
+        # MissionsRunner._sync_recurring_missions_in_draft: dept.yaml.draft
+        # is the single source of truth the console + dispatch read.
+        import yaml as _yaml
+        doc = _yaml.safe_load(dept_draft_text)
+        existing = doc.get("recurring_missions") or []
+        existing_ids = {m.get("id") for m in existing}
+        for m in starter_missions:
+            if m.get("id") not in existing_ids:
+                existing.append(dict(m))
+        doc["recurring_missions"] = existing
+        dept_draft_text = _yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+    write_with_dirs(root / "dept.yaml.draft", dept_draft_text)
 
     # 4. onboarding/STATE.yaml (initialized at status=Idea).
     state_yaml.init_state(
@@ -1431,6 +1460,22 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
         render_broker_policy(slug, level=level, children=children),
     )
 
+    # 12. Starter-mission pieces (card #688) — for each starter mission,
+    #     emit missions/<id>/PROMPT.md + its own-skill/config/memory/voice
+    #     pieces per mission_scaffold.py, so the cockpit's #642 layered
+    #     piece view renders the FULL architecture (groups, bands, tiles)
+    #     natively, with zero manual retrofit. Also emit
+    #     docs/CONTEXT_POOL_SCHEMA.md when any starter mission's
+    #     output_queue is the pool convention (queues/research/), so the
+    #     pool-band's optional schema deep-link resolves too.
+    for m in starter_missions:
+        mission_scaffold.scaffold_mission_pieces(root, m, slug, display_name)
+    if any(
+        str(m.get("output_queue") or "").rstrip("/") == "queues/research"
+        for m in starter_missions
+    ):
+        mission_scaffold.scaffold_pool_schema(root, display_name)
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Scaffold a bubble-ops-<slug> onboarding repo.")
@@ -1452,11 +1497,26 @@ def main() -> int:
             "Example: --children=ben,maya,miranda,eliot"
         ),
     )
+    p.add_argument(
+        "--starter-missions",
+        default="",
+        help=(
+            "Optional JSON array of recurring-mission dicts (card #688) to "
+            "bootstrap into dept.yaml.draft AND fully scaffold "
+            "(missions/<id>/PROMPT.md + own-skill/config/memory/voice "
+            "pieces) so the cockpit's #642 layered piece view renders "
+            "natively from bootstrap. Example: "
+            '\'[{"id": "draft_x", "layer": 2, "cadence": "daily", '
+            '"description": "...", "output_queue": "queues/gates/", '
+            '"creates": ["draft"], "input_sources": ["twitter_voice"]}]\''
+        ),
+    )
     args = p.parse_args()
     children = [c.strip() for c in args.children.split(",") if c.strip()] if args.children else []
+    starter_missions = json.loads(args.starter_missions) if args.starter_missions else []
     try:
         scaffold(Path(args.target), args.slug, args.display_name, args.owner,
-                 level=args.level, children=children)
+                 level=args.level, children=children, starter_missions=starter_missions)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 64
