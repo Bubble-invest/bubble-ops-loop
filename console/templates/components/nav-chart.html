@@ -1,0 +1,64 @@
+{# nav-chart.html — native NAV-over-time line chart (board #364, PR-A).
+   Expects `nav_chart` (a nav_history.NavHistory) and `nav_range_options`
+   (["30","90","all"]) in context, plus `dept.slug` for the range-toggle
+   links (?nav_range=…, plain GET — no JS state machine needed).
+
+   Inline SVG polyline, same 100x32-viewbox convention as kpi-sparkline.html
+   so it reads as the same visual system, not a bolted-on chart lib.
+   Degraded snapshots render as hollow/dashed markers with NO connecting
+   line through them (nav_history.py splits the polyline into clean-run
+   segments) — a broker-leg dropout must never look like a real NAV move. #}
+<section class="nav-chart-card" aria-labelledby="nav-chart-heading">
+  <header class="nav-chart-head">
+    <div>
+      <h3 id="nav-chart-heading" class="nav-chart-heading">NAV — historique</h3>
+      {% if nav_chart.degraded_count %}
+        <span class="nav-chart-degraded-note">
+          {{ nav_chart.degraded_count }} snapshot{{ 's' if nav_chart.degraded_count != 1 else '' }}
+          dégradé{{ 's' if nav_chart.degraded_count != 1 else '' }} (leg broker manquant) — affiché{{ 's' if nav_chart.degraded_count != 1 else '' }} en pointillé, non relié
+        </span>
+      {% endif %}
+    </div>
+    <nav class="nav-chart-range-toggle" aria-label="Période">
+      {% for opt in nav_range_options %}
+        <a href="?nav_range={{ opt }}"
+           class="nav-chart-range-link{% if opt == nav_chart.range_key %} nav-chart-range-link--active{% endif %}">
+          {{ '30j' if opt == '30' else ('90j' if opt == '90' else 'Tout') }}
+        </a>
+      {% endfor %}
+    </nav>
+  </header>
+
+  {% if nav_chart.has_chart %}
+    <div class="nav-chart-value-row">
+      <span class="nav-chart-value">{{ nav_chart.last_display }}</span>
+      <span class="nav-chart-minmax">min {{ nav_chart.min_display }} · max {{ nav_chart.max_display }}</span>
+    </div>
+    <svg class="nav-chart-svg" viewBox="0 0 100 32" preserveAspectRatio="none"
+         role="img" aria-label="NAV sur {{ nav_chart.points | length }} jours, {{ nav_chart.degraded_count }} dégradés">
+      {% for seg in nav_chart.segments %}
+        <polyline class="nav-chart-line" points="{{ seg }}" />
+      {% endfor %}
+      {% for i in range(nav_chart.degraded_x | length) %}
+        <circle class="nav-chart-degraded-marker"
+                cx="{{ nav_chart.degraded_x[i] }}" cy="{{ nav_chart.degraded_y[i] }}" r="1.4" />
+      {% endfor %}
+      {# Invisible hit-targets, one per point, carrying the hover tooltip
+         (native <title> — no JS dependency, works with the console's
+         self-contained/CSP-strict constraint). #}
+      {% for i in range(nav_chart.all_x | length) %}
+        <circle class="nav-chart-hit"
+                cx="{{ nav_chart.all_x[i] }}" cy="{{ nav_chart.all_y[i] }}" r="2.2">
+          <title>{{ nav_chart.points[i].date }} — ${{ '%.0f'|format(nav_chart.points[i].nav) }}{% if nav_chart.points[i].degraded %} — DÉGRADÉ : {{ nav_chart.points[i].note_excerpt }}{% endif %}</title>
+        </circle>
+      {% endfor %}
+    </svg>
+    <footer class="nav-chart-foot">
+      <span>{{ nav_chart.points[0].date }}</span>
+      <span>{{ nav_chart.points | length }} jours</span>
+      <span>{{ nav_chart.points[-1].date }}</span>
+    </footer>
+  {% else %}
+    <p class="nav-chart-empty">Historique NAV insuffisant pour cette période — élargissez la fenêtre.</p>
+  {% endif %}
+</section>

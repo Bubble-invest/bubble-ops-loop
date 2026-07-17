@@ -8,7 +8,7 @@ import os
 import time
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from console.services import (
@@ -19,6 +19,7 @@ from console.services import (
     loop_runtime,
     markdown_render,
     mission_pieces,
+    nav_history,
     whiteboard_series,
 )
 from console.services.gate_grouping import group_gates_by_kind
@@ -80,7 +81,10 @@ def _kanban_snapshot(limit: int = 6) -> "dict | None":
 
 
 @router.get("/dept/{slug}", response_class=HTMLResponse)
-def dept_detail(slug: str, request: Request):
+def dept_detail(
+    slug: str, request: Request,
+    nav_range: str = Query(nav_history.DEFAULT_RANGE),
+):
     d = dept_registry.get_department(slug)
     if d is None:
         raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
@@ -141,6 +145,13 @@ def dept_detail(slug: str, request: Request):
     # KPI graphs — time series built from the dept's Layer-4 output history
     # (one datapoint per loop run). {{OPERATOR}} msg 1163, 2026-06-01.
     whiteboard_graphs = whiteboard_series.load_whiteboard_series(slug)
+    # Native NAV-over-time chart (board #364, PR-A) — reads db/fund.sqlite
+    # directly (the dept's own DB, same access pattern as repo_path elsewhere);
+    # empty/graceful for any dept without a fund DB (only Ben has one today).
+    # Degraded snapshots (broker leg dropped — see nav_history.py docstring
+    # for why a naive plot lies) render as gaps, not silently dropped rows.
+    nav_range_key = nav_range if nav_range in nav_history.RANGE_DAYS else nav_history.DEFAULT_RANGE
+    nav_chart = nav_history.load_nav_history(slug, nav_range_key)
     # Loop-run history — one entry per active day, with clickable outputs.
     # {{OPERATOR}} msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
@@ -256,6 +267,8 @@ def dept_detail(slug: str, request: Request):
             "whiteboard_notes_rendered": whiteboard_notes_rendered,
             "whiteboard_freeform": whiteboard_freeform,
             "whiteboard_graphs": whiteboard_graphs,
+            "nav_chart": nav_chart,
+            "nav_range_options": list(nav_history.RANGE_DAYS.keys()),
             "loop_runs": loop_runs,
             "decision_events": decision_events,
             "backup_events": backup_events,
