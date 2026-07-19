@@ -36,10 +36,12 @@
 #      clear ALL skip-worktree flags before every sync (a read mirror has no
 #      business hiding paths from itself).
 #   2. root-owned paths inside the mirror (e.g. .git/index touched by a stray
-#      root process — #265 class) → "Permission denied" mid-merge. The sync
-#      runs as `claude`, which cannot chown/fix these; the fix is to DETECT and
-#      WARN loudly with the exact `chown` command a human/root session should
-#      run, then skip that dept for this tick (never crash the whole run).
+#      root process — #265 class) → "Permission denied" mid-merge. The sync runs
+#      as `claude` and cannot chown. For the common benign case — a root-owned
+#      .git/index (derived, and .git/ itself is claude-owned) — we SELF-HEAL by
+#      rebuilding the index as claude (rm + reset). For any other root-owned path
+#      (real data) we DETECT and WARN loudly with the exact `chown` command, then
+#      skip that dept for this tick (never crash the whole run, never touch data).
 #   3. aborted-merge debris (MERGE_HEAD / half-written index from an interrupted
 #      checkout) blocking every subsequent pull.
 #
@@ -300,6 +302,18 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     # the exact remediation command, and skip this dept for this tick rather
     # than fail mid-reset with a raw "Permission denied".
     root_owned="$(root_owned_paths "$dir")"
+    # Self-heal the common footgun: a root-owned .git/index (left by a root
+    # restic-restore or a stray sudo git — seen 2026-07-19, blocked the content
+    # mirror for days). The index is a DERIVED file and .git/ itself is claude-owned,
+    # so we rebuild it as claude WITHOUT chown — rm + reset regenerates it from HEAD.
+    # Only auto-heal when EVERY root-owned path is a .git/index; any other root-owned
+    # path (real data) we never touch → fall through to the WARN+skip below.
+    if [[ -n "$root_owned" ]] && ! echo "$root_owned" | grep -qvE '/\.git/index$'; then
+        echo "$root_owned" | while read -r p; do [[ -n "$p" ]] && rm -f "$p"; done
+        git -C "$dir" reset -q 2>/dev/null || true
+        log "${slug}: self-healed root-owned .git/index (rebuilt as $(id -un)) — was blocking the mirror pull"
+        root_owned="$(root_owned_paths "$dir")"
+    fi
     if [[ -n "$root_owned" ]]; then
         root_owned_count="$(echo "$root_owned" | grep -c .)"
         log "WARN ${slug}: ${root_owned_count} root-owned path(s) in mirror — sync cannot proceed as user '$(id -un)'. Fix on the VPS: chown -R $(id -un):$(id -gn) '${dir}'"
