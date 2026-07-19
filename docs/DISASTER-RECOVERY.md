@@ -117,6 +117,16 @@ ssh hetzner 'sudo RESTIC_REPOSITORY=<off-site-repo> \
         --include /home/claude/.claude/projects'
 ```
 
+> ⚠️ **Obligatoire après CHAQUE restore dans `/home/claude` :** `restic restore`
+> tourne sous `sudo` (root), donc les fichiers restaurés sortent **root-owned**.
+> Un `.git/index` root-owned bloque silencieusement les opérations git de l'agent
+> (symptôme observé le 2026-07-16 : mirror content bloqué, gates figées ; cf.
+> ops-board #711). Rends la propriété à `claude` avant de relancer les loops :
+>
+> ```bash
+> ssh hetzner 'sudo chown -R claude:claude /home/claude/agents /home/claude/.claude'
+> ```
+
 Cf. `docs/BACKUP-STRATEGY.md` pour les détails.
 
 ### Étape 7 — Redémarrer les unités systemd

@@ -91,7 +91,11 @@ place (jamais d'écrasement direct).
        au vieux Morty, donc PERDU avec lui ; phase 2 off-site = OK)
     4. restic restore latest --target / (oui, à la racine, mais
        sur un système fraichement provisionné, pas en-place sur prod)
-    5. Vérifier les unités systemd + redémarrer
+    5. OBLIGATOIRE — rendre la propriété à claude (le restore tourne sous
+       sudo, donc les fichiers sortent root-owned ; un .git/index root-owned
+       bloque silencieusement les git ops de l'agent — cf. ops-board #711) :
+         sudo chown -R claude:claude /home/claude/agents /home/claude/.claude
+    6. Vérifier les unités systemd + redémarrer
 
 --------------------------------------------------------------------------------
 5. Vérifier l'intégrité du repo (drill mensuel)
