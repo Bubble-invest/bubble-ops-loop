@@ -61,7 +61,7 @@ also has a local workspace for them). Merge all sources for a given folder.
 | `morty`           | `-home-claude-agents-morty`               | *(none — VPS-only concierge)*                                   | *(none)*                           |
 | `rick_rnd`        | *(none — Lab runs on the Mac)*            | `_mac-joris/-Users-joris-claude-workspaces-Rick-RnD`<br>`_mac-joris/-Users-joris-claude-workspaces-Rick-RnD-prototypes-deepseek-session` | `_mac-jade/...-Rick-RnD`           |
 | `ben_fund`        | `-home-claude-agents-bubble-ops-ben`      | *(none — Ben is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-07)* | *(none — never existed; phantom ref)* |
-| `miranda_socials` | *(none)*                                  | *(none — moved to Jade Mac M1)*                                  | `_mac-jade/...-Miranda-Socials`    |
+| `miranda_socials` | *(none)*                                  | *(none — moved to Jade Mac M1)*                                  | `_mac-jade/...-bubble-ops-content` |
 | `ellie_assistant` | *(none — Jade's assistant, Jade-Mac only)* | *(none)*                                                       | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-ellie` |
 | `geraldine_accounting` | *(none — moved to Jade Mac M5, 2026-07-02)* | *(none)*                                                    | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-accountant` |
 
@@ -71,6 +71,18 @@ also has a local workspace for them). Merge all sources for a given folder.
 dept, excluded from compile), `-home-claude-agents-bubble-ops-accountant` (dead
 fossil — Geraldine migrated to Jade Mac M5 on 2026-07-02, this VPS copy is stale).
 They are not live agents.
+
+**`miranda_socials` migration note (2026-07-16):** the Miranda clean-workspace
+cutover (Joris-approved, board card #657, PR `bubble-ops-content#32` merged
+2026-07-16 ~14:25 UTC) made `bubble-ops-content` her SOLE workspace going
+forward. `_mac-jade/...-Miranda-Socials` was archived to
+`~/claude-workspaces/_archive/` on Jade's Mac at the same cutover (tag
+`archive-cutover-20260716`) and is now a dead, frozen source (newest jsonl
+2026-07-16 ~06:30 UTC, before the switch) — historical only, do not re-add as
+a live source. `_mac-jade/...-bubble-ops-content` is the live replacement,
+confirmed by transcript content (dept="content", the new L1→L4 mission-loop
+dispatch logic, e.g. `draft_linkedin`/`draft_x`/`draft_substack_note`), not
+just name mentions.
 
 ## STEP 1 — Read current wiki state
 
@@ -465,31 +477,45 @@ What it does (no judgment needed from you — it's deterministic):
 Just run it and note its one-line-per-agent output in your final report. Do not
 edit any agent's private memory yourself.
 
-## PRUNING STEP — skill-sync hygiene (run the checker)
+## PRUNING STEP — skill-sync hygiene (run the checker, self-heal the easy case)
 
 A Claude **skill** can silently go stale: the REGISTERED copy
 (`~/.claude/skills/<name>/SKILL.md`, what every agent auto-loads) can drift from
 its WORKSPACE SOURCE or from `origin/main`, because editing+committing a skill does
 NOT auto-update the registered copy. An agent then keeps loading an OLD skill
-(this bit `rnd_loop` 2026-06-19). Same doctrine as memory-hygiene: DETECT, don't
-fix — file a card so the owning agent re-syncs its own skill. Just run it:
+(this bit `rnd_loop` 2026-06-19). Card #653 added a narrow **self-heal**: the
+checker now fixes the unambiguous case itself (source confirmed newer + clean) and
+still files a card — same as before — for everything it can't safely resolve. Run
+it with `--fix`:
 
 ```bash
-sudo -u claude python3 /home/claude/scripts/skill_sync_check.py
+sudo -u claude python3 /home/claude/scripts/skill_sync_check.py --fix
 ```
 
-What it does (deterministic, never edits a skill):
+What it does (deterministic):
 - For each registered skill on each machine (VPS-native + the Mac caches synced up
   by mac-transcript-sync into `_mac-<slug>-skills/registered` + `/source`), checks
   TWO drifts: (a) registered ≠ workspace-source, (b) registered ≠ origin/main.
 - Skills with NO workspace source (registry-only, e.g. `auth`) are skipped — nothing
   to compare, not flagged.
-- For any stale skill, files ONE kanban board card per host (owner=rnd — R&D owns the
-  skill registry) listing the drifted skills + the reason, so the loop triages it and
-  the owning agent re-syncs (`cp` source → registry, then /reload or re-arm /loop).
+- **`--fix` heals ONE direction only (source → registered), ONLY when unambiguous**:
+  workspace source is clean/committed AND confirmed newer than the registered copy
+  (via git-commit recency, falling back to mtime). Every heal (applied or refused)
+  is logged to `.hygiene_tidy_log.jsonl`.
+- **Refuses + reports instead of clobbering** whenever the registered copy might be
+  the newer/authoritative side — e.g. it was hot-edited directly in
+  `~/.claude/skills/<name>/SKILL.md` and not yet copied back to source (this
+  happened for real: `telegram-message-A2A` had a security-tightening live ONLY in
+  the registry, with a clean committed-but-stale source — a blind source→registry
+  copy would have destroyed it). Also refuses when source is dirty/uncommitted, the
+  skill has no workspace source, or recency direction can't be determined. Refused
+  skills still show up on the drift card exactly as before.
+- For any skill still drifted after healing (refused-to-heal or genuinely
+  ambiguous), files ONE kanban board card per host (owner=rnd — R&D owns the
+  skill registry) listing them + the reason, so the loop triages it and a
+  human/the owning agent decides the direction manually.
 
-Note its one-line-per-host output in your final report. Do not re-sync skills
-yourself — the card routes it to the owner.
+Note its one-line-per-host output (scan + heal lines) in your final report.
 
 ---
 
