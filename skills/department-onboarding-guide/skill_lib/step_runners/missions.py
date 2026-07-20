@@ -543,7 +543,24 @@ class MissionsRunner(StepRunner):
     def _commit_current_mission(self) -> bool:
         """Test the current mission and, on PASS, write it to disk.
 
-        Returns True on commit, False on test failure.
+        Returns True on commit, False on test failure OR on a piece-
+        emission I/O failure (card #707).
+
+        Ordering note (card #707): the mission yaml is written BEFORE
+        `scaffold_mission_pieces` emits its pieces. We keep this order
+        rather than reversing it: `_write` (mission_scaffold.py) is
+        idempotent/never-clobbers, so on a retry after an I/O failure it
+        just re-emits whatever pieces are still missing — reversing the
+        order would buy us a smaller "declared-but-unfurnished" window
+        at the cost of a NEW failure mode (pieces emitted for a mission
+        that then never gets its declaring yaml written, e.g. if the
+        yaml write itself fails after a successful emit) without
+        actually removing the window, just relocating it. A guard here
+        that (a) never leaves the failure silent and (b) never deletes
+        the already-written yaml is sufficient: the recovery path is
+        "operator sees the error, re-approves the same mission, retry
+        picks up where it left off" — which is exactly what idempotent
+        `_write` already gives us for free.
         """
         assert self._current_mission is not None
         assert self.dept_yaml_draft_path is not None
@@ -556,7 +573,12 @@ class MissionsRunner(StepRunner):
         if not result.passed:
             # Keep current_mission, do not advance, do not write.
             return False
-        # Write the mission YAML.
+        # Write the mission YAML. From this point on the mission is
+        # DECLARED on disk; if anything below fails, we must NOT delete
+        # this file (that would lose already-done work) and we MUST
+        # surface the failure to the operator instead of raising out of
+        # on_answer() (step_runners/base.py's contract: on_answer never
+        # raises).
         mission_path = dept_root / "missions" / f"{self._current_mission['id']}.yaml"
         _atomic_write_yaml(mission_path, dict(self._current_mission))
         if mission_path not in self._artifacts_written:
@@ -565,16 +587,42 @@ class MissionsRunner(StepRunner):
         # mission (missions/<id>/PROMPT.md, own-skill/config/memory/voice)
         # so the cockpit renders it natively — not a retrofit — the SAME
         # emitter scaffold.py's bootstrap --starter-missions path uses.
+        #
+        # card #707: this does real syscalls (mkdir / write_text) and CAN
+        # raise (OSError / PermissionError / disk-full). Guard it so a
+        # mid-emission failure doesn't (a) escape on_answer() as a raw
+        # exception, and (b) leave the operator with a silently
+        # half-hatched dept (yaml declared, no pieces, no error shown).
         display_name = self._dept_display_name(dept_root)
-        for written in mission_scaffold.scaffold_mission_pieces(
-            dept_root, self._current_mission, dept_root.name, display_name,
-        ):
-            if written not in self._artifacts_written:
-                self._artifacts_written.append(written)
-        if str(self._current_mission.get("output_queue") or "").rstrip("/") == "queues/research":
-            schema_path = mission_scaffold.scaffold_pool_schema(dept_root, display_name)
-            if schema_path is not None and schema_path not in self._artifacts_written:
-                self._artifacts_written.append(schema_path)
+        mission_id = self._current_mission["id"]
+        try:
+            for written in mission_scaffold.scaffold_mission_pieces(
+                dept_root, self._current_mission, dept_root.name, display_name,
+            ):
+                if written not in self._artifacts_written:
+                    self._artifacts_written.append(written)
+            if str(self._current_mission.get("output_queue") or "").rstrip("/") == "queues/research":
+                schema_path = mission_scaffold.scaffold_pool_schema(dept_root, display_name)
+                if schema_path is not None and schema_path not in self._artifacts_written:
+                    self._artifacts_written.append(schema_path)
+        except OSError as exc:
+            # Surface loudly via the same channel _change_field already
+            # uses for operator-visible refusals (Sprint correctif Fix 5)
+            # — prepended to the next next_prompt() call. Do NOT advance:
+            # the mission yaml stays on disk (recoverable), current_mission
+            # is left untouched so re-approving retries the same mission,
+            # and _write's idempotent never-clobber semantics mean the
+            # retry only re-emits whatever pieces are still missing.
+            self._last_rejection_reason = (
+                f"⚠️ Erreur : le hatch de la mission `{mission_id}` a "
+                f"échoué pendant l'écriture de ses fichiers "
+                f"(PROMPT.md / skill / config / memory / voice) : "
+                f"{exc}. La mission `{mission_id}` reste déclarée "
+                f"(missions/{mission_id}.yaml existe) mais ses fichiers "
+                f"ne sont pas tous écrits. Réponds `approuve` à nouveau "
+                f"pour réessayer — la reprise est idempotente."
+            )
+            return False
         # Append to sub_validated.
         self._sub_validated.append({
             "id": self._current_mission["id"],
