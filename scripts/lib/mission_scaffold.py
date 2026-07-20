@@ -57,11 +57,19 @@ from typing import Any, Dict, List, Optional
 
 # Kept in exact lockstep with mission_pieces._MISSION_VERB_PREFIXES /
 # _mission_config_piece's candidate-generation order (console/services/
-# mission_pieces.py) -- the WRITE side must offer the file at the same
-# candidate the READ side tries first, or the emitted config file
-# silently never resolves. See that module's docstring for the full
-# per-shape verification (draft_x -> config/x.yaml, gather_x_timeline ->
-# config/x_sources.yaml, etc).
+# mission_pieces.py) -- enforced by
+# console/tests/test_mission_scaffold_resolver_lockstep.py, which fails CI
+# on a one-sided edit to either copy. The WRITE side must offer the file
+# at SOME candidate the READ side tries (not necessarily its first) --
+# for verb-prefixed ids the emitter writes the verb-stripped tail, which
+# is the resolver's candidate #2, not #1 (its #1 is always the whole
+# id) -- the resolver's forgiving multi-candidate fallback is what makes
+# this resolve, per its own per-shape verification (draft_x ->
+# config/x.yaml, gather_x_timeline -> config/x_sources.yaml, but also
+# publish_execution -> config/publish.yaml and gather_youtube_taste ->
+# config/youtube_topics.yaml, neither of which is "whole id" or "verb-
+# stripped tail" -- see that module's docstring for why no single fixed
+# candidate rule covers every real shape).
 _MISSION_VERB_PREFIXES = ("gather_", "draft_", "synthesizing_", "publish_")
 
 
@@ -71,10 +79,16 @@ def _dehyphenate(key: str) -> str:
 
 def _mission_config_glossary_name(mission_id: str) -> str:
     """Return the config/<name>.yaml candidate this emitter WRITES for a
-    given mission id -- the first candidate mission_pieces._mission_config_
-    piece would also try, so the emitted file resolves on the very first
-    lookup (whole id / verb-stripped tail, +"_sources" suffix for
-    gather_* per the resolver's verified per-shape convention)."""
+    given mission id -- ONE of the candidates mission_pieces.
+    _mission_config_piece also tries (verb-stripped tail, +"_sources"
+    suffix for gather_* per the resolver's verified per-shape
+    convention), so the emitted file resolves via the resolver's
+    candidate list. NOT necessarily the resolver's first-tried candidate:
+    for verb-prefixed ids the resolver tries the whole id first and this
+    tail-stripped name second -- it resolves today because the resolver
+    falls through its full candidate list rather than requiring its first
+    hit to win. See _MISSION_VERB_PREFIXES's comment above and
+    console/tests/test_mission_scaffold_resolver_lockstep.py."""
     stripped = mission_id
     for prefix in _MISSION_VERB_PREFIXES:
         if stripped.startswith(prefix):
