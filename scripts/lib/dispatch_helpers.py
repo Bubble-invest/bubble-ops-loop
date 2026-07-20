@@ -58,17 +58,29 @@ _WEEKDAY_NAMES = {
 
 def _parse_iso(s: str) -> datetime:
     """Parse an ISO-8601 timestamp, tolerating a trailing 'Z' (UTC) which
-    ``datetime.fromisoformat`` rejects before Python 3.11.
+    ``datetime.fromisoformat`` rejects before Python 3.11, AND tolerating a
+    NAIVE timestamp (no offset/'Z' at all) by assuming UTC.
 
     On Python 3.9 and 3.10, ``fromisoformat('2026-06-26T08:03:39Z')`` raises
     ``ValueError``.  This helper normalises the 'Z' to '+00:00' before
     parsing so agent-written timestamps are accepted on all supported Python
     versions.  For non-'Z' input the behaviour is identical to the bare call.
+
+    #713: an agent-written `.last-run` marker occasionally has no tz info at
+    all (e.g. ``2026-07-19T19:06:19.897511``) — ``fromisoformat`` parses this
+    fine but returns a NAIVE datetime, which later poisons ``_to_paris`` and
+    crashes dispatch. This helper normalises any naive result to tz-aware
+    UTC before returning, so a naive marker on disk never produces a naive
+    datetime in memory. For an input that already carries an offset (or
+    'Z'), this is a pure no-op — behaviour is unchanged.
     """
     s = s.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +418,18 @@ def layer_1_gate_satisfied(today_dir: Path, *, fire_after_rounds: int = 1) -> bo
 # ---------------------------------------------------------------------------
 
 def _to_paris(dt_utc: datetime) -> datetime:
-    """Convert a tz-aware UTC datetime into Paris-local time."""
+    """Convert a UTC datetime into Paris-local time.
+
+    #713: a naive datetime (no tzinfo) used to raise ``ValueError`` here — a
+    single bad `.last-run` marker (e.g. an agent-written naive timestamp)
+    was enough to crash `build_dispatch_ctx` for the rest of the day. Now we
+    assume UTC for naive input instead of raising, matching `_parse_iso`'s
+    read-boundary tolerance (defense in depth for any other call site that
+    hands this a naive datetime). For an already tz-aware input this is a
+    pure no-op — behaviour is unchanged.
+    """
     if dt_utc.tzinfo is None:
-        raise ValueError("_to_paris requires a tz-aware datetime")
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
     return dt_utc.astimezone(_PARIS)
 
 
