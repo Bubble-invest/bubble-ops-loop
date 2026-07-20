@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -1327,6 +1328,160 @@ def _build_settings(slug: str, level: str = "ops") -> dict:
     return settings
 
 
+# ---------------------------------------------------------------------------
+# Card #700 — credential-provisioning check.
+#
+# Real incident (#698, 2026-07-17): Miranda's cutover moved her workspace to
+# bubble-ops-content but never carried IMAP_PASSWORD_FIRM across. Her
+# config/newsletter_sources.yaml referenced it, but her secrets.sops.env only
+# had SOPS_PROVISIONED + NETLIFY_AUTH_TOKEN. Result: AUTHENTICATIONFAILED on
+# every newsletter run for a day, silently -- one input went dark. A MISSING
+# credential and a ROTATED one produce the identical server-side symptom, so
+# without this check the loss is invisible until someone notices a dead feed
+# and manually chases "who has the good password" -- when the key was simply
+# never provisioned in the first place.
+#
+# What counts as a "referenced credential" (kept deliberately NARROW so this
+# never cries wolf on an ordinary uppercase config value like a status enum
+# or a currency/region code):
+#   - Only scanned from `config/**/*.yaml`, `config/**/*.yml`, and
+#     `skills/**/*.md` under the workspace root (the two places a dept's
+#     OWN runtime config/skill docs name the secrets they need -- NOT the
+#     whole tree, so structural/template files never get vacuumed in).
+#   - Only tokens matching CREDENTIAL_NAME_RE: an ALL-CAPS env-var-shaped
+#     identifier ([A-Z][A-Z0-9_]+) that ALSO matches one of the tight
+#     suffix/prefix markers: *_PASSWORD*, *_TOKEN*, *_KEY*, *_SECRET*,
+#     IMAP_*, SMTP_*. A bare uppercase word like READY or US_EAST does not
+#     match any of those markers and is never collected.
+#
+# What counts as "present": a top-level `KEY=` line in secrets.sops.env,
+# read as TEXT (never decrypted, never parsed as a value) -- SOPS-encrypted
+# env files keep the key name in cleartext to the left of `=`, only the
+# value is ENC[...]-wrapped, so scanning key names never requires the SOPS
+# key/passphrase and never touches a decrypted value.
+#
+# CRITICAL: only KEY NAMES + presence booleans are ever collected, logged,
+# or raised in an error message. No secret VALUE is read, held, or printed
+# anywhere in this code path.
+# ---------------------------------------------------------------------------
+CREDENTIAL_NAME_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+
+_CREDENTIAL_MARKERS = (
+    "_PASSWORD",
+    "_TOKEN",
+    "_KEY",
+    "_SECRET",
+)
+_CREDENTIAL_PREFIXES = (
+    "IMAP_",
+    "SMTP_",
+)
+
+_CONFIG_GLOBS = ("config/**/*.yaml", "config/**/*.yml")
+_SKILL_GLOBS = ("skills/**/*.md",)
+
+
+def _looks_like_credential_name(token: str) -> bool:
+    """Tight allowlist: env-var-shaped AND matches a known credential marker.
+
+    Deliberately excludes plain uppercase tokens (e.g. READY, US_EAST) that
+    have no credential-suffix/prefix -- see the module comment above for the
+    incident this guards against and why the match is kept narrow.
+    """
+    if any(marker in token for marker in _CREDENTIAL_MARKERS):
+        return True
+    if any(token.startswith(prefix) for prefix in _CREDENTIAL_PREFIXES):
+        return True
+    return False
+
+
+def collect_referenced_credentials(root: Path) -> set[str]:
+    """Scan the workspace's OWN config/skill files for credential-shaped
+    env-var NAMES they reference. Returns a set of NAMES only -- this
+    function never reads a secret value (it only ever reads config/skill
+    source text, not secrets.sops.env).
+    """
+    root = Path(root)
+    found: set[str] = set()
+    for glob_set in (_CONFIG_GLOBS, _SKILL_GLOBS):
+        for pattern in glob_set:
+            for path in root.glob(pattern):
+                if not path.is_file():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for token in CREDENTIAL_NAME_RE.findall(text):
+                    if _looks_like_credential_name(token):
+                        found.add(token)
+    return found
+
+
+def collect_provisioned_secret_keys(root: Path) -> set[str]:
+    """Read the KEY NAMES present in root/secrets.sops.env.
+
+    secrets.sops.env is SOPS-encrypted at the VALUE level only; the KEY
+    stays in cleartext to the left of `=` (dotenv-style), so this reads the
+    file as plain text and only ever looks at the key side of each line.
+    No decryption, no SOPS invocation, no value is ever inspected.
+    """
+    root = Path(root)
+    secrets_path = root / "secrets.sops.env"
+    if not secrets_path.exists():
+        return set()
+    keys: set[str] = set()
+    for line in secrets_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
+class CredentialProvisioningError(RuntimeError):
+    """Raised when a workspace's own config/skills reference a credential
+    NAME that has no matching key present in secrets.sops.env.
+
+    Carries `missing_keys` (a sorted list of NAMES only) for callers that
+    want structured access; str(err) renders a human-readable, value-free
+    message naming the missing keys.
+    """
+
+    def __init__(self, missing_keys: list[str], *, root: Path):
+        self.missing_keys = list(missing_keys)
+        self.root = root
+        keys_str = ", ".join(self.missing_keys)
+        super().__init__(
+            f"credential provisioning check FAILED for {root}: "
+            f"{len(self.missing_keys)} referenced credential name(s) have "
+            f"no matching key in secrets.sops.env: {keys_str}. "
+            f"(Names only -- no values were read or exposed.) "
+            f"This workspace's own config/skills reference these credentials "
+            f"but they were never carried over/provisioned. See #698 for the "
+            f"incident this check exists to prevent."
+        )
+
+
+def check_credential_provisioning(root: Path) -> None:
+    """Fail loudly if any credential NAME referenced by this workspace's own
+    config/skills has no matching key present in secrets.sops.env.
+
+    Raises CredentialProvisioningError naming the missing KEYS (never a
+    value) on a gap. No-op (returns None) when everything referenced is
+    present, or when there's nothing to check.
+    """
+    referenced = collect_referenced_credentials(root)
+    if not referenced:
+        return
+    present = collect_provisioned_secret_keys(root)
+    missing = sorted(referenced - present)
+    if missing:
+        raise CredentialProvisioningError(missing, root=Path(root))
+
+
 def scaffold(root: Path, slug: str, display_name: str, owner: str,
              level: str = "ops",
              children: list | None = None,
@@ -1475,6 +1630,17 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
         for m in starter_missions
     ):
         mission_scaffold.scaffold_pool_schema(root, display_name)
+
+    # 13. Credential-provisioning check (card #700) — FAIL LOUDLY if this
+    #     workspace already has a secrets.sops.env (i.e. this is a
+    #     cutover/migration re-scaffold onto an existing workspace, per the
+    #     #698 incident) and its own config/skills reference a credential
+    #     NAME that has no matching key in that file. A brand-new bootstrap
+    #     (onboarding happens BEFORE secrets are provisioned) has no
+    #     secrets.sops.env yet, so the check is a no-op there by design —
+    #     see check_credential_provisioning()'s docstring.
+    if (root / "secrets.sops.env").exists():
+        check_credential_provisioning(root)
 
 
 def main() -> int:
