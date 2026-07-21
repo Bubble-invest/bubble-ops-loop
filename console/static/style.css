@@ -806,6 +806,91 @@ code, .code {
   margin: 0;
 }
 
+/* ─── 4-moments flow strip (card #731) ───────────────────────────
+   One legible left→right chain L1 → L2 → L3 → L4 above the moment
+   cards; each node anchors to its detailed card (#moment-N). Pure
+   CSS — arrows are ::after pseudo-elements, no external lib. */
+.moments-flow {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: stretch;
+}
+.mflow-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 190px;
+  min-width: 0;
+}
+.mflow-step:not(:last-child)::after {
+  content: "→";
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ochre);
+  flex: none;
+}
+.mflow-node {
+  flex: 1;
+  display: block;
+  padding: 10px 13px 11px;
+  border-radius: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color .15s ease;
+}
+.mflow-node:hover { border-color: var(--ochre-soft); text-decoration: none; }
+.mflow-l {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--ochre-deep);
+  display: block;
+}
+.mflow-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--ink);
+  display: block;
+  margin: 2px 0 0;
+  letter-spacing: -.01em;
+}
+.mflow-what {
+  font-size: 11.5px;
+  color: var(--body-muted);
+  line-height: 1.4;
+  display: block;
+  margin: 4px 0 0;
+}
+.mflow-cycle-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .03em;
+  color: var(--body-muted);
+  margin: 0 0 18px;
+}
+/* m4 pages (home/dept skin): glass tiles like .moment */
+body.m4 .mflow-node {
+  background: rgba(255,255,255,.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,.9);
+  box-shadow: var(--shadow-soft);
+}
+body.m4 .mflow-node:hover { border-color: rgba(102,126,234,.35); }
+/* phone: stack vertically, arrows point down */
+@media (max-width: 640px) {
+  .moments-flow { flex-direction: column; }
+  .mflow-step { flex-direction: column; align-items: stretch; gap: 6px; }
+  .mflow-step:not(:last-child)::after { content: "↓"; align-self: center; }
+}
+
 /* ─── Settings (réglages, read-only) ─────────────────────────── */
 
 .reglage-list {
@@ -4103,4 +4188,78 @@ body.m4 .a-pill:hover:not(.active) { border-color: var(--violet); }
      (.piece-grid flex-wrap) — bump padding on phone so each tile clears
      the same ~40px tap-target floor. */
   .piece-tile { padding: 8px 11px; }
+}
+
+/* ═══ Question gates (#730) — Miranda's dynamic "which direction?" cards ═══
+   A question gate reuses the gate mechanism (kind: question) but must never
+   read like a publish approval: sage accent instead of the violet approval
+   identity, question text up front, and one button PER option (action=choose)
+   instead of the approve/reject strip. */
+
+/* Panel card ("Décisions qu'on attend de toi") — distinct from approvals. */
+.decision-card--question {
+  border-left: 4px solid var(--sage);
+  background: var(--paper-soft);
+}
+.decision-card--question .decision-card-count { color: var(--sage); }
+.decision-card--question .decision-card-cta { color: var(--sage); }
+body.m4 .decision-card--question { border-left: 4px solid var(--sage); }
+body.m4 .decision-card--question .decision-card-cta { color: var(--sage); }
+
+/* Gate page / batch view — the question block itself. */
+.gate-question-block {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--sage);
+  border-radius: 2px;
+}
+.gate-question-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sage);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.gate-question-text {
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.gate-question-context {
+  font-size: 13.5px;
+  color: var(--body-soft);
+  line-height: 1.55;
+  margin: 0 0 12px;
+}
+.gate-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.gate-option-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--sage);
+  border-radius: 2px;
+  padding: 11px 14px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+              transform 0.15s ease;
+}
+.gate-option-btn:hover {
+  background: var(--paper-soft);
+  border-color: var(--sage);
+  transform: translateY(-1px);
 }

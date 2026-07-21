@@ -1,12 +1,15 @@
-{# HTMX fragment after a gate decision (approve/reject/modify/defer). #}
+{# HTMX fragment after a gate decision (approve/reject/modify/defer/choose). #}
 <div class="reprendre-card" style="margin-top:14px; border-left-color: var(--sage);">
   <p style="margin:0 0 6px; font-weight:500;
     {% if action == 'approve' %}color: var(--sage);
+    {% elif action == 'choose' %}color: var(--sage);
     {% elif action == 'reject' %}color: var(--danger, #c0392b);
     {% elif action == 'modify' %}color: var(--ochre);
     {% else %}color: var(--body-muted);{% endif %}">
     {% if action == 'approve' %}
       Approuvé — sera exécuté au prochain cycle
+    {% elif action == 'choose' %}
+      Option choisie{% if option_label %} — « {{ option_label }} »{% endif %}
     {% elif action == 'reject' %}
       Rejeté
     {% elif action == 'modify' %}

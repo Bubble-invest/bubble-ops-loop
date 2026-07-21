@@ -61,6 +61,11 @@ properties:
           - prospect_followup
           - trade_order
           - content_publish
+          # #730 — dynamic question card: the agent has a mid-draft doubt
+          # and asks the operator to pick a direction among 2-3 options
+          # (beyond raw content validation). Requires `question` + `options`
+          # (see conditional below); resolved with action `choose`.
+          - question
       - type: string
         pattern: "^domain:[a-z][a-z_]+$"
         description: |
@@ -92,12 +97,43 @@ properties:
     type: array
     items:
       type: string
-      enum: [approve, reject, modify, defer]
+      enum: [approve, reject, modify, defer, choose]
     minItems: 1
     uniqueItems: true
     description: |
       Allowed actions a human can take on this gate via the console.
-      Subset of [approve, reject, modify, defer] — never empty.
+      Subset of [approve, reject, modify, defer, choose] — never empty.
+      `choose` (#730) is the action of a `question` gate: the operator
+      picks one of the gate's `options`; the console records it in
+      inbox/decisions/<id>.yaml with `selected_option` (+ label).
+  question:
+    type: string
+    minLength: 1
+    description: |
+      REQUIRED when kind == question (#730). The prompt text shown to the
+      operator ("Quel angle pour … ?"). Optional free-text context goes in
+      the standard `summary` field (markdown, rendered sanitized).
+  options:
+    type: array
+    minItems: 2
+    maxItems: 3
+    items:
+      type: object
+      required: [id, label]
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]*$"
+          description: Stable identifier echoed back as `selected_option`.
+        label:
+          type: string
+          minLength: 1
+          description: Operator-facing button text (French prose).
+    description: |
+      REQUIRED when kind == question (#730). The 2-3 directions the agent
+      proposes. The console renders one button per option; clicking posts
+      action=choose + option=<id> to the same /decide route approvals use.
   current_mode:
     type: string
     enum:
@@ -153,3 +189,11 @@ allOf:
       required: [kind]
     then:
       required: [gate_policy_id, authorization_band_id]
+  # #730: a question gate MUST carry its prompt and its 2-3 options.
+  - if:
+      properties:
+        kind:
+          const: question
+      required: [kind]
+    then:
+      required: [question, options]
