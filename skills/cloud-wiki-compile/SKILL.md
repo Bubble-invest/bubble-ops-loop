@@ -222,6 +222,171 @@ If nothing significant: "NO_NEW_KNOWLEDGE".
 
 Wait for ALL extraction subagents.
 
+## STEP 4.6 — Skill-gap miner (weekly, Sunday compile only)
+
+**Only runs when today (UTC) is Sunday.** Any other day of the week, skip this
+step entirely — jump straight to STEP 4.5. Gaps only matter once they've had a
+chance to recur across a week of sessions, and running this daily would just
+be a daily re-read of the same slowly-accumulating evidence for no benefit
+(#103 research memo, ruling GO-SIMPLIFIED: weekly cadence, not daily).
+
+This is a **second extractor reading the SAME reduced-text feed** STEP 4
+already computed for each wiki folder — piggyback, not a new scan. Do NOT
+re-`find`/re-parse the transcripts; reuse the per-folder text you already
+have in context from STEP 4's subagent dispatch (or, if STEP 4 subagents
+already exited and freed their context, re-run only the STEP 4 read/parse
+commands — never add a new discovery mechanism, and never grep/regex the
+transcripts for keywords — see RULE below).
+
+**This step is agentic reading judgment, NOT a keyword/regex miner.** A
+keyword grep over "manually"/"workaround"/"by hand" was tried and rejected
+(#103 research: ~60-70% of such hits are NOT gaps — they are agents
+narrating their own discipline, a verification step, or a dispatch cause,
+all using the same words as a real gap). Only a reading agent can tell these
+apart. Do not write, or ask a subagent to write, a regex/keyword pass here.
+
+Spawn **ONE Task subagent, model sonnet** (judgment task, same tier
+justification as STEP 4 — this is fleet-wide friction data, curation quality
+matters). Give it the full set of reduced-text slices across ALL wiki
+folders (not just one) — the skill-gap signal is fleet-wide, unlike the
+per-folder knowledge extraction.
+
+### Skill-gap extractor prompt template:
+
+```
+You are a skill-gap / recurring-manual-workaround extractor reading real
+agent session transcripts (the same reduced user/assistant text turns
+already parsed for wiki knowledge extraction this run). Your job is READING
+JUDGMENT, not keyword matching — you are looking for moments where an agent
+needed a capability, and either (a) no skill existed and it hand-rolled a
+multi-step workaround, (b) an existing skill broke/errored and got worked
+around, (c) an existing skill almost fit but needed bolted-on extra steps,
+or (d) the SAME manual workaround recurs across ≥2 distinct sessions/agents.
+
+TRANSCRIPT_SLICES = {the full set of reduced text turns from ALL wiki
+folders' source dirs this run, i.e. everything STEP 4 already extracted from}
+
+## What counts as a candidate (read for MEANING, not words)
+
+A phrase containing "manually", "workaround", "by hand", "hand-rolled" etc.
+is NOT automatically a candidate. In practice roughly two-thirds of such
+phrases in real transcripts are NOT gaps. Explicitly EXCLUDE these three
+patterns even though they use gap-sounding language:
+
+1. **Dispatch-cause narration** — "Joris triggered this manually", "manually
+   kicked off by the operator" — describes WHY a run happened, not a missing
+   capability. Not a candidate.
+2. **Verification-step narration** — "let me confirm/verify sync manually",
+   "manually double-checked the output" — this is the agent doing due
+   diligence, not working around a gap. Not a candidate.
+3. **Discipline narration** — "I do NOT hand-roll dispatch", "I never
+   manually edit X" — the agent is explicitly AVOIDING a workaround. This is
+   the opposite of a gap. Not a candidate.
+
+Only flag an ACTUAL gap: the agent needed to do something, a skill should
+have covered it (or an existing skill mis-fired), and instead the agent
+improvised — especially if it did so more than once.
+
+## Ranking — weight self-diagnosis highest
+
+Rank candidates by how the agent itself framed it, highest confidence first:
+1. **Explicit self-diagnosis** — the agent said something like "that's a
+   real, un-carded capability gap" or "this should be a skill" in its own
+   reasoning. Near-zero false-positive rate. Rank these at the top.
+2. **Error-then-fix, repeated across ≥2 DISTINCT sessions** — the same
+   error followed by the same remediation, seen in more than one session.
+   Count distinct sessions, not repeated occurrences within one session
+   (a single session retrying 4 times is recurrence=1, not 4).
+3. **Exact-command / exact-recipe fingerprint repeated across sessions** —
+   but EXCLUDE anything that is normal loop-framework boilerplate (heartbeat
+   checks, safe_pull, date-formatting, routine dispatch-decision commands).
+   Those are the loop working as designed, not a gap.
+4. **Bare keyword mention with no repetition or self-diagnosis** — lowest
+   confidence. Include only if genuinely compelling; do not pad the list
+   with these.
+
+## Evidence-quote rule (mandatory, no exceptions)
+
+Every candidate MUST carry at least one VERBATIM quote copied exactly from
+the transcript text you were given — not a paraphrase, not a summary of what
+the agent meant. If you cannot produce an exact quote substantiating a
+candidate, DO NOT list it. No quote = not a candidate. This is the guardrail
+against inventing gaps.
+
+## De-dup against the board — BOTH open AND closed cards
+
+Before finalizing your candidate list, check whether each candidate is
+already known to the board. This is NOT optional and NOT limited to open
+cards — the single loudest recurring signal in this fleet's history (the
+git-push-guard recipe) was already carded FOUR times, several of them
+CLOSED, and a miner that only checks open cards would re-surface it as
+its #1 finding every single week forever.
+
+Run BOTH of these before emitting your final list:
+
+  gh issue list --repo Bubble-invest/bubble-ops-board --state open \
+    --search "<keywords from your candidate>" --limit 20
+  gh issue list --repo Bubble-invest/bubble-ops-board --state closed \
+    --search "<keywords from your candidate>" --limit 20
+
+For each candidate, search using its most distinctive terms (the tool/skill
+name, the error string, the recipe keywords — e.g. "GITHUB_APP_ID",
+"push-guard", "unsandboxed --repo-dir"). If either search returns an issue
+(any state) whose title/body clearly already describes the same underlying
+gap, DROP the candidate from your list entirely — do not include it even
+as a low-ranked mention, and do not re-file it. Note in your one-line
+summary how many candidates you dropped this way and why (so a human can
+sanity-check the de-dup, not just trust it silently).
+
+If `gh` is unavailable or the search errors, say so explicitly in your
+output instead of silently skipping de-dup — do not guess whether something
+is already carded.
+
+## Output format — report-only, no side effects
+
+Write ONLY a markdown report. Do NOT create a board card, do NOT call
+emit-kanban-task, do NOT run any tool that mutates the board or the wiki.
+This step's only side effect is writing one file.
+
+For each surviving candidate, in ranked order (self-diagnosed first):
+
+```
+### <N>. <short title> — <signal class: MISSING|BROKEN|EXTEND|FRICTION>
+
+**Evidence:** "<verbatim quote>" — <agent slug>, <session file basename>
+**Why it's a gap:** <1-2 sentences, your reasoning>
+**Recurrence:** seen in <N> distinct session(s)/agent(s)
+**Proposed action:** new-skill | fix-existing | extend-existing — <1 line>
+**Board check:** open+closed search terms used: "<terms>" — no match found
+```
+
+If you found zero candidates that survive both the FP filters and the
+de-dup check, write a one-line file saying so — do not pad with weak
+candidates to look productive.
+
+RETURN (to the parent, not written to disk): one compact summary line —
+"skill_gap: N candidates written, M dropped as already-carded (open+closed),
+K dropped as false-positive-pattern".
+```
+
+Write its output to (create the directory + file if absent — this is a
+fixed VPS-local path, independent of wherever a `bubble-ops-loop` checkout
+happens to live, matching this SKILL's existing convention of hardcoded
+`/home/claude/...` paths rather than a repo-relative one):
+
+```
+/home/claude/monitoring/skill-updates/{YEAR}-W{WK}-workaround-candidates.md
+```
+
+(`{WEEK}` = ISO week, e.g. `2026-W29`; compute with
+`date -u +%G-W%V`.) Rick reviews this path by hand weekly (over SSH, same as
+he reads any other VPS-local state). It is NOT the shared wiki (do not write
+it under `shared-wiki/`) and it is NOT a board card. No auto-carding, no
+confidence-bar gate, no `emit-kanban-task` call — Rick triages
+`candidates.md` manually and cards the real ones himself.
+
+Note the one-line summary in your final compile report (STEP 10).
+
 ## STEP 4.5 — Quiet-gate
 
 If ALL spawned extractors returned `NO_NEW_KNOWLEDGE`:
@@ -244,6 +409,11 @@ done
 ```
 
 3. Jump to STEP 9 (index) → STEP 10 (report). Skip 5-8. **Stay silent on Telegram** (quiet night).
+
+(Note: if STEP 4.6 ran because today is Sunday, its `candidates.md` was
+already written before this gate — the wiki-knowledge quiet-gate and the
+skill-gap miner are independent; a quiet wiki night can still have a
+non-empty workaround report, and vice versa.)
 
 Otherwise proceed to STEP 5.
 
@@ -358,7 +528,10 @@ PYEOF
 
 **Silent on quiet nights** (quiet-gate fired) and on any run where synthesis
 wrote nothing. Otherwise post ONE concise summary to Joris via the bot token in
-`/run/claude-agent/env`:
+`/run/claude-agent/env`. If STEP 4.6 ran (Sunday) and wrote a non-empty
+`candidates.md`, append its one-line summary (candidate count + dropped
+counts) to this same message rather than sending a second Telegram message —
+this stays a report-only artifact, never its own alert:
 
 ```bash
 ENV_FILE=/run/claude-agent/env
@@ -367,7 +540,7 @@ JORIS_TG=6532205130
 if [ -n "${BOT_TOKEN:-}" ]; then
   curl -s --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     -d chat_id="$JORIS_TG" \
-    -d text="🧠 wiki compile $(date -u +%Y-%m-%d): <your one-line summary from the synthesis string>" >/dev/null 2>&1
+    -d text="🧠 wiki compile $(date -u +%Y-%m-%d): <your one-line summary from the synthesis string><, on Sunday: + skill-gap: N candidates (M already-carded dropped)>" >/dev/null 2>&1
 fi
 unset BOT_TOKEN
 ```
