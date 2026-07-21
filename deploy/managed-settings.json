@@ -35,6 +35,19 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "_doc": "Card #732 — root fix for #695 (key-name self-redact missed a secret) and #726 (211 transcripts leaking token values in cleartext). Matcher '.*' = ALL tools, since the leak surface is any tool_result, not just Edit/Write/Bash. Scrubs secret-VALUE-shaped strings (sk-ant-*, sk-or-v1-*, tskey-auth-*, etc — NOT key-name matching) out of tool_output before it reaches the model. UNVERIFIED whether updatedToolOutput also persists to the on-disk .jsonl transcript — see output-guard.py header. `timeout` is in SECONDS per the hooks doc, not ms — 10 means fail-open kicks in after 10s, not ~2.8h. NOTE: the PreToolUse mission-guard block above also has `timeout: 10000`, which is very likely the same units bug (100000s), but that's an existing live block — left untouched here; flagging as a separate follow-up fix. Root-owned at /opt so a dept agent (or a prompt-injection) can't disable it — same placement pattern as the mission-guard above.",
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/bubble-output-guard/output-guard.py",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
