@@ -1,27 +1,47 @@
 #!/usr/bin/env python3
 """output-guard.py — PostToolUse hook that scrubs secret-VALUE-shaped strings
-out of tool_output before they reach the model's context (and, per the
-Claude Code hooks doc, the on-disk session .jsonl transcript — a PostToolUse
-`updatedToolOutput` replacement is saved into the transcript, so this hook is
-the ONE place that fixes both the in-context leak and the at-rest leak for
-NEW turns going forward. It does NOT retroactively scrub secrets already
-written to existing .jsonl files before this hook was deployed — that needs a
-separate one-time disk-scrub backstop for #726's 211 already-leaked
-transcripts).
+out of tool_output before they reach the model's context.
 
-Card #732. Root-fixes two related leak classes:
-  - #695: a dept agent leaked a personal IMAP app-password because a
-    self-redact `sed` matched key-NAMES (e.g. "*_PASSWORD") and missed the
-    `_PERSONAL` suffix variant. Name-based matching is fragile by
-    construction — there's always another env-var naming convention it
-    misses.
-  - #726: 211 session transcripts had secret VALUES (sk-ant-*, sk-or-v1-*,
-    tskey-auth-*) sitting in cleartext because nothing scrubbed tool_output
-    before it was written.
+UNVERIFIED: whether the scrubbed `updatedToolOutput` also gets written to the
+on-disk session .jsonl transcript is NOT confirmed by the Claude Code hooks
+doc. The doc's "replays the saved text on --resume" language documents
+SessionStart's `additionalContext`, not PostToolUse's `updatedToolOutput` —
+the two are not shown to behave the same way. This hook DEFINITELY fixes the
+in-context leak (the model never sees the raw secret again). The at-rest
+(.jsonl) guarantee needs an empirical spot-check on a live box before we rely
+on it — until that's done, treat the disk-scrub backstop below as required
+regardless of outcome, not just a nice-to-have for the already-leaked
+transcripts: if PostToolUse does NOT persist to disk, at-rest leaks continue
+for every NEW session too, not only the 211 old ones covered by #726.
+
+It does NOT retroactively scrub secrets already written to existing .jsonl
+files before this hook was deployed — that needs a separate one-time
+disk-scrub backstop for #726's 211 already-leaked transcripts, and per the
+above, that backstop is not just for the old transcripts — see the
+"must-happen-regardless" note above.
+
+Card #732. Root-fixes the recurring PROVIDER-PREFIXED-TOKEN leak class (#726,
+211 transcripts with sk-ant-*, sk-or-v1-*, tskey-auth-* etc sitting in
+cleartext because nothing scrubbed tool_output before it was written) and the
+general "key-name matching is fragile" pattern that #695 exposed (a
+self-redact `sed` matched key-NAMES like "*_PASSWORD" and missed the
+`_PERSONAL` suffix variant — there's always another naming convention a
+name-based matcher misses).
+
+IMPORTANT — this does NOT catch #695's own leak in practice: #695's actual
+secret was a bare 16-char alphanumeric IMAP app-password with no distinctive
+prefix, and value-shape matching deliberately does not match bare
+unlabeled-shape strings (doing so would false-positive on every hex hash /
+UUID / git SHA in normal tool output). So the next #695-SHAPED incident (a
+bare, unlabeled secret with no recognizable prefix) will slip through this
+hook exactly as it did before. That gap needs a different mitigation — e.g. a
+scoped egress allowlist, or requiring newly-issued credentials to carry a
+distinguishable prefix — tracked as a follow-up, not solved here.
 
 This hook fixes the ROOT CAUSE class by matching on secret VALUE SHAPE
 instead of key name — a token doesn't stop being a secret because the
-variable holding it was named unexpectedly.
+variable holding it was named unexpectedly. It is necessarily bounded to the
+provider prefixes below; see the non-exhaustive note near _SECRET_PATTERNS.
 
 Per the Claude Code hooks doc (PostToolUse):
   - stdin = JSON with tool_name + tool_input + tool_output (+ cwd, session_id,
@@ -46,6 +66,16 @@ import re
 import sys
 
 # ── Value-SHAPE patterns (NOT key-name patterns — see #695 lesson above) ───
+#
+# NON-EXHAUSTIVE provider list — this is a living list, not full coverage.
+# Known uncovered shapes (follow-up, not solved here): Stripe (sk_live_/
+# sk_test_), Google API keys (AIzaSy...), generic JWTs, DB connection-string
+# passwords (postgres://user:pass@host), AWS SECRET access keys (only the
+# AKIA/ASIA access-key-ID is matched above, not the paired secret), base64-
+# wrapped secrets, and secrets split across separate JSON fields (e.g.
+# {"user": "...", "pass": "..."} where neither field alone is shaped like a
+# known token). Add new provider prefixes here as they're identified; do not
+# assume this list is complete.
 #
 # Each pattern matches the STRUCTURE of a real token format. Kept deliberately
 # narrow / anchored on each provider's documented prefix + a minimum-length
