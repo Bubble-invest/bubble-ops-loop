@@ -66,6 +66,20 @@ def _add_content_dept(root: Path) -> None:
     (repo / "outputs").mkdir()
 
 
+def test_moments_detail_has_fitwidth_frame_and_fullscreen_toggle(client):
+    """Card #730/#731: the detailed per-moment view (`.moments-list`) is
+    wrapped in a bounded fit-to-width frame with a 'Plein écran' toggle,
+    so it never overflows and can be expanded on demand. Every dept
+    (shared dept_detail.html), checked via the fixture dept — 200, no
+    auth needed (see test_dept_page_has_moments_flow_strip above)."""
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    html = r.text
+    assert 'class="moments-frame"' in html
+    assert 'data-moments-fullscreen' in html            # the toggle button
+    assert 'Plein écran' in html
+
+
 # ─── 1. Flow strip — every dept ──────────────────────────────────────────
 
 def test_dept_page_has_moments_flow_strip(client):
