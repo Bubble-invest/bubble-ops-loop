@@ -548,6 +548,18 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       ↺ après le moment {{ layers|last }}, la boucle repart au moment {{ layers|first }} —
       un cycle par journée de travail.
     </p>
+    {# Card #730/#731 (2) — the detailed per-moment view (data unchanged,
+       mission_pieces_by_layer / missions_by_layer, see #642) is wrapped in
+       a bounded fit-to-width frame with a "Plein écran" toggle so it can
+       never overflow the page yet is still fully inspectable on demand.
+       Vanilla JS only, self-contained — no external lib (script at the
+       bottom of this section). #}
+    <div class="moments-frame" data-moments-frame>
+      <div class="moments-frame-bar">
+        <button type="button" class="moments-fullscreen-btn" data-moments-fullscreen
+                aria-label="Afficher les 4 moments en plein écran">⤢ Plein écran</button>
+      </div>
+      <div class="moments-frame-scroll">
     <ul class="moments-list">
       {% for l in layers %}
         {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
@@ -747,12 +759,35 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
         {% endif %}
       {% endfor %}
     </ul>
+      </div>
+    </div>
   {% else %}
     <p class="prose-block muted-italic">
       Aucun moment déclaré pour l'instant.
     </p>
   {% endif %}
 </section>
+
+<script>
+(function () {
+  document.querySelectorAll('[data-moments-fullscreen]').forEach(function (btn) {
+    var frame = btn.closest('[data-moments-frame]');
+    if (!frame) return;
+    btn.addEventListener('click', function () {
+      var full = frame.classList.toggle('moments-frame--full');
+      btn.textContent = full ? '⤡ Quitter' : '⤢ Plein écran';
+    });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    document.querySelectorAll('.moments-frame--full').forEach(function (frame) {
+      frame.classList.remove('moments-frame--full');
+      var btn = frame.querySelector('[data-moments-fullscreen]');
+      if (btn) btn.textContent = '⤢ Plein écran';
+    });
+  });
+})();
+</script>
 
 {# ═══ 04b — MISSION FILES (L1/L2), read-only fallback pane ═══
    Card #622 shipped this as a flat file list; #642 PR-A folds that
@@ -801,23 +836,6 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </div>
     {% endif %}
   {% endfor %}
-</section>
-{% endif %}
-
-{# ═══ LA VOIX — carte des changements (Miranda / dept `content` only) ═
-   Card #731 (2): the "voice-change-map" — quels fichiers/skills un
-   changement de voix touche — vivait en fichier HTML isolé dans les
-   outputs de Miranda (bubble-ops-content outputs/2026-07-21/
-   voice-change-map.html). Rendu nativement ici, au skin du cockpit,
-   self-contained (aucun CDN/script externe). #}
-{% if dept.slug == 'content' %}
-<section class="cabinet-section m4-section" aria-labelledby="dept-voice-map-heading">
-  <div class="section-head">
-    <span class="section-num">✎</span>
-    <h2 id="dept-voice-map-heading" class="section-title">La voix — carte des changements</h2>
-    <span class="section-sub">quels fichiers un changement de voix touche</span>
-  </div>
-  {% include "partials/_voice_change_map.html" %}
 </section>
 {% endif %}
 
