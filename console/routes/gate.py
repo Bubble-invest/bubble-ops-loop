@@ -22,7 +22,7 @@ from console.services.markdown_render import render_markdown_safe
 
 router = APIRouter()
 
-ALLOWED_ACTIONS = {"approve", "reject", "modify", "defer"}
+ALLOWED_ACTIONS = {"approve", "reject", "modify", "defer", "choose"}
 
 
 def _attach_thesis_rendered(gate: dict) -> dict:
@@ -279,12 +279,14 @@ def gate_card(slug: str, gate_id: str, request: Request):
 def gate_decide(
     slug: str, gate_id: str, request: Request,
     action: str = Form(...), comment: str = Form(""),
+    option: str = Form(""),
 ):
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(400, f"Invalid action: {action}")
     if dept_registry.get_department(slug) is None:
         raise HTTPException(404, f"Unknown dept: {slug}")
-    if github_reader.load_gate(slug, gate_id) is None:
+    gate = github_reader.load_gate(slug, gate_id)
+    if gate is None:
         raise HTTPException(404, f"Gate not found: {gate_id}")
     decision = {
         "gate_id": gate_id,
@@ -293,6 +295,21 @@ def gate_decide(
         "decided_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "decided_by": "operator",  # single-operator console
     }
+    # `choose` (#730 — question gates): the operator picks one of the 2-3
+    # options the agent proposed. Only valid when the submitted option id
+    # matches one the gate actually declares — same trust model as
+    # ALLOWED_ACTIONS above (never record a value the card didn't offer).
+    # The selected option rides in the SAME decision file approvals use,
+    # so the emit side drains it through the unchanged inbox flow.
+    option_label = ""
+    if action == "choose":
+        opts = {str(o.get("id")): o for o in (gate.get("options") or [])
+                if isinstance(o, dict) and o.get("id")}
+        if option not in opts:
+            raise HTTPException(400, f"Invalid option: {option or '(none)'}")
+        option_label = str(opts[option].get("label") or "")
+        decision["selected_option"] = option
+        decision["selected_option_label"] = option_label
     out_path = github_reader.write_gate_decision(slug, gate_id, decision)
     resp = request.app.state.templates.TemplateResponse(
         "partials/gate_decision_ok.html",
@@ -301,6 +318,7 @@ def gate_decide(
             "slug": slug,
             "gate_id": gate_id,
             "action": action,
+            "option_label": option_label,
             "out_path": str(out_path),
         },
     )
@@ -309,8 +327,8 @@ def gate_decide(
     # list (htmx HX-Redirect) so the card visibly disappears and the remaining
     # decisions are in view. `modify` is NOT terminal — the gate stays visible
     # "en révision" — so we keep the operator here to read the confirmation
-    # instead of redirecting.
-    if action in ("approve", "reject", "defer"):
+    # instead of redirecting. `choose` IS terminal (the question is answered).
+    if action in ("approve", "reject", "defer", "choose"):
         resp.headers["HX-Redirect"] = f"/dept/{slug}"
     return resp
 

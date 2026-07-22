@@ -62,6 +62,25 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   3: "actions, productions concrètes",
   4: 'relecture, ajustements pour demain',
 } %}
+{# Card #731 — per-dept couches. Miranda (dept `content`) suit sa carte
+   canonique « Miranda — Reconstruction (état désiré) » (miranda-rebuild,
+   bubble-ops-content outputs/2026-07-21/miranda-rebuild-base.html) :
+   Observe / Orient + Draft / Act = Publish / Debrief. Les autres depts
+   gardent les noms génériques de la flotte ci-dessus. #}
+{% if dept.slug == 'content' %}
+  {% set moment_names = {
+    1: 'Observe',
+    2: 'Orient + Draft',
+    3: 'Act = Publish',
+    4: 'Debrief',
+  } %}
+  {% set moment_what = {
+    1: "collecte — une mission de recherche par source, des faits (pas d'angle), déposés dans le pool du jour",
+    2: 'un bureau de rédaction par canal — lit tout le pool, choisit lui-même, rédige dans la voix du canal',
+    3: "un exécuteur événementiel — publie la décision approuvée à la gate, l'engagement intégré au publish",
+    4: 'juge la journée — quality-brief, management-export (11 KPIs), logbook',
+  } %}
+{% endif %}
 
 {# ═══ HÉRO — qui est ce collègue ═══════════════════════════════════
    Épuré m4 hero (mirrors home.html): eyebrow + name + one-line status.
@@ -253,18 +272,42 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
         {% if grp.count >= 2 %}
           {# Grouped: one card → the BATCH view (/gate/<slug>/kind/<kind>)
              listing ALL gates of this kind with inline actions, so the
-             operator triages the whole pile in place (2026-06-01). #}
-          <a class="decision-card"
+             operator triages the whole pile in place (2026-06-01).
+             Question groups (#730) keep the same batch route but get the
+             distinct sage treatment so they never read as approvals. #}
+          <a class="decision-card{% if grp.kind == 'question' %} decision-card--question{% endif %}"
              href="/gate/{{ dept.slug }}/kind/{{ grp.kind }}">
             <div class="decision-card-count">{{ grp.count }}</div>
             <h3 class="decision-card-title">
-              {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
-              — {{ grp.kind_label|capitalize_fr }}
+              {% if grp.kind == 'question' %}
+                {{ grp.count }} questions — {{ dept.display_name }} a besoin de ton avis
+              {% else %}
+                {{ grp.count }} décision{{ '' if grp.count == 1 else 's' }} à prendre
+                — {{ grp.kind_label|capitalize_fr }}
+              {% endif %}
             </h3>
             <p class="decision-card-body">
               {{ grp.count }} {{ grp.kind_label }} en attente · les voir toutes →
             </p>
-            <span class="decision-card-cta">Voir les {{ grp.count }} →</span>
+            <span class="decision-card-cta">{% if grp.kind == 'question' %}Répondre →{% else %}Voir les {{ grp.count }} →{% endif %}</span>
+          </a>
+        {% elif grp.kind == 'question' %}
+          {# Question gate (#730) — Miranda asks "which direction?" with 2-3
+             options. Distinct card (sage accent, question text up front) in
+             the SAME panel, visually separate from publish approvals. The
+             option buttons live on the gate page (/gate/<slug>/<id>). #}
+          {% set g = grp.gates[0] %}
+          <a class="decision-card decision-card--question"
+             href="/gate/{{ dept.slug }}/{{ g.id }}">
+            <div class="decision-card-count">?</div>
+            <h3 class="decision-card-title">
+              Question — {{ dept.display_name }} a besoin de ton avis
+            </h3>
+            <p class="decision-card-body">
+              {{ (g.question or 'Une question t’attend.') | truncate(110) }}
+              {% if g.options %}· {{ g.options | length }} options{% endif %}
+            </p>
+            <span class="decision-card-cta">Répondre →</span>
           </a>
         {% else %}
           {% set g = grp.gates[0] %}
@@ -485,12 +528,32 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   </div>
 
   {% if layers %}
+    {# Card #731 — flow strip: the 4 moments as ONE legible left→right chain
+       (L1 → L2 → L3 → L4, puis ↺ retour au début). Chaque nœud renvoie à sa
+       carte détaillée ci-dessous. Pure HTML/CSS (style.css .moments-flow) —
+       self-contained, no external lib. #}
+    <ol class="moments-flow"
+        aria-label="Le cycle des 4 moments — de l'observation au débrief, puis on recommence">
+      {% for l in layers %}
+        <li class="mflow-step">
+          <a class="mflow-node" href="#moment-{{ l }}">
+            <span class="mflow-l">L{{ l }}</span>
+            <span class="mflow-name">{{ moment_names.get(l, 'Moment ' ~ l) }}</span>
+            <span class="mflow-what">{{ moment_what.get(l, '') }}</span>
+          </a>
+        </li>
+      {% endfor %}
+    </ol>
+    <p class="mflow-cycle-note">
+      ↺ après le moment {{ layers|last }}, la boucle repart au moment {{ layers|first }} —
+      un cycle par journée de travail.
+    </p>
     <ul class="moments-list">
       {% for l in layers %}
         {% set _ms = (missions_by_layer.get(l, []) if missions_by_layer else []) %}
         {% set _prompt = layer_prompts.get(l) if layer_prompts else None %}
         {% set _recent = (layer_recent_outputs.get(l) if layer_recent_outputs else None) %}
-        <li class="moment{% if _recent %} moment--active{% endif %}" data-layer="{{ l }}">
+        <li class="moment{% if _recent %} moment--active{% endif %}" id="moment-{{ l }}" data-layer="{{ l }}">
           <div class="moment-num">Moment {{ l }} sur 4</div>
           <h4 class="moment-nom">{{ moment_names.get(l, 'Moment ' ~ l) }}</h4>
           <p class="muted" style="font-size:13px; margin:6px 0 0;">
@@ -738,6 +801,23 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
       </div>
     {% endif %}
   {% endfor %}
+</section>
+{% endif %}
+
+{# ═══ LA VOIX — carte des changements (Miranda / dept `content` only) ═
+   Card #731 (2): the "voice-change-map" — quels fichiers/skills un
+   changement de voix touche — vivait en fichier HTML isolé dans les
+   outputs de Miranda (bubble-ops-content outputs/2026-07-21/
+   voice-change-map.html). Rendu nativement ici, au skin du cockpit,
+   self-contained (aucun CDN/script externe). #}
+{% if dept.slug == 'content' %}
+<section class="cabinet-section m4-section" aria-labelledby="dept-voice-map-heading">
+  <div class="section-head">
+    <span class="section-num">✎</span>
+    <h2 id="dept-voice-map-heading" class="section-title">La voix — carte des changements</h2>
+    <span class="section-sub">quels fichiers un changement de voix touche</span>
+  </div>
+  {% include "partials/_voice_change_map.html" %}
 </section>
 {% endif %}
 

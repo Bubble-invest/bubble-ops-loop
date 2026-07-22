@@ -115,13 +115,16 @@
          graceful no-op when chart_path is absent or the file 404s. Render the
          <details> if there's a thesis OR a chart so a chart-only gate still has
          a container. Mirrors gate_card.html's chart block. #}
-      {% if gate.summary or gate.chart_path or gate.attachments %}
+      {# question gates (#730): summary is context for the question block
+         below, not a thesis — skip it here (attachments/chart still show). #}
+      {% if (gate.summary and gate.kind != 'question') or gate.chart_path or gate.attachments %}
         <details {% if not (gate.kind == 'trade_proposal' or gate.ticker) %}open{% endif %} style="margin:0 0 10px;">
           <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}{% if gate.attachments %} & pièces jointes{% endif %}</summary>
           {# Summary: skip for content gates — they render their summary in the
              dedicated proposal block below (outside this <details>). #}
           {% if gate.summary and gate.kind not in ('social_post', 'content_publish',
-                'news_post', 'news_post_task', 'prospect_dm', 'followup_draft', 'draft_task') %}
+                'news_post', 'news_post_task', 'prospect_dm', 'followup_draft', 'draft_task',
+                'question') %}
           {# Thesis rendered as sanitized markdown->HTML (card #523-A, mirrors
              #507's whiteboard-notes pipeline) — gate.thesis_rendered is a
              markupsafe.Markup built by console/routes/gate.py via
@@ -360,6 +363,43 @@
          class — one mono-text style for the whole batch view). #}
       <div class="a-footer"><span class="gate-batch-meta">{{ gid }}</span></div>
 
+      {% if gate.kind == 'question' %}
+      {# ─── Question gate (#730) — batch view ─────────────────────
+         Mirrors gate_card.html's gate-question-block, compact. The
+         question + its 2-3 option buttons REPLACE the 4-action form:
+         picking an option decides the gate via the same /decide route
+         (action=choose + option=<id>) and swaps this card like any
+         other batch decision. #}
+      <div class="gate-question-block" style="margin:12px 0 0;">
+        <div class="gate-question-eyebrow">Question — ton avis est attendu</div>
+        <p class="gate-question-text" style="font-size:15px;">{{ gate.question }}</p>
+        {% if gate.thesis_rendered %}
+        <div class="gate-question-context markdown-body" style="font-size:13px;">{{ gate.thesis_rendered }}</div>
+        {% endif %}
+        <form hx-post="/gate/{{ slug }}/{{ gid }}/decide"
+              hx-target="#gatecard-{{ gid }}"
+              hx-swap="outerHTML">
+          <input type="hidden" name="action" value="choose">
+          <div class="gate-question-options">
+            {% for opt in gate.options or [] %}
+              {% if opt is mapping and opt.id %}
+              <button type="submit" name="option" value="{{ opt.id }}"
+                      class="gate-option-btn" hx-disabled-elt="this">
+                {{ opt.label or opt.id }}
+              </button>
+              {% endif %}
+            {% endfor %}
+          </div>
+          <div class="cabinet-field" style="margin-top:10px;">
+            <input type="text" name="comment"
+                   placeholder="un mot pour nuancer ton choix (facultatif)"
+                   style="width:100%; background: var(--paper); border:1px solid var(--line);
+                          padding:8px 10px; font-family: var(--font-body); font-size:13px;
+                          color: var(--ink); border-radius:2px;">
+          </div>
+        </form>
+      </div>
+      {% else %}
       <form hx-post="/gate/{{ slug }}/{{ gid }}/decide"
             hx-target="#gatecard-{{ gid }}"
             hx-swap="outerHTML"
@@ -378,6 +418,7 @@
           <button type="submit" name="action" value="defer" class="btn-ghost" hx-disabled-elt="this">defer</button>
         </div>
       </form>
+      {% endif %}
     </div>
   {% endfor %}
 </div>

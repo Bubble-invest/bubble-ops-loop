@@ -101,6 +101,49 @@
   </div>
   {% endif %}
 
+  {# ─── Question gate — Miranda's dynamic questions (board #730) ──
+     kind == 'question': mid-draft, the agent has a genuine "which
+     direction?" doubt and asks the operator to pick among 2-3 options.
+     Distinct visual treatment (sage accent + option buttons) so it never
+     reads like a publish approval. Fields:
+       question : the prompt text (required)
+       summary  : optional free-text context — rendered through the SAME
+                  sanitized markdown pipeline (gate.thesis_rendered)
+       options  : list of {id, label} (2-3 items)
+     Clicking an option POSTs the SAME /decide route the approvals use,
+     with action=choose + option=<id> → inbox/decisions/<id>.yaml. #}
+  {% if gate.kind == 'question' %}
+  <div class="gate-question-block">
+    <div class="gate-question-eyebrow">Question — {{ slug }} a besoin de ton avis</div>
+    <p class="gate-question-text">{{ gate.question }}</p>
+    {% if gate.thesis_rendered %}
+    <div class="gate-question-context markdown-body">{{ gate.thesis_rendered }}</div>
+    {% endif %}
+    <form hx-post="/gate/{{ slug }}/{{ gate_id }}/decide"
+          hx-target="#decision-result" hx-swap="innerHTML">
+      <input type="hidden" name="action" value="choose">
+      <div class="gate-question-options">
+        {% for opt in gate.options or [] %}
+          {% if opt is mapping and opt.id %}
+          <button type="submit" name="option" value="{{ opt.id }}"
+                  class="gate-option-btn" hx-disabled-elt="this">
+            {{ opt.label or opt.id }}
+          </button>
+          {% endif %}
+        {% endfor %}
+      </div>
+      <div class="cabinet-field" style="margin-top:12px;">
+        <input type="text" name="comment"
+               placeholder="un mot pour nuancer ton choix (facultatif)"
+               style="width:100%; background: var(--paper); border:1px solid var(--line);
+                      padding:9px 11px; font-family: var(--font-body); font-size:13px;
+                      color: var(--ink); border-radius:2px;">
+      </div>
+      <div id="decision-result"></div>
+    </form>
+  </div>
+  {% endif %}
+
   {# ─── Trade details + thesis (trade_proposal gates) ───────────── #}
   {% include "components/trade-details.html" %}
 
@@ -382,7 +425,9 @@
      built by console/routes/gate.py via render_markdown_safe(gate.summary),
      nh3-sanitized, safe to emit directly. `pre-line` dropped — markdown's
      own paragraphs/lists/headings now carry the structure. #}
-  {% if gate.summary and gate.kind not in ('social_post', 'content_publish') %}
+  {# 'question' excluded too (#730): its summary/context already renders
+     inside the gate-question-block above. #}
+  {% if gate.summary and gate.kind not in ('social_post', 'content_publish', 'question') %}
   <div class="gate-thesis markdown-body" style="margin:0 0 16px; font-size:15px; line-height:1.6;
        color: var(--body-soft);">{{ gate.thesis_rendered }}</div>
   {% endif %}
@@ -470,6 +515,9 @@
       display:block; margin-top:5px; font-size:12px; color: var(--body-muted);
     }
   </style>
+  {# Question gates (#730) answer via their option buttons above — the
+     4-action form below would be misleading (approve/reject a question?). #}
+  {% if gate.kind != 'question' %}
   <form id="gate-decide-form"
         hx-post="/gate/{{ slug }}/{{ gate_id }}/decide"
         hx-target="#decision-result" hx-swap="innerHTML"
@@ -514,6 +562,7 @@
       }, true);
     })();
   </script>
+  {% endif %}
 </div>
 
 <p style="margin-top:24px;">

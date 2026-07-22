@@ -38,6 +38,9 @@ _HUMAN_KIND: dict[str, str] = {
     "news_post":          "post",
     "news_post_task":     "post",
     "followup_draft":     "relance",
+    # #730 — Miranda's dynamic question cards: mid-draft, she asks the
+    # operator to pick a direction among 2-3 options (kind: question).
+    "question":           "question à trancher",
 }
 
 
