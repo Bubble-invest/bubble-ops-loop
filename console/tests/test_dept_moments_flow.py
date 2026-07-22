@@ -18,6 +18,23 @@ from pathlib import Path
 import yaml
 
 
+def test_moments_flow_has_overflow_safeguard():
+    """Card #730/#731 follow-up: the flow strip must never push the page
+    wider than the viewport — it is bounded to max-width: 100% AND clips/
+    scrolls horizontally within its own box, so a narrow screen scrolls
+    the strip, never the page."""
+    css = Path(__file__).resolve().parents[1] / "static" / "style.css"
+    text = css.read_text(encoding="utf-8")
+    assert ".moments-flow" in text
+    # isolate JUST the .moments-flow rule block (up to its closing brace),
+    # not the sibling .mflow-* rules that follow it — a pre-existing
+    # min-width:0 on .mflow-step must not make this test pass by accident.
+    after = text.split(".moments-flow", 1)[1]
+    rule_block = after[: after.index("}") + 1]
+    assert "max-width: 100%" in rule_block
+    assert "overflow-x: auto" in rule_block
+
+
 def _add_content_dept(root: Path) -> None:
     """Drop a minimal LIVE bubble-ops-content (Miranda) repo into the disk
     root so /dept/content renders. Mirrors the fixture-dept shape in

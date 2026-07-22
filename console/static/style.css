@@ -818,6 +818,9 @@ code, .code {
   flex-wrap: wrap;
   gap: 10px;
   align-items: stretch;
+  max-width: 100%;
+  overflow-x: auto;      /* the strip scrolls within its own box, never the page */
+  -webkit-overflow-scrolling: touch;
 }
 .mflow-step {
   display: flex;
@@ -826,6 +829,7 @@ code, .code {
   flex: 1 1 190px;
   min-width: 0;
 }
+.mflow-node { min-width: 0; word-break: break-word; }
 .mflow-step:not(:last-child)::after {
   content: "→";
   font-size: 17px;
