@@ -839,23 +839,6 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
 </section>
 {% endif %}
 
-{# ═══ LA VOIX — carte des changements (Miranda / dept `content` only) ═
-   Card #731 (2): the "voice-change-map" — quels fichiers/skills un
-   changement de voix touche — vivait en fichier HTML isolé dans les
-   outputs de Miranda (bubble-ops-content outputs/2026-07-21/
-   voice-change-map.html). Rendu nativement ici, au skin du cockpit,
-   self-contained (aucun CDN/script externe). #}
-{% if dept.slug == 'content' %}
-<section class="cabinet-section m4-section" aria-labelledby="dept-voice-map-heading">
-  <div class="section-head">
-    <span class="section-num">✎</span>
-    <h2 id="dept-voice-map-heading" class="section-title">La voix — carte des changements</h2>
-    <span class="section-sub">quels fichiers un changement de voix touche</span>
-  </div>
-  {% include "partials/_voice_change_map.html" %}
-</section>
-{% endif %}
-
 {# ═══ 05 — SON MANDAT + HISTORIQUE (secondary — collapsed detail) ═══
    #534: the mandate one-liner stays visible; the full MANDATE.md, the loop
    cadence, the safety-net, the decision timeline and the loop-run history

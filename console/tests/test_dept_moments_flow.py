@@ -1,15 +1,20 @@
 """
-test_dept_moments_flow.py — card #731 (cockpit rendering, Miranda's page).
+test_dept_moments_flow.py — card #731 (cockpit rendering, Miranda's page),
+extended by card #730/#731 follow-up (render/layout fix, 2026-07-22).
 
-Two rendering fixes on /dept/<slug>:
+Rendering fixes on /dept/<slug> (shared dept_detail.html, fleet-wide):
   1. The "Ses 4 moments" section opens with a legible flow strip
      (L1 → L2 → L3 → L4 ↺) whose nodes anchor to the detailed moment cards.
      For Miranda (dept `content`) the couches follow her canonical state map
      « Miranda — Reconstruction (état désiré) » (miranda-rebuild):
      Observe / Orient + Draft / Act = Publish / Debrief.
-  2. Miranda's « voice-change-map » (files/skills touched by a voice change)
-     renders natively inside her page (partials/_voice_change_map.html) —
-     not as a loose HTML file in her outputs. Content-dept only.
+  2. [#730/#731 follow-up] `.moments-flow` never overflows the viewport —
+     bounded + horizontally scrollable strip.
+  3. [#730/#731 follow-up] The detailed per-moment view (`.moments-list`)
+     is wrapped in a fit-to-width frame with a "Plein écran" toggle.
+  4. [#730/#731 follow-up] Miranda's « voice-change-map » section — unused
+     (Jade: not useful) — is REMOVED (was: rendered natively inside her
+     page via partials/_voice_change_map.html; that partial is deleted).
 """
 from __future__ import annotations
 
@@ -66,6 +71,18 @@ def _add_content_dept(root: Path) -> None:
     (repo / "outputs").mkdir()
 
 
+def test_voice_change_map_removed():
+    """Card #730/#731 (3): 'La voix — carte des changements' is unused
+    (Jade: not useful) — removed from the shared dept_detail.html and its
+    partial deleted outright."""
+    tmpl = Path(__file__).resolve().parents[1] / "templates" / "dept_detail.html"
+    text = tmpl.read_text(encoding="utf-8")
+    assert "_voice_change_map.html" not in text
+    assert "La voix — carte des changements" not in text
+    partial = Path(__file__).resolve().parents[1] / "templates" / "partials" / "_voice_change_map.html"
+    assert not partial.exists()
+
+
 def test_moments_detail_has_fitwidth_frame_and_fullscreen_toggle(client):
     """Card #730/#731: the detailed per-moment view (`.moments-list`) is
     wrapped in a bounded fit-to-width frame with a 'Plein écran' toggle,
@@ -112,7 +129,7 @@ def test_generic_dept_has_no_voice_map(client):
     assert 'class="vcm"' not in body
 
 
-# ─── 2. Miranda (dept content) — canonical couches + voice map ───────────
+# ─── 2. Miranda (dept content) — canonical couches ───────────────────────
 
 def test_content_dept_uses_canonical_couches(fixture_root, client):
     """Miranda's flow strip + moment cards follow the canonical
@@ -128,14 +145,12 @@ def test_content_dept_uses_canonical_couches(fixture_root, client):
     assert "Le débrief du soir" not in body
 
 
-def test_content_dept_renders_voice_map_natively(fixture_root, client):
-    """The voice-change-map renders inside Miranda's page: section heading,
-    the truth/modify/keep legend, and the source-of-truth file."""
+def test_content_dept_has_no_voice_map(fixture_root, client):
+    """[#730/#731 follow-up] The voice-change-map section is removed
+    fleet-wide, INCLUDING on Miranda's own page (was: content-dept-only
+    native render; Jade: not useful — see test_voice_change_map_removed
+    for the template-level guard)."""
     _add_content_dept(fixture_root)
     body = client.get("/dept/content").text
-    assert "La voix — carte des changements" in body
-    assert 'class="vcm"' in body, "native partial must be included"
-    assert "Source de vérité" in body
-    assert "shared/BRAND.md" in body
-    # self-contained: the partial ships no external script/CDN reference
-    assert "cdn." not in body.split('class="vcm"')[1].lower()
+    assert "carte des changements" not in body.lower()
+    assert 'class="vcm"' not in body
