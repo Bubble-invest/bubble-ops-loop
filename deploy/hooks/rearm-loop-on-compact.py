@@ -61,6 +61,10 @@ def main() -> int:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
         return 0
+    # Valid JSON can still parse to a non-dict (e.g. `[1,2,3]`, `null`); guard
+    # so `.get()` never raises — the hook MUST always exit 0 (#754 reviewer).
+    if not isinstance(payload, dict):
+        return 0
     if payload.get("source") not in REARM_SOURCES:
         return 0
 

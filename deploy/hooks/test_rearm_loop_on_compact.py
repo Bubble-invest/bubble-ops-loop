@@ -105,6 +105,18 @@ def test_malformed_stdin_exits_zero(tmp_path):
     assert proc.returncode == 0  # never break session start
 
 
+def test_valid_json_non_dict_payload_exits_zero(tmp_path):
+    # Valid JSON that parses to a non-dict (list, null) must not crash on .get().
+    # A SessionStart hook that exits non-zero breaks startup for EVERY agent.
+    inject = _mk_inject(tmp_path, seed="")
+    env = dict(os.environ, HOME=str(tmp_path), OPS_LOOP_BOOT_REARM="1")
+    for body in ("[1,2,3]", "null", '"just a string"', "42"):
+        proc = subprocess.run([sys.executable, str(HOOK)], input=body,
+                              capture_output=True, text=True, env=env, check=False)
+        assert proc.returncode == 0, f"non-dict payload {body!r} broke exit 0"
+        assert inject.read_text() == "", f"non-dict payload {body!r} wrongly re-armed"
+
+
 def test_rearm_text_shares_boot_rearm_core_phrasing():
     """The compact hook and boot_rearm.ts must give the agent the SAME instruction
     so the two re-arm paths don't drift. Assert the load-bearing phrases match."""
