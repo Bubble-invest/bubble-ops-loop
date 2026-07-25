@@ -1,0 +1,153 @@
+{# risk-cluster-table.html — cluster rollup + bet drill-down (board #364, PR-B).
+   Expects `risk_clusters` (a risk_clusters.RiskClusterTable) in context.
+
+   Option (c), per Joris: cluster rollup at top (name / weight / #bets), each
+   row expands to its member bets (ticker, thesis one-liner, conviction,
+   status). Server-rendered <details>/<summary> — same zero-JS expand/collapse
+   idiom as the KPI-overflow section above (.loop-runs-overflow /
+   .kpi-overflow), not a bolted-on JS accordion.
+
+   ALL vault-sourced text (cluster name, thesis, ticker, status, conviction,
+   sleeve) goes through plain Jinja `{{ }}` — autoescaped by the app's Jinja2
+   Environment (no `|safe`, no raw HTML) — so a memo with e.g. `<script>` in
+   its H1 renders as inert text, never executes.
+
+   Review addition (b) — Joris approved: an "Uncovered / unclustered" summary
+   row (below the cluster rows, visually distinct — it isn't a cluster with
+   bets) showing the NAV the clustered rollup above doesn't capture (ETF /
+   cash / single-stock / crypto sleeves — see risk_clusters._load_uncovered_pct
+   for how it's sourced from vault/clusters/_summary.md).
+
+   Review addition (c) — Joris approved: a one-line note that bet counts can
+   overlap across clusters (a ticker can be a member of 2+ clusters by
+   design — same "Sum check" fact _summary.md itself prints), so the Bets
+   column isn't misread as a disjoint partition.
+
+   Follow-up fix (2026-07-25, PR #291): the uncovered row alone made the
+   footer look like it didn't sum to 100% (the individual cluster rows in
+   the BODY sum to a raw, overlap-double-counted ~25.58%, while uncovered
+   alone shows 69.43%). Added a "Total clustered (déduplication)" row —
+   read from the SAME _summary.md "Sum check" line, not derived from the
+   visible body rows — so the footer reads as its own explicit
+   reconciliation: dedup-clustered + uncovered = ~100%. The body rows above
+   are unchanged (still the intentional overlapping analytical view; the
+   overlap note above explains why they sum higher). #}
+<section class="risk-cluster-card" aria-labelledby="risk-cluster-heading">
+  <header class="risk-cluster-head">
+    <div>
+      <h3 id="risk-cluster-heading" class="risk-cluster-heading">Clusters de risque &amp; bets</h3>
+      {% if risk_clusters.has_clusters %}
+        <span class="risk-cluster-sub">
+          {{ risk_clusters.clusters | length }} cluster{{ 's' if risk_clusters.clusters | length != 1 else '' }}
+          · {{ risk_clusters.total_bets }} bet{{ 's' if risk_clusters.total_bets != 1 else '' }} rattaché{{ 's' if risk_clusters.total_bets != 1 else '' }}
+        </span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if risk_clusters.has_clusters %}
+    <p class="risk-cluster-overlap-note">
+      Un même titre peut être membre de plusieurs clusters par construction — les compteurs de bets par cluster ne sont donc pas mutuellement exclusifs (ne pas les additionner comme une partition).
+    </p>
+    <table class="risk-cluster-table">
+      <thead>
+        <tr>
+          <th class="risk-cluster-col-name">Cluster</th>
+          <th class="risk-cluster-col-weight">Poids NAV</th>
+          <th class="risk-cluster-col-mv">MV</th>
+          <th class="risk-cluster-col-bets">Bets</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cluster in risk_clusters.clusters %}
+          <tr class="risk-cluster-row">
+            <td class="risk-cluster-col-name">
+              <span class="risk-cluster-name">{{ cluster.name }}</span>
+              <span class="risk-cluster-id slug-ref">{{ cluster.cluster_id }}</span>
+            </td>
+            <td class="risk-cluster-col-weight risk-cluster-mono">{{ cluster.weight_display }}</td>
+            <td class="risk-cluster-col-mv risk-cluster-mono">{{ cluster.mv_display }}</td>
+            <td class="risk-cluster-col-bets">
+              {% if cluster.bets %}
+                <details class="risk-cluster-drilldown">
+                  <summary>{{ cluster.bet_count }} bet{{ 's' if cluster.bet_count != 1 else '' }} · voir le détail</summary>
+                  <table class="risk-bet-table">
+                    <thead>
+                      <tr>
+                        <th>Ticker</th>
+                        <th>Thèse</th>
+                        <th>Conviction</th>
+                        <th>Statut</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for bet in cluster.bets %}
+                        <tr>
+                          <td class="risk-bet-ticker slug-ref">{{ bet.ticker }}</td>
+                          <td class="risk-bet-thesis">{{ bet.thesis }}</td>
+                          <td class="risk-bet-conviction">{{ bet.conviction or '—' }}</td>
+                          <td class="risk-bet-status">{{ bet.status or '—' }}</td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                  {% if cluster.unmatched_members %}
+                    <p class="risk-cluster-unmatched">
+                      Sans dossier de thèse : {{ cluster.unmatched_members | join(', ') }}
+                    </p>
+                  {% endif %}
+                </details>
+              {% else %}
+                <span class="risk-cluster-empty-bets">
+                  Aucun dossier de thèse pour {{ cluster.members | join(', ') if cluster.members else 'ce cluster' }}
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      {% if risk_clusters.uncovered_pct is not none %}
+        <tfoot>
+          {% if risk_clusters.dedup_clustered_pct is not none %}
+            <tr class="risk-cluster-row risk-cluster-recon-row risk-cluster-recon-clustered">
+              <td class="risk-cluster-col-name">
+                <span class="risk-cluster-name risk-cluster-recon-label">Total clustered (dédupliqué)</span>
+                <span class="risk-cluster-id slug-ref">Somme des clusters ci-dessus, sans double-compte des titres multi-clusters</span>
+              </td>
+              <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.dedup_clustered_display }}</td>
+              <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+              <td class="risk-cluster-col-bets">
+                <span class="risk-cluster-empty-bets">Figure de réconciliation — pas une ligne de cluster</span>
+              </td>
+            </tr>
+          {% endif %}
+          <tr class="risk-cluster-row risk-cluster-uncovered-row">
+            <td class="risk-cluster-col-name">
+              <span class="risk-cluster-name risk-cluster-uncovered-label">Non couvert / hors cluster</span>
+              <span class="risk-cluster-id slug-ref">ETF sans roster, cash, single-stock (§3a), crypto (§3b)</span>
+            </td>
+            <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.uncovered_display }}</td>
+            <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+            <td class="risk-cluster-col-bets">
+              <span class="risk-cluster-empty-bets">Hors périmètre clustering — pas un cluster de bets</span>
+            </td>
+          </tr>
+          {% if risk_clusters.dedup_clustered_pct is not none %}
+            <tr class="risk-cluster-row risk-cluster-recon-row risk-cluster-recon-total">
+              <td class="risk-cluster-col-name">
+                <span class="risk-cluster-name risk-cluster-recon-label">= Total NAV</span>
+              </td>
+              <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.reconciliation_total_display }}</td>
+              <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+              <td class="risk-cluster-col-bets">
+                <span class="risk-cluster-empty-bets">Dédupliqué + non couvert ≈ 100% de la NAV</span>
+              </td>
+            </tr>
+          {% endif %}
+        </tfoot>
+      {% endif %}
+    </table>
+  {% else %}
+    <p class="risk-cluster-empty">Aucune analyse de cluster disponible pour le moment.</p>
+  {% endif %}
+</section>

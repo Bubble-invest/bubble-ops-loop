@@ -356,6 +356,13 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
     {% include "components/nav-chart.html" %}
   {% endif %}
 
+  {# Risk-cluster rollup + bet drill-down (#364, PR-B) — only meaningful for
+     depts with vault/clusters/ (Ben today); risk_clusters.has_clusters is
+     False (graceful no-op) for every other dept. #}
+  {% if risk_clusters and risk_clusters.has_clusters %}
+    {% include "components/risk-cluster-table.html" %}
+  {% endif %}
+
   {% if whiteboard and whiteboard.kpis %}
     {# #534 (Joris): only ONE row of KPI tiles visible by default; the rest
        tuck behind the same "+N de plus" collapse used for loop-runs overflow.

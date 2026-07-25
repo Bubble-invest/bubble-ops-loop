@@ -20,6 +20,7 @@ from console.services import (
     markdown_render,
     mission_pieces,
     nav_history,
+    risk_clusters,
     whiteboard_series,
 )
 from console.services.gate_grouping import group_gates_by_kind
@@ -152,6 +153,11 @@ def dept_detail(
     # for why a naive plot lies) render as gaps, not silently dropped rows.
     nav_range_key = nav_range if nav_range in nav_history.RANGE_DAYS else nav_history.DEFAULT_RANGE
     nav_chart = nav_history.load_nav_history(slug, nav_range_key)
+    # Risk-cluster rollup + bet drill-down (board #364, PR-B) — reads the
+    # dept's vault/clusters/ (written weekly by tools/cluster_analysis.py)
+    # + vault/investment-cases/ (per-thesis memos), read-only. Empty/graceful
+    # for any dept without vault/clusters/ (only Ben has one today).
+    risk_cluster_table = risk_clusters.load_risk_clusters(slug)
     # Loop-run history — one entry per active day, with clickable outputs.
     # {{OPERATOR}} msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
@@ -269,6 +275,7 @@ def dept_detail(
             "whiteboard_graphs": whiteboard_graphs,
             "nav_chart": nav_chart,
             "nav_range_options": list(nav_history.RANGE_DAYS.keys()),
+            "risk_clusters": risk_cluster_table,
             "loop_runs": loop_runs,
             "decision_events": decision_events,
             "backup_events": backup_events,
