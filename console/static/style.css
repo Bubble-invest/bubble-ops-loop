@@ -2333,6 +2333,138 @@ a.piece-tile:hover {
   margin: 6px 0 2px;
 }
 
+/* ─── Risk-cluster rollup + bet drill-down (board #364, PR-B) ───────────
+   Cluster rows are a compact table (mirrors nav-chart-card's card shell);
+   each row's bet list is a nested <details>/<summary> drill-down — same
+   zero-JS expand/collapse idiom as .loop-runs-overflow / .kpi-overflow
+   above, not a bolted-on JS accordion. */
+.risk-cluster-card {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 18px 20px 14px;
+  margin-bottom: 20px;
+}
+.risk-cluster-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.risk-cluster-heading {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  color: var(--ink);
+  margin: 0;
+}
+.risk-cluster-sub {
+  display: block;
+  font-size: 11.5px;
+  color: var(--body-muted);
+  margin-top: 2px;
+}
+.risk-cluster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.risk-cluster-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--body-muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.risk-cluster-row > td {
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+.risk-cluster-row:last-child > td { border-bottom: none; }
+.risk-cluster-name {
+  display: block;
+  font-weight: 600;
+  color: var(--ink);
+}
+.risk-cluster-id {
+  display: block;
+  font-size: 11px;
+  margin-top: 1px;
+}
+.risk-cluster-mono {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.risk-cluster-empty {
+  font-size: 12.5px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 6px 0 2px;
+}
+.risk-cluster-empty-bets {
+  font-size: 12px;
+  color: var(--body-muted);
+  font-style: italic;
+}
+
+/* Bet drill-down — nested details inside the Bets column. */
+.risk-cluster-drilldown { margin: 0; }
+.risk-cluster-drilldown > summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--body-soft);
+}
+.risk-cluster-drilldown > summary::-webkit-details-marker { display: none; }
+.risk-cluster-drilldown > summary::before { content: "+ "; opacity: .6; }
+.risk-cluster-drilldown[open] > summary { color: var(--ink); margin-bottom: 6px; }
+.risk-bet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+}
+.risk-bet-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--body-muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.risk-bet-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+.risk-bet-table tr:last-child td { border-bottom: none; }
+.risk-bet-ticker { font-family: var(--font-mono); white-space: nowrap; }
+.risk-bet-thesis { color: var(--ink); }
+.risk-bet-conviction, .risk-bet-status {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--body-muted);
+  white-space: nowrap;
+}
+.risk-cluster-unmatched {
+  font-size: 11px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 6px 2px 0;
+}
+
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
 

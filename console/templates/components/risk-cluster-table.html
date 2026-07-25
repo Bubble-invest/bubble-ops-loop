@@ -1,0 +1,89 @@
+{# risk-cluster-table.html — cluster rollup + bet drill-down (board #364, PR-B).
+   Expects `risk_clusters` (a risk_clusters.RiskClusterTable) in context.
+
+   Option (c), per Joris: cluster rollup at top (name / weight / #bets), each
+   row expands to its member bets (ticker, thesis one-liner, conviction,
+   status). Server-rendered <details>/<summary> — same zero-JS expand/collapse
+   idiom as the KPI-overflow section above (.loop-runs-overflow /
+   .kpi-overflow), not a bolted-on JS accordion.
+
+   ALL vault-sourced text (cluster name, thesis, ticker, status, conviction,
+   sleeve) goes through plain Jinja `{{ }}` — autoescaped by the app's Jinja2
+   Environment (no `|safe`, no raw HTML) — so a memo with e.g. `<script>` in
+   its H1 renders as inert text, never executes. #}
+<section class="risk-cluster-card" aria-labelledby="risk-cluster-heading">
+  <header class="risk-cluster-head">
+    <div>
+      <h3 id="risk-cluster-heading" class="risk-cluster-heading">Clusters de risque &amp; bets</h3>
+      {% if risk_clusters.has_clusters %}
+        <span class="risk-cluster-sub">
+          {{ risk_clusters.clusters | length }} cluster{{ 's' if risk_clusters.clusters | length != 1 else '' }}
+          · {{ risk_clusters.total_bets }} bet{{ 's' if risk_clusters.total_bets != 1 else '' }} rattaché{{ 's' if risk_clusters.total_bets != 1 else '' }}
+        </span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if risk_clusters.has_clusters %}
+    <table class="risk-cluster-table">
+      <thead>
+        <tr>
+          <th class="risk-cluster-col-name">Cluster</th>
+          <th class="risk-cluster-col-weight">Poids NAV</th>
+          <th class="risk-cluster-col-mv">MV</th>
+          <th class="risk-cluster-col-bets">Bets</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cluster in risk_clusters.clusters %}
+          <tr class="risk-cluster-row">
+            <td class="risk-cluster-col-name">
+              <span class="risk-cluster-name">{{ cluster.name }}</span>
+              <span class="risk-cluster-id slug-ref">{{ cluster.cluster_id }}</span>
+            </td>
+            <td class="risk-cluster-col-weight risk-cluster-mono">{{ cluster.weight_display }}</td>
+            <td class="risk-cluster-col-mv risk-cluster-mono">{{ cluster.mv_display }}</td>
+            <td class="risk-cluster-col-bets">
+              {% if cluster.bets %}
+                <details class="risk-cluster-drilldown">
+                  <summary>{{ cluster.bet_count }} bet{{ 's' if cluster.bet_count != 1 else '' }} · voir le détail</summary>
+                  <table class="risk-bet-table">
+                    <thead>
+                      <tr>
+                        <th>Ticker</th>
+                        <th>Thèse</th>
+                        <th>Conviction</th>
+                        <th>Statut</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for bet in cluster.bets %}
+                        <tr>
+                          <td class="risk-bet-ticker slug-ref">{{ bet.ticker }}</td>
+                          <td class="risk-bet-thesis">{{ bet.thesis }}</td>
+                          <td class="risk-bet-conviction">{{ bet.conviction or '—' }}</td>
+                          <td class="risk-bet-status">{{ bet.status or '—' }}</td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                  {% if cluster.unmatched_members %}
+                    <p class="risk-cluster-unmatched">
+                      Sans dossier de thèse : {{ cluster.unmatched_members | join(', ') }}
+                    </p>
+                  {% endif %}
+                </details>
+              {% else %}
+                <span class="risk-cluster-empty-bets">
+                  Aucun dossier de thèse pour {{ cluster.members | join(', ') if cluster.members else 'ce cluster' }}
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="risk-cluster-empty">Aucune analyse de cluster disponible pour le moment.</p>
+  {% endif %}
+</section>
