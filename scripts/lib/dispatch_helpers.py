@@ -2233,84 +2233,23 @@ def _due_scheduled_catchup_layer(
     return None
 
 
-def select_due_missions(
+def _due_missions_for_layer(
     ctx: "dict[str, Any]",
     missions: "list[dict]",
+    layer: int,
+    *,
+    now_utc: datetime,
 ) -> "list[dict]":
-    """Return all due missions for the highest-priority eligible phase this tick.
+    """Among `missions` belonging to `layer`, return those that are due and
+    input-ready this tick. Sorted by mission id for determinism.
 
-    This is the mission-centric dispatch primitive. The caller (the /loop
-    runtime) uses it to spawn ONE subagent per returned mission instead of ONE
-    per phase — so every secondary mission (ben's `market_wrapup`, content's
-    `newsletter_redaction`, etc.) runs, not just the primary one.
-
-    Input:
-      ctx     — the same dict that decide_dispatch consumes (built by
-                build_dispatch_ctx). May optionally carry `_repo_dir` (str or
-                Path) for input-queue checks on consumer missions.
-      missions — the dept's `recurring_missions` list from dept.yaml.
-
-    Selection criteria per mission (ALL must hold):
-      1. Its `layer` is on the highest-priority eligible phase (mirrors
-         decide_dispatch's priority order: L4 > L3 > L2 > L1).
-      2. The layer's time floor (Paris-local) is reached AND its
-         prerequisites are met (same gates as decide_dispatch).
-      3. `is_mission_due()` returns True using the mission's own per-mission
-         last-run timestamp (stamped by materialize_due_missions_for_tick for
-         all layers 1-4, so every mission has its own idempotence marker).
-      4. Its input is ready: producer missions always pass; consumer missions
-         (those with `input_queue`) require that queue to be non-empty.
-
-    Returns missions in layer-priority order, then by mission id for
-    determinism. Returns [] when no phase is eligible (heartbeat tick) or no
-    mission in the eligible phase is due.
-
-    Back-compat guarantee: decide_dispatch(ctx) returns the same phase string
-    as before — this function does NOT mutate ctx or alter any on-disk state.
-    The relationship is:
-      phase = decide_dispatch(ctx)
-      due   = select_due_missions(ctx, missions)
-      ∀ m ∈ due: m["layer"] == _layer_from_phase(phase)  (when due is non-empty)
-    """
-    now_utc: datetime = ctx.get("now_utc")
-    if now_utc is None or now_utc.tzinfo is None:
-        return []
-
-    # Determine the highest-priority eligible layer.
-    # Uses _highest_eligible_layer_from_signals (the shared helper also used
-    # by the materializer) to guarantee structural identity: both paths iterate
-    # _LAYER_PRIORITY and call _layer_eligible_from_signals in the same order.
-    now_paris_t = _to_paris(now_utc).time()
-    counts = ctx.get("round_counter") or {}
-    baseline = ctx.get("layer_1_baseline_counter") or {}
-    fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
-    eligible_layer = _highest_eligible_layer_from_signals(
-        now_paris_t,
-        has_research=bool(ctx.get("has_research_items", False)),
-        has_decisions=bool(ctx.get("has_inbox_decisions", False)),
-        has_mgmt_notes=bool(ctx.get("has_unconsumed_mgmt_notes", False)),
-        l1_fired=_layer_fired_today(ctx, 1),
-        l2_fired=_layer_fired_today(ctx, 2),
-        l3_fired=_layer_fired_today(ctx, 3),
-        counts=counts,
-        baseline=baseline,
-        fire_after_rounds=fire_after_rounds,
-    )
-
-    if eligible_layer is None:
-        # Catch-up safeguard (#428, Fix 2): no layer is eligible the normal way
-        # (heartbeat tick), but a scheduled producer mission may have a slot that
-        # passed today and never ran (e.g. Mac asleep at 18:03). Let it wake its own
-        # layer so it is not silently skipped for the week. Only a fallback — it can
-        # never out-rank a higher-priority layer that has real work this tick.
-        eligible_layer = _due_scheduled_catchup_layer(ctx, missions)
-    if eligible_layer is None:
-        return []
-
-    # Among all missions on that layer, keep those that are due and have ready input.
+    Pure per-layer selection — factored out of select_due_missions so the
+    fallthrough loop (#757) can probe a layer's real due-list without
+    duplicating the per-mission gates (is_mission_due, input-ready, event
+    ledger)."""
     due: list[dict] = []
     for m in missions:
-        if int(m.get("layer", 0)) != eligible_layer:
+        if int(m.get("layer", 0)) != layer:
             continue
         last_fired = _mission_last_fired(ctx, m)
         if not is_mission_due(m, now=now_utc, last_fired=last_fired):
@@ -2332,9 +2271,133 @@ def select_due_missions(
                     continue
         due.append(m)
 
-    # Sort by mission id for determinism (layer is uniform across the result).
     due.sort(key=lambda m: m.get("id", ""))
     return due
+
+
+def select_due_missions(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+) -> "list[dict]":
+    """Return all due missions for the highest-priority eligible phase this tick.
+
+    This is the mission-centric dispatch primitive. The caller (the /loop
+    runtime) uses it to spawn ONE subagent per returned mission instead of ONE
+    per phase — so every secondary mission (ben's `market_wrapup`, content's
+    `newsletter_redaction`, etc.) runs, not just the primary one.
+
+    Input:
+      ctx     — the same dict that decide_dispatch consumes (built by
+                build_dispatch_ctx). May optionally carry `_repo_dir` (str or
+                Path) for input-queue checks on consumer missions.
+      missions — the dept's `recurring_missions` list from dept.yaml.
+
+    Selection criteria per mission (ALL must hold):
+      1. Its `layer` is on an eligible phase (mirrors decide_dispatch's
+         priority order: L4 > L3 > L2 > L1) — see the FALLTHROUGH note below
+         for how "eligible phase" is chosen when the top one is empty.
+      2. The layer's time floor (Paris-local) is reached AND its
+         prerequisites are met (same gates as decide_dispatch).
+      3. `is_mission_due()` returns True using the mission's own per-mission
+         last-run timestamp (stamped by materialize_due_missions_for_tick for
+         all layers 1-4, so every mission has its own idempotence marker).
+      4. Its input is ready: producer missions always pass; consumer missions
+         (those with `input_queue`) require that queue to be non-empty.
+
+    Returns missions in layer-priority order, then by mission id for
+    determinism. Returns [] when NO eligible layer (checked in priority order)
+    has any due mission (a true heartbeat tick).
+
+    FALLTHROUGH (#757 FIX): decide_dispatch's priority means an "approved
+    decisions" (has_inbox_decisions=True) signal pins L3 as eligible for the
+    REST OF THE DAY, even once L3's own missions have nothing left to do —
+    e.g. a MANUAL-broker decision (no execution API; awaits a human placing
+    the trade by hand, like Boursorama) that is never archived out of
+    `inbox/decisions/`, and whose daily-cadence `execution` mission already
+    ran once today (its per-mission `.last-run` blocks re-selection). Before
+    this fix, `select_due_missions` picked L3 as THE eligible layer, found its
+    `due` list empty, and returned `[]` — even while L2's research queue (or
+    L4's weekly_review) was genuinely time-due. That starved L1/L2/L4 for the
+    rest of the day: the loop degraded to manual-fire-only.
+
+    The dispatch data model (dept.yaml / inbox/decisions/*.yaml) carries no
+    broker/manual-execution field reachable at this layer — decisions are
+    plain YAML files identified only by presence + `kind` (see
+    `_queue_has_items`, `_present_trigger_ids`). So the fix cannot special-case
+    "manual broker decisions" out of `has_inbox_decisions` (that's option (a)
+    from issue #757 — not implementable without a schema addition). Instead:
+    when the highest-priority eligible layer's own `due` list is empty, WALK
+    DOWN `_LAYER_PRIORITY` to the next-lower layer that is *also* eligible
+    this tick and return ITS due list instead of giving up. Only when EVERY
+    eligible layer (checked highest to lowest) yields no due mission do we
+    fall to the #428 catch-up safeguard and finally to `[]`.
+
+    This cannot fire a layer that isn't independently eligible (the walk only
+    considers layers _layer_eligible_from_signals already accepts), so C.1-C.4
+    priority and every existing gate (time floors, L4 prerequisites, L1 cycle
+    gate, per-mission idempotence, input-queue readiness, event ledgers) are
+    unchanged for the common case (top layer has due work). It only changes
+    behaviour on the specific starvation case above.
+
+    Back-compat guarantee: decide_dispatch(ctx) is UNCHANGED — still returns
+    the single highest-priority-eligible PHASE STRING (it does not know about
+    a layer's due-list being empty). The former invariant
+    "∀ m ∈ due: m['layer'] == _layer_from_phase(decide_dispatch(ctx))" no
+    longer holds in the fallthrough case by design — see #757: `due` is now
+    the source of truth for what the runtime should actually dispatch,
+    `decide_dispatch`'s phase string is retained only as the back-compat
+    "primary" signal documented in scaffold.py.
+    """
+    now_utc: datetime = ctx.get("now_utc")
+    if now_utc is None or now_utc.tzinfo is None:
+        return []
+
+    # Determine eligibility signals once (mirrors decide_dispatch exactly).
+    now_paris_t = _to_paris(now_utc).time()
+    counts = ctx.get("round_counter") or {}
+    baseline = ctx.get("layer_1_baseline_counter") or {}
+    fire_after_rounds = int(ctx.get("fire_after_rounds", 1))
+    has_research = bool(ctx.get("has_research_items", False))
+    has_decisions = bool(ctx.get("has_inbox_decisions", False))
+    has_mgmt_notes = bool(ctx.get("has_unconsumed_mgmt_notes", False))
+    l1_fired = _layer_fired_today(ctx, 1)
+    l2_fired = _layer_fired_today(ctx, 2)
+    l3_fired = _layer_fired_today(ctx, 3)
+
+    # Walk _LAYER_PRIORITY [4, 3, 2, 1]: for each layer that is independently
+    # eligible this tick (same predicate _highest_eligible_layer_from_signals
+    # uses), check its OWN due list. Return the first non-empty one. This is
+    # the #757 fallthrough — previously we stopped at the FIRST eligible layer
+    # even when its due list was empty.
+    for layer in _LAYER_PRIORITY:
+        if not _layer_eligible_from_signals(
+            layer,
+            now_paris_t,
+            has_research=has_research,
+            has_decisions=has_decisions,
+            has_mgmt_notes=has_mgmt_notes,
+            l1_fired=l1_fired,
+            l2_fired=l2_fired,
+            l3_fired=l3_fired,
+            counts=counts,
+            baseline=baseline,
+            fire_after_rounds=fire_after_rounds,
+        ):
+            continue
+        due = _due_missions_for_layer(ctx, missions, layer, now_utc=now_utc)
+        if due:
+            return due
+
+    # No eligible layer had any due mission this tick (or none was eligible at
+    # all). Catch-up safeguard (#428, Fix 2): a scheduled producer mission may
+    # have a slot that passed today and never ran (e.g. Mac asleep at 18:03).
+    # Let it wake its own layer so it is not silently skipped for the week.
+    # Only a fallback — it can never out-rank a higher-priority layer that has
+    # real work this tick (the loop above already tried every eligible layer).
+    catchup_layer = _due_scheduled_catchup_layer(ctx, missions)
+    if catchup_layer is None:
+        return []
+    return _due_missions_for_layer(ctx, missions, catchup_layer, now_utc=now_utc)
 
 
 def select_due_missions_for_forced_layer(
