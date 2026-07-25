@@ -10,7 +10,18 @@
    ALL vault-sourced text (cluster name, thesis, ticker, status, conviction,
    sleeve) goes through plain Jinja `{{ }}` — autoescaped by the app's Jinja2
    Environment (no `|safe`, no raw HTML) — so a memo with e.g. `<script>` in
-   its H1 renders as inert text, never executes. #}
+   its H1 renders as inert text, never executes.
+
+   Review addition (b) — Joris approved: an "Uncovered / unclustered" summary
+   row (below the cluster rows, visually distinct — it isn't a cluster with
+   bets) showing the NAV the clustered rollup above doesn't capture (ETF /
+   cash / single-stock / crypto sleeves — see risk_clusters._load_uncovered_pct
+   for how it's sourced from vault/clusters/_summary.md).
+
+   Review addition (c) — Joris approved: a one-line note that bet counts can
+   overlap across clusters (a ticker can be a member of 2+ clusters by
+   design — same "Sum check" fact _summary.md itself prints), so the Bets
+   column isn't misread as a disjoint partition. #}
 <section class="risk-cluster-card" aria-labelledby="risk-cluster-heading">
   <header class="risk-cluster-head">
     <div>
@@ -25,6 +36,9 @@
   </header>
 
   {% if risk_clusters.has_clusters %}
+    <p class="risk-cluster-overlap-note">
+      Un même titre peut être membre de plusieurs clusters par construction — les compteurs de bets par cluster ne sont donc pas mutuellement exclusifs (ne pas les additionner comme une partition).
+    </p>
     <table class="risk-cluster-table">
       <thead>
         <tr>
@@ -82,6 +96,21 @@
           </tr>
         {% endfor %}
       </tbody>
+      {% if risk_clusters.uncovered_pct is not none %}
+        <tfoot>
+          <tr class="risk-cluster-row risk-cluster-uncovered-row">
+            <td class="risk-cluster-col-name">
+              <span class="risk-cluster-name risk-cluster-uncovered-label">Non couvert / hors cluster</span>
+              <span class="risk-cluster-id slug-ref">ETF sans roster, cash, single-stock (§3a), crypto (§3b)</span>
+            </td>
+            <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.uncovered_display }}</td>
+            <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+            <td class="risk-cluster-col-bets">
+              <span class="risk-cluster-empty-bets">Hors périmètre clustering — pas un cluster de bets</span>
+            </td>
+          </tr>
+        </tfoot>
+      {% endif %}
     </table>
   {% else %}
     <p class="risk-cluster-empty">Aucune analyse de cluster disponible pour le moment.</p>

@@ -2366,6 +2366,12 @@ a.piece-tile:hover {
   color: var(--body-muted);
   margin-top: 2px;
 }
+.risk-cluster-overlap-note {
+  font-size: 11px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 0 0 10px;
+}
 .risk-cluster-table {
   width: 100%;
   border-collapse: collapse;
@@ -2463,6 +2469,20 @@ a.piece-tile:hover {
   color: var(--body-muted);
   font-style: italic;
   margin: 6px 2px 0;
+}
+
+/* Uncovered/unclustered summary row (review addition (b)) — visually
+   distinct from a real cluster row: dashed top border + muted italic label,
+   no hover/emphasis, and it's a <tfoot> so it never sorts with <tbody>. */
+.risk-cluster-uncovered-row > td {
+  border-top: 1px dashed var(--line-soft);
+  border-bottom: none;
+  padding-top: 10px;
+}
+.risk-cluster-uncovered-label {
+  font-style: italic;
+  color: var(--body-muted);
+  font-weight: 600;
 }
 
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */

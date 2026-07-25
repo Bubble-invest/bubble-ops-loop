@@ -68,6 +68,14 @@ _CLUSTER_SKIP_FILES = {"_summary.md", "_config.yaml"}
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
+# Line-scan fallback for frontmatter blocks that fail a full `yaml.safe_load`
+# (board #364 review finding — see _split_frontmatter docstring). Matches the
+# same 3 ticker-carrying keys _case_tickers() reads, plus `status`, each
+# anchored to start-of-line so a colon inside an unrelated value (e.g. a
+# `title:` with an em-dash + colon) can't be mistaken for a key.
+_LINE_SCALAR_RE = re.compile(r"^(ticker|status):\s*(.+?)\s*$", re.MULTILINE)
+_LINE_LIST_RE = re.compile(r"^(tickers|positions_affected):\s*\[(.*?)\]\s*$", re.MULTILINE)
+
 
 @dataclass(frozen=True)
 class Bet:
@@ -118,6 +126,13 @@ class ClusterRow:
 @dataclass(frozen=True)
 class RiskClusterTable:
     clusters: List[ClusterRow] = field(default_factory=list)
+    # NAV% not captured by any cluster (ETF-backbone-only clustering leaves
+    # the uncovered-ETF / cash / single-stock (§3a) / crypto (§3b) sleeves
+    # out by design — see _summary.md's "Non-cluster NAV breakdown"). None
+    # when it couldn't be sourced at all (no _summary.md AND no weights to
+    # derive it from) — the template must not show a fabricated 0%.
+    uncovered_pct: Optional[float] = None
+    uncovered_source: str = ""  # "summary" | "derived" | "" — for tests/debug
 
     @property
     def has_clusters(self) -> bool:
@@ -127,19 +142,73 @@ class RiskClusterTable:
     def total_bets(self) -> int:
         return sum(c.bet_count for c in self.clusters)
 
+    @property
+    def uncovered_display(self) -> str:
+        if self.uncovered_pct is None:
+            return "—"
+        return f"{self.uncovered_pct:.2f}%"
+
+
+def _regex_fallback_frontmatter(raw_fm: str) -> Dict[str, Any]:
+    """Line-scan recovery for a frontmatter block that fails full YAML parse
+    (board #364 review finding, 2026-07-24: 7 of 145 live investment-case
+    files have an unquoted `:` inside an unrelated value — e.g. `title: INSM
+    (Insmed) — L2 underwrite: first-in-class...` — which breaks the WHOLE
+    block, so `yaml.safe_load` raising discards a correctly-formatted
+    `ticker:`/`tickers:`/`positions_affected:` line right along with it. That
+    silently drops a real bet with a valid ticker over a syntax error
+    elsewhere in the same file (live cases affected: INSM, LIN, LNG, CSGP,
+    VRSK, ADYEN).
+
+    This does NOT attempt to be a YAML parser — it only recovers the
+    specific keys this module reads (ticker-carrying fields + status), each
+    matched at start-of-line so it can't be fooled by a colon appearing
+    inside another key's value. Each matched value is parsed with
+    `yaml.safe_load` individually (safe: a single scalar/flow-list, not the
+    whole broken block) so quoting/brackets are still honoured; a value that
+    itself fails to parse is skipped rather than raising."""
+    out: Dict[str, Any] = {}
+    for key, val in _LINE_SCALAR_RE.findall(raw_fm):
+        if key in out:
+            continue
+        try:
+            parsed = yaml.safe_load(val)
+        except yaml.YAMLError:
+            continue
+        out[key] = parsed
+    for key, inner in _LINE_LIST_RE.findall(raw_fm):
+        if key in out:
+            continue
+        try:
+            parsed = yaml.safe_load("[" + inner + "]")
+        except yaml.YAMLError:
+            continue
+        if isinstance(parsed, list):
+            out[key] = parsed
+    return out
+
 
 def _split_frontmatter(text: str) -> tuple[Dict[str, Any], str]:
     """Split a vault memo into (frontmatter_dict, body). Returns ({}, text)
     if there's no valid `---`-delimited frontmatter block (never raises —
-    a malformed memo degrades to 'no metadata' rather than a 500)."""
+    a malformed memo degrades to 'no metadata' rather than a 500).
+
+    When the full YAML parse of the frontmatter block fails, falls back to
+    `_regex_fallback_frontmatter()` to recover whichever ticker/status lines
+    are still well-formed, instead of discarding the whole block (see that
+    function's docstring — board #364 review finding). Behaviour when YAML
+    parses cleanly is unchanged."""
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return {}, text
     try:
         fm = yaml.safe_load(m.group(1))
     except yaml.YAMLError as exc:
-        _log.warning("risk_clusters: frontmatter parse error: %s", exc)
-        return {}, m.group(2)
+        _log.warning(
+            "risk_clusters: frontmatter parse error, falling back to "
+            "line-scan recovery: %s", exc,
+        )
+        return _regex_fallback_frontmatter(m.group(1)), m.group(2)
     if not isinstance(fm, dict):
         fm = {}
     return fm, m.group(2)
@@ -261,6 +330,57 @@ def _load_clusters(vault_dir: Path) -> List[ClusterRow]:
     return rows
 
 
+_UNCOVERED_ROW_RE = re.compile(
+    r"\|\s*\*\*Total non-cluster\*\*\s*\|\s*\*\*([\d.]+)%\*\*\s*\|",
+)
+
+
+def _load_uncovered_pct(vault_dir: Path, cluster_rows: List[ClusterRow]) -> tuple[Optional[float], str]:
+    """Source the NAV% not captured by any cluster (board #364 review addition
+    (b), Joris-approved). `vault/clusters/_summary.md`'s "Non-cluster NAV
+    breakdown" table lists the sleeves clustering deliberately excludes
+    (Uncovered ETF, crypto §3b, single-stock §3a, cash) and rolls them into
+    one bold **Total non-cluster** row, e.g.:
+
+        | Bucket | NAV % | $ |
+        |---|---:|---:|
+        | Uncovered ETF (no roster) | 28.89% | $66,157 |
+        | Crypto sleeve (§3b — excluded by design) | 0.56% | $1,285 |
+        | Single-stock sleeve (§3a — excluded by design) | 3.01% | $6,888 |
+        | Cash (deployable) | 36.97% | $84,662 |
+        | **Total non-cluster** | **69.43%** | |
+
+    That row is read directly when present (it's _summary.md's own
+    deduplicated figure — trust it over recomputing). Falls back to
+    `100 - sum(cluster weights)` only when _summary.md is missing/unreadable
+    or doesn't have that row, since a naive sum-of-cluster-weights double
+    counts positions that are members of 2+ clusters by design (same
+    "Sum check" note _summary.md prints) and would UNDER-state uncovered NAV.
+    Returns (None, "") if neither source is available — the template must
+    not render a fabricated 0%."""
+    summary_path = vault_dir / "clusters" / "_summary.md"
+    if summary_path.exists():
+        try:
+            text = summary_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _log.warning("risk_clusters: failed reading %s: %s", summary_path, exc)
+            text = ""
+        m = _UNCOVERED_ROW_RE.search(text)
+        if m:
+            try:
+                return float(m.group(1)), "summary"
+            except ValueError:
+                pass
+
+    # Fallback: derive from cluster weights. Explicitly approximate (see
+    # docstring) — only used when _summary.md can't give us the real figure.
+    weighted = [c.nav_weight_pct for c in cluster_rows if c.nav_weight_pct is not None]
+    if not weighted:
+        return None, ""
+    derived = 100.0 - sum(weighted)
+    return derived, "derived"
+
+
 def load_risk_clusters(slug: str) -> RiskClusterTable:
     """Return the cluster-rollup + bet-drill-down table for a dept. Empty
     (graceful) for any dept without a vault/clusters/ dir — only Ben has
@@ -298,4 +418,10 @@ def load_risk_clusters(slug: str) -> RiskClusterTable:
     # to the bottom rather than sorting arbitrarily.
     enriched.sort(key=lambda c: (c.nav_weight_pct is None, -(c.nav_weight_pct or 0)))
 
-    return RiskClusterTable(clusters=enriched)
+    uncovered_pct, uncovered_source = _load_uncovered_pct(vault_dir, enriched)
+
+    return RiskClusterTable(
+        clusters=enriched,
+        uncovered_pct=uncovered_pct,
+        uncovered_source=uncovered_source,
+    )

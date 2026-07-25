@@ -216,6 +216,214 @@ def test_malformed_frontmatter_does_not_crash(disk_root):
     assert table.has_clusters  # doesn't crash the whole page
 
 
+# ─── Review finding: YAML-parse-failure fallback (board #364 review) ─────
+#
+# 7 of 145 live investment-case files have an unquoted `:` inside an
+# unrelated frontmatter value (most commonly `title:` with an em-dash +
+# colon, e.g. "INSM (Insmed) — L2 underwrite: first-in-class..."), which
+# breaks the WHOLE `---` block for `yaml.safe_load` — so the ticker line
+# sitting right next to it, correctly formatted, was silently discarded
+# along with everything else. Live theses affected: INSM, LIN, LNG, CSGP,
+# VRSK, ADYEN. This fixture copies the REAL shape of the INSM file (title
+# line breaks the parse; `ticker: INSM` on its own line is well-formed) —
+# not an invented minimal repro.
+
+_REAL_MALFORMED_INSM_SHAPE = """---
+title: INSM (Insmed) — L2 underwrite: first-in-class respiratory franchise, post-earnings pullback
+type: investment-case
+ticker: INSM
+date: 2026-07-13
+layer: 2
+analyst: ben-l2
+status: proposed
+conviction: 3/5
+---
+
+# INSM (Insmed) — L2 underwrite
+
+Body.
+"""
+
+
+def test_yaml_parse_failure_still_recovers_ticker_via_fallback(disk_root):
+    """RED before the fix: yaml.safe_load raises on the `title:` line (an
+    unquoted colon inside the value), _split_frontmatter used to catch that
+    and return {} — discarding the well-formed `ticker: INSM` line right
+    along with it, so this cluster showed 0 bets despite a real, valid case
+    file. GREEN after the regex line-scan fallback: the ticker (and status)
+    must still be recovered."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "healthcare_complex", "Healthcare Complex", ["INSM"], 1.50, 3435.0)
+    (repo / "vault" / "investment-cases" / "2026-07-13-INSM-insmed-l2-underwrite.md").write_text(
+        _REAL_MALFORMED_INSM_SHAPE, encoding="utf-8",
+    )
+
+    # Sanity-check the fixture actually reproduces a real YAML parse failure
+    # (otherwise this test would pass for the wrong reason).
+    import yaml as _yaml
+    frontmatter_block = _REAL_MALFORMED_INSM_SHAPE.split("---\n", 2)[1]
+    with pytest.raises(_yaml.YAMLError):
+        _yaml.safe_load(frontmatter_block)
+
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.has_clusters
+    c = table.clusters[0]
+    assert c.bet_count == 1
+    assert c.bets[0].ticker == "INSM"
+    assert c.bets[0].status == "proposed"
+
+
+def test_yaml_parse_failure_fallback_does_not_alter_clean_parse(disk_root):
+    """Regression guard: when YAML parses fine, behaviour is byte-for-byte
+    what it was before the fallback existed (thesis/status/conviction come
+    from the real parsed dict, not the regex path)."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH"], 3.12, 7150.0)
+    _write_case_singular_ticker(repo, "smh-case.md", "SMH", "SMH — AI-capex core holding")
+    table = risk_clusters.load_risk_clusters("ben")
+    c = table.clusters[0]
+    assert c.bet_count == 1
+    assert c.bets[0].ticker == "SMH"
+    assert "AI-capex core holding" in c.bets[0].thesis
+    assert c.bets[0].status == "watch"
+    assert c.bets[0].conviction == "2/5"
+
+
+def test_yaml_parse_failure_with_no_recoverable_ticker_stays_empty(disk_root):
+    """A malformed file with no ticker-carrying line at all must still
+    degrade gracefully (no crash, no phantom bet) — the fallback recovers
+    what's there, it doesn't invent anything."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH"], 3.12, 7150.0)
+    (repo / "vault" / "investment-cases" / "macro-note.md").write_text(
+        "---\ntitle: Some macro note: with a colon\nkind: process_note\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    c = table.clusters[0]
+    assert c.bet_count == 0
+
+
+# ─── Uncovered/unclustered NAV row (review addition (b), Joris-approved) ──
+#
+# _summary.md's real "Non-cluster NAV breakdown" table (copied verbatim from
+# the live bubble-ben-vault repo, 2026-07-24) rolls the ETF/cash/single-stock
+# (§3a)/crypto (§3b) sleeves clustering excludes by design into one bold
+# **Total non-cluster** row:
+#
+#     | Bucket | NAV % | $ |
+#     |---|---:|---:|
+#     | Uncovered ETF (no roster) | 28.89% | $66,157 |
+#     | Crypto sleeve (§3b — excluded by design) | 0.56% | $1,285 |
+#     | Single-stock sleeve (§3a — excluded by design) | 3.01% | $6,888 |
+#     | Cash (deployable) | 36.97% | $84,662 |
+#     | **Total non-cluster** | **69.43%** | |
+#
+# That figure (69.43%) is _summary.md's own deduplicated number — used
+# directly rather than recomputed, since a naive 100% - sum(cluster weights)
+# double-counts positions that are members of 2+ clusters by design (the
+# same "Sum check" fact _summary.md documents), which is also why change (c)
+# (the overlap note) exists.
+
+_REAL_SUMMARY_NONCLUSTER_TABLE = """---
+title: Cluster Analysis — Cross-Cluster Summary
+type: cluster_summary
+status: active
+---
+
+# Cluster Analysis — Summary
+
+**Total NAV (positions + cash):** $229,010
+
+| Cluster | NAV % | Members |
+|---------|------:|---------|
+| [[ai_capex]] AI-Capex Cluster | 3.12% | 3 |
+
+**Non-cluster NAV breakdown:**
+
+| Bucket | NAV % | $ |
+|---|---:|---:|
+| Uncovered ETF (no roster) | 28.89% | $66,157 |
+| Crypto sleeve (§3b — excluded by design) | 0.56% | $1,285 |
+| Single-stock sleeve (§3a — excluded by design) | 3.01% | $6,888 |
+| Cash (deployable) | 36.97% | $84,662 |
+| **Total non-cluster** | **69.43%** | |
+
+**Sum check (deduplicated):** clustered 30.57% + non-cluster 69.43% = 99.99% (should be ~100%)
+"""
+
+
+def test_uncovered_pct_read_directly_from_summary_md(disk_root):
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH", "URA", "ROBO"], 3.12, 7150.0)
+    (repo / "vault" / "clusters" / "_summary.md").write_text(
+        _REAL_SUMMARY_NONCLUSTER_TABLE, encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_pct == pytest.approx(69.43)
+    assert table.uncovered_source == "summary"
+    assert table.uncovered_display == "69.43%"
+
+
+def test_uncovered_pct_falls_back_to_derived_when_no_summary(disk_root):
+    """No _summary.md at all -> derive uncovered = 100 - sum(cluster
+    weights). Explicitly an approximation (can undercount when clusters
+    overlap) — only used because there's no better source."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "a", "Cluster A", ["X"], 30.0, 1000.0)
+    _write_cluster(repo, "b", "Cluster B", ["Y"], 20.0, 500.0)
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_pct == pytest.approx(50.0)
+    assert table.uncovered_source == "derived"
+
+
+def test_uncovered_pct_none_when_summary_missing_row_and_no_weights(disk_root):
+    """No _summary.md, no cluster weights to derive from -> None, not a
+    fabricated 0% (the template must not render an uncovered row at all in
+    this case)."""
+    repo = _build_repo(disk_root)
+    # nav_weight_pct absent entirely -> _write_cluster's dict helper always
+    # writes a float; write the memo by hand so the field is truly missing.
+    (repo / "vault" / "clusters" / "a.md").write_text(
+        "---\ncluster_id: a\ntitle: Cluster A\nmembers: [X]\n---\n\n# Cluster A\n",
+        encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_pct is None
+    assert table.uncovered_display == "—"
+
+
+def test_uncovered_plus_cluster_weights_sum_near_100_on_real_summary(disk_root):
+    """Weights + uncovered should sum to ~100% NAV using _summary.md's own
+    per-cluster NAV% figures (the same 12-cluster table shape from the live
+    vault) alongside its uncovered figure — this is the reconciliation the
+    review asked for."""
+    repo = _build_repo(disk_root)
+    # Mirror the live _summary.md's 12 cluster rows + uncovered total.
+    weights = {
+        "ex_us_equity": 7.78, "defense_thematic": 0.00, "pea_geographic_diversifier": 9.53,
+        "eu_quality_value_active_basket": 2.70, "us_tech_concentration_pack": 5.58,
+        "ai_capex": 3.12, "dividend_cluster": 2.65, "long_duration": 2.80,
+        "commodity_inflation_complex": 3.35, "real_assets": 0.43,
+        "healthcare_complex": 1.50, "us_factor_smallcap": 0.99,
+    }
+    for cid, w in weights.items():
+        _write_cluster(repo, cid, cid.replace("_", " ").title(), ["X"], w, 100.0)
+    (repo / "vault" / "clusters" / "_summary.md").write_text(
+        _REAL_SUMMARY_NONCLUSTER_TABLE, encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    # NOTE: raw per-cluster NAV% sums to 40.43% here (25.58% on the real
+    # vault's own overlapping members) which does NOT reconcile to
+    # 100 - 69.43 = 30.57% — that gap IS the multi-cluster overlap
+    # _summary.md documents in its own "Sum check" line, which is exactly
+    # why change (c)'s overlap note exists. This test asserts the value we
+    # actually promise: the uncovered figure is _summary.md's real
+    # deduplicated number, not a naive derived one, when both are available.
+    assert table.uncovered_source == "summary"
+    assert table.uncovered_pct == pytest.approx(69.43)
+
+
 # ─── Route-level tests ───────────────────────────────────────────────────
 
 def test_route_renders_200_with_cluster_table(client, fixture_root):
@@ -276,6 +484,50 @@ def test_route_escapes_vault_sourced_text(client, fixture_root):
     assert "<img src=x onerror=alert(2)>" not in r.text
     # escaped form must be present somewhere (proves the text rendered, not silently dropped)
     assert "&lt;script&gt;" in r.text or "&lt;img" in r.text
+
+
+def test_route_renders_uncovered_row_and_overlap_note(client, fixture_root):
+    """Review additions (b) + (c): the uncovered/unclustered row and the
+    multi-cluster-overlap note must both render on the page when there are
+    clusters."""
+    repo = fixture_root / "bubble-ops-fixture"
+    (repo / "vault" / "clusters").mkdir(parents=True)
+    (repo / "vault" / "investment-cases").mkdir(parents=True)
+    _write_cluster_into(repo, "ai_capex", "AI-Capex Cluster", ["SMH"], 3.12, 7150.0)
+    _write_case_into(repo, "case1.md", ["SMH"], "SMH — AI-capex core holding")
+    (repo / "vault" / "clusters" / "_summary.md").write_text(
+        _REAL_SUMMARY_NONCLUSTER_TABLE, encoding="utf-8",
+    )
+
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    body = r.text
+    # Uncovered row: label + sourced figure, visually distinct row class.
+    assert "risk-cluster-uncovered-row" in body
+    assert "Non couvert" in body
+    assert "69.43%" in body
+    # Overlap note: some form of "not mutually exclusive / can overlap"
+    # messaging present near the table.
+    assert "risk-cluster-overlap-note" in body
+    assert "plusieurs clusters" in body
+
+
+def test_route_no_uncovered_row_when_pct_unavailable(client, fixture_root):
+    """No _summary.md and no cluster weights to derive from -> no uncovered
+    row rendered at all (must not fabricate a 0%/—% row)."""
+    repo = fixture_root / "bubble-ops-fixture"
+    (repo / "vault" / "clusters").mkdir(parents=True)
+    (repo / "vault" / "investment-cases").mkdir(parents=True)
+    (repo / "vault" / "clusters" / "ai_capex.md").write_text(
+        "---\ncluster_id: ai_capex\ntitle: AI-Capex Cluster\nmembers: [SMH]\n---\n\n# AI-Capex\n",
+        encoding="utf-8",
+    )
+
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "risk-cluster-uncovered-row" not in r.text
+    # The overlap note still renders (it's static once there are clusters).
+    assert "risk-cluster-overlap-note" in r.text
 
 
 # ─── local helpers reused by the route tests (avoid name clash with the
