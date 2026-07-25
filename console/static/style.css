@@ -1428,6 +1428,10 @@ body.m4 .mflow-node:hover { border-color: rgba(102,126,234,.35); }
    so this is inert on desktop where the table already fits. */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-scroll .costs-table { min-width: 620px; }
+/* #364 risk-cluster table (Cluster · Poids NAV · MV · Bets) — same idiom:
+   scroll sideways in-box on mobile instead of spilling the page body.
+   min-width keeps the 4 columns legible rather than crushing them. */
+.table-scroll .risk-cluster-table { min-width: 520px; }
 
 /* ─── Mobile sidebar — CSS-only hamburger menu ──────────────────── */
 .sidebar-toggle-input { display: none; }
