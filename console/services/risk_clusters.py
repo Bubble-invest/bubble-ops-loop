@@ -133,6 +133,14 @@ class RiskClusterTable:
     # derive it from) — the template must not show a fabricated 0%.
     uncovered_pct: Optional[float] = None
     uncovered_source: str = ""  # "summary" | "derived" | "" — for tests/debug
+    # Deduplicated clustered NAV% — the figure the uncovered_pct ACTUALLY
+    # reconciles against (100% = dedup_clustered_pct + uncovered_pct), NOT
+    # the raw sum of the individual cluster rows above (those double-count
+    # positions that are members of 2+ clusters by design — see
+    # _load_dedup_clustered_pct()'s docstring). None when it couldn't be
+    # sourced/derived — the template must not show a fabricated figure.
+    dedup_clustered_pct: Optional[float] = None
+    dedup_clustered_source: str = ""  # "summary" | "derived" | ""
 
     @property
     def has_clusters(self) -> bool:
@@ -147,6 +155,22 @@ class RiskClusterTable:
         if self.uncovered_pct is None:
             return "—"
         return f"{self.uncovered_pct:.2f}%"
+
+    @property
+    def dedup_clustered_display(self) -> str:
+        if self.dedup_clustered_pct is None:
+            return "—"
+        return f"{self.dedup_clustered_pct:.2f}%"
+
+    @property
+    def reconciliation_total_display(self) -> str:
+        """dedup_clustered + uncovered, for the footer's "= 100%" line. Only
+        meaningful when both figures are available — the template only shows
+        this when dedup_clustered_pct is not None (uncovered_pct is already
+        gated the same way upstream of it)."""
+        if self.dedup_clustered_pct is None or self.uncovered_pct is None:
+            return "—"
+        return f"{self.dedup_clustered_pct + self.uncovered_pct:.2f}%"
 
 
 def _regex_fallback_frontmatter(raw_fm: str) -> Dict[str, Any]:
@@ -381,6 +405,64 @@ def _load_uncovered_pct(vault_dir: Path, cluster_rows: List[ClusterRow]) -> tupl
     return derived, "derived"
 
 
+# Matches _summary.md's own "Sum check (deduplicated)" line, e.g.:
+#   **Sum check (deduplicated):** clustered 30.57% + non-cluster 69.43% = 99.99% (should be ~100%)
+# Captures the "clustered X%" figure — the DEDUPLICATED clustered total,
+# distinct from the raw sum of the individual per-cluster NAV% rows (which
+# double-counts multi-cluster-membership positions by design; see the
+# "Note:" line _summary.md prints directly below this one).
+_DEDUP_CLUSTERED_RE = re.compile(
+    r"Sum check \(deduplicated\)[^\n]*?clustered\s+([\d.]+)%",
+)
+
+
+def _load_dedup_clustered_pct(
+    vault_dir: Path, uncovered_pct: Optional[float],
+) -> tuple[Optional[float], str]:
+    """Source the DEDUPLICATED clustered NAV% — the figure that actually
+    reconciles to 100% against `uncovered_pct`.
+
+    board #364 review finding (2026-07-24): the individual cluster rows in
+    the table body sum to ~25.58% RAW on the live vault, because a position
+    that's a member of 2+ clusters is intentionally counted in each of those
+    clusters' rows (analytical, overlapping view). `_summary.md` itself
+    documents this and states the deduplicated figure explicitly in its own
+    "Sum check" line, e.g.:
+
+        **Sum check (deduplicated):** clustered 30.57% + non-cluster 69.43% = 99.99% (should be ~100%)
+
+    That "clustered 30.57%" is read directly (same trust-the-source pattern
+    as `_load_uncovered_pct`'s "Total non-cluster" row) — it is NOT the sum
+    of the visible per-cluster rows, and must never be computed as such here
+    (that would just reproduce the ~25.58% double-counted figure the
+    reconciliation exists to correct).
+
+    Falls back to `100 - uncovered_pct` only when _summary.md is missing/
+    unreadable or doesn't have the "Sum check" line — this is the same
+    complement relationship _summary.md's own line asserts, just computed
+    from the side we do have. Returns (None, "") if `uncovered_pct` is also
+    unavailable — the template must not render a fabricated figure."""
+    summary_path = vault_dir / "clusters" / "_summary.md"
+    if summary_path.exists():
+        try:
+            text = summary_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _log.warning("risk_clusters: failed reading %s: %s", summary_path, exc)
+            text = ""
+        m = _DEDUP_CLUSTERED_RE.search(text)
+        if m:
+            try:
+                return float(m.group(1)), "summary"
+            except ValueError:
+                pass
+
+    # Fallback: complement of uncovered_pct. Only used when _summary.md
+    # can't give us the real figure directly.
+    if uncovered_pct is None:
+        return None, ""
+    return 100.0 - uncovered_pct, "derived"
+
+
 def load_risk_clusters(slug: str) -> RiskClusterTable:
     """Return the cluster-rollup + bet-drill-down table for a dept. Empty
     (graceful) for any dept without a vault/clusters/ dir — only Ben has
@@ -419,9 +501,12 @@ def load_risk_clusters(slug: str) -> RiskClusterTable:
     enriched.sort(key=lambda c: (c.nav_weight_pct is None, -(c.nav_weight_pct or 0)))
 
     uncovered_pct, uncovered_source = _load_uncovered_pct(vault_dir, enriched)
+    dedup_clustered_pct, dedup_clustered_source = _load_dedup_clustered_pct(vault_dir, uncovered_pct)
 
     return RiskClusterTable(
         clusters=enriched,
         uncovered_pct=uncovered_pct,
         uncovered_source=uncovered_source,
+        dedup_clustered_pct=dedup_clustered_pct,
+        dedup_clustered_source=dedup_clustered_source,
     )

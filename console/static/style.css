@@ -2485,6 +2485,33 @@ a.piece-tile:hover {
   font-weight: 600;
 }
 
+/* Reconciliation rows (dedup-clustered total + the "= Total NAV" closer) —
+   PR #291 follow-up. The dedup-clustered row sits ABOVE the uncovered row
+   (dashed border carried by the uncovered row already separates the block
+   from <tbody>); the "= Total NAV" row closes it out so the footer reads
+   top-to-bottom as an explicit sum, distinct from the overlapping body
+   rows above. */
+.risk-cluster-recon-clustered > td {
+  border-top: 1px dashed var(--line-soft);
+  border-bottom: none;
+  padding-top: 10px;
+}
+.risk-cluster-uncovered-row.risk-cluster-row ~ .risk-cluster-recon-total > td,
+.risk-cluster-recon-total > td {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+  font-weight: 600;
+}
+.risk-cluster-recon-label {
+  font-style: italic;
+  color: var(--body-muted);
+  font-weight: 600;
+}
+.risk-cluster-recon-total .risk-cluster-recon-label,
+.risk-cluster-recon-total .risk-cluster-mono {
+  color: var(--ink);
+}
+
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
 

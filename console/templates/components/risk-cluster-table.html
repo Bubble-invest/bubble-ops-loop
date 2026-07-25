@@ -21,7 +21,17 @@
    Review addition (c) — Joris approved: a one-line note that bet counts can
    overlap across clusters (a ticker can be a member of 2+ clusters by
    design — same "Sum check" fact _summary.md itself prints), so the Bets
-   column isn't misread as a disjoint partition. #}
+   column isn't misread as a disjoint partition.
+
+   Follow-up fix (2026-07-25, PR #291): the uncovered row alone made the
+   footer look like it didn't sum to 100% (the individual cluster rows in
+   the BODY sum to a raw, overlap-double-counted ~25.58%, while uncovered
+   alone shows 69.43%). Added a "Total clustered (déduplication)" row —
+   read from the SAME _summary.md "Sum check" line, not derived from the
+   visible body rows — so the footer reads as its own explicit
+   reconciliation: dedup-clustered + uncovered = ~100%. The body rows above
+   are unchanged (still the intentional overlapping analytical view; the
+   overlap note above explains why they sum higher). #}
 <section class="risk-cluster-card" aria-labelledby="risk-cluster-heading">
   <header class="risk-cluster-head">
     <div>
@@ -98,6 +108,19 @@
       </tbody>
       {% if risk_clusters.uncovered_pct is not none %}
         <tfoot>
+          {% if risk_clusters.dedup_clustered_pct is not none %}
+            <tr class="risk-cluster-row risk-cluster-recon-row risk-cluster-recon-clustered">
+              <td class="risk-cluster-col-name">
+                <span class="risk-cluster-name risk-cluster-recon-label">Total clustered (dédupliqué)</span>
+                <span class="risk-cluster-id slug-ref">Somme des clusters ci-dessus, sans double-compte des titres multi-clusters</span>
+              </td>
+              <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.dedup_clustered_display }}</td>
+              <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+              <td class="risk-cluster-col-bets">
+                <span class="risk-cluster-empty-bets">Figure de réconciliation — pas une ligne de cluster</span>
+              </td>
+            </tr>
+          {% endif %}
           <tr class="risk-cluster-row risk-cluster-uncovered-row">
             <td class="risk-cluster-col-name">
               <span class="risk-cluster-name risk-cluster-uncovered-label">Non couvert / hors cluster</span>
@@ -109,6 +132,18 @@
               <span class="risk-cluster-empty-bets">Hors périmètre clustering — pas un cluster de bets</span>
             </td>
           </tr>
+          {% if risk_clusters.dedup_clustered_pct is not none %}
+            <tr class="risk-cluster-row risk-cluster-recon-row risk-cluster-recon-total">
+              <td class="risk-cluster-col-name">
+                <span class="risk-cluster-name risk-cluster-recon-label">= Total NAV</span>
+              </td>
+              <td class="risk-cluster-col-weight risk-cluster-mono">{{ risk_clusters.reconciliation_total_display }}</td>
+              <td class="risk-cluster-col-mv risk-cluster-mono">—</td>
+              <td class="risk-cluster-col-bets">
+                <span class="risk-cluster-empty-bets">Dédupliqué + non couvert ≈ 100% de la NAV</span>
+              </td>
+            </tr>
+          {% endif %}
         </tfoot>
       {% endif %}
     </table>

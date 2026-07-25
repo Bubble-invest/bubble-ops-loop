@@ -365,6 +365,83 @@ def test_uncovered_pct_read_directly_from_summary_md(disk_root):
     assert table.uncovered_display == "69.43%"
 
 
+# ─── Deduplicated clustered total (PR #291 follow-up) ─────────────────────
+#
+# The uncovered row alone (69.43%) doesn't reconcile against the raw sum of
+# the individual cluster rows (~25.58%/~40.43% in these fixtures) because
+# those rows double-count multi-cluster-membership positions by design.
+# _summary.md's own "Sum check (deduplicated)" line states the figure that
+# DOES reconcile: "clustered 30.57% + non-cluster 69.43% = 99.99%". That
+# 30.57% must be parsed from this line directly, not computed from the
+# visible cluster rows (which would just reproduce the double-counted
+# figure the reconciliation exists to correct).
+
+def test_dedup_clustered_pct_read_directly_from_summary_md(disk_root):
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH", "URA", "ROBO"], 3.12, 7150.0)
+    (repo / "vault" / "clusters" / "_summary.md").write_text(
+        _REAL_SUMMARY_NONCLUSTER_TABLE, encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.dedup_clustered_pct == pytest.approx(30.57)
+    assert table.dedup_clustered_source == "summary"
+    assert table.dedup_clustered_display == "30.57%"
+
+
+def test_dedup_clustered_plus_uncovered_reconciles_to_100(disk_root):
+    """The whole point of this fix: dedup_clustered_pct + uncovered_pct must
+    sum to ~100%, using the REAL live-vault _summary.md figures (30.57% +
+    69.43% = 99.99% ~ 100%), even though the raw cluster-row sum does not."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH", "URA", "ROBO"], 3.12, 7150.0)
+    (repo / "vault" / "clusters" / "_summary.md").write_text(
+        _REAL_SUMMARY_NONCLUSTER_TABLE, encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    total = table.dedup_clustered_pct + table.uncovered_pct
+    assert total == pytest.approx(100.0, abs=0.1)
+    # NOTE: _summary.md's own prose states "= 99.99%" (rounding artifact of
+    # its unrounded internal figures), but summing the two *rounded* display
+    # figures we parsed (30.57 + 69.43) is exactly 100.00 — arguably a
+    # cleaner reconciliation than the source line's own rounding. Either way
+    # it's within a rounding hair of 100%, which is the property this test
+    # actually guards.
+    assert table.reconciliation_total_display == "100.00%"
+
+
+def test_dedup_clustered_pct_falls_back_to_complement_of_uncovered(disk_root):
+    """No "Sum check" line in _summary.md (or no _summary.md at all) ->
+    derive dedup_clustered = 100 - uncovered. Still reconciles by
+    construction; source is labelled "derived" so tests/debug can tell."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "a", "Cluster A", ["X"], 30.0, 1000.0)
+    _write_cluster(repo, "b", "Cluster B", ["Y"], 20.0, 500.0)
+    # No _summary.md at all -> uncovered_pct itself falls back to "derived"
+    # (100 - sum(cluster weights) = 50.0), and dedup_clustered should mirror
+    # via the same complement relationship (100 - 50.0 = 50.0).
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_source == "derived"
+    assert table.dedup_clustered_source == "derived"
+    assert table.dedup_clustered_pct == pytest.approx(50.0)
+    assert table.dedup_clustered_pct + table.uncovered_pct == pytest.approx(100.0)
+
+
+def test_dedup_clustered_pct_none_when_uncovered_also_none(disk_root):
+    """No _summary.md, no cluster weights to derive uncovered from -> both
+    uncovered_pct and dedup_clustered_pct are None, not a fabricated figure.
+    The template must not render the reconciliation rows at all."""
+    repo = _build_repo(disk_root)
+    (repo / "vault" / "clusters" / "a.md").write_text(
+        "---\ncluster_id: a\ntitle: Cluster A\nmembers: [X]\n---\n\n# Cluster A\n",
+        encoding="utf-8",
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_pct is None
+    assert table.dedup_clustered_pct is None
+    assert table.dedup_clustered_display == "—"
+    assert table.reconciliation_total_display == "—"
+
+
 def test_uncovered_pct_falls_back_to_derived_when_no_summary(disk_root):
     """No _summary.md at all -> derive uncovered = 100 - sum(cluster
     weights). Explicitly an approximation (can undercount when clusters
@@ -510,6 +587,32 @@ def test_route_renders_uncovered_row_and_overlap_note(client, fixture_root):
     # messaging present near the table.
     assert "risk-cluster-overlap-note" in body
     assert "plusieurs clusters" in body
+    # Reconciliation rows (PR #291 follow-up): dedup-clustered total +
+    # uncovered = ~100%, sourced from the same _summary.md fixture's "Sum
+    # check" line (30.57%).
+    assert "risk-cluster-recon-clustered" in body
+    assert "risk-cluster-recon-total" in body
+    assert "30.57%" in body
+    assert "100.00%" in body  # the reconciliation_total_display closer
+
+
+def test_route_no_recon_rows_when_dedup_unavailable(client, fixture_root):
+    """No _summary.md and no cluster weights to derive uncovered from ->
+    neither the uncovered row NOR the reconciliation rows render (nothing to
+    reconcile without a real figure)."""
+    repo = fixture_root / "bubble-ops-fixture"
+    (repo / "vault" / "clusters").mkdir(parents=True)
+    (repo / "vault" / "investment-cases").mkdir(parents=True)
+    (repo / "vault" / "clusters" / "ai_capex.md").write_text(
+        "---\ncluster_id: ai_capex\ntitle: AI-Capex Cluster\nmembers: [SMH]\n---\n\n# AI-Capex\n",
+        encoding="utf-8",
+    )
+
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "risk-cluster-uncovered-row" not in r.text
+    assert "risk-cluster-recon-clustered" not in r.text
+    assert "risk-cluster-recon-total" not in r.text
 
 
 def test_route_no_uncovered_row_when_pct_unavailable(client, fixture_root):
