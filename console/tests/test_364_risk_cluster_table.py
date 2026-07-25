@@ -523,6 +523,25 @@ def test_route_renders_200_with_cluster_table(client, fixture_root):
     assert "SMH" in body
 
 
+def test_route_cluster_table_wrapped_in_scroll_container(client, fixture_root):
+    """Mobile-overflow fix: the cluster table must sit inside a
+    `.table-scroll` (overflow-x:auto) wrapper so a narrow viewport scrolls the
+    table WITHIN its own box rather than spilling the whole page body sideways.
+    Guards against the wrapper being dropped in a future edit."""
+    repo = fixture_root / "bubble-ops-fixture"
+    (repo / "vault" / "clusters").mkdir(parents=True)
+    (repo / "vault" / "investment-cases").mkdir(parents=True)
+    _write_cluster_into(repo, "ai_capex", "AI-Capex Cluster", ["SMH"], 3.12, 7150.0)
+    _write_case_into(repo, "case1.md", ["SMH"], "SMH — AI-capex core holding")
+
+    body = client.get("/dept/fixture").text
+    # the scroll wrapper opens before the table it protects
+    assert '<div class="table-scroll">' in body
+    assert body.index('<div class="table-scroll">') < body.index(
+        '<table class="risk-cluster-table">'
+    )
+
+
 def test_route_empty_state_no_clusters(client, fixture_root):
     """The fixture dept has no vault/clusters/ dir at all (conftest.py's
     fixture_root doesn't create one) — must render cleanly (no crash, no

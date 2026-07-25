@@ -49,6 +49,11 @@
     <p class="risk-cluster-overlap-note">
       Un même titre peut être membre de plusieurs clusters par construction — les compteurs de bets par cluster ne sont donc pas mutuellement exclusifs (ne pas les additionner comme une partition).
     </p>
+    {# .table-scroll (shared idiom, see .costs-table) — on a narrow/mobile
+       viewport the 4-col table + nowrap MV/weight cells can't compress below
+       the screen, so it scrolls WITHIN its own box instead of spilling the
+       whole page body horizontally. #}
+    <div class="table-scroll">
     <table class="risk-cluster-table">
       <thead>
         <tr>
@@ -147,6 +152,7 @@
         </tfoot>
       {% endif %}
     </table>
+    </div>
   {% else %}
     <p class="risk-cluster-empty">Aucune analyse de cluster disponible pour le moment.</p>
   {% endif %}
