@@ -212,12 +212,24 @@ class Policy:
             if repo not in self.read_repos:
                 reasons.append(f"repo {repo!r} not in policy read list: {self.read_repos}")
         elif action == "runtime_write_own":
-            if repo != self.own_repo:
-                reasons.append(
-                    f"repo {repo!r} is not the actor's own_repo ({self.own_repo!r})"
-                )
+            # A repo is writable under runtime_write_own if it is the actor's
+            # own_repo OR it carries an explicit write-rule in the policy. The
+            # write: list has always been keyed by repo (see _allowed_paths_for_repo),
+            # i.e. the schema was already designed for a dept to own more than one
+            # write target — a dept whose vault/data lives in a SECOND repo it owns
+            # (e.g. ben -> bubble-ben-vault, split out 2026-06-03) must be able to
+            # push it. The path allow-list below still fully constrains WHAT it may
+            # write in that repo; this only decides WHICH repos are eligible.
+            # (#benvault: prior code hard-required repo == own_repo, which silently
+            # blocked every vault push — the migration moved the repo but never
+            # granted its push-policy. Fail only when the repo is neither.)
             allowed_paths = self._allowed_paths_for_repo(repo)
-            if not allowed_paths:
+            if repo != self.own_repo and not allowed_paths:
+                reasons.append(
+                    f"repo {repo!r} is not the actor's own_repo ({self.own_repo!r}) "
+                    f"and has no write rules declared"
+                )
+            elif not allowed_paths:
                 reasons.append(f"no write rules declared for repo {repo!r}")
             for p in paths:
                 if _is_structural(p):
