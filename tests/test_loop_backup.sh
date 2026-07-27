@@ -776,6 +776,134 @@ else
     bad "J3 floor wrote a truthful line for a FRESH dept; heartbeat=$(cat "$HB_JFRESH" 2>/dev/null)"
 fi
 unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J
+
+# =============================================================================
+# J-DEFECT-B (#749/#750 defect (b), Rick 2026-07-27): a tick that merely hits
+# its --max-budget-usd cap (or an auth failure) must NOT be reported as
+# "dept DOWN" — it ran fine, it just hit a known, honest limit. Stub emits the
+# REAL `claude -p --output-format json` envelope shape, verified live against
+# the actual CLI (v2.1.220, 2026-07-27): `--max-budget-usd 0.0001` on a real
+# tick produced exactly `{"is_error":true,...,"subtype":"error_max_budget_usd",
+# "errors":["Reached maximum budget ($0.0001)"]}` with shell exit=1.
+# =============================================================================
+
+# J4: a stale dept whose backup tick hits its BUDGET CAP → BACKUP-BUDGET-EXCEEDED
+#     (NOT BACKUP-FAILED / NOT "dept DOWN") appended to its heartbeat.log, no
+#     auto-restart fired.
+BUDGET_STUB="$WORK/claude-budget.sh"
+cat > "$BUDGET_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "CLAUDE_STUB_RAN" >> "$CLAUDE_LOG_J"
+echo '{"is_error":true,"duration_api_ms":0,"num_turns":1,"stop_reason":"end_turn","session_id":"x","total_cost_usd":0.35,"usage":{},"terminal_reason":"budget_exhausted","subtype":"error_max_budget_usd","errors":["Reached maximum budget ($0.0001)"],"type":"result","duration_ms":2315,"uuid":"x"}'
+exit 1
+EOF
+chmod +x "$BUDGET_STUB"
+reset_fixtures
+common_env
+export CLAUDE_LOG_J="$CLAUDE_LOG"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-jbudget.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48   # neutralize the EARLY/head-start gate deterministically
+make_dept jbudget 10800; make_layer jbudget 1
+set_enabled jbudget
+export BUBBLE_BACKUP_DEPTS="jbudget"
+export BUBBLE_BACKUP_CLAUDE_BIN="$BUDGET_STUB"
+: > "$CLAUDE_LOG"; : > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+HB_JBUDGET="$AGENTS_ROOT/bubble-ops-jbudget/outputs/$TODAY/heartbeat.log"
+if grep -q 'BACKUP-BUDGET-EXCEEDED exit=1' "$HB_JBUDGET" 2>/dev/null \
+   && ! grep -q 'dept DOWN' "$HB_JBUDGET" 2>/dev/null \
+   && ! grep -q 'BACKUP-FAILED' "$HB_JBUDGET" 2>/dev/null; then
+    ok "J4 stale dept + budget-capped tick -> truthful 'BACKUP-BUDGET-EXCEEDED exit=1' (NOT dept DOWN)"
+else
+    bad "J4 missing/wrong BACKUP-BUDGET-EXCEEDED line; heartbeat=$(cat "$HB_JBUDGET" 2>/dev/null)"
+fi
+if ! grep -q '^jbudget$' "$RESTART_LOG" 2>/dev/null; then
+    ok "J5 budget-capped tick does NOT trigger an auto-restart (dept isn't down, cap survives a restart)"
+else
+    bad "J5 auto-restart fired for a budget-capped (not down) dept; restart.log=$(cat "$RESTART_LOG" 2>/dev/null)"
+fi
+
+# J6: the Telegram fired-ping for a budget-capped tick carries the SPECIFIC
+#     reason (not a bare exit code) so a human reads "budget exceeded" and
+#     knows it needs a cap raise, not a restart.
+if grep -q 'BUDGET EXCEEDED' "$NOTIFY_LOG" 2>/dev/null; then
+    ok "J6 backup-fired Telegram ping carries the specific BUDGET EXCEEDED reason"
+else
+    bad "J6 fired ping missing the specific budget-exceeded reason; notify.log=$(cat "$NOTIFY_LOG" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# J7: a stale dept whose tick fails with an AUTH signature (plain text, not
+#     JSON — the real shape an unauthenticated tick prints) -> BACKUP-AUTH-FAILED,
+#     not "dept DOWN", no auto-restart (re-login fixes it, a restart does not).
+AUTH_STUB="$WORK/claude-auth.sh"
+cat > "$AUTH_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "CLAUDE_STUB_RAN" >> "$CLAUDE_LOG_J"
+echo "Not logged in · Please run /login"
+exit 1
+EOF
+chmod +x "$AUTH_STUB"
+reset_fixtures
+common_env
+export CLAUDE_LOG_J="$CLAUDE_LOG"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-jauth.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept jauth 10800; make_layer jauth 1
+set_enabled jauth
+export BUBBLE_BACKUP_DEPTS="jauth"
+export BUBBLE_BACKUP_CLAUDE_BIN="$AUTH_STUB"
+: > "$CLAUDE_LOG"; : > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+HB_JAUTH="$AGENTS_ROOT/bubble-ops-jauth/outputs/$TODAY/heartbeat.log"
+if grep -q 'BACKUP-AUTH-FAILED exit=1' "$HB_JAUTH" 2>/dev/null \
+   && ! grep -q 'dept DOWN' "$HB_JAUTH" 2>/dev/null; then
+    ok "J7 stale dept + auth-failed tick -> truthful 'BACKUP-AUTH-FAILED exit=1' (NOT dept DOWN)"
+else
+    bad "J7 missing/wrong BACKUP-AUTH-FAILED line; heartbeat=$(cat "$HB_JAUTH" 2>/dev/null)"
+fi
+if ! grep -q '^jauth$' "$RESTART_LOG" 2>/dev/null; then
+    ok "J8 auth-failed tick does NOT trigger an auto-restart (needs re-login, not a restart)"
+else
+    bad "J8 auto-restart fired for an auth-failed dept; restart.log=$(cat "$RESTART_LOG" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# J9: a genuine unexplained crash (no budget/auth/timeout signature) still
+#     restarts, unchanged — the auto-restart gating narrowed to ONLY this case
+#     must not have broken the original "genuinely down" path (K1 below covers
+#     this too, but pin it here right next to the new negative cases).
+CRASH_STUB="$WORK/claude-crash.sh"
+cat > "$CRASH_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "CLAUDE_STUB_RAN" >> "$CLAUDE_LOG_J"
+echo '{"type":"result","result":"boom","subtype":"error_during_execution"}'
+exit 1
+EOF
+chmod +x "$CRASH_STUB"
+reset_fixtures
+common_env
+export CLAUDE_LOG_J="$CLAUDE_LOG"
+export BUBBLE_AUTORESTART_STATE="$WORK/auto-restart-jcrash.jsonl"; : > "$BUBBLE_AUTORESTART_STATE"
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+# Use "ben" (a known department in DEPT_ALLOWLIST, same as K1) — a made-up
+# slug is fail-closed refused by auto_restart.is_department() regardless of
+# tick outcome, which would make this assertion vacuous.
+make_dept ben 10800; make_layer ben 1
+set_enabled ben
+export BUBBLE_BACKUP_DEPTS="ben"
+export BUBBLE_BACKUP_CLAUDE_BIN="$CRASH_STUB"
+: > "$CLAUDE_LOG"; : > "$RESTART_LOG"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 1
+HB_JCRASH="$AGENTS_ROOT/bubble-ops-ben/outputs/$TODAY/heartbeat.log"
+if grep -q 'BACKUP-FAILED exit=1' "$HB_JCRASH" 2>/dev/null && grep -q 'dept DOWN' "$HB_JCRASH" 2>/dev/null \
+   && grep -q '^ben$' "$RESTART_LOG" 2>/dev/null; then
+    ok "J9 a genuine unexplained crash (no known signature) still says 'dept DOWN' AND still auto-restarts"
+else
+    bad "J9 unexplained-crash path regressed; heartbeat=$(cat "$HB_JCRASH" 2>/dev/null); restart.log=$(cat "$RESTART_LOG" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_CLAUDE_BIN CLAUDE_LOG_J BUBBLE_BACKUP_LAYER_OFFSET_H
+
 # K. Auto-restart dead DEPARTMENTS (Rick 2026-06-19, {{OPERATOR}}-approved). Fires
 #    ONLY when the backup tick FAILED to revive the dept (exit != 0). Scope:
 #      • departments (tony/ben/maya/accountant) restart;
