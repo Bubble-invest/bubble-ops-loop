@@ -32,6 +32,7 @@ as any other optional-heavy-dependency test in this repo.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import socket
 import threading
 import time
@@ -100,9 +101,17 @@ def _build_fixture_root(root: Path) -> None:
     )
     (live / "outputs").mkdir()
 
-    l3_dir = live / "outputs" / "2026-07-16" / "3"
+    # #829: this .last-run MUST be dated relative to "now", not a hardcoded
+    # date — see #762 (test_mission_pieces.py) for the same rot class. The
+    # console filters/renders by TODAY's date, so a fixture pinned to a
+    # fixed past date stops exercising the real "today" code path once that
+    # date passes. Anchor to today so the fixture keeps expressing "this
+    # layer ran recently" for as long as it exists.
+    _today = _dt.date.today()
+    _today_str = _today.isoformat()
+    l3_dir = live / "outputs" / _today_str / "3"
     l3_dir.mkdir(parents=True)
-    (l3_dir / ".last-run").write_text("2026-07-16T18:25:00Z", encoding="utf-8")
+    (l3_dir / ".last-run").write_text(f"{_today_str}T18:25:00Z", encoding="utf-8")
     (l3_dir / "summary.md").write_text(
         "# L3 run\n"
         "**Trigger:** 5 new `inbox/decisions/` items synced from cockpit "
