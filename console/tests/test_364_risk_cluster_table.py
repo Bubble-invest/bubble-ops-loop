@@ -442,6 +442,251 @@ def test_dedup_clustered_pct_none_when_uncovered_also_none(disk_root):
     assert table.reconciliation_total_display == "—"
 
 
+# ─── Fail-closed regression: _load_dedup_clustered_pct() adversarial inputs ─
+#
+# board #785: `_load_dedup_clustered_pct()`'s regex
+# (`Sum check \(deduplicated\)[^\n]*?clustered\s+([\d.]+)%`) must fail CLOSED
+# (return None / fall through to the documented complement fallback) rather
+# than return a garbage partial match when `_summary.md`'s "Sum check
+# (deduplicated)" line is reworded, reordered, or malformed. These tests
+# call `_load_dedup_clustered_pct()` directly (unit-level — the function
+# under test) so each malformed-line variant is isolated from the rest of
+# `load_risk_clusters()`'s pipeline.
+#
+# Real fail-open found and fixed here: the original regex had no word
+# boundary before "clustered", so it matched the "clustered" *substring*
+# inside "non-clustered"/"non-cluster" tokens. A line that only mentions
+# "non-clustered 69.43%" (no standalone "clustered N%" figure at all) used
+# to silently return 69.43 — the non-cluster percentage mislabeled as the
+# deduplicated CLUSTERED figure. Fixed with a `(?<![\w-])` lookbehind (see
+# risk_clusters.py). The well-formed path is asserted byte-identical below.
+
+def _write_summary_text(repo: Path, text: str) -> None:
+    (repo / "vault" / "clusters" / "_summary.md").write_text(text, encoding="utf-8")
+
+
+def test_dedup_regex_wellformed_baseline_unchanged(disk_root):
+    """GREEN baseline: the well-formed line still parses exactly as before
+    the fix (byte-identical behaviour on the real live-vault shape)."""
+    repo = _build_repo(disk_root, slug="wf")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** clustered 30.57% + non-cluster 69.43% = 99.99% (should be ~100%)\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert pct == pytest.approx(30.57)
+    assert source == "summary"
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Sum check (dedup)",           # reworded label
+        "Sum-check (deduplicated)",    # hyphenated label
+        "Deduplicated sum check",      # reordered label words
+    ],
+)
+def test_dedup_regex_rejects_reworded_label(disk_root, label):
+    """A relabeled "Sum check (deduplicated)" header must not be matched —
+    falls through to the uncovered-complement fallback (source: "derived"),
+    never a value silently sourced from a header the code doesn't recognize."""
+    repo = _build_repo(disk_root, slug="reworded")
+    _write_summary_text(
+        repo, f"**{label}:** clustered 30.57% + non-cluster 69.43% = 99.99%\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)  # complement of uncovered, not a parse
+
+
+def test_dedup_regex_rejects_reordered_clustered_after_nonclusterlabel(disk_root):
+    """"clustered N%" appearing BEFORE the "Sum check (deduplicated)" label
+    (i.e. outside the label's line) must not leak into the match — the regex
+    is anchored to text that follows the label on the same line."""
+    repo = _build_repo(disk_root, slug="reordered")
+    _write_summary_text(
+        repo,
+        "clustered 55%% raw mention elsewhere in the doc\n"
+        "**Sum check (deduplicated):** non-cluster 69.43% only, no clustered figure here\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    # No standalone "clustered N%" on the Sum-check line itself -> falls back
+    # to the documented complement, not the unrelated "clustered 55%" above.
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_fail_closed_on_missing_percent_sign(disk_root):
+    repo = _build_repo(disk_root, slug="nopercent")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** clustered 30.57 + non-cluster 69.43% = 99.99%\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)  # complement fallback, not a bad parse
+
+
+def test_dedup_regex_fail_closed_on_missing_number(disk_root):
+    repo = _build_repo(disk_root, slug="nonumber")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** clustered % + non-cluster 69.43% = 99.99%\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_fail_closed_on_empty_summary_file(disk_root):
+    repo = _build_repo(disk_root, slug="empty")
+    _write_summary_text(repo, "")
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_fail_closed_on_section_absent(disk_root):
+    """_summary.md exists but has no "Sum check" section at all."""
+    repo = _build_repo(disk_root, slug="nosection")
+    _write_summary_text(
+        repo, "# Cluster Analysis — Summary\n\nNo sum-check line in this file.\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_fail_closed_when_summary_missing_and_no_uncovered(disk_root):
+    """No _summary.md at all AND uncovered_pct also unavailable (None) ->
+    the function must return (None, ""), never a fabricated number."""
+    repo = _build_repo(disk_root, slug="nosummarynouncovered")
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=None,
+    )
+    assert pct is None
+    assert source == ""
+
+
+def test_dedup_regex_rejects_substring_match_inside_non_clustered(disk_root):
+    """THE bug this card exists to catch: a line with ONLY "non-clustered
+    N%" (a different metric — the non-cluster/uncovered figure) and no
+    standalone "clustered N%" figure at all must NOT have its regex match
+    the "clustered" substring inside "non-clustered" and return that number
+    as if it were the deduplicated clustered total. Must fail closed
+    (fall through to the complement-of-uncovered derivation) instead."""
+    repo = _build_repo(disk_root, slug="substring")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** non-clustered 69.43% (no true clustered figure on this line)\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    # Must NOT be 69.43 (the non-cluster figure smuggled through as
+    # "clustered" via unanchored substring matching) — must fall back to the
+    # documented complement instead.
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_recovers_real_clustered_figure_despite_non_clustered_prefix(disk_root):
+    """Companion to the substring-match regression above: when the SAME line
+    has both a "non-clustered N%" mention AND a real standalone "clustered
+    N%" figure, the true clustered figure must still be recovered (not
+    swallowed by the fix, and not confused with the non-cluster one)."""
+    repo = _build_repo(disk_root, slug="substring2")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** non-clustered 69.43% + clustered 30.57% = 99.99%\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "summary"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_multiple_candidate_lines_uses_first_valid_match(disk_root):
+    """Multiple "Sum check (deduplicated)" lines in the same file (shouldn't
+    happen in a well-formed _summary.md, but must not crash or silently
+    pick garbage) -> re.search returns the first match, deterministically."""
+    repo = _build_repo(disk_root, slug="multi")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** clustered 30.57% + non-cluster 69.43% = 99.99%\n"
+        "**Sum check (deduplicated):** clustered 99.99% + non-cluster 0.01% = 100.00%\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "summary"
+    assert pct == pytest.approx(30.57)  # first match, not the second
+
+
+def test_dedup_regex_different_metric_same_line_does_not_leak(disk_root):
+    """A number attached to a DIFFERENT metric label (not "clustered") on
+    the Sum-check line must never be picked up as the clustered figure."""
+    repo = _build_repo(disk_root, slug="diffmetric")
+    _write_summary_text(
+        repo,
+        "**Sum check (deduplicated):** non-cluster 69.43% only (clustered figure omitted)\n",
+    )
+    pct, source = risk_clusters._load_dedup_clustered_pct(
+        repo / "vault", uncovered_pct=69.43,
+    )
+    assert source == "derived"
+    assert pct == pytest.approx(30.57)
+
+
+def test_dedup_regex_fail_closed_end_to_end_via_load_risk_clusters(disk_root):
+    """End-to-end regression through the public `load_risk_clusters()` path
+    (not just the isolated helper): a `_summary.md` whose Sum-check line only
+    carries the non-cluster figure must produce the SAFE derived
+    dedup_clustered_pct, never the smuggled non-cluster number."""
+    repo = _build_repo(disk_root)
+    _write_cluster(repo, "ai_capex", "AI-Capex Cluster", ["SMH"], 3.12, 7150.0)
+    _write_summary_text(
+        repo,
+        "\n".join([
+            "---",
+            "title: Cluster Analysis — Cross-Cluster Summary",
+            "type: cluster_summary",
+            "---",
+            "",
+            "# Cluster Analysis — Summary",
+            "",
+            "| Bucket | NAV % | $ |",
+            "|---|---:|---:|",
+            "| **Total non-cluster** | **69.43%** | |",
+            "",
+            "**Sum check (deduplicated):** non-clustered 69.43% (malformed — no true clustered figure)",
+            "",
+        ]),
+    )
+    table = risk_clusters.load_risk_clusters("ben")
+    assert table.uncovered_pct == pytest.approx(69.43)
+    assert table.uncovered_source == "summary"
+    # Must be the SAFE derived complement (100 - 69.43 = 30.57), not the
+    # smuggled 69.43 non-cluster figure mislabeled as "clustered".
+    assert table.dedup_clustered_pct == pytest.approx(30.57)
+    assert table.dedup_clustered_source == "derived"
+
+
 def test_uncovered_pct_falls_back_to_derived_when_no_summary(disk_root):
     """No _summary.md at all -> derive uncovered = 100 - sum(cluster
     weights). Explicitly an approximation (can undercount when clusters
