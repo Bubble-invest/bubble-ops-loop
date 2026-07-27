@@ -411,8 +411,20 @@ def _load_uncovered_pct(vault_dir: Path, cluster_rows: List[ClusterRow]) -> tupl
 # distinct from the raw sum of the individual per-cluster NAV% rows (which
 # double-counts multi-cluster-membership positions by design; see the
 # "Note:" line _summary.md prints directly below this one).
+#
+# `(?<![\w-])` guards against matching the "clustered" *substring* inside
+# "non-clustered"/"non-cluster-ish" tokens on the same line (board #785
+# regression test finding: without this, a reworded line like "**Sum check
+# (deduplicated):** non-clustered 69.43% + clustered 30.57%" would still
+# match, but a line with ONLY "non-clustered 69.43%" and no true "clustered
+# N%" figure would silently return 69.43 — the non-cluster percentage
+# mislabeled as the deduplicated clustered one. The lookbehind requires
+# "clustered" not be immediately preceded by a word character or hyphen, so
+# it only ever binds to a standalone "clustered" token, never a "non-
+# clustered"/"nonclustered" one. Well-formed lines are unaffected (no
+# preceding word/hyphen character there).
 _DEDUP_CLUSTERED_RE = re.compile(
-    r"Sum check \(deduplicated\)[^\n]*?clustered\s+([\d.]+)%",
+    r"Sum check \(deduplicated\)[^\n]*?(?<![\w-])clustered\s+([\d.]+)%",
 )
 
 
