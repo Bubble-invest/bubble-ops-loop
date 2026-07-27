@@ -1329,6 +1329,13 @@ make_layer_marker m4shim 3 "$((NOW_EPOCH - 3600))"
 # risk_control fired via the shim: ONLY the layer marker is stamped, at
 # risk_control's own slot time — deliberately NO per-mission marker at all.
 make_layer_marker m4shim 4 "$((NOW_EPOCH - 300))"
+# STEP 3 output evidence (#749/#750 defect c): the shim's real run also
+# writes its artifact AFTER the marker — without this, the layer marker
+# alone is indistinguishable from a session that died right after STEP 1,
+# and the defect-c output-evidence gate must NOT trust it as risk_control's
+# own fire (see the same note on the M6/M7-equivalent python fixtures in
+# scripts/lib/tests/test_518_floor_mission_granular.py).
+echo "ok" > "$AGENTS_ROOT/bubble-ops-m4shim/outputs/$(date -u +%Y-%m-%d)/4/risk-brief.md"
 set_enabled m4shim
 export BUBBLE_BACKUP_DEPTS="m4shim"
 
@@ -1342,6 +1349,115 @@ if [[ "$ran" == "1" ]] \
     ok "M7 legacy-shim marker (risk_control, no per-mission marker) correctly excludes it; market_wrapup dispatches"
 else
     bad "M7 shim-marker fallback broken; ran=$ran claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# =============================================================================
+# M8-M10: defect (c) — a "started" marker must not suppress recovery
+# (#749/#750, board #715, the 2026-07-23 outage). Root cause: the shim's
+# STEP 1 stamps outputs/<today>/<N>/.last-run BEFORE any real work; STEP 3
+# (the real artifact) only lands after. A session that dies in between
+# leaves the marker present with NO output — the floor must treat that as
+# "died mid-dispatch" and run the recovery tick, not skip. End-to-end
+# through the real SCRIPT (not just the python selector unit tests in
+# scripts/lib/tests/test_518_floor_mission_granular.py) — single L4 mission
+# (risk_control only) so there is no market_wrapup noise to disambiguate.
+# =============================================================================
+make_dept_yaml_l4_one_mission() {
+    # make_dept_yaml_l4_one_mission <slug> <time_HH:MM> — single L4
+    # recurring_mission, shim-resolved (no dedicated missions/<id>/PROMPT.md).
+    local slug="$1" t="$2"
+    local wd="$AGENTS_ROOT/bubble-ops-$slug"
+    mkdir -p "$wd"
+    cat > "$wd/dept.yaml" <<YAML
+recurring_missions:
+- id: risk_control
+  layer: 4
+  cadence: daily
+  time: "$t"
+  output_queue: queues/research/
+  creates: []
+YAML
+}
+
+# M8: marker present, output ABSENT (died mid-dispatch) → NOT skipped, the
+#     recovery tick runs.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept m8died 10800
+make_layer m8died 4
+make_dept_yaml_l4_one_mission m8died "$RISK_TIME"
+make_layer_marker m8died 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker m8died 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker m8died 3 "$((NOW_EPOCH - 3600))"
+# STEP 1 fired (marker stamped) — STEP 3 never happened. Deliberately NO
+# output file besides .last-run.
+make_layer_marker m8died 4 "$((NOW_EPOCH - 300))"
+set_enabled m8died
+export BUBBLE_BACKUP_DEPTS="m8died"
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "1" ]] && grep -q 'mission `risk_control`' "$CLAUDE_ARGS" 2>/dev/null; then
+    ok "M8 defect(c) marker present + output ABSENT → recovery tick runs (died-mid-dispatch caught)"
+else
+    bad "M8 expected a recovery tick for risk_control; ran=$ran claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# M9: marker present, output PRESENT (genuinely completed) → skipped, no
+#     needless re-run of a healthy dept.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept m9healthy 10800
+make_layer m9healthy 4
+make_dept_yaml_l4_one_mission m9healthy "$RISK_TIME"
+make_layer_marker m9healthy 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker m9healthy 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker m9healthy 3 "$((NOW_EPOCH - 3600))"
+make_layer_marker m9healthy 4 "$((NOW_EPOCH - 300))"
+echo "ok" > "$AGENTS_ROOT/bubble-ops-m9healthy/outputs/$(date -u +%Y-%m-%d)/4/risk-brief.md"
+set_enabled m9healthy
+export BUBBLE_BACKUP_DEPTS="m9healthy"
+
+: > "$CLAUDE_LOG"; : > "$WORK/loop-backup.jsonl"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "0" ]] && grep -q 'all L4 missions already fired today' "$WORK/loop-backup.jsonl" 2>/dev/null; then
+    ok "M9 defect(c) marker present + output PRESENT → clean skip (healthy dept not re-run)"
+else
+    bad "M9 expected a clean skip; ran=$ran jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null)"
+fi
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# M10: no marker at all → runs, unchanged (baseline case, pinned against
+#      regression from the new output-evidence gate).
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+make_dept m10never 10800
+make_layer m10never 4
+make_dept_yaml_l4_one_mission m10never "$RISK_TIME"
+make_layer_marker m10never 1 "$((NOW_EPOCH - 3600))"
+make_layer_marker m10never 2 "$((NOW_EPOCH - 3600))"
+make_layer_marker m10never 3 "$((NOW_EPOCH - 3600))"
+# No L4 layer marker, no output — risk_control has simply never fired today.
+set_enabled m10never
+export BUBBLE_BACKUP_DEPTS="m10never"
+
+: > "$NOTIFY_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ARGS"
+with_dryrun -unset- -unset- "$SCRIPT" --layer 4
+
+ran="$(grep -c CLAUDE_STUB_RAN "$CLAUDE_LOG" 2>/dev/null || true)"
+if [[ "$ran" == "1" ]] && grep -q 'mission `risk_control`' "$CLAUDE_ARGS" 2>/dev/null; then
+    ok "M10 no marker at all → runs, unchanged"
+else
+    bad "M10 expected risk_control to run (never fired today); ran=$ran claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
 fi
 unset BUBBLE_BACKUP_LAYER_OFFSET_H
 

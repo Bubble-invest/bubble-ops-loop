@@ -51,6 +51,21 @@ _WEEKDAY_NAMES = {
     "sunday": 6,
 }
 
+# #749/#750 defect (c) / board #715: the OODA layers whose shim prompt
+# (`layers/<N>/PROMPT.md`) is confirmed to write its real STEP-3 artifact(s)
+# into its OWN `outputs/<today>/<N>/` dir — L1 (situation_brief.md /
+# summary.md / morning_briefing.md) and L4 (risk-brief.md / risk-kpis.yaml /
+# management-export.yaml). Checked against both the live `agents/ben/layers/
+# {1,4}/PROMPT.md` and the canonical `layer_templates.py`. L2 ("research")
+# and L3 ("execution") deliberately excluded: their real output is a vault
+# thesis note / a `trades`|`decisions` DB row, never a file under
+# `outputs/<today>/{2,3}/` — so "no extra file there" is NOT evidence of a
+# died-mid-dispatch session for those two, and gating on it would falsely
+# force a re-run of a genuinely healthy L2/L3 mission every time. Used by
+# `_mission_last_fired_with_shim_fallback`'s output-evidence gate — see its
+# docstring.
+_LAYERS_WITH_OUTPUT_EVIDENCE = frozenset({1, 4})
+
 
 # ---------------------------------------------------------------------------
 # Tolerant ISO-8601 parser
@@ -118,6 +133,63 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
         raise ValueError("write_last_run requires a tz-aware datetime")
     layer_dir.mkdir(parents=True, exist_ok=True)
     (layer_dir / ".last-run").write_text(when.isoformat(), encoding="utf-8")
+
+
+def layer_output_present(layer_dir: Path) -> bool:
+    """True iff `<layer_dir>` (`outputs/<today>/<N>/`) has evidence of REAL
+    layer output, distinct from the STEP-1 idempotence marker.
+
+    WHY this exists (#749/#750 defect c, board #715 — the 07-23 floor-cron
+    outage): every layer prompt (`agents/*/layers/<N>/PROMPT.md`, and the
+    canonical templates in `layer_templates.py`) stamps `.last-run` as its
+    FIRST action, BEFORE any real work — "Write immediately
+    outputs/<today>/{n}/.last-run ... before any other work". The actual
+    artifacts (`situation_brief.md`/`summary.md` for L1, `risk-brief.md`/
+    `risk-kpis.yaml`/`management-export.yaml` for L4, ...) are only written
+    at STEP 3, after the work is done. On 2026-07-23 a live session died
+    AFTER STEP 1 but BEFORE STEP 3: the marker existed, the floor read it as
+    "already fired today", and declined to recover a dept that had in fact
+    produced NOTHING that day. This helper is the "did it actually finish"
+    signal a caller can additionally require before trusting the marker.
+
+    Deliberately generic (no specific filename): the real artifact names
+    differ per layer and per dept (L1: situation_brief.md / summary.md /
+    morning_briefing.md; L4: risk-brief.md / risk-kpis.yaml; ...) and are not
+    contractually fixed anywhere in the live dept trees (the 4-file schema
+    documented in MVP-ROADMAP.md / OPERATOR-GUIDE.md is enforced only in the
+    scaffold's generated fixture, `tests/test_skeleton_completeness.py`, NOT
+    in the deployed `agents/*/layers/*/PROMPT.md` — e.g. `agents/ben`'s real
+    L1/L3 prompts never mention `logs.jsonl` at all). So instead of guessing
+    a filename, this checks the ONLY thing every layer's contract actually
+    guarantees on completion: something besides `.last-run` exists in the
+    layer's own output dir.
+
+    Returns False (no evidence of output) if the dir doesn't exist, is
+    empty, or contains only `.last-run` (+ any dotfiles — a died-mid-dispatch
+    tick could in principle also drop a stray dotfile/lockfile; those don't
+    count as real output either). Returns True as soon as ANY non-dotfile
+    entry (file or subdir, e.g. `artifacts/`) is present.
+
+    NOTE (L2/L3 caveat — read before reusing this elsewhere): L2 ("research")
+    and L3 ("execution") do NOT write their real output into
+    `outputs/<today>/<N>/` at all in the live depts today — L2's artifact is
+    a vault thesis note keyed by ticker; L3's is a `trades`/`decisions` DB
+    row + a notification. For those layers this helper will read False even
+    on a fully successful run. Callers must NOT treat that as "died
+    mid-dispatch" for L2/L3 — see the shim-fallback caller in
+    `_mission_last_fired_with_shim_fallback` for how that ambiguity is
+    handled (bias to running the tick rather than trusting a marker this
+    helper can't corroborate).
+    """
+    if not layer_dir.is_dir():
+        return False
+    for entry in layer_dir.iterdir():
+        if entry.name == ".last-run":
+            continue
+        if entry.name.startswith("."):
+            continue
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2123,6 +2195,25 @@ def _mission_last_fired_with_shim_fallback(
     A per-mission marker (even a stale one) always wins over the layer
     fallback — this function only consults the layer marker when the
     per-mission marker is genuinely absent.
+
+    #749/#750 defect (c) / board #715 (2026-07-23 outage): the layer marker
+    this fallback trusts is stamped at STEP 1 of the shim prompt, BEFORE any
+    real work (see `layer_output_present`'s docstring) — so on its own it
+    cannot distinguish "the mission genuinely fired via the shim" from "the
+    session died right after STEP 1, before producing anything". Before
+    trusting the layer marker as this mission's OWN fire, we additionally
+    require `layer_output_present` evidence for layers where the shim
+    prompt's real STEP 3 artifacts are known to land in the layer's own
+    `outputs/<today>/<N>/` dir (L1, L4 — confirmed against both
+    `agents/*/layers/{1,4}/PROMPT.md` and the canonical `layer_templates.py`).
+    L2/L3 write their real output elsewhere (a vault note, a DB row) and
+    never populate `outputs/<today>/{2,3}/` beyond `.last-run` even on a
+    fully successful run, so requiring output evidence there would falsely
+    treat every healthy L2/L3 shim mission as "died mid-dispatch" and
+    needlessly re-run it — the exact regression #4 in the defect-c task
+    warns against. For those layers we fall back to the marker alone
+    (unchanged pre-existing behavior); the ambiguity is real and unresolved
+    there, not silently "fixed" by pointing at a signal that isn't reliable.
     """
     per_mission = _mission_last_fired(ctx, mission)
     if per_mission is not None:
@@ -2137,6 +2228,21 @@ def _mission_last_fired_with_shim_fallback(
     layer_marker = _layer_fired_today_marker(ctx, layer)
     if layer_marker is None:
         return None
+
+    # Output-evidence gate (defect c): only for layers whose shim prompt is
+    # confirmed to write real STEP-3 artifacts into outputs/<today>/<N>/.
+    # A marker with NO corroborating output on one of these layers means the
+    # session died mid-dispatch (STEP 1 done, STEP 3 never reached) — treat
+    # it as NOT fired so the caller re-selects the mission (recovery runs).
+    # Ambiguous/ungated layers (L2, L3) are left to the marker alone below —
+    # see the docstring note above; a false "not fired" there would trigger
+    # a needless re-run of a genuinely healthy mission, not a safe recovery.
+    if layer in _LAYERS_WITH_OUTPUT_EVIDENCE:
+        today_dir_str = ctx.get("today_dir")
+        if today_dir_str is not None:
+            layer_dir = Path(today_dir_str) / str(layer)
+            if not layer_output_present(layer_dir):
+                return None
 
     # Disambiguation: the layer marker can only represent THIS mission if its
     # own scheduled slot (daily/weekly `time:`, Paris-local) had already
@@ -2475,7 +2581,10 @@ def select_due_missions_for_forced_layer(
         # whose STEP 1 stamps ONLY the layer marker — never the per-mission
         # one. Plain _mission_last_fired would then report "never fired" for
         # an already-fired shim mission, re-selecting it on a later floor
-        # tick. _mission_last_fired_with_shim_fallback closes that gap.
+        # tick. _mission_last_fired_with_shim_fallback closes that gap — and
+        # (#749/#750 defect c) additionally refuses to trust that layer
+        # marker, for L1/L4, without corroborating STEP-3 output; see its
+        # docstring and `layer_output_present`.
         last_fired = _mission_last_fired_with_shim_fallback(repo, ctx, m)
         if not is_mission_due(m, now=now_utc, last_fired=last_fired):
             continue
