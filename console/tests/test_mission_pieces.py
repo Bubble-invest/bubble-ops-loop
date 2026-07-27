@@ -12,6 +12,7 @@ Covers PLAN-642 §4's per-dept fixture matrix:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import sys
 from pathlib import Path
 
@@ -73,9 +74,18 @@ def content_shaped_repo(tmp_path: Path, monkeypatch) -> Path:
     (repo / "docs" / "CONTEXT_POOL_SCHEMA.md").write_text(
         "# Pool schema\n", encoding="utf-8")
 
-    (repo / "outputs" / "2026-07-16" / "missions" / "draft_x").mkdir(parents=True)
-    (repo / "outputs" / "2026-07-16" / "missions" / "draft_x" / ".last-run").write_text(
-        "2026-07-16T12:05:00Z\n", encoding="utf-8")
+    # #762: this .last-run MUST be dated relative to "now", not a hardcoded
+    # date. mission_status() classifies 'actif' on a rolling 7-day window, so a
+    # fixture pinned to a literal date silently flips to 'dormant' once that
+    # date falls out of the window — which is exactly what happened here (the
+    # fixture was written on 2026-07-16 and the suite went red on 2026-07-24,
+    # eight days later, with no code change). Anchor to today so the fixture
+    # keeps expressing "this mission ran recently" for as long as it exists.
+    _today = _dt.date.today()
+    _today_str = _today.isoformat()
+    (repo / "outputs" / _today_str / "missions" / "draft_x").mkdir(parents=True)
+    (repo / "outputs" / _today_str / "missions" / "draft_x" / ".last-run").write_text(
+        f"{_today_str}T12:05:00Z\n", encoding="utf-8")
 
     return repo
 
@@ -387,7 +397,8 @@ def test_mission_core_resolves_hyphenated_flat_yaml_filename(ben_shaped_repo):
 
 def test_mission_status_actif_dormant_evenementiel_inconnu(content_shaped_repo):
     """PR-B item 8: status badge classification. content_shaped_repo's
-    fixture gives draft_x a .last-run today (2026-07-16) -> 'actif'; an
+    fixture gives draft_x a .last-run dated today (anchored to
+    date.today(), see #762 — never a hardcoded date) -> 'actif'; an
     event-cadence mission is always 'événementiel' regardless of output
     history; a mission with no outputs/ entry at all is 'inconnu'."""
     from console.services.mission_pieces import mission_status
