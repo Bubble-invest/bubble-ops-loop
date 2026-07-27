@@ -414,15 +414,37 @@ PYEOF
 # Recipient: {{OPERATOR}}'s Telegram chat_id. tony/cgp have no config.yaml (only maya
 # does), so we can't lean on per-dept `resolve_recipients`; the backup net pings
 # ONE human ({{OPERATOR}}) regardless of dept. chat_id is overridable via
-# BUBBLE_BACKUP_TELEGRAM_CHAT_ID (default = {{OPERATOR}}, confirmed msg 1946).
+# BUBBLE_BACKUP_TELEGRAM_CHAT_ID, then BUBBLE_OPERATOR_CHAT_ID, then a hardcoded
+# literal fallback of {{OPERATOR}}'s real chat_id (confirmed msg 1946; same value
+# used in scripts/lib/tests/test_loop_notify.py). Board #749/#750 defect (a): the
+# comment here used to CLAIM a default existed but the code fell through to ""
+# when both env vars were unset — that's exactly what caused the 2026-07-23
+# silent-alert outage (Telegram 400 chat_id is empty, never surfaced). The
+# literal below is the actual default now, not just documentation of one.
 #
 # TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
 # envfile (which carries it) before invoking this. Never fatal: a notify failure
-# must not abort the safety net (mirrors emit_event's posture).
-BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-}}"
+# must not abort the safety net (mirrors emit_event's posture) — but per #749/#750
+# it must never be SILENT either, so an unresolved chat_id is logged loudly at
+# each send site instead of being POSTed empty (see notify_backup_fired /
+# notify_autorestart below).
+BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-6532205130}}"
 
 notify_backup_fired() {
     local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}"
+    # #749/#750 defect (a) guard: never POST an empty chat_id and swallow the
+    # resulting Telegram 400 silently. If BACKUP_CHAT_ID is STILL unresolved
+    # here (should be unreachable now that the fallback above is a real
+    # literal, but defends against a future env override being set to "" —
+    # e.g. BUBBLE_BACKUP_TELEGRAM_CHAT_ID="") log loudly and bail instead of
+    # sending. This is the failure mode that hid a full-day fleet outage.
+    # Mirrors this file's "never fatal" posture for notify failures (return 0,
+    # not 1 — a dropped alert must not abort the floor/restart flow under
+    # set -e, same as every other `|| log ...`-guarded send in this file).
+    if [[ -z "$BACKUP_CHAT_ID" ]]; then
+        log "$slug: ERROR — chat_id unresolved — cannot alert (backup-fired ping for '${slug}' dropped, not sent)"
+        return 0
+    fi
     local age_h
     if [[ -n "$age" && "$age" != "None" ]]; then
         age_h="$(( age / 60 ))m"
@@ -622,6 +644,14 @@ PYEOF
 # backup-fired ping (caller has the env sourced). Never fatal.
 notify_autorestart() {
     local slug="$1" what="$2" reason="$3"
+    # #749/#750 defect (a) guard: same as notify_backup_fired — never POST an
+    # empty chat_id and swallow a silent 400. Log loudly and bail instead.
+    # return 0 (not 1): a dropped alert must stay non-fatal, matching this
+    # file's existing posture for every other notify failure.
+    if [[ -z "$BACKUP_CHAT_ID" ]]; then
+        log "$slug: ERROR — chat_id unresolved — cannot alert (auto-restart ping for '${slug}' dropped, not sent)"
+        return 0
+    fi
     local subject="🔁 auto-restart [${slug}] — ${what}"
     if [[ -n "${BUBBLE_BACKUP_NOTIFY_CMD:-}" ]]; then
         "${BUBBLE_BACKUP_NOTIFY_CMD}" "$slug" "$BACKUP_CHAT_ID" "${subject}"$'\n'"${reason}" \
