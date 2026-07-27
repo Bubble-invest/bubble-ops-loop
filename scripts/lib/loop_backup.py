@@ -98,14 +98,19 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
     timestamp (not mtime) avoids false-fresh readings if a deploy/rsync
     touches the file without the loop actually ticking.
 
-    Truthful-heartbeat exclusion (Rick 2026-06-19): the floor appends a
-    ``... tick BACKUP-FAILED ... — dept DOWN`` line when its OWN backup tick
-    failed (dept genuinely down). That line carries a CURRENT timestamp, so a
-    naive "last ISO ts" read would treat the dept as FRESH-ALIVE and the floor
-    would stop re-firing — exactly the false-fresh failure this signal exists to
-    kill. So a ``BACKUP-FAILED`` line is NOT counted as a liveness signal: we
-    fall back to the last REAL heartbeat before it (or None). A ``BACKUP-RAN``
-    or ``DEGRADED-L4`` line DOES count — the dept was actually serviced.
+    Truthful-heartbeat exclusion (Rick 2026-06-19; extended #749/#750 defect
+    (b)): the floor appends a ``... tick BACKUP-FAILED ... — dept DOWN`` line
+    when its OWN backup tick crashed (dept genuinely down) — or, since defect
+    (b), one of the other floor-authored non-liveness outcomes
+    (BACKUP-BUDGET-EXCEEDED / BACKUP-AUTH-FAILED / BACKUP-TIMEOUT): the FLOOR
+    wrote these, not the dept, so none of them are evidence the dept's own
+    loop ticked. Any of these lines carries a CURRENT timestamp, so a naive
+    "last ISO ts" read would treat the dept as FRESH-ALIVE and the floor
+    would stop re-firing — exactly the false-fresh failure this signal exists
+    to kill. So NONE of the _HB_NOT_LIVENESS tokens count as a liveness
+    signal: we fall back to the last REAL heartbeat before them (or None). A
+    ``BACKUP-RAN`` or ``DEGRADED-L4`` line DOES count — the dept was actually
+    serviced.
     """
     import datetime as _dt
 
@@ -121,10 +126,10 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
             with open(fp, "r", encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             # Walk lines newest→oldest; the freshness signal is the most recent
-            # ISO-stamped line that is NOT a BACKUP-FAILED ("dept DOWN") marker.
+            # ISO-stamped line that is NOT a floor-authored non-liveness marker.
             for line in reversed(text.splitlines()):
-                if HB_BACKUP_FAILED in line:
-                    continue  # down-marker: never a liveness signal
+                if any(tok in line for tok in _HB_NOT_LIVENESS):
+                    continue  # down/budget/auth/timeout marker: never a liveness signal
                 m = _ISO_RE.search(line)
                 if not m:
                     continue
@@ -139,10 +144,11 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
         except OSError:
             ts_epoch = None
         if ts_epoch is None:
-            # No parseable non-down line. If the file has ONLY down-markers we
-            # must NOT fall back to mtime (that would re-introduce false-fresh);
-            # only fall back to mtime when there were no ISO lines at all.
-            if HB_BACKUP_FAILED in text:
+            # No parseable non-excluded line. If the file has ONLY excluded
+            # markers we must NOT fall back to mtime (that would re-introduce
+            # false-fresh); only fall back to mtime when there were no ISO
+            # lines at all.
+            if any(tok in text for tok in _HB_NOT_LIVENESS):
                 continue
             try:
                 ts_epoch = os.path.getmtime(fp)
@@ -271,8 +277,72 @@ def latest_per_dept(events: List[dict]) -> dict:
 
 # Stable outcome tokens (grep-able by the watchdog / cockpit).
 HB_BACKUP_RAN = "BACKUP-RAN-FOR-DEPT"   # floor ran a layer tick OK in the dept's place
-HB_BACKUP_FAILED = "BACKUP-FAILED"      # floor tried but the backup tick itself failed → dept DOWN
+HB_BACKUP_FAILED = "BACKUP-FAILED"      # floor tried, tick crashed for an UNKNOWN reason → dept DOWN
 HB_DEGRADED_L4 = "DEGRADED-L4"          # degraded L4 carried-over (loop was down today)
+# ── #749/#750 defect (b): a non-zero exit is not automatically "dept DOWN" ──
+# `claude -p ... --max-budget-usd N` returns shell exit=1 whenever the tick
+# merely EXCEEDS its budget cap (subtype "error_max_budget_usd") — the dept
+# ran fine, it just hit the spend ceiling. Blanket-labelling every non-zero
+# exit "dept DOWN" (Defect 2, reference_floor_cron_marker_and_budget_defects.md,
+# reproduced live 2026-07-25: `--max-budget-usd 0.001` → subtype
+# error_max_budget_usd → exit=1) falsely reports a live, budget-capped dept as
+# a dead one — same defect class as #758 (an alert asserting a cause it never
+# verified). These tokens give each DISTINCT failure its own honest label so a
+# human reads "budget exceeded" vs "auth failed" vs "actually down" and knows
+# which needs a different response (raise the cap / re-login / restart).
+HB_BACKUP_BUDGET_EXCEEDED = "BACKUP-BUDGET-EXCEEDED"  # tick ran, hit --max-budget-usd — NOT down
+HB_BACKUP_AUTH_FAILED = "BACKUP-AUTH-FAILED"          # tick couldn't authenticate — needs re-login, not a restart
+HB_BACKUP_TIMEOUT = "BACKUP-TIMEOUT"                  # tick ran out of time — may be transient
+
+# Every outcome token the FLOOR (not the dept) writes into the dept's own
+# heartbeat.log. None of these are evidence the dept's own loop ticked, so
+# latest_heartbeat_epoch must exclude ALL of them from freshness, not just
+# HB_BACKUP_FAILED (pre-#749/#750-(b) behavior only excluded the crash case).
+_HB_NOT_LIVENESS = (
+    HB_BACKUP_FAILED,
+    HB_BACKUP_BUDGET_EXCEEDED,
+    HB_BACKUP_AUTH_FAILED,
+    HB_BACKUP_TIMEOUT,
+)
+
+
+def classify_tick_outcome(
+    exit_code: int,
+    subtype: Optional[str] = None,
+    is_error: Optional[bool] = None,
+    raw_output: str = "",
+) -> str:
+    """Pure classification of a `claude -p` backup tick's outcome.
+
+    Distinguishes an ACTUAL dead department from a tick that ran and hit a
+    known, honest failure mode. `subtype`/`is_error` come from the
+    `--output-format json` envelope when it parsed (`obj.get("subtype")`,
+    `obj.get("is_error")`); `raw_output` is the tick's raw stdout+stderr,
+    used only as a fallback text-signature scan when the JSON didn't parse
+    (e.g. an auth failure prints plain text, not JSON — verified live
+    2026-07-25: "Not logged in · Please run /login").
+
+    Returns one of the HB_* outcome tokens. `exit_code == 0` always returns
+    HB_BACKUP_RAN regardless of subtype (mirrors the pre-existing behavior:
+    only a non-zero exit needs classifying at all).
+    """
+    if exit_code == 0:
+        return HB_BACKUP_RAN
+    if subtype == "error_max_budget_usd":
+        return HB_BACKUP_BUDGET_EXCEEDED
+    if subtype == "error_timeout" or "timed out" in raw_output.lower():
+        return HB_BACKUP_TIMEOUT
+    text_l = raw_output.lower()
+    if (
+        "not logged in" in text_l
+        or "please run /login" in text_l
+        or "please run `/login`" in text_l
+        or subtype == "error_auth"
+    ):
+        return HB_BACKUP_AUTH_FAILED
+    # Unknown non-zero exit with none of the above signatures — the ONLY case
+    # that should say "dept DOWN".
+    return HB_BACKUP_FAILED
 
 
 def format_external_heartbeat(
@@ -289,8 +359,16 @@ def format_external_heartbeat(
     grep-able outcome token. Cases (one per call site):
 
       * floor ran a layer tick OK   → ``<iso> tick BACKUP-RAN-FOR-DEPT layer=N exit=0``
-      * floor's backup tick FAILED  → ``<iso> tick BACKUP-FAILED exit=N — dept DOWN``
+      * tick hit its budget cap     → ``<iso> tick BACKUP-BUDGET-EXCEEDED exit=N — tick ran, hit budget cap (not down)``
+      * tick couldn't authenticate  → ``<iso> tick BACKUP-AUTH-FAILED exit=N — needs re-login``
+      * tick ran out of time        → ``<iso> tick BACKUP-TIMEOUT exit=N``
+      * tick crashed, unknown cause → ``<iso> tick BACKUP-FAILED exit=N — dept DOWN``
       * degraded L4 carried-over    → ``<iso> tick DEGRADED-L4 carried-over``
+
+    Budget/auth/timeout are DISTINCT from a genuine crash (#749/#750 defect
+    (b)): the tick ran, it just hit a known, honest limit — NOT evidence the
+    dept process is dead. Only HB_BACKUP_FAILED (no known signature matched)
+    means "dept DOWN".
 
     `outcome` is one of the HB_* constants. `ts` defaults to now (UTC ISO,
     second resolution — same shape as now_iso()).
@@ -306,6 +384,15 @@ def format_external_heartbeat(
     elif outcome == HB_BACKUP_FAILED:
         code = int(exit_code) if exit_code is not None else 1
         body = f"{HB_BACKUP_FAILED} exit={code} — dept DOWN"
+    elif outcome == HB_BACKUP_BUDGET_EXCEEDED:
+        code = int(exit_code) if exit_code is not None else 1
+        body = f"{HB_BACKUP_BUDGET_EXCEEDED} exit={code} — tick ran, hit budget cap (not down)"
+    elif outcome == HB_BACKUP_AUTH_FAILED:
+        code = int(exit_code) if exit_code is not None else 1
+        body = f"{HB_BACKUP_AUTH_FAILED} exit={code} — needs re-login"
+    elif outcome == HB_BACKUP_TIMEOUT:
+        code = int(exit_code) if exit_code is not None else 1
+        body = f"{HB_BACKUP_TIMEOUT} exit={code}"
     elif outcome == HB_DEGRADED_L4:
         body = f"{HB_DEGRADED_L4} carried-over"
     else:

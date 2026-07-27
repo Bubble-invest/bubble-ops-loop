@@ -90,6 +90,14 @@ PY="${REPO_ROOT}/venv/bin/python"
 # extracted from the claude --output-format json envelope) so the caller can
 # relay it to Telegram. Reset per dept by run_backup_tick. Init for set -u.
 LAST_TICK_SUMMARY=""
+# #749/#750 defect (b): holds the most recent tick's `subtype` field (e.g.
+# "success", "error_max_budget_usd") from the same JSON envelope, plus the
+# raw stdout+stderr text (for text-signature fallback when the envelope
+# didn't parse — e.g. a plain-text auth failure). Together these let the
+# caller classify a non-zero exit instead of blanket-labelling it "dept
+# DOWN". Reset per dept by run_backup_tick. Init for set -u.
+LAST_TICK_SUBTYPE=""
+LAST_TICK_RAW=""
 # Holds the mission id of the CURRENT headless tick in mission-granular floor
 # mode (card #518), empty in legacy/generic mode. Set by the per-dept loop
 # before each do_one_tick call; read by notify_backup_fired to tag the fired
@@ -414,15 +422,37 @@ PYEOF
 # Recipient: {{OPERATOR}}'s Telegram chat_id. tony/cgp have no config.yaml (only maya
 # does), so we can't lean on per-dept `resolve_recipients`; the backup net pings
 # ONE human ({{OPERATOR}}) regardless of dept. chat_id is overridable via
-# BUBBLE_BACKUP_TELEGRAM_CHAT_ID (default = {{OPERATOR}}, confirmed msg 1946).
+# BUBBLE_BACKUP_TELEGRAM_CHAT_ID, then BUBBLE_OPERATOR_CHAT_ID, then a hardcoded
+# literal fallback of {{OPERATOR}}'s real chat_id (confirmed msg 1946; same value
+# used in scripts/lib/tests/test_loop_notify.py). Board #749/#750 defect (a): the
+# comment here used to CLAIM a default existed but the code fell through to ""
+# when both env vars were unset — that's exactly what caused the 2026-07-23
+# silent-alert outage (Telegram 400 chat_id is empty, never surfaced). The
+# literal below is the actual default now, not just documentation of one.
 #
 # TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
 # envfile (which carries it) before invoking this. Never fatal: a notify failure
-# must not abort the safety net (mirrors emit_event's posture).
-BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-}}"
+# must not abort the safety net (mirrors emit_event's posture) — but per #749/#750
+# it must never be SILENT either, so an unresolved chat_id is logged loudly at
+# each send site instead of being POSTed empty (see notify_backup_fired /
+# notify_autorestart below).
+BACKUP_CHAT_ID="${BUBBLE_BACKUP_TELEGRAM_CHAT_ID:-${BUBBLE_OPERATOR_CHAT_ID:-6532205130}}"
 
 notify_backup_fired() {
-    local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}"
+    local slug="$1" age="${2:-}" exit_code="${3:-}" summary="${4:-}" outcome="${5:-}"
+    # #749/#750 defect (a) guard: never POST an empty chat_id and swallow the
+    # resulting Telegram 400 silently. If BACKUP_CHAT_ID is STILL unresolved
+    # here (should be unreachable now that the fallback above is a real
+    # literal, but defends against a future env override being set to "" —
+    # e.g. BUBBLE_BACKUP_TELEGRAM_CHAT_ID="") log loudly and bail instead of
+    # sending. This is the failure mode that hid a full-day fleet outage.
+    # Mirrors this file's "never fatal" posture for notify failures (return 0,
+    # not 1 — a dropped alert must not abort the floor/restart flow under
+    # set -e, same as every other `|| log ...`-guarded send in this file).
+    if [[ -z "$BACKUP_CHAT_ID" ]]; then
+        log "$slug: ERROR — chat_id unresolved — cannot alert (backup-fired ping for '${slug}' dropped, not sent)"
+        return 0
+    fi
     local age_h
     if [[ -n "$age" && "$age" != "None" ]]; then
         age_h="$(( age / 60 ))m"
@@ -438,7 +468,21 @@ notify_backup_fired() {
     local what="backup tick"
     [[ -n "$FORCE_LAYER" ]] && what="L${FORCE_LAYER} floor tick"
     [[ -n "${CURRENT_MISSION_ID:-}" ]] && what="${what} (mission=${CURRENT_MISSION_ID})"
-    local msg="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+    # #749/#750 defect (b): carry the SPECIFIC classified reason (budget
+    # exceeded / auth failed / timeout / actually down) in the alert line, not
+    # just a bare exit code — so a human reads "budget exceeded" vs "auth
+    # failed" vs "actually down" and knows each needs a different response.
+    # Only append a reason tag for a non-zero exit whose outcome differs from
+    # the plain crash label (BACKUP-FAILED already reads as "down" via the
+    # heartbeat line elsewhere; here we only need the DISTINGUISHING cases).
+    local reason_tag=""
+    case "$outcome" in
+        BACKUP-BUDGET-EXCEEDED) reason_tag=" [BUDGET EXCEEDED — tick ran, not down]" ;;
+        BACKUP-AUTH-FAILED)     reason_tag=" [AUTH FAILED — needs re-login, not a restart]" ;;
+        BACKUP-TIMEOUT)         reason_tag=" [TIMEOUT]" ;;
+        BACKUP-FAILED)          [[ "$exit_code" != "0" ]] && reason_tag=" [dept DOWN]" ;;
+    esac
+    local msg="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}${reason_tag}"
     # Append the tick's work summary so {{OPERATOR}} sees WHAT the layer mission did,
     # not just that the net fired. Empty summary (parse failed / heartbeat with
     # no text) falls back to the bare line above.
@@ -455,7 +499,7 @@ notify_backup_fired() {
 
     # The python sender takes subject + body separately and re-joins; pass the
     # bare fired-line as the subject and the tick summary as the body.
-    local fired_line="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}"
+    local fired_line="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}${reason_tag}"
     "$PY" - "$BACKUP_CHAT_ID" "$fired_line" "$summary" <<'PYEOF' || log "$slug: warn — could not send backup-fired Telegram ping"
 import sys
 sys.path.insert(0, "/home/claude/bubble-ops-loop")
@@ -622,6 +666,14 @@ PYEOF
 # backup-fired ping (caller has the env sourced). Never fatal.
 notify_autorestart() {
     local slug="$1" what="$2" reason="$3"
+    # #749/#750 defect (a) guard: same as notify_backup_fired — never POST an
+    # empty chat_id and swallow a silent 400. Log loudly and bail instead.
+    # return 0 (not 1): a dropped alert must stay non-fatal, matching this
+    # file's existing posture for every other notify failure.
+    if [[ -z "$BACKUP_CHAT_ID" ]]; then
+        log "$slug: ERROR — chat_id unresolved — cannot alert (auto-restart ping for '${slug}' dropped, not sent)"
+        return 0
+    fi
     local subject="🔁 auto-restart [${slug}] — ${what}"
     if [[ -n "${BUBBLE_BACKUP_NOTIFY_CMD:-}" ]]; then
         "${BUBBLE_BACKUP_NOTIFY_CMD}" "$slug" "$BACKUP_CHAT_ID" "${subject}"$'\n'"${reason}" \
@@ -819,6 +871,8 @@ run_backup_tick() {
     local slug="$1" workdir="$2" envfile="$3"
     local lock="${LOCK_DIR}/ops-loop-${slug}.tick.lock"
     LAST_TICK_SUMMARY=""   # reset so a parse miss never relays a prior dept's summary
+    LAST_TICK_SUBTYPE=""   # reset so a parse miss never carries a prior dept's subtype
+    LAST_TICK_RAW=""       # reset so a parse miss never carries a prior dept's raw output
 
     if [[ "$DRY_RUN" == "1" ]]; then
         log "$slug: DRY_RUN — would run one backup tick (lock=$lock)"
@@ -874,12 +928,32 @@ run_backup_tick() {
     ) >"$runlog" 2>&1
     local exit=$?
     log "$slug: backup tick exit=$exit"
-    # Extract the tick's final assistant message (the work summary) from the
-    # `claude --output-format json` envelope so the caller can relay it to
-    # Telegram. Never fatal — a parse failure just yields an empty summary and
-    # the notify falls back to the bare fired-line. Stored in a module global
-    # because the function already uses its return code for the exit status.
-    LAST_TICK_SUMMARY="$(
+    # Extract the tick's final assistant message (the work summary), its
+    # `subtype` (e.g. "success" / "error_max_budget_usd"), and its `is_error`
+    # flag from the `claude --output-format json` envelope, in ONE pass over
+    # the runlog (still available here — read it before it's rm'd below).
+    # #749/#750 defect (b): subtype/is_error is what lets the caller tell a
+    # tick that merely hit its budget cap apart from a genuine crash, instead
+    # of blanket-labelling every non-zero exit "dept DOWN". Never fatal — a
+    # parse failure yields empty values and the caller's classifier falls
+    # back to the raw-text signature scan (see LAST_TICK_RAW below). Stored
+    # in module globals because the function already uses its return code
+    # for the exit status.
+    # Field shapes verified live against the real CLI (2026-07-27, v2.1.220):
+    #   success            → {"is_error":false,...,"subtype":"success","result":"..."}
+    #   --max-budget-usd 0 → {"is_error":true,...,"subtype":"error_max_budget_usd",
+    #                         "errors":["Reached maximum budget ($0.0001)"]}  (no "result" key)
+    # Two-part output: a plain SUBTYPE header on line 1 (a short,
+    # controlled-vocabulary token straight from the CLI, e.g. "success" /
+    # "error_max_budget_usd" — guaranteed single-line, safe as a bare
+    # line), then the raw summary text from line 2 onward (unrestricted —
+    # may contain newlines/anything). NOT NUL-separated: a bash `$(...)`
+    # command substitution SILENTLY STRIPS embedded NUL bytes (POSIX
+    # behavior, confirmed live: `x="$(printf 'a\x00b')"` → x=="ab", the
+    # \x00 vanishes) — a NUL-delimited scheme would merge summary+subtype
+    # back together with no separator survivor. A newline-delimited header
+    # line has no such failure mode.
+    local parsed; parsed="$(
         "$PY" - "$runlog" <<'PYEOF' 2>/dev/null || true
 import sys, json
 try:
@@ -898,13 +972,26 @@ try:
         if start != -1:
             obj = json.loads(raw[start:])
     text = ""
+    subtype = ""
     if isinstance(obj, dict):
         text = obj.get("result") or ""
-    print(text.strip()[:1500])
+        subtype = obj.get("subtype") or ""
+    # subtype is a short CLI-defined token (no newlines/control chars in
+    # practice); still strip any stray newline defensively so it can never
+    # break the line-1-is-the-header contract.
+    subtype = subtype.replace("\n", " ").replace("\r", " ")
+    sys.stdout.write(subtype + "\n" + text.strip()[:1500])
 except Exception:
-    pass
+    print()
 PYEOF
     )"
+    LAST_TICK_SUBTYPE="$(head -n 1 <<<"$parsed")"
+    LAST_TICK_SUMMARY="$(tail -n +2 <<<"$parsed")"
+    # Raw text signature fallback (auth failures print plain text, not JSON —
+    # verified: "Not logged in · Please run /login"). Capped so a runaway
+    # runlog never bloats this global; the classifier only needs a substring
+    # match, not the full transcript.
+    LAST_TICK_RAW="$(head -c 4000 "$runlog" 2>/dev/null || true)"
     rm -f "$runlog"
     bkp_flock -u 9 "$lock" || true
     return $exit
@@ -930,20 +1017,50 @@ do_one_tick() {
     fi
     emit_event "$slug" "run" "$reason" "$age" "$tick_exit"
     [[ "$tick_exit" == "0" ]] || OVERALL=1
+    # ── #749/#750 defect (b): classify a non-zero exit before calling it
+    # "dept DOWN" ─────────────────────────────────────────────────────────
+    # A non-zero exit is NOT automatically "dept DOWN": `--max-budget-usd`
+    # returns exit=1 with subtype "error_max_budget_usd" the moment a tick
+    # merely EXCEEDS its budget cap — the dept ran fine, it just hit the
+    # spend ceiling. Same for an auth failure (needs re-login, not a
+    # restart) or a timeout. Only an exit with NONE of those signatures is a
+    # genuine, unexplained crash — the ONLY case that should say "dept
+    # DOWN". classify_tick_outcome() is the pure decision (tested in
+    # test_loop_backup.py); this call is its only production call site.
+    local outcome
+    # LAST_TICK_RAW travels via an EXPORTED env var, not argv or a pipe: a
+    # heredoc already claims this command's stdin (SC2259 — piping in AND
+    # heredoc-ing the same command silently drops the pipe), and the raw
+    # tick output can be large/multiline, which argv handles poorly.
+    outcome="$(BUBBLE_TICK_RAW_TEXT="$LAST_TICK_RAW" "$PY" - "$tick_exit" "$LAST_TICK_SUBTYPE" <<'PYEOF' 2>/dev/null || echo "BACKUP-FAILED"
+import os, sys
+sys.path.insert(0, "/home/claude/bubble-ops-loop")
+from scripts.lib.loop_backup import classify_tick_outcome
+exit_code, subtype = int(sys.argv[1]), sys.argv[2]
+raw = os.environ.get("BUBBLE_TICK_RAW_TEXT", "")
+print(classify_tick_outcome(exit_code, subtype=subtype or None, raw_output=raw))
+PYEOF
+)"
+    [[ -n "$outcome" ]] || outcome="BACKUP-FAILED"   # fail-closed: unparseable → still surfaced, never silently swallowed
+    log "$slug: tick outcome classified as $outcome (exit=$tick_exit subtype=${LAST_TICK_SUBTYPE:-<none>})"
+
     # Truthful external heartbeat: encode the real OUTCOME of this intervention
     # into the dept's OWN heartbeat.log so a downstream consumer (watchdog,
     # cockpit) reading the tail sees whether the dept is actually up — the
     # "I'm down" signal that was missing when the session that writes the
-    # heartbeat died with the loop (Maya/Ben 2026-06-18). Three cases:
-    #   degraded L4              → DEGRADED-L4 carried-over
-    #   backup ran, exit 0       → BACKUP-RAN-FOR-DEPT layer=N exit=0
-    #   backup tick failed (≠0)  → BACKUP-FAILED exit=N — dept DOWN
+    # heartbeat died with the loop (Maya/Ben 2026-06-18). Cases:
+    #   degraded L4                    → DEGRADED-L4 carried-over
+    #   backup ran, exit 0             → BACKUP-RAN-FOR-DEPT layer=N exit=0
+    #   tick hit its budget cap        → BACKUP-BUDGET-EXCEEDED exit=N — not down
+    #   tick couldn't authenticate     → BACKUP-AUTH-FAILED exit=N — needs re-login
+    #   tick ran out of time           → BACKUP-TIMEOUT exit=N
+    #   tick crashed, unknown cause    → BACKUP-FAILED exit=N — dept DOWN
     if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
         write_external_heartbeat "$slug" "DEGRADED-L4"
     elif [[ "$tick_exit" == "0" ]]; then
         write_external_heartbeat "$slug" "BACKUP-RAN-FOR-DEPT" "${FORCE_LAYER:-}" "$tick_exit"
     else
-        write_external_heartbeat "$slug" "BACKUP-FAILED" "${FORCE_LAYER:-}" "$tick_exit"
+        write_external_heartbeat "$slug" "$outcome" "${FORCE_LAYER:-}" "$tick_exit"
     fi
     # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
     # dept in DEPTS, both success and failure exit). Source the dept env in a
@@ -954,7 +1071,7 @@ do_one_tick() {
         # shellcheck disable=SC1090
         [[ -f "$envfile" ]] && . "$envfile"
         set +a
-        notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY"
+        notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY" "$outcome"
         # Board #521 cause 3: on a floor-fired L1/L4 (not degraded), also
         # relay the REAL brief body — a SEPARATE message from the 🛟 ping
         # above, via the same canonical send path every dept's live loop
@@ -963,13 +1080,17 @@ do_one_tick() {
         if [[ -n "$FORCE_LAYER" && "${DEGRADED_L4:-0}" != "1" ]]; then
             notify_floor_layer_brief "$slug" "$workdir" "$envfile" "$FORCE_LAYER" "$tick_exit"
         fi
-        # Auto-restart the dead DEPT only when the backup tick FAILED to revive it
-        # (tick_exit != 0 = loop down AND the safety net couldn't run a layer).
-        # The pure decision enforces the concierge guard + the 3/hour guardrail.
-        # A successful backup tick (exit 0) revived the dept's work for this cycle
-        # → no restart needed. Runs in the same env-sourced subshell so the
-        # escalation Telegram ping has the token.
-        if [[ "$tick_exit" != "0" ]]; then
+        # Auto-restart the DEPT only for a genuine, unexplained crash
+        # (outcome == BACKUP-FAILED — no known signature matched, so this is
+        # the only case still consistent with "dept process is actually
+        # dead"). A budget/auth/timeout outcome means the tick RAN — the
+        # dept isn't down, so restarting the systemd service would not fix
+        # anything (a budget cap or expired auth survives a restart) and
+        # would just burn an auto-restart guardrail slot for nothing. The
+        # pure decision enforces the concierge guard + the 3/hour guardrail.
+        # Runs in the same env-sourced subshell so the escalation Telegram
+        # ping has the token.
+        if [[ "$tick_exit" != "0" && "$outcome" == "BACKUP-FAILED" ]]; then
             maybe_auto_restart "$slug"
         fi
     )

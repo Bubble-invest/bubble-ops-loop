@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.lib.dispatch_helpers import (
+    layer_output_present,
     select_due_missions_for_forced_layer,
     write_last_run,
 )
@@ -255,6 +256,12 @@ def test_legacy_shim_marker_excludes_already_fired_shim_mission(tmp_path: Path):
     # deliberately NOT stamping outputs/<today>/missions/risk_control/.last-run.
     today = AT_22_31_UTC.strftime("%Y-%m-%d")
     write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+    # STEP 3 output evidence (#749/#750 defect c): the shim's real run also
+    # writes its artifact into outputs/<today>/4/ AFTER the marker — without
+    # this, the layer marker alone is indistinguishable from a session that
+    # died right after STEP 1, and the output-evidence gate in
+    # _mission_last_fired_with_shim_fallback must NOT trust it.
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
     ids = [m["id"] for m in due]
@@ -308,6 +315,9 @@ def test_dedicated_prompt_mission_unaffected_by_shim_fallback(tmp_path: Path):
 
     today = AT_22_31_UTC.strftime("%Y-%m-%d")
     write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)  # shim marker (risk_control)
+    # STEP 3 output evidence (#749/#750 defect c) — see the equivalent note in
+    # test_legacy_shim_marker_excludes_already_fired_shim_mission.
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
     assert [m["id"] for m in due] == ["market_wrapup"], (
@@ -337,6 +347,9 @@ def test_shim_marker_stamped_after_second_missions_slot_covers_it_too(tmp_path: 
     today = AT_22_31_UTC.strftime("%Y-%m-%d")
     after_both_slots = datetime(2026, 6, 23, 20, 35, tzinfo=timezone.utc)  # 22:35 Paris
     write_last_run(repo / "outputs" / today / "4", after_both_slots)
+    # STEP 3 output evidence (#749/#750 defect c) — see the equivalent note in
+    # test_legacy_shim_marker_excludes_already_fired_shim_mission.
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     later = datetime(2026, 6, 23, 21, 0, tzinfo=timezone.utc)  # 23:00 Paris
     due = select_due_missions_for_forced_layer(repo, 4, now_utc=later)
@@ -344,3 +357,163 @@ def test_shim_marker_stamped_after_second_missions_slot_covers_it_too(tmp_path: 
         "a shim marker stamped AFTER both missions' slots opened plausibly "
         "covers both — this is the shim's structural ambiguity, not a bug"
     )
+
+
+# ── 7. Defect (c) — the 07-23 outage: a "started" marker must not suppress
+#    recovery (#749/#750, board #715) ────────────────────────────────────────
+#
+# Root cause (verified against agents/ben/layers/{1,4}/PROMPT.md and the
+# canonical layer_templates.py, both of which are explicit: "Write
+# immediately outputs/<today>/{n}/.last-run ... BEFORE any other work"):
+# the marker this module's shim fallback trusts is stamped at STEP 1, before
+# any real work. On 2026-07-23 a live session died AFTER stamping it but
+# BEFORE STEP 3 (the layer's real artifact — situation_brief.md/summary.md
+# for L1, risk-brief.md/risk-kpis.yaml for L4). The floor read "marker
+# present" as "already fired today" and declined to recover the dept, even
+# though nothing had actually run.
+#
+# Fix: _mission_last_fired_with_shim_fallback (dispatch_helpers.py) now
+# additionally requires `layer_output_present` evidence, for L1/L4 only,
+# before trusting the shim's layer marker as a shim-resolved mission's own
+# fire. L2/L3 are deliberately NOT gated this way (see the docstring on both
+# `layer_output_present` and `_mission_last_fired_with_shim_fallback`) — they
+# never write real output into outputs/<today>/{2,3}/ even on a fully
+# successful run, so requiring it there would falsely force a needless
+# re-run of a healthy L2/L3 mission every single day, not fix an outage.
+
+def test_defect_c_marker_present_output_absent_is_not_treated_as_fired(tmp_path: Path):
+    """THE outage scenario: risk_control's shim STEP 1 stamped the L4 layer
+    marker, then the session died before STEP 3 ever ran — no risk-brief.md,
+    no risk-kpis.yaml, nothing besides `.last-run` in outputs/<today>/4/.
+    The floor must NOT treat risk_control as fired: it must be selected as
+    due (recovery), not skipped. A false recovery-run is cheap; a false skip
+    is the full-day outage this defect caused."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    _write_dept_yaml(repo, [risk_control])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    # STEP 1 fired (marker stamped) — STEP 3 never happened (died mid-dispatch).
+    write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+    assert list((repo / "outputs" / today / "4").iterdir()) == [
+        repo / "outputs" / today / "4" / ".last-run"
+    ], "fixture sanity: only the marker must exist, no other file"
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
+    ids = [m["id"] for m in due]
+
+    assert ids == ["risk_control"], (
+        f"expected risk_control to be selected for RECOVERY — the layer "
+        f"marker exists but STEP 3 never produced any output, so the "
+        f"session must have died mid-dispatch; a marker-only skip here "
+        f"would silently repeat the 07-23 outage. got {ids}"
+    )
+
+
+def test_defect_c_marker_present_output_present_is_still_skipped(tmp_path: Path):
+    """The healthy-day counterpart: risk_control's shim ran to completion —
+    marker AND risk-brief.md both exist. The floor must skip it (no
+    needless re-run of an already-completed mission)."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    _write_dept_yaml(repo, [risk_control])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    today = AT_22_31_UTC.strftime("%Y-%m-%d")
+    write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
+    assert due == [], (
+        "risk_control genuinely completed (marker + real output both "
+        "present) — the floor must not re-run a healthy mission"
+    )
+
+
+def test_defect_c_no_marker_at_all_still_runs_unchanged(tmp_path: Path):
+    """Baseline, unchanged case: no layer marker and no output at all —
+    the mission has simply never fired today. Must be selected (this was
+    already true before defect (c); this test pins it against regression
+    from the new output-evidence gate)."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "4").mkdir(parents=True)
+    (repo / "layers" / "4" / "PROMPT.md").write_text("legacy L4 shim")
+    risk_control = _mk_daily("risk_control", layer=4, time="21:00")
+    _write_dept_yaml(repo, [risk_control])
+    _fire_prereqs(repo, AT_21_00_UTC)
+
+    due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
+    assert [m["id"] for m in due] == ["risk_control"], (
+        "no marker at all — must run, unaffected by the output-evidence gate"
+    )
+
+
+def test_defect_c_output_evidence_gate_does_not_apply_to_l2_l3(tmp_path: Path):
+    """L2/L3 never write real output into outputs/<today>/{2,3}/ even on a
+    fully successful run (their artifacts are a vault note / a DB row) — the
+    output-evidence gate must NOT apply there, or a healthy L2/L3 shim
+    mission would be wrongly re-run on every single floor tick. Marker alone
+    must still mean "fired" for these two layers, matching pre-existing
+    (correct) behavior."""
+    repo = _mk_repo(tmp_path)
+    (repo / "layers" / "2").mkdir(parents=True)
+    (repo / "layers" / "2" / "PROMPT.md").write_text("legacy L2 shim")
+    research = _mk_daily("research", layer=2, time="12:00")
+    _write_dept_yaml(repo, [research])
+
+    at_12_01 = datetime(2026, 6, 23, 10, 1, tzinfo=timezone.utc)  # 12:01 Paris
+    today = at_12_01.strftime("%Y-%m-%d")
+    at_12_00 = datetime(2026, 6, 23, 10, 0, tzinfo=timezone.utc)  # 12:00 Paris
+    # ONLY the marker — no output file (L2's real output never lands here).
+    write_last_run(repo / "outputs" / today / "2", at_12_00)
+
+    due = select_due_missions_for_forced_layer(repo, 2, now_utc=at_12_01)
+    assert due == [], (
+        "L2 must still be treated as fired from the marker alone — "
+        "requiring output evidence here would force a needless daily "
+        "re-run of a genuinely healthy L2 mission"
+    )
+
+
+# ── 8. layer_output_present unit tests (isolated from the shim-fallback wiring) ──
+
+def test_layer_output_present_false_when_dir_missing(tmp_path: Path):
+    assert layer_output_present(tmp_path / "outputs" / "2026-06-23" / "4") is False
+
+
+def test_layer_output_present_false_with_only_last_run(tmp_path: Path):
+    d = tmp_path / "4"
+    write_last_run(d, AT_21_00_UTC)
+    assert layer_output_present(d) is False
+
+
+def test_layer_output_present_true_with_a_real_artifact(tmp_path: Path):
+    d = tmp_path / "4"
+    write_last_run(d, AT_21_00_UTC)
+    (d / "risk-brief.md").write_text("ok")
+    assert layer_output_present(d) is True
+
+
+def test_layer_output_present_true_for_a_subdir_artifact(tmp_path: Path):
+    """artifacts/ style dirs (the 4-file schema's `artifacts/` entry) count
+    as output too — layer_output_present must not require a plain file."""
+    d = tmp_path / "1"
+    write_last_run(d, AT_21_00_UTC)
+    (d / "artifacts").mkdir()
+    assert layer_output_present(d) is True
+
+
+def test_layer_output_present_ignores_stray_dotfiles(tmp_path: Path):
+    """A stray dotfile (e.g. a lockfile dropped mid-crash) must not count
+    as real output — only .last-run itself is excluded by name, but ANY
+    dotfile is excluded by the leading-dot rule, so a died-mid-dispatch
+    tick that drops some other dotfile artifact still reads as no-output."""
+    d = tmp_path / "4"
+    write_last_run(d, AT_21_00_UTC)
+    (d / ".stray-lock").write_text("x")
+    assert layer_output_present(d) is False

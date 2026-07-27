@@ -27,12 +27,16 @@ import json
 import pytest
 
 from scripts.lib.loop_backup import (
+    HB_BACKUP_AUTH_FAILED,
+    HB_BACKUP_BUDGET_EXCEEDED,
     HB_BACKUP_FAILED,
     HB_BACKUP_RAN,
+    HB_BACKUP_TIMEOUT,
     HB_DEGRADED_L4,
     append_event,
     append_external_heartbeat,
     backup_decision,
+    classify_tick_outcome,
     format_event,
     format_external_heartbeat,
     latest_heartbeat_epoch,
@@ -358,3 +362,138 @@ def test_no_iso_lines_still_falls_back_to_mtime(tmp_path):
     (d / "heartbeat.log").write_text("heartbeat\n", encoding="utf-8")
     ep = latest_heartbeat_epoch(str(tmp_path))
     assert ep is not None  # mtime fallback preserved
+
+
+# =============================================================================
+# N. classify_tick_outcome (#749/#750 defect (b), Rick 2026-07-27) — a
+#    `claude -p ... --max-budget-usd N` tick that merely EXCEEDS its budget
+#    cap returns subtype "error_max_budget_usd" and shell exit=1. Before this
+#    fix, loop-backup.sh mapped ANY non-zero exit to
+#    `BACKUP-FAILED exit=N — dept DOWN`, so a live, budget-capped dept was
+#    falsely reported as a dead one (same defect class as #758: an alert
+#    asserting a cause it never verified). classify_tick_outcome() is the
+#    pure decision the bash wrapper (do_one_tick) now calls before labelling
+#    anything "dept DOWN".
+#
+#    Field shapes below are verified LIVE against the real `claude -p
+#    --output-format json` CLI (2026-07-27, v2.1.220), not guessed:
+#      success            -> {"is_error":false,...,"subtype":"success","result":"..."}
+#      --max-budget-usd 0 -> {"is_error":true,...,"subtype":"error_max_budget_usd",
+#                             "errors":["Reached maximum budget ($0.0001)"]}
+# =============================================================================
+
+
+def test_classify_exit_zero_is_always_ran_regardless_of_subtype():
+    """exit=0 short-circuits to HB_BACKUP_RAN — a successful tick never needs
+    classifying, even if subtype/raw_output are garbage."""
+    assert classify_tick_outcome(0, subtype=None, raw_output="") == HB_BACKUP_RAN
+    assert classify_tick_outcome(0, subtype="anything", raw_output="noise") == HB_BACKUP_RAN
+
+
+def test_classify_budget_exceeded_is_not_down():
+    """The #749/#750 defect (b) reproduction: subtype error_max_budget_usd +
+    exit=1 must classify as BUDGET-EXCEEDED, never BACKUP-FAILED/'dept DOWN'."""
+    outcome = classify_tick_outcome(1, subtype="error_max_budget_usd", raw_output="")
+    assert outcome == HB_BACKUP_BUDGET_EXCEEDED
+    assert outcome != HB_BACKUP_FAILED
+
+
+def test_classify_auth_failure_from_raw_text_signature():
+    """An auth failure prints PLAIN TEXT (not JSON) — verified live: 'Not
+    logged in · Please run /login'. subtype is empty/unparsed; the raw-text
+    fallback must still catch it."""
+    raw = "Not logged in · Please run /login"
+    outcome = classify_tick_outcome(1, subtype=None, raw_output=raw)
+    assert outcome == HB_BACKUP_AUTH_FAILED
+
+
+def test_classify_auth_failure_case_insensitive_and_backtick_variant():
+    outcome = classify_tick_outcome(1, subtype=None, raw_output="please run `/login`")
+    assert outcome == HB_BACKUP_AUTH_FAILED
+
+
+def test_classify_timeout_from_raw_text():
+    outcome = classify_tick_outcome(124, subtype=None, raw_output="command timed out after 45m")
+    assert outcome == HB_BACKUP_TIMEOUT
+
+
+def test_classify_unknown_nonzero_exit_is_the_only_dept_down_case():
+    """No known signature (subtype empty, no auth/timeout text) → the ONLY
+    case that should still say 'dept DOWN'."""
+    outcome = classify_tick_outcome(1, subtype="", raw_output='{"type":"result","result":"boom"}')
+    assert outcome == HB_BACKUP_FAILED
+
+
+def test_classify_subtype_wins_over_raw_text_when_both_present():
+    """subtype (from the parsed JSON envelope) is authoritative; a stray
+    text match in the raw output must not override a clean budget subtype."""
+    outcome = classify_tick_outcome(
+        1, subtype="error_max_budget_usd", raw_output="Not logged in · Please run /login"
+    )
+    assert outcome == HB_BACKUP_BUDGET_EXCEEDED
+
+
+def test_external_hb_budget_exceeded_shape():
+    line = format_external_heartbeat(
+        HB_BACKUP_BUDGET_EXCEEDED, exit_code=1, ts="2026-07-27T12:00:00Z")
+    assert line == (
+        "2026-07-27T12:00:00Z tick BACKUP-BUDGET-EXCEEDED exit=1 — "
+        "tick ran, hit budget cap (not down)"
+    )
+    assert "dept DOWN" not in line  # the whole point of defect (b): NOT down
+
+
+def test_external_hb_auth_failed_shape():
+    line = format_external_heartbeat(
+        HB_BACKUP_AUTH_FAILED, exit_code=1, ts="2026-07-27T12:00:00Z")
+    assert line == "2026-07-27T12:00:00Z tick BACKUP-AUTH-FAILED exit=1 — needs re-login"
+
+
+def test_external_hb_timeout_shape():
+    line = format_external_heartbeat(
+        HB_BACKUP_TIMEOUT, exit_code=124, ts="2026-07-27T12:00:00Z")
+    assert line == "2026-07-27T12:00:00Z tick BACKUP-TIMEOUT exit=124"
+
+
+def test_budget_exceeded_line_does_not_read_as_fresh(tmp_path):
+    """Like BACKUP-FAILED, a BACKUP-BUDGET-EXCEEDED line is FLOOR-authored,
+    not the dept's own heartbeat — it must not count as liveness (else the
+    floor would stop re-firing on a dept that's actually just budget-capped
+    every cycle, masking a real problem)."""
+    d = tmp_path / "2026-07-27"
+    d.mkdir()
+    hb = d / "heartbeat.log"
+    hb.write_text("2026-07-27T07:00:00Z tick L1 ok\n", encoding="utf-8")
+    append_external_heartbeat(
+        str(hb), HB_BACKUP_BUDGET_EXCEEDED, exit_code=1, ts="2026-07-27T12:00:00Z")
+    import datetime as _dt
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    # Falls back to the dept's OWN 07:00 line, not the floor's 12:00 marker.
+    assert got.hour == 7
+
+
+def test_auth_failed_line_does_not_read_as_fresh(tmp_path):
+    d = tmp_path / "2026-07-27"
+    d.mkdir()
+    hb = d / "heartbeat.log"
+    hb.write_text("2026-07-27T07:00:00Z tick L1 ok\n", encoding="utf-8")
+    append_external_heartbeat(
+        str(hb), HB_BACKUP_AUTH_FAILED, exit_code=1, ts="2026-07-27T12:00:00Z")
+    import datetime as _dt
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert got.hour == 7
+
+
+def test_timeout_line_does_not_read_as_fresh(tmp_path):
+    d = tmp_path / "2026-07-27"
+    d.mkdir()
+    hb = d / "heartbeat.log"
+    hb.write_text("2026-07-27T07:00:00Z tick L1 ok\n", encoding="utf-8")
+    append_external_heartbeat(
+        str(hb), HB_BACKUP_TIMEOUT, exit_code=124, ts="2026-07-27T12:00:00Z")
+    import datetime as _dt
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert got.hour == 7
