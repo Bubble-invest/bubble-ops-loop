@@ -478,46 +478,136 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
 </script>
 
 <script>
-const DATA = {{ data_json | safe }};(function(){
+const DATA = ({{ data_json | safe }}) || {};(function(){
 "use strict";
 
+/* ---------- render contract (READ THIS BEFORE ADDING A FIELD) --------------
+   This whole renderer is ONE IIFE: a single uncaught throw blanks the ENTIRE
+   thesis tab (the 2026-08-11/12 outage — `m.exposure_pct_nav.toFixed(1)` on a
+   field the producer never emits). DATA comes from
+   console/services/thesis_book.py::build_thesis_data(), which is itself fed by
+   bubble-ops-ben/tools/vault_to_graph.py — a producer this repo does NOT own
+   and cannot pin. So the rule here is: the consumer is TOTAL. Never do raw
+   arithmetic, `.toFixed()`, `.split()` or `.length` on a DATA-derived field.
+   Route every number through num()/fmtNum()/fmtUsd()/fmtPct(), every string
+   through esc(), and every list through `(x||[])`. See REQUIRED_THESIS_KEYS in
+   console/services/thesis_book.py for the documented contract, and
+   console/tests/test_thesis_book_total_renderer.py for the fence.
+--------------------------------------------------------------------------- */
+
+/* Belt: every field the renderer iterates is guaranteed to be a list, so a
+   producer that drops a key degrades to an empty section instead of a throw
+   (braces: build_thesis_data() defaults the same keys server-side). */
+['nodes','themes','macro','clusters','sectors'].forEach(function(k){
+  if(!Array.isArray(DATA[k])) DATA[k] = [];
+});
+
 /* ---------- indices ---------- */
-const NODE_BY_ID = new Map(DATA.nodes.map(n=>[n.id,n]));
-const THEME_BY_ID = new Map(DATA.themes.map(t=>[t.id,t]));
+const NODE_BY_ID = new Map(DATA.nodes.filter(n=>n&&n.id).map(n=>[n.id,n]));
+const THEME_BY_ID = new Map(DATA.themes.filter(t=>t&&t.id).map(t=>[t.id,t]));
+
+/* The producer emits a macro's theme list as `themes`; this template was
+   authored against `themes_driven`. Accept either — a rename upstream must not
+   silently empty the macro→theme grouping (it did: every theme fell into
+   "Cross-Cutting" from the day the key changed). */
+function themeIdsOf(m){
+  return arr(m && (m.themes_driven || m.themes));
+}
+
 const MACRO_OF_THEME = new Map();
-DATA.macro.forEach(m=>{ (m.themes_driven||[]).forEach(tid=>{
+DATA.macro.forEach(m=>{ themeIdsOf(m).forEach(tid=>{
   if(!MACRO_OF_THEME.has(tid)) MACRO_OF_THEME.set(tid, m.id);
 });});
 
 const TICKER_FIRST_THEME = new Map();
-DATA.themes.forEach(t=>{ (t.tickers||[]).forEach(tid=>{
+DATA.themes.forEach(t=>{ arr(t.tickers).forEach(tid=>{
   if(!TICKER_FIRST_THEME.has(tid)) TICKER_FIRST_THEME.set(tid, t.id);
 });});
 
-/* ---------- formatting ---------- */
+/* ---------- formatting (ALL nullable — '—' is the missing-value render) ----- */
+/* num() is the single gate: anything that is not a finite number becomes null,
+   and every formatter below renders null as an em-dash. Any new numeric field
+   MUST come through here. */
+function num(v){ return (typeof v === 'number' && isFinite(v)) ? v : null; }
+/* arr() is the list-side twin of num(): anything that is not an array becomes
+   an empty one, so `.forEach/.map/.filter` on a producer field can never throw
+   (a bare `x||[]` still explodes when x is a non-array object or a string). */
+function arr(v){ return Array.isArray(v) ? v.filter(function(x){ return x!==null && x!==undefined; }) : []; }
+function str(v){ return (v===null||v===undefined) ? '' : String(v); }
 function fmtUsd(n){
-  if(n===null||n===undefined||isNaN(n)) return '—';
-  const sign = n<0?'-':'';
-  const v = Math.abs(n);
+  const v0 = num(n);
+  if(v0===null) return '—';
+  const sign = v0<0?'-':'';
+  const v = Math.abs(v0);
   if(v>=1000) return sign+'$'+(v/1000).toFixed(1)+'k';
   return sign+'$'+Math.round(v).toString();
 }
+function fmtUsdFull(n){
+  const v = num(n);
+  return v===null ? '—' : '$'+Math.round(v).toLocaleString('en-US');
+}
 function fmtPct(n, opts){
   opts = opts||{};
-  if(n===null||n===undefined||isNaN(n)) return '—';
+  const v = num(n);
+  if(v===null) return '—';
   const d = opts.decimals!==undefined?opts.decimals:1;
-  const s = n>0.0001?'+':'';
-  return s+n.toFixed(d)+'%';
+  const s = v>0.0001?'+':'';
+  return s+v.toFixed(d)+'%';
+}
+/* Nullable .toFixed() — the direct replacement for every `x.toFixed(n)` that
+   used to throw on a missing field. */
+function fmtNum(v, dp, suffix){
+  const n = num(v);
+  if(n===null) return '—';
+  return n.toFixed(dp===undefined?1:dp) + (suffix||'');
+}
+function fmtInt(v){
+  const n = num(v);
+  return n===null ? '—' : String(Math.round(n));
+}
+/* Sum that stays null when NOTHING in the list is a number — so an absent
+   field renders '—' rather than a fabricated "$0". */
+function sumNum(list){
+  let acc = null;
+  (list||[]).forEach(function(v){
+    const n = num(v);
+    if(n!==null) acc = (acc===null?0:acc) + n;
+  });
+  return acc;
+}
+function sortKey(v){ const n = num(v); return n===null ? -Infinity : n; }
+function byExposureDesc(a,b){ return sortKey(b.exposure_usd) - sortKey(a.exposure_usd); }
+/* "$12.3k / 4.1% NAV", degrading to whichever half exists, then to '—'. */
+function exposureText(usd, pct, dp){
+  const u = num(usd), p = num(pct);
+  if(u===null && p===null) return '—';
+  if(p===null) return fmtUsd(u);
+  if(u===null) return fmtNum(p, dp===undefined?1:dp, '% NAV');
+  return fmtUsd(u)+' / '+fmtNum(p, dp===undefined?1:dp, '% NAV');
+}
+function fmtDate(v, opts){
+  if(!v) return '—';
+  const d = new Date(v);
+  if(isNaN(d.getTime())) return '—';
+  try { return d.toLocaleDateString('en-US', opts); } catch(e){ return '—'; }
+}
+function fmtDateTime(v, opts){
+  if(!v) return '—';
+  const d = new Date(v);
+  if(isNaN(d.getTime())) return '—';
+  try { return d.toLocaleString('en-US', opts); } catch(e){ return '—'; }
 }
 function fmtIndicatorValue(ind){
+  ind = ind||{};
   const unit = ind.unit||'';
+  if(ind.value===null || ind.value===undefined) return '—';
   if(typeof ind.value !== 'number') return ind.value + unit;
   if(unit === '$') return '$'+ind.value;
   if(unit.trim().startsWith('$')) return '$'+ind.value+unit.slice(unit.indexOf('$')+1);
   return ind.value + unit;
 }
 function pctClass(n){ if(n>0.05) return 'pos'; if(n<-0.05) return 'neg'; return 'flat'; }
-function esc(s){ return (s===null||s===undefined)?'':String(s); }
+function esc(s){ return str(s); }
 function truncateName(name, max){
   max = max||20;
   if(!name) return '';
@@ -550,23 +640,25 @@ function el(tag, opts, kids){
 
 /* ---------- header ---------- */
 function renderHeader(){
-  const genDate = new Date(DATA.generated_at);
-  document.getElementById('hdrDate').textContent = genDate.toLocaleDateString('en-US',{weekday:'short',year:'numeric',month:'short',day:'numeric'});
-  document.getElementById('hdrNav').textContent = '$'+Math.round(DATA.nav).toLocaleString('en-US');
+  const dEl = document.getElementById('hdrDate');
+  if(dEl) dEl.textContent = fmtDate(DATA.generated_at,{weekday:'short',year:'numeric',month:'short',day:'numeric'});
+  const nEl = document.getElementById('hdrNav');
+  if(nEl) nEl.textContent = fmtUsdFull(DATA.nav);
   const r = DATA.since_rebase_pct;
-  const vs = DATA.vs_acwi_pct;
+  const vs = num(DATA.vs_acwi_pct);
   const rEl = document.getElementById('hdrReturn');
-  const vsTxt = (typeof vs === 'number') ? ' · '+(vs>0.0001?'+':'')+vs.toFixed(1)+'pp vs ACWI' : '';
+  if(!rEl) return;
+  const vsTxt = (vs!==null) ? ' · '+(vs>0.0001?'+':'')+vs.toFixed(1)+'pp vs ACWI' : '';
   rEl.textContent = fmtPct(r)+' since rebase'+vsTxt;
   rEl.className = 'nav-return tabular '+pctClass(r);
 }
 
 /* ---------- conviction ---------- */
 function deriveConviction(theme){
-  if(!theme.held_tickers || theme.held_tickers.length===0){
+  if(!Array.isArray(theme.held_tickers) || theme.held_tickers.length===0){
     return {label:'Watching', cls:'conv-watching'};
   }
-  const r = theme.theme_return_wtd || 0;
+  const r = num(theme.theme_return_wtd) || 0;
   if(r >= 3) return {label:'Playing out', cls:'conv-playing'};
   if(r < 0) return {label:'Dead', cls:'conv-dead'};
   return {label:'Stalling', cls:'conv-stalling'};
@@ -668,20 +760,22 @@ function buildSparkline(data, w, h){
 
 /* ---------- thesis generation (data-driven) ---------- */
 function sentenceSplit(s){
-  return (s||'').split(/(?<=[.!?])\s+/).filter(Boolean);
+  return str(s).split(/(?<=[.!?])\s+/).filter(Boolean);
 }
 
 function macroFramingParagraph(theme, macro){
   if(!macro){
     return 'This is an idiosyncratic, single-catalyst call — it sits outside our six macro regimes and stands or falls on its own thesis rather than a broad tailwind.';
   }
-  const indicators = macro.indicators||[];
+  const indicators = arr(macro.indicators);
   const flagged = indicators.find(i=>i.signal==='warning'||i.signal==='red') || indicators[0];
   let indicatorSentence = '';
-  if(flagged){
-    indicatorSentence = ' ' + flagged.name + ' is reading ' + flagged.value + (flagged.unit||'') + (flagged.tripwire ? ' — our tripwire is ' + flagged.tripwire + '.' : '.');
+  if(flagged && flagged.name && flagged.value!==null && flagged.value!==undefined){
+    indicatorSentence = ' ' + esc(flagged.name) + ' is reading ' + fmtIndicatorValue(flagged) + (flagged.tripwire ? ' — our tripwire is ' + esc(flagged.tripwire) + '.' : '.');
   }
-  return 'This sits inside our ' + macro.title + ' outlook: ' + macro.subtitle + '.' + indicatorSentence;
+  const title = esc(macro.title) || 'macro';
+  const sub = esc(macro.subtitle);
+  return 'This sits inside our ' + title + ' outlook' + (sub ? ': ' + sub : '') + '.' + indicatorSentence;
 }
 
 function holdingsParagraph(theme, heldNodes){
@@ -689,11 +783,11 @@ function holdingsParagraph(theme, heldNodes){
   if(withThesis.length){
     const n = withThesis[0];
     const sentences = sentenceSplit(n.thesis).slice(0,2).join(' ');
-    return n.name + ' (' + n.id + ') carries the discretionary case here: ' + sentences;
+    return esc(n.name) + ' (' + esc(n.id) + ') carries the discretionary case here: ' + sentences;
   }
   if(heldNodes.length){
-    const names = heldNodes.map(n=>n.name ? n.name+' ('+n.id+')' : n.id).join(', ');
-    const total = heldNodes.reduce((s,n)=>s+(n.market_value||0),0);
+    const names = heldNodes.map(n=>n.name ? esc(n.name)+' ('+esc(n.id)+')' : esc(n.id)).join(', ');
+    const total = sumNum(heldNodes.map(n=>n.market_value));
     return 'We express this through ' + heldNodes.length + ' position' + (heldNodes.length>1?'s':'') +
       ' — ' + names + ' — for a combined ' + fmtUsd(total) + '. These are structural building blocks rather than single-name bets: sizing does the work, not stock-picking.';
   }
@@ -701,20 +795,26 @@ function holdingsParagraph(theme, heldNodes){
 }
 
 function performanceParagraph(theme){
-  const held = theme.held_tickers && theme.held_tickers.length;
-  const hasWatch = theme.ticker_count > (theme.held_tickers?theme.held_tickers.length:0);
+  const heldN = Array.isArray(theme.held_tickers) ? theme.held_tickers.length : 0;
+  const hasWatch = (num(theme.ticker_count)||0) > heldN;
+  const ret = num(theme.theme_return_wtd);
+  const watch = num(theme.watchlist_return_avg);
   let s = '';
-  if(held){
-    s = 'The held sleeve is ' + (theme.theme_return_wtd>=0?'up':'down') + ' ' + fmtPct(Math.abs(theme.theme_return_wtd)).replace('+','') + ' since last review (' + (theme.last_verified||'n/a') + ').';
+  if(heldN){
+    if(ret===null){
+      s = 'We own ' + heldN + ' name' + (heldN>1?'s':'') + ' here; a weighted return for the sleeve is not on file for this review (' + (esc(theme.last_verified)||'n/a') + ').';
+    } else {
+      s = 'The held sleeve is ' + (ret>=0?'up':'down') + ' ' + fmtPct(Math.abs(ret)).replace('+','') + ' since last review (' + (esc(theme.last_verified)||'n/a') + ').';
+    }
   } else {
-    s = 'Nothing owned yet — this stays a watch item, reviewed by ' + (theme.review_by||'n/a') + '.';
+    s = 'Nothing owned yet — this stays a watch item, reviewed by ' + (esc(theme.review_by)||'n/a') + '.';
   }
-  if(hasWatch){
-    const diff = (theme.watchlist_return_avg||0) - (theme.theme_return_wtd||0);
-    s += ' The unheld watchlist names for this theme are averaging ' + fmtPct(theme.watchlist_return_avg) + '.';
-    if(held && diff > 5){
+  if(hasWatch && watch!==null){
+    const diff = watch - (ret||0);
+    s += ' The unheld watchlist names for this theme are averaging ' + fmtPct(watch) + '.';
+    if(heldN && ret!==null && diff > 5){
       s += ' That is running meaningfully ahead of what we own — worth checking whether we are missing the move.';
-    } else if(held && diff < -5){
+    } else if(heldN && ret!==null && diff < -5){
       s += ' Our held sleeve is outperforming that broader watchlist.';
     }
   }
@@ -723,8 +823,8 @@ function performanceParagraph(theme){
 
 function buildThesis(theme){
   const macroId = MACRO_OF_THEME.get(theme.id);
-  const macro = macroId ? DATA.macro.find(m=>m.id===macroId) : null;
-  const heldNodes = (theme.held_tickers||[]).map(t=>NODE_BY_ID.get(t)).filter(Boolean);
+  const macro = macroId ? DATA.macro.find(m=>m && m.id===macroId) : null;
+  const heldNodes = arr(theme.held_tickers).map(t=>NODE_BY_ID.get(t)).filter(Boolean);
   return [
     macroFramingParagraph(theme, macro),
     holdingsParagraph(theme, heldNodes),
@@ -736,7 +836,7 @@ function buildThesis(theme){
 function worstSignal(indicators){
   const order = {red:3, warning:2, neutral:1, green:0};
   let worst = 'green';
-  (indicators||[]).forEach(ind=>{
+  arr(indicators).forEach(ind=>{
     const s = ind.signal||'neutral';
     if((order[s]!==undefined?order[s]:1) > (order[worst]!==undefined?order[worst]:0)) worst = s;
   });
@@ -744,6 +844,7 @@ function worstSignal(indicators){
 }
 function cleanResearchNote(text){
   if(!text) return '';
+  text = str(text);
   const idx = text.indexOf('\n\n');
   if(idx > -1 && idx < 80){
     const head = text.slice(0, idx).trim();
@@ -762,51 +863,60 @@ function buildResearchNoteEl(text){
 
 function renderMacroGrid(){
   const grid = document.getElementById('macroGrid');
-  DATA.macro.forEach(m=>{
+  if(!grid) return;
+  arr(DATA.macro).forEach(m=>{
     const overall = worstSignal(m.indicators);
     const titleMain = el('div',{cls:'macro-title-main'}, [
       el('span',{cls:'sig-dot sig-'+overall}),
-      el('h3',{cls:'macro-title', text:m.title})
+      el('h3',{cls:'macro-title', text: esc(m.title) || esc(m.id)})
     ]);
 
-    const indicators = el('div',{cls:'macro-indicators'}, (m.indicators||[]).map(ind=>{
+    const indicators = el('div',{cls:'macro-indicators'}, arr(m.indicators).map(ind=>{
       const sigCls = 'sig-'+(ind.signal||'neutral');
       const row = el('div',{cls:'indicator-row'});
       row.appendChild(el('span',{cls:'sig-dot '+sigCls}));
-      row.appendChild(el('span',{cls:'indicator-name', text: ind.name}));
+      row.appendChild(el('span',{cls:'indicator-name', text: esc(ind.name)}));
       const valSpan = el('span',{cls:'indicator-value tabular', text: fmtIndicatorValue(ind)});
       row.appendChild(valSpan);
-      if(ind.tripwire) row.title = ind.name+' tripwire: '+ind.tripwire;
+      if(ind.tripwire) row.title = esc(ind.name)+' tripwire: '+esc(ind.tripwire);
       return row;
     }));
 
+    // The 2026-08 outage lived on the next line: `m.exposure_pct_nav.toFixed(1)`
+    // on a key the producer never emits. exposureText() is total.
     const exposureLine = el('div',{cls:'macro-exposure'});
     exposureLine.appendChild(document.createTextNode('Exposure: '));
     const expB = document.createElement('b'); expB.className='tabular';
-    expB.textContent = fmtUsd(m.exposure_usd)+' / '+m.exposure_pct_nav.toFixed(1)+'% NAV';
+    expB.textContent = exposureText(m.exposure_usd, m.exposure_pct_nav, 1);
     exposureLine.appendChild(expB);
-    if(typeof m.return_wtd === 'number'){
+    const retWtd = num(m.return_wtd);
+    if(retWtd!==null){
       exposureLine.appendChild(document.createTextNode('  ·  WTD '));
-      const retSpan = document.createElement('span'); retSpan.className='tabular '+pctClass(m.return_wtd);
-      retSpan.textContent = fmtPct(m.return_wtd);
+      const retSpan = document.createElement('span'); retSpan.className='tabular '+pctClass(retWtd);
+      retSpan.textContent = fmtPct(retWtd);
       exposureLine.appendChild(retSpan);
     }
 
     const note = m.research_note ? buildResearchNoteEl(m.research_note) : null;
 
-    const links = el('div',{cls:'macro-links'});
-    links.appendChild(document.createTextNode('→ '));
-    (m.themes_driven||[]).forEach((tid,i)=>{
-      const t = THEME_BY_ID.get(tid);
-      const a = el('a',{attrs:{href:'#theme-'+tid}, text: t?shortThemeName(t):tid});
-      a.addEventListener('click', function(ev){ ev.preventDefault(); jumpToTheme(tid); });
-      links.appendChild(a);
-      if(i < m.themes_driven.length-1) links.appendChild(document.createTextNode(', '));
-    });
+    const themeIds = themeIdsOf(m);
+    let links = null;
+    if(themeIds.length){
+      links = el('div',{cls:'macro-links'});
+      links.appendChild(document.createTextNode('→ '));
+      themeIds.forEach((tid,i)=>{
+        const t = THEME_BY_ID.get(tid);
+        const a = el('a',{attrs:{href:'#theme-'+tid}, text: t?shortThemeName(t):esc(tid)});
+        a.addEventListener('click', function(ev){ ev.preventDefault(); jumpToTheme(tid); });
+        links.appendChild(a);
+        if(i < themeIds.length-1) links.appendChild(document.createTextNode(', '));
+      });
+    }
 
-    const card = el('div',{cls:'macro-card', id:'macro-'+m.id, attrs:{'data-macro':m.id}}, [
+    const sub = esc(m.subtitle);
+    const card = el('div',{cls:'macro-card', id:'macro-'+esc(m.id), attrs:{'data-macro':esc(m.id)}}, [
       el('div',{cls:'macro-title-row'}, [ titleMain ]),
-      el('p',{cls:'macro-subtitle', text:m.subtitle}),
+      sub ? el('p',{cls:'macro-subtitle', text:sub}) : null,
       exposureLine,
       indicators,
       note,
@@ -825,7 +935,7 @@ function renderOverview(){
 
   const navRow = el('div',{cls:'ov-nav-row'});
   const navMain = el('div',{cls:'ov-nav-main'});
-  navMain.appendChild(el('span',{cls:'ov-nav-value tabular', text:'$'+Math.round(po.nav).toLocaleString('en-US')}));
+  navMain.appendChild(el('span',{cls:'ov-nav-value tabular', text: fmtUsdFull(po.nav)}));
   navMain.appendChild(el('span',{cls:'ov-nav-return tabular '+pctClass(po.since_rebase_pct), text: fmtPct(po.since_rebase_pct)+' since rebase'}));
   navRow.appendChild(navMain);
   // since_rebase_note removed per Joris request
@@ -847,13 +957,14 @@ function renderOverview(){
   card.appendChild(statRow);
 
   const brokerRow = el('div',{cls:'ov-broker-row'});
-  (po.brokers||[]).forEach(b=>{
-    const isLive = (b.status||'').toLowerCase()==='live';
+  arr(po.brokers).forEach(b=>{
+    const isLive = String(b.status||'').toLowerCase()==='live';
     const chip = el('div',{cls:'ov-broker-chip'});
     chip.appendChild(el('span',{cls:'sig-dot '+(isLive?'sig-green':'sig-warning')}));
     const info = el('div',{cls:'ov-broker-info'});
-    const valTxt = (b.nav_eur!==undefined && b.nav_eur!==null) ? '€'+Math.round(b.nav_eur).toLocaleString('en-US') : fmtUsd(b.nav_usd);
-    info.appendChild(el('div',{cls:'ov-broker-name', text:b.name}));
+    const eur = num(b.nav_eur);
+    const valTxt = (eur!==null) ? '€'+Math.round(eur).toLocaleString('en-US') : fmtUsd(b.nav_usd);
+    info.appendChild(el('div',{cls:'ov-broker-name', text: esc(b.name) || '—'}));
     info.appendChild(el('div',{cls:'ov-broker-value tabular', text: valTxt}));
     chip.appendChild(info);
     chip.title = (b.note||'') + (isLive?'':' — '+b.status);
@@ -865,13 +976,14 @@ function renderOverview(){
     const wrap = el('div',{cls:'ov-block'});
     wrap.appendChild(el('div',{cls:'ov-block-title', text:"Today's movers"}));
     const list = el('div',{cls:'ov-movers'});
-    po.top_movers.forEach(mv=>{
+    arr(po.top_movers).forEach(mv=>{
       const row = el('div',{cls:'ov-mover-row'});
-      row.appendChild(el('span',{cls:'ov-mover-ticker mono', text:mv.ticker}));
-      if(mv.change_pct!==null && mv.change_pct!==undefined){
-        row.appendChild(el('span',{cls:'ov-mover-pct tabular '+pctClass(mv.change_pct), text:fmtPct(mv.change_pct)}));
+      row.appendChild(el('span',{cls:'ov-mover-ticker mono', text: esc(mv.ticker)}));
+      const chg = num(mv.change_pct);
+      if(chg!==null){
+        row.appendChild(el('span',{cls:'ov-mover-pct tabular '+pctClass(chg), text:fmtPct(chg)}));
       }
-      row.appendChild(el('span',{cls:'ov-mover-reason', text:mv.reason}));
+      row.appendChild(el('span',{cls:'ov-mover-reason', text: esc(mv.reason)}));
       list.appendChild(row);
     });
     wrap.appendChild(list);
@@ -884,7 +996,12 @@ function renderOverview(){
     wrap.appendChild(el('div',{cls:'ov-block-title', text:'Hedge overlay'}));
     const line = el('div',{cls:'ov-hedge-line'});
     line.appendChild(el('span',{cls:'sig-dot sig-green'}));
-    line.appendChild(el('span',{text: h.instrument+' — '+h.status+', cost '+fmtUsd(h.cost_usd)+' ('+h.cost_pct_nav+'% NAV)'}));
+    // cost_usd / cost_pct_nav are NOT emitted by the live producer — say
+    // nothing rather than "cost — (undefined% NAV)".
+    let hedgeTxt = (esc(h.instrument) || '—') + ' — ' + (esc(h.status) || 'live');
+    const costTxt = exposureText(h.cost_usd, h.cost_pct_nav, 2);
+    if(costTxt !== '—') hedgeTxt += ', cost ' + costTxt;
+    line.appendChild(el('span',{text: hedgeTxt}));
     wrap.appendChild(line);
     card.appendChild(wrap);
   }
@@ -895,12 +1012,15 @@ function renderOverview(){
     const titleTxt = pending.length ? pending.length+' decision'+(pending.length>1?'s':'')+' awaiting Joris' : 'Decisions — all actioned today';
     wrap.appendChild(el('div',{cls:'ov-block-title'+(pending.length?' ov-flag':''), text:titleTxt}));
     const list = el('div',{cls:'ov-decisions'});
-    po.pending_decisions.forEach(d=>{
+    arr(po.pending_decisions).forEach(d=>{
       const executed = /executed/i.test(d.status||'');
       const row = el('div',{cls:'ov-decision-row'});
       row.appendChild(el('span',{cls:'sig-dot '+(executed?'sig-green':'sig-warning')}));
-      let txt = d.ticker+' — '+d.action+' · '+d.status;
-      if(d.days_remaining!==undefined && d.days_remaining!==null) txt += ' ('+d.days_remaining+'d left)';
+      let txt = [esc(d.ticker), esc(d.action)].filter(Boolean).join(' — ');
+      if(esc(d.status)) txt += (txt?' · ':'') + esc(d.status);
+      if(!txt) txt = '—';
+      const daysLeft = num(d.days_remaining);
+      if(daysLeft!==null) txt += ' ('+daysLeft+'d left)';
       row.appendChild(el('span',{text:txt}));
       list.appendChild(row);
     });
@@ -917,27 +1037,34 @@ function renderGlobalMacro(){
   if(!gm || !narrEl || !pillsEl) return;
 
   narrEl.innerHTML = '';
-  (gm.narrative||'').split(/\n\s*\n/).forEach(p=>{
+  str(gm.narrative).split(/\n\s*\n/).forEach(p=>{
     p = enrichTickers(p.trim());
     if(p) narrEl.appendChild(el('p',{cls:'macro-narrative-p', text:p}));
   });
 
   pillsEl.innerHTML = '';
-  (gm.key_signals||[]).forEach(s=>{
+  arr(gm.key_signals).forEach(s=>{
     const pill = el('div',{cls:'signal-pill'});
     pill.appendChild(el('span',{cls:'sig-dot sig-'+(s.signal||'neutral')}));
-    pill.appendChild(el('span',{cls:'signal-pill-name', text:s.indicator}));
-    pill.appendChild(el('span',{cls:'signal-pill-value tabular', text:String(s.value)}));
-    if(s.tripwire) pill.title = 'Tripwire: '+s.tripwire;
+    pill.appendChild(el('span',{cls:'signal-pill-name', text: esc(s.indicator)}));
+    pill.appendChild(el('span',{cls:'signal-pill-value tabular', text: (s.value===null||s.value===undefined)?'—':String(s.value)}));
+    if(s.tripwire) pill.title = 'Tripwire: '+esc(s.tripwire);
     pillsEl.appendChild(pill);
   });
 }
 
+/* Theme names are `Short Name — long qualifier`. Both halves are optional and
+   `name` itself may be absent — fall back to the id, never throw. */
+function themeLabel(t){
+  return esc(t && (t.name || t.id));
+}
 function shortThemeName(t){
-  return t.name.split('—')[0].trim();
+  const n = themeLabel(t);
+  return n.split('—')[0].trim() || n;
 }
 function themeNameSub(t){
-  const parts = t.name.split('—');
+  const n = themeLabel(t);
+  const parts = n.split('—');
   if(parts.length<2) return '';
   const rest = parts.slice(1).join('—').trim();
   if(!rest || /^\(?\d{4}\)?$/.test(rest)) return '';
@@ -947,52 +1074,64 @@ function themeNameSub(t){
 /* ---------- theme groups ---------- */
 let AUTO_EXPAND_IDS = new Set();
 function computeAutoExpand(){
-  const held = DATA.themes.filter(t=>t.held_tickers && t.held_tickers.length>0);
-  held.sort((a,b)=>b.exposure_usd - a.exposure_usd);
+  const held = DATA.themes.filter(t=>t && Array.isArray(t.held_tickers) && t.held_tickers.length>0);
+  held.sort(byExposureDesc);
   held.slice(0,4).forEach(t=>AUTO_EXPAND_IDS.add(t.id));
 }
 
 const THEME_CARD_ELS = new Map(); // id -> {row, bodyWrap, built, buildFn}
 
+/* "<head> · $X combined exposure" — the exposure clause disappears entirely
+   when nothing in the group carries a number, rather than claiming "$0". */
+function groupSubText(head, total){
+  return num(total)===null ? head : head+' · '+fmtUsd(total)+' combined exposure';
+}
+
 function renderThemeGroups(){
   const container = document.getElementById('themeGroups');
+  if(!container) return;
   const usedThemeIds = new Set();
 
-  DATA.macro.forEach(m=>{
-    const themes = (m.themes_driven||[]).map(tid=>THEME_BY_ID.get(tid)).filter(Boolean);
-    themes.sort((a,b)=>b.exposure_usd - a.exposure_usd);
+  arr(DATA.macro).forEach(m=>{
+    const themes = themeIdsOf(m).map(tid=>THEME_BY_ID.get(tid)).filter(Boolean);
+    themes.sort(byExposureDesc);
     if(!themes.length) return;
     themes.forEach(t=>usedThemeIds.add(t.id));
 
-    const groupHeader = el('h3',{cls:'theme-group-header', id:'group-'+m.id, text:'Driven by '+m.title});
-    const groupSub = el('p',{cls:'theme-group-sub', text: themes.length+' theme'+(themes.length>1?'s':'')+' · '+fmtUsd(m.exposure_usd)+' combined exposure'});
+    const title = esc(m.title) || esc(m.id) || 'macro';
+    const groupHeader = el('h3',{cls:'theme-group-header', id:'group-'+esc(m.id), text:'Driven by '+title});
+    const macroTotal = num(m.exposure_usd)!==null ? m.exposure_usd : sumNum(themes.map(t=>t.exposure_usd));
+    const groupSub = el('p',{cls:'theme-group-sub', text: groupSubText(themes.length+' theme'+(themes.length>1?'s':''), macroTotal)});
     container.appendChild(groupHeader);
     container.appendChild(groupSub);
     themes.forEach(t=>container.appendChild(renderThemeCard(t, themes)));
   });
 
-  const crossCutting = DATA.themes.filter(t=>!usedThemeIds.has(t.id));
+  const crossCutting = DATA.themes.filter(t=>t && !usedThemeIds.has(t.id));
   if(crossCutting.length){
-    crossCutting.sort((a,b)=>b.exposure_usd - a.exposure_usd);
+    crossCutting.sort(byExposureDesc);
     container.appendChild(el('h3',{cls:'theme-group-header', id:'group-cross', text:'Cross-Cutting & Idiosyncratic'}));
-    container.appendChild(el('p',{cls:'theme-group-sub', text: crossCutting.length+' theses outside our six macro regimes · '+fmtUsd(crossCutting.reduce((s,t)=>s+t.exposure_usd,0))+' combined exposure'}));
+    const total = sumNum(crossCutting.map(t=>t.exposure_usd));
+    const head = crossCutting.length+' theses outside our six macro regimes';
+    container.appendChild(el('p',{cls:'theme-group-sub', text: groupSubText(head, total)}));
     crossCutting.forEach(t=>container.appendChild(renderThemeCard(t, crossCutting)));
   }
 }
 
 function renderThemeCard(theme, siblingGroup){
   const conv = deriveConviction(theme);
-  const heldN = theme.held_tickers ? theme.held_tickers.length : 0;
+  const heldN = Array.isArray(theme.held_tickers) ? theme.held_tickers.length : 0;
+  const tickerN = num(theme.ticker_count);
 
   const row = el('div',{cls:'theme-row', attrs:{role:'button','aria-expanded':'false', tabindex:'0'}});
   row.appendChild(el('span',{cls:'conv-dot '+conv.cls, title:conv.label}));
-  row.appendChild(el('span',{cls:'theme-name', text: theme.name}));
+  row.appendChild(el('span',{cls:'theme-name', text: themeLabel(theme)}));
 
   const meta = el('div',{cls:'theme-meta'});
   meta.appendChild(el('span',{cls:'m-exp tabular', text: heldN? fmtUsd(theme.exposure_usd) : '—'}));
   const retSpan = el('span',{cls:'m-ret tabular '+(heldN?pctClass(theme.theme_return_wtd):''), text: heldN? fmtPct(theme.theme_return_wtd): '—'});
   meta.appendChild(retSpan);
-  meta.appendChild(el('span',{cls:'m-held tabular', text: heldN+'/'+theme.ticker_count+' held'}));
+  meta.appendChild(el('span',{cls:'m-held tabular', text: heldN+'/'+fmtInt(tickerN)+' held'}));
   row.appendChild(meta);
   row.appendChild(el('span',{cls:'chevron'}));
 
@@ -1013,28 +1152,41 @@ function renderThemeCard(theme, siblingGroup){
     const stats = el('div',{cls:'stat-lines'});
     const expLine = el('div',{cls:'stat-line'});
     expLine.appendChild(el('span',{cls:'label', text:'Our exposure'}));
-    expLine.appendChild(el('span',{cls:'val tabular', text: heldN? (fmtUsd(theme.exposure_usd)+' · '+theme.exposure_pct_nav.toFixed(2)+'% NAV · '+fmtPct(theme.theme_return_wtd)) : 'not held'}));
+    // Was `theme.exposure_pct_nav.toFixed(2)` — the same latent throw as the
+    // macro card, masked only because held_tickers is currently always empty.
+    // Emit only the parts that actually exist.
+    let expTxt = 'not held';
+    if(heldN){
+      const parts = [];
+      if(num(theme.exposure_usd)!==null) parts.push(fmtUsd(theme.exposure_usd));
+      if(num(theme.exposure_pct_nav)!==null) parts.push(fmtNum(theme.exposure_pct_nav, 2, '% NAV'));
+      if(num(theme.theme_return_wtd)!==null) parts.push(fmtPct(theme.theme_return_wtd));
+      expTxt = parts.length ? parts.join(' · ') : ('held ('+heldN+') — sizing not on file');
+    }
+    expLine.appendChild(el('span',{cls:'val tabular', text: expTxt}));
     stats.appendChild(expLine);
 
-    const nonHeld = theme.ticker_count - heldN;
+    const nonHeld = (num(theme.ticker_count)||0) - heldN;
     if(nonHeld > 0){
+      const watchAvg = num(theme.watchlist_return_avg);
       const wLine = el('div',{cls:'stat-line'});
       wLine.appendChild(el('span',{cls:'label', text:'Watchlist ('+nonHeld+')'}));
-      wLine.appendChild(el('span',{cls:'val tabular', text: fmtPct(theme.watchlist_return_avg)+' avg'}));
+      wLine.appendChild(el('span',{cls:'val tabular', text: watchAvg===null ? '—' : fmtPct(watchAvg)+' avg'}));
       stats.appendChild(wLine);
-      if(heldN){
-        const diff = (theme.watchlist_return_avg||0)-(theme.theme_return_wtd||0);
+      const ret = num(theme.theme_return_wtd);
+      if(heldN && watchAvg!==null && ret!==null){
+        const diff = watchAvg - ret;
         if(diff>5) stats.appendChild(el('div',{cls:'stat-note', text:'▲ watchlist running ahead of our held sleeve — worth a second look'}));
         else if(diff<-5) stats.appendChild(el('div',{cls:'stat-note good', text:'✓ our held sleeve is outperforming the broader watchlist'}));
       }
     }
     body.appendChild(stats);
 
-    const chipGroup = buildChipGroup(theme.tickers||[], theme.held_tickers);
+    const chipGroup = buildChipGroup(arr(theme.tickers), theme.held_tickers);
     body.appendChild(chipGroup.chipGrid);
     body.appendChild(chipGroup.detailWrap);
 
-    const siblings = siblingGroup.filter(s=>s.id!==theme.id).sort((a,b)=>b.exposure_usd-a.exposure_usd).slice(0,3);
+    const siblings = arr(siblingGroup).filter(s=>s.id!==theme.id).sort(byExposureDesc).slice(0,3);
     if(siblings.length){
       const ct = el('div',{cls:'connects-to'});
       ct.appendChild(document.createTextNode('Connects to: '));
@@ -1056,7 +1208,7 @@ function renderThemeCard(theme, siblingGroup){
   row.addEventListener('click', ()=> setOpen(row.getAttribute('aria-expanded')!=='true') );
   row.addEventListener('keydown', function(ev){ if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); row.click(); } });
 
-  const card = el('div',{cls:'theme-card', id:'theme-'+theme.id, attrs:{'data-theme':theme.id}}, [row, bodyWrap]);
+  const card = el('div',{cls:'theme-card', id:'theme-'+esc(theme.id), attrs:{'data-theme':esc(theme.id)}}, [row, bodyWrap]);
   THEME_CARD_ELS.set(theme.id, {card, row, setOpen});
 
   if(AUTO_EXPAND_IDS.has(theme.id)) setOpen(true);
@@ -1072,7 +1224,7 @@ function buildChipGroup(tickerIds, heldOverrideList){
   detailWrap.appendChild(detailInner);
 
   let activeChip = null;
-  (tickerIds||[]).forEach(tid=>{
+  arr(tickerIds).forEach(tid=>{
     const node = NODE_BY_ID.get(tid);
     const isHeld = heldOverrideList ? (heldOverrideList.indexOf(tid)>=0) : !!(node && node.held);
     const chip = el('div',{cls:'ticker-chip'+(isHeld?' held':'')+(!node?' nodata':''), attrs:{tabindex:'0','data-ticker':tid}});
@@ -1111,7 +1263,7 @@ function buildChipDetail(tid, node){
     return card;
   }
   const head = el('div',{cls:'chip-detail-head'});
-  head.appendChild(el('span',{cls:'chip-detail-name', text: node.name+' ('+node.id+')'}));
+  head.appendChild(el('span',{cls:'chip-detail-name', text: node.name ? esc(node.name)+' ('+esc(node.id)+')' : esc(node.id)}));
   const q = (node.quality||'watch').toLowerCase();
   head.appendChild(el('span',{cls:'qtag qtag-'+q, text: node.quality||'WATCH'}));
   card.appendChild(head);
@@ -1132,7 +1284,7 @@ function buildChipDetail(tid, node){
     'On the watchlist; no standalone research note on file yet.');
   card.appendChild(el('div',{cls:'chip-detail-body', text: thesisText}));
 
-  const catalyst = node.catalyst || 'No scheduled catalyst on file.';
+  const catalyst = esc(node.catalyst) || 'No scheduled catalyst on file.';
   const catRow = el('div',{cls:'chip-detail-row'});
   catRow.appendChild(document.createTextNode('Catalyst: '));
   const catB = document.createElement('b'); catB.textContent = catalyst; catB.style.fontFamily='var(--sans)'; catB.style.fontWeight='500';
@@ -1142,11 +1294,11 @@ function buildChipDetail(tid, node){
   const brokerRow = el('div',{cls:'chip-detail-row'});
   if(node.held){
     brokerRow.appendChild(document.createTextNode('Held via '));
-    const b = document.createElement('b'); b.textContent = (node.broker||'—');
+    const b = document.createElement('b'); b.textContent = esc(node.broker) || '—';
     brokerRow.appendChild(b);
-    brokerRow.appendChild(document.createTextNode(' · '+ (node.weight_pct||0).toFixed(2) +'% NAV · '+ fmtUsd(node.market_value||0)));
+    brokerRow.appendChild(document.createTextNode(' · '+ fmtNum(node.weight_pct, 2, '% NAV') +' · '+ fmtUsd(node.market_value)));
   } else {
-    brokerRow.appendChild(document.createTextNode('Not held' + (node.sector? ' · '+node.sector : '')));
+    brokerRow.appendChild(document.createTextNode('Not held' + (node.sector? ' · '+esc(node.sector) : '')));
   }
   card.appendChild(brokerRow);
 
@@ -1156,13 +1308,18 @@ function buildChipDetail(tid, node){
 /* ---------- sector view ---------- */
 function computeSectorStats(){
   var sectorIdx = new Map();
-  (DATA.sectors||[]).forEach(function(s){
-    sectorIdx.set(s.name, {sector:s.name, our:s.weight_pct||0, acwi:s.acwi_weight_pct||0, held:[], pass:[], watch:[]});
+  arr(DATA.sectors).forEach(function(s){
+    var name = esc(s.name) || esc(s.id);
+    if(!name) return;
+    sectorIdx.set(name, {sector:name, our:num(s.weight_pct)||0, acwi:num(s.acwi_weight_pct)||0, held:[], pass:[], watch:[]});
   });
-  Object.keys(DATA.acwi_sector_weights||{}).forEach(function(s){
-    if(!sectorIdx.has(s)) sectorIdx.set(s, {sector:s, our:0, acwi:DATA.acwi_sector_weights[s], held:[], pass:[], watch:[]});
-  });
-  DATA.nodes.forEach(function(n){
+  var acwiW = DATA.acwi_sector_weights;
+  if(acwiW && typeof acwiW === 'object'){
+    Object.keys(acwiW).forEach(function(s){
+      if(!sectorIdx.has(s)) sectorIdx.set(s, {sector:s, our:0, acwi:num(acwiW[s])||0, held:[], pass:[], watch:[]});
+    });
+  }
+  arr(DATA.nodes).forEach(function(n){
     var s = n.sector;
     if(!s) return;
     if(!sectorIdx.has(s)) sectorIdx.set(s, {sector:s, our:0, acwi:0, held:[], pass:[], watch:[]});
@@ -1181,14 +1338,15 @@ function computeSectorStats(){
 function deltaClass(d){ if(d>2) return 'pos'; if(d<-2) return 'neg'; return 'flat'; }
 
 function renderSectorBar(label, val, maxScale, cls){
+  const v = num(val);
   const line = el('div',{cls:'sector-bar-line'});
   line.appendChild(el('span',{cls:'sector-bar-tag', text:label}));
   const track = el('div',{cls:'sector-bar-track'});
   const fill = el('div',{cls:'sector-bar-fill '+cls});
-  fill.style.width = Math.max(0, Math.min(100, maxScale? (val/maxScale)*100 : 0)) + '%';
+  fill.style.width = Math.max(0, Math.min(100, (maxScale && v!==null)? (v/maxScale)*100 : 0)) + '%';
   track.appendChild(fill);
   line.appendChild(track);
-  line.appendChild(el('span',{cls:'sector-bar-val tabular', text: val.toFixed(1)+'%'}));
+  line.appendChild(el('span',{cls:'sector-bar-val tabular', text: fmtNum(v, 1, '%')}));
   return line;
 }
 
@@ -1198,16 +1356,18 @@ function renderSectorView(){
   SECTOR_VIEW_BUILT = true;
   const stats = computeSectorStats();
   const container = document.getElementById('sectorGroups');
-  const maxScale = Math.max(10, Math.max.apply(null, stats.map(s=>Math.max(s.our, s.acwi)))) * 1.15;
+  if(!container) return;
+  const maxScale = Math.max(10, Math.max.apply(null, [0].concat(stats.map(s=>Math.max(s.our, s.acwi))))) * 1.15;
 
   stats.forEach(s=>{
     const row = el('div',{cls:'sector-row', attrs:{role:'button','aria-expanded':'false',tabindex:'0'}});
     const head = el('div',{cls:'sector-row-head'});
-    head.appendChild(el('span',{cls:'sector-name', text:s.sector}));
+    head.appendChild(el('span',{cls:'sector-name', text: esc(s.sector) || '—'}));
     const rowStats = el('div',{cls:'sector-stats'});
-    rowStats.appendChild(el('span',{text:'Our '+s.our.toFixed(1)+'%'}));
-    rowStats.appendChild(el('span',{text:'ACWI '+s.acwi.toFixed(1)+'%'}));
-    rowStats.appendChild(el('span',{cls:'s-delta tabular '+deltaClass(s.delta), text:(s.delta>0.0001?'+':'')+s.delta.toFixed(1)+'pp'}));
+    rowStats.appendChild(el('span',{text:'Our '+fmtNum(s.our,1,'%')}));
+    rowStats.appendChild(el('span',{text:'ACWI '+fmtNum(s.acwi,1,'%')}));
+    const dlt = num(s.delta);
+    rowStats.appendChild(el('span',{cls:'s-delta tabular '+deltaClass(dlt||0), text: dlt===null ? '—' : (dlt>0.0001?'+':'')+dlt.toFixed(1)+'pp'}));
     head.appendChild(rowStats);
     row.appendChild(head);
 
@@ -1335,20 +1495,21 @@ function jumpToTicker(tid){
 /* ---------- search ---------- */
 function buildSearchIndex(){
   const idx = [];
-  DATA.themes.forEach(t=> idx.push({type:'Theme', id:t.id, label: shortThemeName(t), sub: themeNameSub(t)}) );
+  arr(DATA.themes).forEach(t=> idx.push({type:'Theme', id:t.id, label: shortThemeName(t), sub: themeNameSub(t)}) );
   const seen = new Set();
-  DATA.themes.forEach(t=> (t.tickers||[]).forEach(tid=>{
+  arr(DATA.themes).forEach(t=> arr(t.tickers).forEach(tid=>{
     if(seen.has(tid)) return; seen.add(tid);
     const n = NODE_BY_ID.get(tid);
-    idx.push({type:'Ticker', id:tid, label: tid, sub: n? n.name : ''});
+    idx.push({type:'Ticker', id:tid, label: esc(tid), sub: (n && esc(n.name)) || ''});
   }));
-  return idx;
+  return idx.filter(m=>m.label);
 }
 const SEARCH_INDEX = buildSearchIndex();
 
 function initSearch(){
   const input = document.getElementById('searchInput');
   const results = document.getElementById('searchResults');
+  if(!input || !results) return;
 
   function render(matches){
     results.innerHTML='';
@@ -1383,24 +1544,39 @@ function initSearch(){
 
 /* ---------- footer ---------- */
 function renderFooter(){
-  const genDate = new Date(DATA.generated_at);
   const meta = document.getElementById('footerMeta');
+  if(!meta) return;
   meta.innerHTML='';
-  meta.appendChild(el('div',{text:'Generated '+genDate.toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'})+' UTC · Data from the Bubble vault.'}));
-  const heldPositions = DATA.nodes.filter(n=>n.held).length;
-  meta.appendChild(el('div',{text: DATA.node_count+' tickers tracked · '+DATA.theme_count+' active themes · '+heldPositions+' positions held.'}));
+  meta.appendChild(el('div',{text:'Generated '+fmtDateTime(DATA.generated_at,{dateStyle:'medium',timeStyle:'short'})+' UTC · Data from the Bubble vault.'}));
+  const heldPositions = DATA.nodes.filter(n=>n && n.held).length;
+  const nodeN = num(DATA.node_count)!==null ? DATA.node_count : DATA.nodes.length;
+  const themeN = num(DATA.theme_count)!==null ? DATA.theme_count : DATA.themes.length;
+  meta.appendChild(el('div',{text: fmtInt(nodeN)+' tickers tracked · '+fmtInt(themeN)+' active themes · '+heldPositions+' positions held.'}));
 }
 
-/* ---------- boot ---------- */
-computeAutoExpand();
-renderHeader();
-renderOverview();
-renderGlobalMacro();
-renderMacroGrid();
-renderThemeGroups();
-initViewToggle();
-initSearch();
-renderFooter();
+/* ---------- boot ----------
+   Braces, not belt: even with every field routed through a nullable formatter,
+   ONE unforeseen throw in a single section must not blank the entire tab (that
+   is the whole shape of this outage class). Each step is isolated; a failure
+   drops just that section and still surfaces loudly on the console, so the
+   smoke test in console/tests/test_thesis_book_total_renderer.py fails instead
+   of a silently-degraded page shipping to Joris. */
+function bootStep(name, fn){
+  try { fn(); }
+  catch(err){
+    console.error('thesis_book: render step "'+name+'" failed —', err);
+  }
+}
+
+bootStep('computeAutoExpand', computeAutoExpand);
+bootStep('renderHeader', renderHeader);
+bootStep('renderOverview', renderOverview);
+bootStep('renderGlobalMacro', renderGlobalMacro);
+bootStep('renderMacroGrid', renderMacroGrid);
+bootStep('renderThemeGroups', renderThemeGroups);
+bootStep('initViewToggle', initViewToggle);
+bootStep('initSearch', initSearch);
+bootStep('renderFooter', renderFooter);
 
 })();
 </script>
