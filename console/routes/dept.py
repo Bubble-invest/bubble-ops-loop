@@ -21,6 +21,7 @@ from console.services import (
     mission_pieces,
     nav_history,
     risk_clusters,
+    value_chains,
     whiteboard_series,
 )
 from console.services.gate_grouping import group_gates_by_kind
@@ -158,6 +159,11 @@ def dept_detail(
     # + vault/investment-cases/ (per-thesis memos), read-only. Empty/graceful
     # for any dept without vault/clusters/ (only Ben has one today).
     risk_cluster_table = risk_clusters.load_risk_clusters(slug)
+    # Value-chain sector maps (board #727, Part 2 of #725) — reads
+    # vault/value-chains/ (_index.md overview + per-sector *.md), read-only.
+    # Empty/graceful for any dept without that vault subdir (only Ben has
+    # it today).
+    value_chain_data = value_chains.load_value_chains(slug)
     # Loop-run history — one entry per active day, with clickable outputs.
     # {{OPERATOR}} msg 1168, 2026-06-01.
     loop_runs = loop_history.list_loop_runs(slug)
@@ -276,6 +282,7 @@ def dept_detail(
             "nav_chart": nav_chart,
             "nav_range_options": list(nav_history.RANGE_DAYS.keys()),
             "risk_clusters": risk_cluster_table,
+            "value_chains": value_chain_data,
             "loop_runs": loop_runs,
             "decision_events": decision_events,
             "backup_events": backup_events,

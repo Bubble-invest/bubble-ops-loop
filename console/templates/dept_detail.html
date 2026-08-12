@@ -480,6 +480,62 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
   </details>
 </section>
 
+{# ═══ 02b — CARTES DE CHAÎNE DE VALEUR (board #727, Part 2 of #725) ═════
+   Read-only render of vault/value-chains/ — the GICS sector value-chain
+   maps (_index.md overview + per-sector *.md) + the tag legend
+   (own/watch/early/ran/private). Graceful no-op (section omitted) for any
+   dept without vault/value-chains/ — value_chains.available is False for
+   every dept but Ben today (same gating idiom as risk_clusters above). #}
+{% if value_chains and value_chains.available %}
+<section class="cabinet-section m4-section" aria-labelledby="dept-value-chains-heading">
+  <div class="section-head">
+    <span class="section-num">02b</span>
+    <h2 id="dept-value-chains-heading" class="section-title">Cartes de chaîne de valeur</h2>
+    <span class="section-sub">
+      {{ value_chains.sector_count }} secteur{{ 's' if value_chains.sector_count != 1 else '' }}
+    </span>
+  </div>
+
+  {% if value_chains.tag_legend %}
+    {# Static legend for the own/watch/early/ran/private tags used inline in
+       each sector map — see value_chains.TAG_LEGEND's docstring for why this
+       is a constant, not scraped from vault content. #}
+    <ul class="value-chain-legend">
+      {% for tag in value_chains.tag_legend %}
+        <li class="value-chain-legend-item">
+          <span class="pill value-chain-tag value-chain-tag-{{ tag.code }}">{{ tag.label }}</span>
+          <span class="value-chain-legend-desc">{{ tag.desc }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if value_chains.overview_html %}
+    <details class="value-chain-overview-details" open>
+      <summary>Vue d'ensemble</summary>
+      <article class="value-chain-overview markdown-body">{{ value_chains.overview_html }}</article>
+    </details>
+  {% endif %}
+
+  {% if value_chains.sectors %}
+    <div class="value-chain-sectors">
+      {% for sector in value_chains.sectors %}
+        <details class="value-chain-sector-details">
+          <summary>{{ sector.title }}</summary>
+          {% if sector.html %}
+            <article class="value-chain-sector-body markdown-body">{{ sector.html }}</article>
+          {% else %}
+            <p class="value-chain-sector-empty">Carte vide.</p>
+          {% endif %}
+        </details>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="value-chain-empty">Aucune carte de secteur pour le moment.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {# ═══ 03 — KANBAN (firm-wide snapshot — management dept only) ═══════
    Compact cross-dept board: per-column counts + the items needing
    attention. Full board at /kanban. Read-only. ({{OPERATOR}} 2026-06-17.) #}

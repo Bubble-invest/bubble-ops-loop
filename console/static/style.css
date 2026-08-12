@@ -2519,6 +2519,74 @@ a.piece-tile:hover {
   color: var(--ink);
 }
 
+/* ─── Value-chain sector maps (board #727, Part 2 of #725) ──────────────
+   vault/value-chains/ overview + per-sector maps, rendered as sanitized
+   markdown (.markdown-body — same rules as the whiteboard/thesis-book
+   panes). Legend badges reuse the existing .pill base class; sector maps
+   use the SAME zero-JS <details>/<summary> idiom as
+   .risk-cluster-drilldown / .loop-runs-overflow above, not a JS accordion. */
+.value-chain-legend {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.value-chain-legend-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.value-chain-tag { text-transform: uppercase; }
+.value-chain-tag-own { color: var(--sage); border-color: var(--sage-soft); }
+.value-chain-tag-watch { color: var(--ochre-deep); border-color: var(--ochre-soft); }
+.value-chain-tag-early { color: var(--violet); border-color: var(--violet-30); }
+.value-chain-tag-ran { color: var(--body-muted); }
+.value-chain-tag-private { color: #c75f5f; border-color: #c75f5f; }
+.value-chain-legend-desc {
+  font-size: 12px;
+  color: var(--body-muted);
+}
+.value-chain-overview-details { margin: 4px 0 18px; }
+.value-chain-overview-details > summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 0.95em;
+  padding: 6px 0;
+}
+.value-chain-overview { max-width: 820px; }
+.value-chain-sectors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.value-chain-sector-details {
+  border-top: 1px solid var(--line-soft);
+  padding: 8px 0;
+}
+.value-chain-sector-details > summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--ink-soft);
+  font-size: 0.95em;
+  padding: 4px 0;
+}
+.value-chain-sector-body {
+  max-width: 820px;
+  margin-top: 8px;
+}
+.value-chain-sector-empty,
+.value-chain-empty {
+  font-size: 12.5px;
+  color: var(--body-muted);
+  font-style: italic;
+  margin: 6px 0 2px;
+}
+
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
 
