@@ -146,3 +146,94 @@ def test_load_latest_review_data_missing_is_empty(tmp_path: Path):
     from console.services.thesis_book import _load_latest_review_data
 
     assert _load_latest_review_data(tmp_path) == {}
+
+
+# ── full-universe: non-held nodes from watchlist-prices.json ─────────────────
+# portfolio-review-data.json only prices the ~84 HELD names, so only held nodes
+# got a sparkline. bubble-ops-ben's watchlist_momentum.py now also persists
+# outputs/<date>/watchlist-prices.json ({yahoo: [[date, close]]}) for the ~500
+# NON-HELD watchlist universe; _attach_sparklines merges both (held wins).
+
+def _watchlist_prices() -> dict:
+    """A watchlist-prices.json payload: the SAME shape as review `prices`, but
+    for non-held names. WATCH1 is only here (no model.lines, not in review);
+    LIN is ALSO here with a DIFFERENT (stale) series to prove held precedence."""
+    return {
+        "WATCH1": [["2026-02-12", 10.0], ["2026-03-12", 11.0],
+                   ["2026-04-12", 12.5]],
+        # Same ticker as a held name, but a divergent series — held must win.
+        "LIN": [["2026-02-12", 1.0], ["2026-03-12", 2.0]],
+    }
+
+
+def test_non_held_node_gets_sparkline_from_watchlist_prices():
+    """A non-held node whose ticker is ONLY in watchlist-prices.json (no
+    model.lines entry, absent from review prices) now gets a sparkline via the
+    direct node.id -> prices fallback."""
+    from console.services.thesis_book import _attach_sparklines
+
+    nodes = [
+        {"id": "WATCH1", "name": "Watchlist only", "held": False},
+        {"id": "NOMATCH", "name": "Truly unpriced", "held": False},
+    ]
+    _attach_sparklines(nodes, _review_payload(), "fixture",
+                       watchlist_prices=_watchlist_prices())
+    by_id = {n["id"]: n for n in nodes}
+
+    # Non-held, watchlist-only -> attached from watchlist-prices.json.
+    assert by_id["WATCH1"]["sparkline_6m"] == [10.0, 11.0, 12.5]
+    # Still no series anywhere -> keeps the placeholder.
+    assert "sparkline_6m" not in by_id["NOMATCH"]
+
+
+def test_held_prices_take_precedence_when_ticker_in_both():
+    """When a ticker is in BOTH sources, the held (portfolio-review-data.json)
+    series wins — the held marks are the book's own."""
+    from console.services.thesis_book import _attach_sparklines
+
+    nodes = [{"id": "LIN", "name": "Linde", "held": True}]
+    _attach_sparklines(nodes, _review_payload(), "fixture",
+                       watchlist_prices=_watchlist_prices())
+    # review LIN series (4 pts), NOT the watchlist LIN series (2 pts).
+    assert nodes[0]["sparkline_6m"] == [321.86, 330.10, 340.55, 335.20]
+
+
+def test_watchlist_only_source_still_attaches_when_no_review():
+    """Even with an empty review payload, a watchlist-prices-only series still
+    reaches non-held nodes (the full-universe path must not depend on the held
+    artifact existing)."""
+    from console.services.thesis_book import _attach_sparklines
+
+    nodes = [{"id": "WATCH1", "held": False}]
+    _attach_sparklines(nodes, {}, "fixture",
+                       watchlist_prices=_watchlist_prices())
+    assert nodes[0]["sparkline_6m"] == [10.0, 11.0, 12.5]
+
+
+def test_attach_sparklines_no_sources_is_a_noop():
+    from console.services.thesis_book import _attach_sparklines
+
+    nodes = _nodes()
+    _attach_sparklines(nodes, {}, "fixture", watchlist_prices={})
+    _attach_sparklines(nodes, {}, "fixture", watchlist_prices=None)
+    assert all("sparkline_6m" not in n for n in nodes)
+
+
+# ── loader: latest outputs/<date>/watchlist-prices.json ──────────────────────
+
+def test_load_latest_watchlist_prices_reads_todays_file(tmp_path: Path):
+    from console.services.thesis_book import _load_latest_watchlist_prices
+
+    day = tmp_path / "outputs" / date.today().isoformat()
+    day.mkdir(parents=True)
+    (day / "watchlist-prices.json").write_text(json.dumps(_watchlist_prices()))
+
+    loaded = _load_latest_watchlist_prices(tmp_path)
+    assert loaded.get("WATCH1") == [["2026-02-12", 10.0], ["2026-03-12", 11.0],
+                                    ["2026-04-12", 12.5]]
+
+
+def test_load_latest_watchlist_prices_missing_is_empty(tmp_path: Path):
+    from console.services.thesis_book import _load_latest_watchlist_prices
+
+    assert _load_latest_watchlist_prices(tmp_path) == {}

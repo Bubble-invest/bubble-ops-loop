@@ -414,6 +414,29 @@ def _load_latest_review_data(root: Path) -> dict:
     return {}
 
 
+def _load_latest_watchlist_prices(root: Path) -> dict:
+    """Load the most recent outputs/<date>/watchlist-prices.json — the L1
+    artifact bubble-ops-ben's watchlist_momentum.py writes for the FULL non-held
+    watchlist universe. Shape: {yahoo_symbol: [[date, close], …]}, the SAME
+    shape as portfolio-review-data.json's `prices` map (so the two merge
+    identically). portfolio-review-data.json only prices the ~84 held names;
+    this file covers the ~500 non-held watchlist names whose sparklines were
+    otherwise blank. Mirrors _load_latest_review_data's 7-day date-scan; fails
+    soft to {} if nothing is on disk / the file is unparseable."""
+    from datetime import timedelta
+    for day_offset in range(7):
+        check = (date.today() - timedelta(days=day_offset)).isoformat()
+        path = root / "outputs" / check / "watchlist-prices.json"
+        if path.exists():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                continue
+    return {}
+
+
 def _norm_symbol(sym: Any) -> str:
     """Normalize a ticker/symbol for join comparison: uppercase, stripped."""
     if not isinstance(sym, str):
@@ -440,23 +463,43 @@ def _series_to_floats(series: Any) -> List[float]:
     return [p[1] for p in pairs]
 
 
-def _attach_sparklines(nodes: Any, review: dict, slug: str) -> None:
+def _attach_sparklines(nodes: Any, review: dict, slug: str,
+                       watchlist_prices: Any = None) -> None:
     """Enrich each node in-place with `sparkline_6m` (a plain price-float array)
-    when the nightly review data carries a price series for its ticker.
+    when a nightly price series exists for its ticker.
 
-    The join (all best-effort — a node with no match simply keeps the template's
-    dotted placeholder):
+    Two on-disk price sources are merged (both {yahoo_symbol: [[date, close]]}):
+      - `review["prices"]` from portfolio-review-data.json — the ~84 HELD names.
+      - `watchlist_prices` from watchlist-prices.json — the ~500 NON-HELD
+        watchlist universe (bubble-ops-ben watchlist_momentum.py).
+    HELD prices take PRECEDENCE when a ticker appears in both — the held marks
+    are the book's own. Without the watchlist source only held nodes ever got a
+    sparkline; every non-held node rendered an empty dotted placeholder.
+
+    The join (all best-effort — a node with no match keeps the placeholder):
         node.id (a ticker, e.g. "LIN"/"ROBO"/"SMH")
           → a model.lines entry (matched on ticker_display / key / yahoo /
             ticker / symbol / label, normalized)
           → that line's `yahoo` symbol
           → prices[yahoo]
-    Plus a direct fallback: if node.id is itself a key in `prices`, use it.
+    Plus a direct fallback: if node.id is itself a key in `prices`, use it —
+    this is the path most non-held watchlist nodes resolve through, since they
+    have no model.lines entry (model.lines only covers held names).
     """
-    if not isinstance(nodes, list) or not isinstance(review, dict):
+    if not isinstance(nodes, list):
         return
-    prices = review.get("prices")
-    if not isinstance(prices, dict) or not prices:
+    if not isinstance(review, dict):
+        review = {}
+    review_prices = review.get("prices")
+    if not isinstance(review_prices, dict):
+        review_prices = {}
+    wl = watchlist_prices if isinstance(watchlist_prices, dict) else {}
+    # Non-held watchlist universe forms the base; held review prices overlay it
+    # so a ticker present in both resolves to the held (book's-own) series.
+    prices: Dict[str, Any] = {}
+    prices.update(wl)
+    prices.update(review_prices)
+    if not prices:
         return
 
     # Normalized price keys for a direct node.id -> prices hit.
@@ -511,8 +554,10 @@ def _attach_sparklines(nodes: Any, review: dict, slug: str) -> None:
         miss = total - matched
         _log.info(
             "thesis_book[%s]: attached live sparkline_6m to %d/%d nodes "
-            "(%d without a price-series match — they keep the placeholder).",
-            slug, matched, total, miss,
+            "(%d without a price-series match — they keep the placeholder) "
+            "from %d held + %d watchlist price series (%d merged keys).",
+            slug, matched, total, miss, len(review_prices), len(wl),
+            len(prices),
         )
 
 
@@ -575,17 +620,25 @@ def build_thesis_data(slug: str) -> dict:
     # defaulted, which is exactly the gap a key-by-key contract closes.
     base = normalize_thesis_data(base, slug)
 
-    # Enrich nodes with per-ticker price sparklines from the nightly review
-    # artifact. The template (console/templates/thesis_book.html) draws each
+    # Enrich nodes with per-ticker price sparklines from the nightly on-disk
+    # artifacts. The template (console/templates/thesis_book.html) draws each
     # ticker's sparkline client-side from `node.sparkline_6m`, but the live
     # producer (vault_to_graph.py) never emits it — so every sparkline rendered
-    # as an empty dotted placeholder. The price series already exist on disk in
-    # outputs/<date>/portfolio-review-data.json (`prices` keyed by yahoo symbol,
-    # joined to holdings via `model.lines[].yahoo`); we read them here, never
-    # fetch live. Missing file / no match degrades silently to the placeholder.
+    # as an empty dotted placeholder. TWO price sources are read (never fetched
+    # live), both {yahoo: [[date, close]]}:
+    #   - outputs/<date>/portfolio-review-data.json `prices` — the ~84 HELD
+    #     names (joined to holdings via model.lines[].yahoo).
+    #   - outputs/<date>/watchlist-prices.json — the ~500 NON-HELD watchlist
+    #     universe (bubble-ops-ben watchlist_momentum.py), which is why the full
+    #     universe now gets sparklines, not just held names.
+    # Held prices win when a ticker is in both. Missing file / no match degrades
+    # silently to the placeholder; this never fetches and never throws into the
+    # render.
     review = _load_latest_review_data(root)
-    if isinstance(review, dict) and review:
-        _attach_sparklines(base.get("nodes"), review, slug)
+    watchlist_prices = _load_latest_watchlist_prices(root)
+    if (isinstance(review, dict) and review) or watchlist_prices:
+        _attach_sparklines(base.get("nodes"), review, slug,
+                           watchlist_prices=watchlist_prices)
 
     _set_cache(slug, base)
     return base
