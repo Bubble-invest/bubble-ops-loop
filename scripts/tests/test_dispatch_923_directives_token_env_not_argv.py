@@ -18,7 +18,11 @@ keeps the remote URL clean and instead reuses dispatch_helpers's
 `_env_with_bearer_auth_header` (imported from scripts/lib, NOT
 re-implemented) to set `http.https://github.com/.extraHeader` via the
 `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` env triad,
-passed through `_run`'s new `env=` kwarg — never part of argv.
+passed through `_run`'s new `env=` kwarg — never part of argv. The push argv
+also carries `-c credential.helper=` (empty — not a secret, fine in argv),
+matching the live-validated #310 generic-fallback push in
+dispatch_helpers.py byte-for-byte in shape: same env mechanism + same
+argv-level credential-helper neutralization flag.
 
 Construction-only test (no real git remote / no live broker token): asserts
 the COMMAND LIST and ENV DICT handed to subprocess.run, not an actual
@@ -69,8 +73,15 @@ def test_push_repo_token_not_in_argv(tmp_path, monkeypatch):
     assert "@github.com" not in argv_joined, push_cmd
     # 3. The remote URL is the clean, credential-free form.
     assert "https://github.com/Bubble-invest/bubble-ops-maya.git" in push_cmd, push_cmd
+    # 4. credential.helper="" neutralization is preserved (matches #310's
+    #    generic-fallback push argv shape exactly — reviewer nit).
+    assert "credential.helper=" in push_cmd, push_cmd
+    assert push_cmd == [
+        "git", "-C", str(tmp_path), "-c", "credential.helper=",
+        "push", "https://github.com/Bubble-invest/bubble-ops-maya.git", "HEAD:main",
+    ], push_cmd
 
-    # 4. The token DOES travel — via env, not argv.
+    # 5. The token DOES travel — via env, not argv.
     push_env = push_kw.get("env")
     assert push_env is not None, "push must pass env= carrying the auth header"
     git_config_values = [v for k, v in push_env.items() if k.startswith("GIT_CONFIG_VALUE_")]

@@ -149,10 +149,17 @@ def _push_repo(repo_dir: Path, repo_name: str, message: str, dry_run: bool) -> t
     # URL stays clean, so a failed-push stderr/stdout line can't echo the
     # token either. Auth behaviour (the Authorization header git sends) is
     # identical to the old inline-URL form — only WHERE the token travels
-    # changes.
+    # changes. `-c credential.helper=` (empty — not a secret, fine in argv)
+    # neutralizes any ambient credential helper chain so our explicit
+    # extraHeader is what's actually used — matches the live-validated
+    # #310 generic-fallback push in dispatch_helpers.py byte-for-byte in
+    # shape (same env mechanism + same argv-level neutralization flag).
     url = f"https://github.com/{_GH_ORG}/{repo_name}.git"
     push_env = _env_with_bearer_auth_header(os.environ.copy(), token)
-    push = _run(["git", "-C", str(repo_dir), "push", url, "HEAD:main"], env=push_env)
+    push = _run(
+        ["git", "-C", str(repo_dir), "-c", "credential.helper=", "push", url, "HEAD:main"],
+        env=push_env,
+    )
     if push.returncode != 0:
         return False, f"push rejected: {(push.stderr or push.stdout).strip()[:200]}"
     return True, "pushed"
