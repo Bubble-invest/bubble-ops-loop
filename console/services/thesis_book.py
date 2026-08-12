@@ -26,6 +26,179 @@ _cache: Dict[str, Any] = {}
 _CACHE_TTL = 60
 
 
+# ── The render contract ─────────────────────────────────────────────────────
+# console/templates/thesis_book.html assembles tab 1 of /dept/<slug>/portfolio
+# LIVE, from this payload, inside ONE IIFE — so a single missing key that the
+# template dereferences used to blank the WHOLE tab (the 2026-08-11/12 outage:
+# `m.exposure_pct_nav.toFixed(1)` on a key `vault_to_graph.py` has never
+# emitted).
+#
+# WHY THIS CONSTANT EXISTS: the template was copied from a hand-authored
+# artifact whose data was richer than what the producer actually emits, and the
+# producer (bubble-ops-ben/tools/vault_to_graph.py) is owned by another repo we
+# cannot pin. Every previous fix patched that day's symptom — e.g.
+# `base.setdefault("macro", [])` let an EMPTY macro list survive, and the moment
+# macro became populated the page died on the next unguarded field. So the fix
+# has to be structural on BOTH sides:
+#
+#   1. this module fills a safe default for every key the template reads and
+#      LOGS LOUDLY which ones the producer omitted (below), and
+#   2. the template routes every field through a nullable formatter and
+#      isolates each render step (see the render-contract comment there).
+#
+# If you add a field to the template, add it here. If a key shows up in the
+# "producer omitted" warning below, that is the producer drifting — fix it in
+# bubble-ops-ben, don't delete it from this list.
+#
+# Fence: console/tests/test_thesis_book_total_renderer.py
+
+#: Top-level keys the template dereferences, mapped to a safe default.
+#: `None` renders as an em-dash; `[]`/`{}` render as an empty section.
+REQUIRED_THESIS_KEYS: Dict[str, Any] = {
+    "generated_at": None,       # header + footer date
+    "nav": None,                # header NAV
+    "since_rebase_pct": None,   # header return
+    "vs_acwi_pct": None,        # header "vs ACWI" clause (optional in practice)
+    "node_count": None,         # footer
+    "theme_count": None,        # footer
+    "nodes": [],                # iterated: NODE_BY_ID, sector view, footer
+    "themes": [],               # iterated: theme cards, search index
+    "macro": [],                # iterated: macro grid, theme grouping
+    "clusters": [],             # iterated (reserved)
+    "sectors": [],              # iterated: sector view
+    "acwi_sector_weights": {},  # sector view benchmark column
+    "global_macro": {},         # narrative + key_signals
+    "portfolio_overview": {},   # overview card
+}
+
+#: Per-item keys read off each `macro[]` entry.
+#: `themes_driven` is the template's name for what the producer emits as
+#: `themes` — normalized below so an upstream rename cannot silently empty the
+#: macro→theme grouping (it did, for months: every theme fell into
+#: "Cross-Cutting & Idiosyncratic").
+MACRO_ITEM_KEYS: Dict[str, Any] = {
+    "id": None,
+    "title": None,
+    "subtitle": None,
+    "indicators": [],
+    "themes_driven": [],
+    "exposure_usd": None,       # NOT emitted by vault_to_graph today
+    "exposure_pct_nav": None,   # NOT emitted — this is what caused the outage
+    "return_wtd": None,         # NOT emitted
+    "research_note": None,      # NOT emitted
+}
+
+#: Per-item keys read off each `themes[]` entry.
+THEME_ITEM_KEYS: Dict[str, Any] = {
+    "id": None,
+    "name": None,
+    "ticker_count": None,
+    "tickers": [],
+    "last_verified": None,
+    "review_by": None,
+    "held_tickers": [],         # NOT emitted by vault_to_graph today
+    "exposure_usd": None,       # NOT emitted
+    "exposure_pct_nav": None,   # NOT emitted — latent twin of the outage line
+    "theme_return_wtd": None,   # NOT emitted
+    "watchlist_return_avg": None,  # NOT emitted
+}
+
+#: Keys the producer is currently known not to emit. They are still filled with
+#: safe defaults, but they are NOT re-reported on every request — only a change
+#: in the missing set is worth a log line.
+_KNOWN_ABSENT = {
+    # genuinely optional at top level — the template already renders these as a
+    # dropped clause, so their absence is not a contract breach
+    "top": {"vs_acwi_pct"},
+    "macro": {"exposure_usd", "exposure_pct_nav", "return_wtd", "research_note"},
+    "themes": {"held_tickers", "exposure_usd", "exposure_pct_nav",
+               "theme_return_wtd", "watchlist_return_avg"},
+}
+
+#: slug -> last logged (top_missing, macro_missing, theme_missing) signature.
+_last_contract_signature: Dict[str, tuple] = {}
+
+
+def _fill_items(items: Any, spec: Dict[str, Any]) -> tuple:
+    """Fill `spec` defaults into every dict in `items`. Returns
+    (normalized_list, set_of_keys_that_were_missing_from_at_least_one_item)."""
+    missing: set = set()
+    out: List[dict] = []
+    if not isinstance(items, list):
+        return [], set(spec)
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        for key, default in spec.items():
+            if it.get(key) is None:
+                missing.add(key)
+                it[key] = [] if isinstance(default, list) else default
+        out.append(it)
+    return out, missing
+
+
+def normalize_thesis_data(base: Any, slug: str = "?") -> dict:
+    """Make `base` satisfy the documented render contract, and log loudly when
+    the producer omitted something.
+
+    This is the server half of "the consumer is total": the template still
+    guards every field itself, but a payload that leaves this function is
+    already shaped so the template's guards never have to fire on a key we
+    know about — and anything it DID have to invent shows up in the log
+    instead of as a blank tab nobody notices until Joris opens the page.
+    """
+    if not isinstance(base, dict):
+        base = {}
+
+    top_missing = set()
+    for key, default in REQUIRED_THESIS_KEYS.items():
+        if base.get(key) is None:
+            top_missing.add(key)
+            base[key] = [] if isinstance(default, list) else (
+                {} if isinstance(default, dict) else default)
+        elif isinstance(default, list) and not isinstance(base[key], list):
+            top_missing.add(key)
+            base[key] = []
+        elif isinstance(default, dict) and not isinstance(base[key], dict):
+            top_missing.add(key)
+            base[key] = {}
+
+    # The producer calls a macro's theme list `themes`; the template reads
+    # `themes_driven`. Bridge it BEFORE filling defaults, so the grouping keeps
+    # working across the rename either way.
+    for m in base["macro"]:
+        if isinstance(m, dict) and not m.get("themes_driven") and isinstance(
+                m.get("themes"), list):
+            m["themes_driven"] = m["themes"]
+
+    base["macro"], macro_missing = _fill_items(base["macro"], MACRO_ITEM_KEYS)
+    base["themes"], theme_missing = _fill_items(base["themes"], THEME_ITEM_KEYS)
+
+    signature = (tuple(sorted(top_missing)), tuple(sorted(macro_missing)),
+                 tuple(sorted(theme_missing)))
+    if signature != _last_contract_signature.get(slug):
+        _last_contract_signature[slug] = signature
+        novel_top = top_missing - _KNOWN_ABSENT["top"]
+        novel_macro = macro_missing - _KNOWN_ABSENT["macro"]
+        novel_theme = theme_missing - _KNOWN_ABSENT["themes"]
+        if novel_top or novel_macro or novel_theme:
+            _log.warning(
+                "thesis_book[%s]: producer payload does NOT satisfy the render "
+                "contract — filled safe defaults. missing top-level=%s "
+                "macro[]=%s themes[]=%s. See REQUIRED_THESIS_KEYS in "
+                "console/services/thesis_book.py.",
+                slug, sorted(novel_top), sorted(novel_macro),
+                sorted(novel_theme),
+            )
+        elif macro_missing or theme_missing:
+            _log.info(
+                "thesis_book[%s]: known-absent producer fields defaulted "
+                "(macro[]=%s themes[]=%s) — page renders them as '—'.",
+                slug, sorted(macro_missing), sorted(theme_missing),
+            )
+    return base
+
+
 def _cached(slug: str) -> Optional[dict]:
     entry = _cache.get(slug)
     if entry and (time.monotonic() - entry["at"]) < _CACHE_TTL:
@@ -224,17 +397,28 @@ def _load_latest_graph_data(root: Path) -> dict:
 
 
 def build_thesis_data(slug: str) -> dict:
-    """Assemble the full Living Portfolio Report dataset on demand."""
+    """Assemble the full Living Portfolio Report dataset on demand.
+
+    The returned dict always satisfies REQUIRED_THESIS_KEYS (see the render
+    contract at the top of this module) — including on the no-repo path, which
+    used to return a bare `{}` and hand the template a payload with no `nodes`
+    at all.
+    """
     cached = _cached(slug)
     if cached is not None:
         return cached
 
     root = repo_path(slug)
     if root is None:
-        return {}
+        return normalize_thesis_data({}, slug)
 
-    # A: structural data from vault_to_graph
+    # A: structural data from vault_to_graph. It is an out-of-repo producer —
+    # do not assume it even returned an object.
     base = _run_vault_to_graph(root)
+    if not isinstance(base, dict):
+        _log.warning("thesis_book[%s]: vault_to_graph returned %s, not an "
+                     "object — falling back to defaults", slug, type(base).__name__)
+        base = {}
 
     # B: live portfolio state
     db_path = root / "db" / "fund.sqlite"
@@ -248,6 +432,8 @@ def build_thesis_data(slug: str) -> dict:
 
     # Macro/global_macro: fall back to latest on-disk graph-data
     fallback = _load_latest_graph_data(root)
+    if not isinstance(fallback, dict):
+        fallback = {}
     for key in ("macro", "global_macro", "vs_acwi_pct", "acwi_return_pct"):
         if key not in base or not base.get(key):
             if key in fallback and fallback[key]:
@@ -261,13 +447,13 @@ def build_thesis_data(slug: str) -> dict:
                 if extra_key in fb_po:
                     base["portfolio_overview"][extra_key] = fb_po[extra_key]
 
-    # Harden the client render contract: thesis_book.html iterates these list
-    # fields UNGUARDED (`DATA.<field>.forEach(...)`), so a missing/empty key
-    # throws "Cannot read properties of undefined (reading 'forEach')" and blanks
-    # the ENTIRE page (found live 2026-08-11: `macro` absent when vault/macro is
-    # empty). Guarantee every iterated field is at least [].
-    for _k in ("macro", "themes", "nodes", "clusters", "sectors"):
-        base.setdefault(_k, [])
+    # Satisfy the documented render contract (and shout about anything the
+    # producer left out). This SUPERSEDES the old
+    # `for _k in (...): base.setdefault(_k, [])` guard, which only covered the
+    # five iterated lists — the 2026-08-12 outage was a *scalar* field
+    # (`macro[].exposure_pct_nav`) inside a list that had been successfully
+    # defaulted, which is exactly the gap a key-by-key contract closes.
+    base = normalize_thesis_data(base, slug)
 
     _set_cache(slug, base)
     return base
