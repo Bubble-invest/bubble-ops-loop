@@ -84,6 +84,28 @@ FRAMEWORK_STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "git-guard/**",        # the guard's own source
 )
 
+# Paths that are ELIGIBLE for a settings_pr WITHOUT being STRUCTURAL.
+#
+# #913 (2026-08-12, Joris-approved): landing test files was blocked on BOTH
+# routes at once — runtime_write_own (tests/ absent from every actor's
+# allowed_paths) AND settings_pr (tests/ correctly fails `_is_structural()`,
+# since a test file is not a mission-definition file). See #773/#891/#888.
+#
+# Deliberately a SEPARATE list from STRUCTURAL_PATH_GLOBS, not folded into it:
+# `enforce()`'s runtime_write_own branch denies a structural path OUTRIGHT,
+# before ever consulting allowed_paths (see the `if _is_structural(p):
+# ... continue` below) — so marking tests/ structural would silently CLOSE
+# the direct-commit route the moment it's opened via allowed_paths. Keeping
+# the lists disjoint lets tests/ be BOTH direct-push-eligible (once an
+# actor's policy allowed_paths includes tests/**, see deploy/policies/
+# *.template.yaml) AND settings-PR-eligible (for a dept whose policy hasn't
+# been redeployed yet, or a test an agent wants human review on before it
+# lands) without touching mission-file (STRUCTURAL_PATH_GLOBS) semantics at
+# all. Scope is intentionally narrow — tests/ only, not a general loosening.
+SETTINGS_PR_EXTRA_GLOBS: tuple[str, ...] = (
+    "tests/**",
+)
+
 KNOWN_ACTIONS: frozenset[str] = frozenset(
     {"runtime_read", "runtime_write_own", "open_priority_pr", "settings_pr"}
 )
@@ -112,6 +134,19 @@ def _is_structural(path: str) -> bool:
     repo. For framework-repo-only protection use is_structural_for_repo().
     """
     return any(_glob_match(path, g) for g in STRUCTURAL_PATH_GLOBS)
+
+
+def _is_settings_pr_eligible(path: str) -> bool:
+    """True if `path` may be the target of a settings_pr (#913).
+
+    = structural (mission files, always PR-only, never runtime_write_own)
+      OR in SETTINGS_PR_EXTRA_GLOBS (currently just tests/** — PR-eligible
+      WITHOUT being locked out of runtime_write_own; see the comment above
+      SETTINGS_PR_EXTRA_GLOBS for why this is a separate list).
+    """
+    return _is_structural(path) or any(
+        _glob_match(path, g) for g in SETTINGS_PR_EXTRA_GLOBS
+    )
 
 
 def is_structural_for_repo(path: str, repo_name: str | None = None) -> bool:
@@ -268,9 +303,10 @@ class Policy:
             if not paths:
                 reasons.append("settings_pr requires at least one path")
             for p in paths:
-                if not _is_structural(p):
+                if not _is_settings_pr_eligible(p):
                     reasons.append(
-                        f"path {p!r} is not structural; use runtime_write_own instead"
+                        f"path {p!r} is not structural and not settings-PR-eligible "
+                        f"(see SETTINGS_PR_EXTRA_GLOBS); use runtime_write_own instead"
                     )
 
         return (len(reasons) == 0), reasons

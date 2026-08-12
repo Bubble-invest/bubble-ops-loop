@@ -22,6 +22,7 @@ github_access:
                               # in lockstep with ops-leaf-policy.template.yaml — its
                               # absence here was the 2026-06-05 maya/tony push-block
                               # (every WORKING_MEMORY write 403'd the whole push).
+        - tests/**            # regression-coverage test files (#913, 2026-08-12).
       mode: direct_runtime_commit
 
   pull_requests:

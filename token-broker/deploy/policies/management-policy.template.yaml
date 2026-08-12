@@ -73,6 +73,9 @@ github_access:
         - whiteboard.md       # L4 cockpit free-space board — rendered VERBATIM by the cockpit
                               # template (alongside whiteboard.yaml's kpis/notes keys). Runtime
                               # data, NOT structural — same class as .yaml (Ben 2026-06-19).
+        - tests/**            # regression-coverage test files (#913, 2026-08-12, Joris-
+                              # approved). Same rationale as ops-leaf-policy.template.yaml —
+                              # low-risk, no runtime execution path in prod.
       mode: direct_runtime_commit
 
   pull_requests:

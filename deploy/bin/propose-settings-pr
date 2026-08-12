@@ -96,10 +96,13 @@
 #       (derive slug+repo; REFUSE if it does not look like an own dept repo).
 #   R5. EVERY target path resolves INSIDE repo-dir (no cross-repo, no ../ escape,
 #       no absolute path outside the tree).
-#   R6. EVERY target path is STRUCTURAL per the broker's STRUCTURAL_PATH_GLOBS
-#       (single source: /opt/bubble-token-broker/src/policy.py `_is_structural`).
-#       A non-structural path is REFUSED (those go via runtime_write_own, not a
-#       settings PR).
+#   R6. EVERY target path is STRUCTURAL per the broker's STRUCTURAL_PATH_GLOBS,
+#       OR settings-PR-eligible per SETTINGS_PR_EXTRA_GLOBS (#913, 2026-08-12:
+#       tests/** — PR-eligible without being locked out of runtime_write_own)
+#       (single source: /opt/bubble-token-broker/src/policy.py
+#       `_is_settings_pr_eligible`, falls back to `_is_structural` against an
+#       older policy.py that predates #913). A path in neither is REFUSED
+#       (those go via runtime_write_own, not a settings PR).
 #   R7. We never write to / target the `main` branch directly: the change lands
 #       on a fresh `settings/<topic>-<utc-ts>` branch; base is main (PR target).
 #
@@ -239,7 +242,10 @@ PYEOF
   rel="${abs_canon#"$root_canon"/}"
   REL_PATHS+=("$rel")
 
-  # R6: structural check via the broker's own _is_structural (single source).
+  # R6: structural (or #913 settings-PR-eligible, e.g. tests/**) check via the
+  # broker's own single source. Prefers _is_settings_pr_eligible (added #913);
+  # falls back to _is_structural against an older policy.py so this script
+  # keeps working before the broker is redeployed.
   # NB: register in sys.modules BEFORE exec_module so @dataclass in policy.py can
   # resolve cls.__module__ (mirrors mission-file-guard.py's loader).
   is_struct="$($PYTHON - "$POLICY_PY" "$rel" <<'PYEOF'
@@ -248,10 +254,11 @@ spec = importlib.util.spec_from_file_location("bubble_broker_policy", sys.argv[1
 mod = importlib.util.module_from_spec(spec)
 sys.modules["bubble_broker_policy"] = mod
 spec.loader.exec_module(mod)
-print("1" if mod._is_structural(sys.argv[2]) else "0")
+check = getattr(mod, "_is_settings_pr_eligible", None) or mod._is_structural
+print("1" if check(sys.argv[2]) else "0")
 PYEOF
 )"
-  [[ "$is_struct" == "1" ]] || die "path '$rel' is NOT structural (per broker STRUCTURAL_PATH_GLOBS) — a settings PR is only for structural files; use runtime_write_own for runtime paths. REFUSED."
+  [[ "$is_struct" == "1" ]] || die "path '$rel' is NOT structural and not settings-PR-eligible (per broker STRUCTURAL_PATH_GLOBS / SETTINGS_PR_EXTRA_GLOBS) — a settings PR is only for structural/whitelisted files; use runtime_write_own for other runtime paths. REFUSED."
 done
 
 # --- R7: base must be main; we never write onto main directly ----------------
