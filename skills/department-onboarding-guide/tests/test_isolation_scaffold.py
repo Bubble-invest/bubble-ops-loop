@@ -84,7 +84,9 @@ def test_scaffold_settings_json_valid_and_scoped(scaffolded):
     assert data["env"]["BUBBLE_DEPT_ROOT"] == "/home/claude/agents/bubble-ops-newdept"
     assert data["env"]["BUBBLE_DEPT_LEVEL"] == "management"
     assert data["model"] == "claude-opus-4-8[1m]"
-    assert set(data["enabledSkills"]) == {"alpha-skill", "beta-skill", "google-workspace"}
+    # Fleet-standard skills (e.g. plan-executor, board #911 part 2) are added
+    # on top of the dept's own list, not instead of it.
+    assert {"alpha-skill", "beta-skill", "google-workspace"} <= set(data["enabledSkills"])
 
 
 def test_scaffold_settings_deny_isolates_other_depts(scaffolded):
@@ -298,6 +300,78 @@ def test_scaffold_subagent_model_absent_field_keeps_default_behavior(tmp_path):
     model_line = next(l for l in body.splitlines() if l.startswith("model:"))
     assert model_line == "model: sonnet"
     assert model_line == f"model: {iso.DEFAULT_SUBAGENT_MODEL}"
+
+
+# -------------------------------------------------------------------------
+# 4e) fleet-standard agents (board #911 part 2) — plan-executor folded into
+#     the scaffold so new depts/machines get it via the standard deploy
+#     (git clone of the dept repo) instead of manual scp to ~/.claude/.
+# -------------------------------------------------------------------------
+def test_scaffold_installs_fleet_plan_executor_agent(scaffolded):
+    dept_root, written = scaffolded
+    f = dept_root / ".claude" / "agents" / "plan-executor.md"
+    assert f.is_file(), "plan-executor.md must be scaffolded into .claude/agents/"
+    assert f in written
+
+
+def test_scaffold_plan_executor_model_pin_preserved(scaffolded):
+    """The version pin lives in the agent definition's own frontmatter (board
+    #908 doctrine) and must survive vendoring UNCHANGED — it is a static
+    copy, never Jinja-rendered, so a per-dept substitution can't touch it."""
+    dept_root, _ = scaffolded
+    body = (dept_root / ".claude" / "agents" / "plan-executor.md").read_text()
+    assert "model: claude-opus-4-6" in body
+
+
+def test_scaffold_installs_fleet_plan_executor_skill(scaffolded):
+    dept_root, written = scaffolded
+    f = dept_root / ".claude" / "skills" / "plan-executor" / "SKILL.md"
+    assert f.is_file(), "plan-executor SKILL.md must be scaffolded into .claude/skills/"
+    assert f in written
+    assert "plan-executor" in f.read_text()
+
+
+def test_scaffold_enables_plan_executor_skill_by_default(scaffolded):
+    """Even when the caller's enabled_skills list (Step 4's dept-declared
+    skills) doesn't mention it, plan-executor is a fleet-standard skill and
+    must show up in the rendered enabledSkills allowlist."""
+    dept_root, _ = scaffolded
+    data = json.loads((dept_root / ".claude" / "settings.json").read_text())
+    assert "plan-executor" in data["enabledSkills"]
+
+
+def test_scaffold_fleet_agents_content_matches_source_verbatim(scaffolded):
+    """Vendored copy must be byte-identical to the canonical skill_lib source
+    (a static fleet artifact, not a template — no drift allowed)."""
+    from skill_lib.isolation_scaffold import _FLEET_DIR
+
+    dept_root, _ = scaffolded
+    scaffolded_agent = (dept_root / ".claude" / "agents" / "plan-executor.md").read_text()
+    canonical_agent = (_FLEET_DIR / "agents" / "plan-executor.md").read_text()
+    assert scaffolded_agent == canonical_agent
+
+    scaffolded_skill = (
+        dept_root / ".claude" / "skills" / "plan-executor" / "SKILL.md"
+    ).read_text()
+    canonical_skill = (_FLEET_DIR / "skills" / "plan-executor" / "SKILL.md").read_text()
+    assert scaffolded_skill == canonical_skill
+
+
+def test_scaffold_fleet_agents_idempotent_on_rerun(tmp_path):
+    dept_root = tmp_path / "bubble-ops-rerun"
+    dept_root.mkdir()
+    kwargs = dict(
+        slug="rerun",
+        display_name="Rerun",
+        level="ops",
+        enabled_skills=["x"],
+        all_dept_slugs=["rerun", "ben"],
+    )
+    iso.scaffold_isolation_surface(dept_root, **kwargs)
+    first = (dept_root / ".claude" / "agents" / "plan-executor.md").read_text()
+    iso.scaffold_isolation_surface(dept_root, **kwargs)
+    second = (dept_root / ".claude" / "agents" / "plan-executor.md").read_text()
+    assert first == second
 
 
 # -------------------------------------------------------------------------

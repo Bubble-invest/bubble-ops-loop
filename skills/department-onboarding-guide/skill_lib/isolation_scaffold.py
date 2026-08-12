@@ -14,6 +14,8 @@ What `scaffold_isolation_surface()` writes into a dept root:
   .claude/settings.json            (dept-scoped perms / skills / hooks / env)
   .claude/hooks/session-start.sh   (SessionStart hook, chmod +x)
   subagents/{data-curator,task-orchestrator,executor,mandate-guardian}.md
+  .claude/agents/plan-executor.md          (fleet-standard, board #911 part 2)
+  .claude/skills/plan-executor/SKILL.md    (fleet-standard, board #911 part 2)
   tests/test_anti_regression_coverage.py   (the Part-A triple, dept-agnostic)
 
 All per-dept bits (slug, display_name, level, enabled_skills, model, the sibling
@@ -21,10 +23,23 @@ dept slugs to deny) are parameterised via the skill's existing Jinja2 renderer
 (skill_lib.templates._env / FileSystemLoader). Deterministic: same input -> same
 output. Idempotent on dirs (exist_ok); files are overwritten with the rendered
 canonical version.
+
+Fleet-standard agents (board #911 part 2): unlike the four MANDATED_PERSONAS
+above (which are dept-parameterised — their body text is rendered per-slug),
+a fleet-standard agent is a STATIC artifact shared verbatim by every dept/machine
+on the platform (its whole point is to be identical everywhere, e.g. the
+version-pinned `model:` frontmatter). These are copied byte-for-byte from
+`templates/fleet/` into `.claude/agents/<name>.md` + `.claude/skills/<name>/` in
+the dept root — Claude Code auto-discovers project-scoped `.claude/agents/` and
+`.claude/skills/` from the session's cwd, so a fresh `git clone` of the dept repo
+(what the standard deploy already does — see `scripts/deploy-to-morty.sh`) is
+enough; no manual `scp` to the machine's `~/.claude/` is needed anymore. Also
+auto-added to `enabledSkills` so the skill is usable by default.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 from pathlib import Path
 from typing import Iterable
@@ -33,6 +48,21 @@ import jinja2
 
 # Reuse the skill's Jinja2 env but point the loader at templates/isolation/.
 _ISOLATION_DIR = Path(__file__).resolve().parent.parent / "templates" / "isolation"
+
+# Canonical, machine-agnostic source of the fleet-standard agents/skills this
+# scaffold now owns (board #911 part 2 — folds plan-executor into the standard
+# deploy instead of manual scp). Vendored verbatim from Rick_RnD/fleet/.
+_FLEET_DIR = Path(__file__).resolve().parent.parent / "templates" / "fleet"
+
+# name -> (agent .md relative to _FLEET_DIR/agents/, skill dir relative to
+# _FLEET_DIR/skills/). Every dept gets these by default, in addition to its
+# own enabled_skills. Add new fleet-standard artifacts here.
+FLEET_STANDARD_AGENTS = {
+    "plan-executor": {
+        "agent": "agents/plan-executor.md",
+        "skill_dir": "skills/plan-executor",
+    },
+}
 
 # The four mandated isolated personas (Notion arch — one per layer).
 MANDATED_PERSONAS = (
@@ -139,6 +169,43 @@ def scaffold_gitkeeps(dept_root: Path) -> list[Path]:
     return written
 
 
+def scaffold_fleet_agents(dept_root: Path) -> list[Path]:
+    """Copy the fleet-standard agents/skills (FLEET_STANDARD_AGENTS) verbatim
+    into `dept_root/.claude/agents/` + `dept_root/.claude/skills/<name>/`.
+
+    Static copy (shutil, not Jinja) — these artifacts are identical fleet-wide
+    by design (e.g. plan-executor's version-pinned `model: claude-opus-4-6`
+    frontmatter must NOT be templated away). Idempotent: overwrites on rerun.
+    """
+    dept_root = Path(dept_root)
+    written: list[Path] = []
+
+    agents_dir = dept_root / ".claude" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    skills_root = dept_root / ".claude" / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+
+    for name, spec in FLEET_STANDARD_AGENTS.items():
+        src_agent = _FLEET_DIR / spec["agent"]
+        dst_agent = agents_dir / f"{name}.md"
+        dst_agent.write_text(src_agent.read_text(encoding="utf-8"), encoding="utf-8")
+        written.append(dst_agent)
+
+        src_skill_dir = _FLEET_DIR / spec["skill_dir"]
+        dst_skill_dir = skills_root / name
+        dst_skill_dir.mkdir(parents=True, exist_ok=True)
+        for src_file in src_skill_dir.rglob("*"):
+            if src_file.is_dir():
+                continue
+            rel = src_file.relative_to(src_skill_dir)
+            dst_file = dst_skill_dir / rel
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+            written.append(dst_file)
+
+    return written
+
+
 def scaffold_isolation_surface(
     dept_root: Path,
     *,
@@ -155,6 +222,9 @@ def scaffold_isolation_surface(
     Args:
         slug, display_name, level: dept identity.
         enabled_skills: this dept's owned/reused skill names (-> enabledSkills).
+            FLEET_STANDARD_AGENTS (e.g. "plan-executor") are appended
+            automatically — every dept gets them enabled by default, no
+            per-dept opt-in required.
         all_dept_slugs: every dept slug on the platform; the OTHERS are added to
             the cross-dept deny list (this dept itself is excluded).
         model: model id (defaults to the platform model).
@@ -163,11 +233,14 @@ def scaffold_isolation_surface(
     """
     dept_root = Path(dept_root)
     other_dept_slugs = sorted(s for s in all_dept_slugs if s != slug)
+    # dict.fromkeys dedupes while preserving order, in case a caller already
+    # listed a fleet-standard name explicitly.
+    all_enabled_skills = list(dict.fromkeys([*enabled_skills, *FLEET_STANDARD_AGENTS]))
     ctx = {
         "slug": slug,
         "display_name": display_name,
         "level": level,
-        "enabled_skills": list(enabled_skills),
+        "enabled_skills": all_enabled_skills,
         "other_dept_slugs": other_dept_slugs,
         "model": model,
         # The dept ORCHESTRATOR runs `model` (Opus — the strongest model) so the
@@ -214,6 +287,10 @@ def scaffold_isolation_surface(
         f = sub / f"{persona}.md"
         f.write_text(_render(f"subagent_{persona}.md.template", ctx), encoding="utf-8")
         written.append(f)
+
+    # .claude/agents/plan-executor.md + .claude/skills/plan-executor/ (board
+    # #911 part 2 — fleet-standard agents, static copy, not Jinja-rendered).
+    written += scaffold_fleet_agents(dept_root)
 
     # tests/test_anti_regression_coverage.py (the Part-A triple)
     tests = dept_root / "tests"
