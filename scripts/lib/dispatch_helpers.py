@@ -3160,6 +3160,45 @@ def _resolve_push_branch(repo_dir: "Path | str") -> str:
     return branch
 
 
+def _env_with_bearer_auth_header(base_env: dict, token: str) -> dict:
+    """Return a copy of `base_env` with a `GIT_CONFIG_*` triad appended that
+    sets `http.https://github.com/.extraHeader` to a Basic-auth header
+    carrying `token`.
+
+    WHY (board #921): the previous code embedded the GitHub App token
+    directly in the push URL (`https://x-access-token:<token>@github.com/...`),
+    which puts the token in **argv** — subprocess argv is exactly what lands
+    in bash-command transcripts and `ps`/process listings. git's
+    `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
+    environment-variable triad (supported since git 2.31; this fleet runs
+    2.50+) lets us set the exact config an inline-URL push would have
+    implied — `http.<url>.extraHeader: Authorization: Basic <b64>` — via the
+    subprocess `env=` kwarg instead. `env=` is NOT argv: it is not recorded
+    in a bash-command transcript and does not show up in `ps`. git sends the
+    identical `Authorization` header either way, so authentication behaviour
+    is unchanged — only WHERE the token travels changes. Because the remote
+    URL is now token-free, git's own stdout/stderr on a failed push (e.g.
+    "fatal: unable to access '...'") can no longer echo the token either.
+
+    Appends rather than clobbers: if `base_env` already carries one or more
+    `GIT_CONFIG_*` entries (defensive — no caller in this module currently
+    sets any), the new entry is appended at the next free index rather than
+    overwriting index 0, so an existing override is never silently dropped.
+    """
+    import base64
+
+    env = dict(base_env)
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    env[f"GIT_CONFIG_KEY_{count}"] = "http.https://github.com/.extraHeader"
+    env[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Basic {basic}"
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return env
+
+
 def force_commit_and_push(
     repo_dir: Path,
     message: str,
@@ -3377,12 +3416,19 @@ def force_commit_and_push(
                 f"failed to mint GitHub App token for {repo_name}: "
                 f"{(cred.stderr or cred.stdout).strip()[:200]}"
             )
+        # #921: token travels via env (GIT_CONFIG_* extraHeader), NEVER in the
+        # URL/argv — see _env_with_bearer_auth_header docstring. The remote
+        # URL stays clean; credential.helper="" still neutralizes any
+        # ambient helper chain so our explicit header is what's actually
+        # used.
+        push_env = _env_with_bearer_auth_header(_env, token)
         push = subprocess.run(
             ["git", "-C", str(repo_dir), "-c", "credential.helper=",
              "push",
-             f"https://x-access-token:{token}@github.com/Bubble-invest/{repo_name}.git",
+             f"https://github.com/Bubble-invest/{repo_name}.git",
              _resolve_push_branch(repo_dir)],
             capture_output=True, text=True,
+            env=push_env,
         )
     else:
         # Last resort: bare push (relies on a credential helper in git config).
