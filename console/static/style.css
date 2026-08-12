@@ -778,9 +778,12 @@ code, .code {
   padding: 0;
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: 1fr;
   gap: 16px;
 }
+/* Wraps flow connectors (flow-arrow, pool-band, gate-band) so they don't
+   become independent grid cells — cockpit 4-moments alignment fix. */
+.moment-connector { list-style: none; display: block; }
 .moment {
   background: var(--paper);
   border: 1px solid var(--line-soft);
@@ -4243,7 +4246,7 @@ body.m4 .dept-kanban-attn-meta { font-size: 11px; color: var(--body-muted); }
 
 /* ── Moments — glass tiles ───────────────────────────────────────────── */
 body.m4 .moments-list {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 16px;
+  display: grid; grid-template-columns: 1fr; gap: 16px;
   list-style: none; margin: 0; padding: 0;
 }
 body.m4 .moment {
