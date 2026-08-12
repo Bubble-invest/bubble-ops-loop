@@ -396,6 +396,126 @@ def _load_latest_graph_data(root: Path) -> dict:
     return {}
 
 
+def _load_latest_review_data(root: Path) -> dict:
+    """Load the most recent portfolio-review-data.json from outputs/ — the
+    nightly artifact that carries `prices` (yahoo_symbol -> [[date, price], …])
+    and `model.lines` (holding identity -> yahoo symbol). Mirrors
+    _load_latest_graph_data's date-scan; degrades to {} if nothing is on disk."""
+    from datetime import timedelta
+    for day_offset in range(7):
+        check = (date.today() - timedelta(days=day_offset)).isoformat()
+        path = root / "outputs" / check / "portfolio-review-data.json"
+        if path.exists():
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except Exception:
+                continue
+    return {}
+
+
+def _norm_symbol(sym: Any) -> str:
+    """Normalize a ticker/symbol for join comparison: uppercase, stripped."""
+    if not isinstance(sym, str):
+        return ""
+    return sym.strip().upper()
+
+
+def _series_to_floats(series: Any) -> List[float]:
+    """Convert a nightly [[date, price], …] series to a chronological list of
+    price floats. Sorts by the date component defensively (the artifact is
+    already chronological, but a bad ordering would flip the up/down colour)."""
+    if not isinstance(series, list):
+        return []
+    pairs: List[tuple] = []
+    for row in series:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        d, price = row[0], row[1]
+        try:
+            pairs.append((str(d), float(price)))
+        except (TypeError, ValueError):
+            continue
+    pairs.sort(key=lambda p: p[0])
+    return [p[1] for p in pairs]
+
+
+def _attach_sparklines(nodes: Any, review: dict, slug: str) -> None:
+    """Enrich each node in-place with `sparkline_6m` (a plain price-float array)
+    when the nightly review data carries a price series for its ticker.
+
+    The join (all best-effort — a node with no match simply keeps the template's
+    dotted placeholder):
+        node.id (a ticker, e.g. "LIN"/"ROBO"/"SMH")
+          → a model.lines entry (matched on ticker_display / key / yahoo /
+            ticker / symbol / label, normalized)
+          → that line's `yahoo` symbol
+          → prices[yahoo]
+    Plus a direct fallback: if node.id is itself a key in `prices`, use it.
+    """
+    if not isinstance(nodes, list) or not isinstance(review, dict):
+        return
+    prices = review.get("prices")
+    if not isinstance(prices, dict) or not prices:
+        return
+
+    # Normalized price keys for a direct node.id -> prices hit.
+    prices_by_norm: Dict[str, str] = {}
+    for ykey in prices:
+        nk = _norm_symbol(ykey)
+        if nk:
+            prices_by_norm.setdefault(nk, ykey)
+
+    # ticker-identity (normalized) -> yahoo symbol, from model.lines.
+    lines = review.get("model", {})
+    lines = lines.get("lines", []) if isinstance(lines, dict) else []
+    ticker_to_yahoo: Dict[str, str] = {}
+    if isinstance(lines, list):
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            yahoo = ln.get("yahoo")
+            if not isinstance(yahoo, str) or not yahoo:
+                continue
+            for field in ("ticker_display", "key", "yahoo", "ticker",
+                          "symbol", "label"):
+                nk = _norm_symbol(ln.get(field))
+                if nk:
+                    ticker_to_yahoo.setdefault(nk, yahoo)
+
+    matched = 0
+    total = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        total += 1
+        nid = _norm_symbol(node.get("id"))
+        if not nid:
+            continue
+        # Resolve to a yahoo symbol, then to a price series.
+        yahoo = ticker_to_yahoo.get(nid)
+        series = None
+        if yahoo is not None:
+            series = prices.get(yahoo)
+            if series is None:
+                series = prices.get(prices_by_norm.get(_norm_symbol(yahoo), ""))
+        if series is None:
+            # Direct fallback: node.id already looks like a yahoo symbol.
+            series = prices.get(prices_by_norm.get(nid, ""))
+        floats = _series_to_floats(series)
+        if len(floats) >= 2:
+            node["sparkline_6m"] = floats
+            matched += 1
+
+    if total:
+        miss = total - matched
+        _log.info(
+            "thesis_book[%s]: attached live sparkline_6m to %d/%d nodes "
+            "(%d without a price-series match — they keep the placeholder).",
+            slug, matched, total, miss,
+        )
+
+
 def build_thesis_data(slug: str) -> dict:
     """Assemble the full Living Portfolio Report dataset on demand.
 
@@ -454,6 +574,18 @@ def build_thesis_data(slug: str) -> dict:
     # (`macro[].exposure_pct_nav`) inside a list that had been successfully
     # defaulted, which is exactly the gap a key-by-key contract closes.
     base = normalize_thesis_data(base, slug)
+
+    # Enrich nodes with per-ticker price sparklines from the nightly review
+    # artifact. The template (console/templates/thesis_book.html) draws each
+    # ticker's sparkline client-side from `node.sparkline_6m`, but the live
+    # producer (vault_to_graph.py) never emits it — so every sparkline rendered
+    # as an empty dotted placeholder. The price series already exist on disk in
+    # outputs/<date>/portfolio-review-data.json (`prices` keyed by yahoo symbol,
+    # joined to holdings via `model.lines[].yahoo`); we read them here, never
+    # fetch live. Missing file / no match degrades silently to the placeholder.
+    review = _load_latest_review_data(root)
+    if isinstance(review, dict) and review:
+        _attach_sparklines(base.get("nodes"), review, slug)
 
     _set_cache(slug, base)
     return base
