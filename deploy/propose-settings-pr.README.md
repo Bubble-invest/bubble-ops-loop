@@ -63,8 +63,9 @@ The helper itself needs NO per-dept customization — one binary serves all dept
 >   --content-from /tmp/new-prompt.md     # or: --patch /tmp/change.diff
 > ```
 >
-> The helper REFUSES anything that isn't your own repo, isn't structural, lacks a
-> justification, or targets a branch other than `main`. On success it prints
+> The helper REFUSES anything that isn't your own repo, isn't structural or
+> settings-PR-eligible (e.g. `tests/**`, #913), lacks a justification, or
+> targets a branch other than `main`. On success it prints
 > `PR_URL=<url>`; a human reviews and merges. Never declare a mission change
 > "official" until the PR is merged.
 

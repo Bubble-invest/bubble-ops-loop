@@ -122,7 +122,7 @@ def fixture_policy_yaml(tmp_path: Path) -> Path:
             "write": [
                 {
                     "repo": "bubble-ops-fixture",
-                    "allowed_paths": ["outputs/**", "queues/**", "inbox/**"],
+                    "allowed_paths": ["outputs/**", "queues/**", "inbox/**", "tests/**"],
                     "mode": "direct_runtime_commit",
                 }
             ],
@@ -145,7 +145,7 @@ def tony_policy_yaml(tmp_path: Path) -> Path:
             "write": [
                 {
                     "repo": "bubble-ops-tony",
-                    "allowed_paths": ["outputs/**", "queues/**", "inbox/**"],
+                    "allowed_paths": ["outputs/**", "queues/**", "inbox/**", "tests/**"],
                     "mode": "direct_runtime_commit",
                 }
             ],

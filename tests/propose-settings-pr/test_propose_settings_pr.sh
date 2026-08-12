@@ -17,6 +17,8 @@
 #      bubble-git-guard push + bubble-gh pr create invocations.
 #   T7 REFUSES when --content-from is given for a path that doesn't change nothing
 #      ... (empty change) — covered implicitly; main path is T6.
+#   T9 ACCEPTS a tests/** path (#913, 2026-08-12) — settings-PR-eligible
+#      WITHOUT being structural, proving gate 2 of the #913 fix.
 #
 # Run:  bash test_propose_settings_pr.sh
 #       bash test_propose_settings_pr.sh -v     # verbose (show helper stderr)
@@ -332,6 +334,28 @@ if [[ "$ERR" == *"no staged changes"* ]]; then
   ok "T8b correct error message emitted (no staged changes)"
 else
   bad "T8b expected 'no staged changes' in stderr; err=$ERR"
+fi
+
+# ---- T9: tests/** is settings-PR-eligible without being structural (#913) --
+# 2026-08-12, Joris-approved: tests/** is neither a mission file nor in this
+# fixture's allowed_paths, yet propose-settings-pr must now ACCEPT it (the
+# broker's SETTINGS_PR_EXTRA_GLOBS widening), proving gate 2 from #913 is
+# fixed. T1 above (outputs/foo.md) pins that ordinary non-structural,
+# non-tests paths are STILL refused — the widening is scoped to tests/ only.
+make_repo "$REPO" "https://github.com/Bubble-invest/bubble-ops-fixture.git"
+mkdir -p "$REPO/tests"
+echo "orig test" > "$REPO/tests/test_example.py"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "seed tests/ file"
+git -C "$REPO" update-ref "refs/remotes/origin/main" HEAD
+NEWTEST="$WORK/newtest.py"
+echo "def test_x(): assert True" > "$NEWTEST"
+run_helper --repo-dir "$REPO" --paths tests/test_example.py --topic add-test \
+           --justification "Land a test file via a reviewed settings PR (#913)." \
+           --content-from "$NEWTEST" --dry-run
+if [[ $RC -eq 0 && "$OUT" == *"PR_URL=DRY_RUN"* ]]; then
+  ok "T9 accepts tests/** path via settings PR (#913 gate-2 fix)"
+else
+  bad "T9 should accept tests/** path (rc=$RC, out=$OUT, err=$ERR)"
 fi
 
 echo
