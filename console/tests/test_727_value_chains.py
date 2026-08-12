@@ -125,14 +125,21 @@ def test_untrusted_content_is_sanitized(disk_root):
     assert "<script>" not in str(data.sectors[0].html)
 
 
-def test_tag_legend_present_and_matches_the_five_known_tags(disk_root):
+def test_tag_legend_present_and_matches_the_nine_known_tags(disk_root):
+    """Legend must cover the FULL union of tags used across Ben's live
+    per-sector deep-dive files, not just the 5 named in _index.md's summary
+    (#727 review finding — financials/industrials/information-technology use
+    `excluded-own` as an 8th tag; energy.md uses `wrong-sector` instead)."""
     repo = _build_repo(disk_root, "ben")
     vc = repo / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text("# Overview\n", encoding="utf-8")
     data = value_chains.load_value_chains("ben")
     codes = {t["code"] for t in data.tag_legend}
-    assert codes == {"own", "watch", "early", "ran", "private"}
+    assert codes == {
+        "own", "watch", "early", "ran", "private",
+        "broken", "arb", "excluded-own", "wrong-sector",
+    }
 
 
 # ─── Route-level tests (/dept/<slug>) ──────────────────────────────────

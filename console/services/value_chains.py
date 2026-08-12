@@ -42,18 +42,27 @@ _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 # block render as a stray markdown rule + prose in the output.
 _FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
 
-#: Static tag legend, per #727's own card description (own/watch/early/ran/
-#: private). Ben's sector maps tag names inline with these codes but the
-#: vault does not (yet) ship a machine-readable legend of its own, so this
-#: mirrors the card's definition rather than scraping one from vault content.
-#: If Ben's vault ever adds a legend file, prefer reading it over this
-#: constant.
+#: Static tag legend — the union of every tag actually used inline across
+#: Ben's live vault/value-chains/*.md sector maps (verified against
+#: /home/claude/agents/bubble-ops-ben/vault/value-chains/ during #727 review;
+#: the card's own summary only named the first 5). The vault does not (yet)
+#: ship a machine-readable legend of its own, so this mirrors the vault's own
+#: emoji + tag vocabulary rather than scraping one from content. If Ben's
+#: vault ever adds a legend file, prefer reading it over this constant.
+#: `excluded-own` and `wrong-sector` are both included as variants seen
+#: across different sector files (financials/industrials/information-
+#: technology use `excluded-own` as an 8th tag; energy.md uses
+#: `wrong-sector` instead).
 TAG_LEGEND: List[dict] = [
-    {"code": "own", "label": "Own", "desc": "Held in the book today."},
-    {"code": "watch", "label": "Watch", "desc": "On the active watchlist."},
-    {"code": "early", "label": "Early", "desc": "Early-stage, spotted but not yet actionable."},
-    {"code": "ran", "label": "Ran", "desc": "Screened and passed on."},
-    {"code": "private", "label": "Private", "desc": "Not yet public, no listed ticker."},
+    {"code": "early", "label": "🟢 Early", "desc": "Early-stage, watchlist-adjacent."},
+    {"code": "watch", "label": "🔵 Watch", "desc": "Watching."},
+    {"code": "own", "label": "🟡 Own", "desc": "We hold."},
+    {"code": "ran", "label": "🔴 Ran", "desc": "Ran — exited, a past position."},
+    {"code": "private", "label": "⚪ Private", "desc": "Private, not investable."},
+    {"code": "broken", "label": "⚫ Broken", "desc": "Cheap for a structural reason, not an opportunity."},
+    {"code": "arb", "label": "🔶 Arb", "desc": "Deal pending, not an entry."},
+    {"code": "excluded-own", "label": "🚫 Excluded-own", "desc": "Held via another sleeve — excluded here to avoid double-counting."},
+    {"code": "wrong-sector", "label": "⛔ Wrong-sector", "desc": "Mapped here in error — belongs to another GICS sector."},
 ]
 
 

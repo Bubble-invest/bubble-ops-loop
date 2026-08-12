@@ -2544,6 +2544,10 @@ a.piece-tile:hover {
 .value-chain-tag-early { color: var(--violet); border-color: var(--violet-30); }
 .value-chain-tag-ran { color: var(--body-muted); }
 .value-chain-tag-private { color: #c75f5f; border-color: #c75f5f; }
+.value-chain-tag-broken { color: var(--ink); border-color: var(--ink-soft); }
+.value-chain-tag-arb { color: #92620a; border-color: #d99a2b; }
+.value-chain-tag-excluded-own { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
+.value-chain-tag-wrong-sector { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
 .value-chain-legend-desc {
   font-size: 12px;
   color: var(--body-muted);
