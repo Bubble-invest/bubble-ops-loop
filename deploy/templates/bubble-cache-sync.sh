@@ -8,8 +8,13 @@
 # SECURITY:
 #   - Token captured into local var; NEVER echo'd, NEVER set -x.
 #   - Token section runs without set -x to avoid accidental leak.
-#   - Uses git clone https://x-access-token:$TOKEN@... pattern.
-#   - Token var is unset immediately after use.
+#   - board #923 (same class as #921/PR#310): the token travels ONLY via a
+#     GIT_CONFIG_* extraHeader env-var triad passed to the specific `git
+#     clone`/`git fetch` invocation — NEVER embedded in the remote URL /
+#     argv (subprocess argv lands in `ps`/transcripts; the old
+#     `x-access-token:$TOKEN@github.com/...` URL form does not). Remote
+#     `origin` is always the clean, token-free URL.
+#   - Token var(s) unset immediately after use.
 #
 # Idempotent: re-running is a no-op (fetch --depth 1 + reset --hard).
 #
@@ -37,6 +42,25 @@ log() {
   local ts
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   echo "${ts} $*" | tee -a "${LOG_FILE}"
+}
+
+# board #923 (same class as #921/PR#310): run `git "$@"` with the token
+# ($1 — already the base64-encoded "x-access-token:<token>" Basic-auth
+# value) injected via a GIT_CONFIG_* extraHeader env triad passed only to
+# THIS invocation — never argv, never written to any .git/config on disk.
+# Also neutralizes credential.helper so no ambient helper chain can
+# intercept/duplicate the auth attempt. Mirrors
+# scripts/lib/dispatch_helpers.py's _env_with_bearer_auth_header (PR#310).
+# NOTE: this script never runs under `set -x` (see SECURITY header above),
+# so these env values are never echoed by tracing either.
+_git_authed() {
+  local b64="$1"; shift
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=credential.helper \
+  GIT_CONFIG_VALUE_0= \
+  GIT_CONFIG_KEY_1='http.https://github.com/.extraHeader' \
+  GIT_CONFIG_VALUE_1="Authorization: Basic ${b64}" \
+  git "$@"
 }
 
 log "bubble-cache-sync START"
@@ -75,33 +99,33 @@ for REPO in "${REPOS[@]}"; do
     fi
     rm -f "${LOG_DIR}/broker-${SLUG}.err"
 
-    # Use token for git operation — no echoing
+    # Use token for git operation — no echoing. #923: token travels via env
+    # (GIT_CONFIG_* extraHeader, see _git_authed above), never in the URL.
+    _AUTH_B64=$(printf 'x-access-token:%s' "${_TOKEN}" | base64 | tr -d '\n')
+
     if [[ -d "${REPO_DIR}/.git" ]]; then
       log "fetch: ${REPO_DIR} (already cloned)"
-      # Temporarily set remote URL with token, fetch, reset URL
+      # origin always stays the clean, token-free URL — never rewritten
+      # with embedded credentials (belt-and-braces in case a prior run left
+      # it pointed elsewhere).
       git -C "${REPO_DIR}" remote set-url origin \
-        "https://x-access-token:${_TOKEN}@github.com/${GITHUB_ORG}/${REPO}.git" \
+        "https://github.com/${GITHUB_ORG}/${REPO}.git" \
         2>/dev/null
-      if git -C "${REPO_DIR}" fetch --depth 1 origin main \
+      if _git_authed "${_AUTH_B64}" -C "${REPO_DIR}" fetch --depth 1 origin main \
           2>"${LOG_DIR}/git-${SLUG}.err"; then
         git -C "${REPO_DIR}" reset --hard origin/main 2>>"${LOG_DIR}/git-${SLUG}.err"
-        # Reset remote URL to unauthenticated form (token expired anyway)
-        git -C "${REPO_DIR}" remote set-url origin \
-          "https://github.com/${GITHUB_ORG}/${REPO}.git" 2>/dev/null
         log "OK: ${REPO} updated (fetch+reset)"
         rm -f "${LOG_DIR}/git-${SLUG}.err"
       else
         log "ERROR: git fetch failed for ${REPO}"
         log "ERROR: $(cat "${LOG_DIR}/git-${SLUG}.err" 2>/dev/null | head -3)"
-        git -C "${REPO_DIR}" remote set-url origin \
-          "https://github.com/${GITHUB_ORG}/${REPO}.git" 2>/dev/null
         EXIT_CODE=1
       fi
     else
       log "clone: ${REPO} → ${REPO_DIR}"
       mkdir -p "${REPO_DIR}"
-      if git clone --depth 1 \
-          "https://x-access-token:${_TOKEN}@github.com/${GITHUB_ORG}/${REPO}.git" \
+      if _git_authed "${_AUTH_B64}" clone --depth 1 \
+          "https://github.com/${GITHUB_ORG}/${REPO}.git" \
           "${REPO_DIR}" \
           2>"${LOG_DIR}/git-${SLUG}.err"; then
         log "OK: ${REPO} cloned"
@@ -114,6 +138,7 @@ for REPO in "${REPOS[@]}"; do
       fi
     fi
 
+    unset _AUTH_B64
     unset _TOKEN
   }
 done

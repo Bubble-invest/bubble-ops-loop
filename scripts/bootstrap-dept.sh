@@ -509,46 +509,70 @@ git -C "$CLONE_DIR" commit \
 
 # -----------------------------------------------------------------------------
 # Step 6: push the branch (as main AND onboarding/<slug>) using an
-# installation-token URL.
+# installation-token auth header.
 #
 # Why this dance: bare `git push` over HTTPS uses git's own credential
 # helper chain, NOT the GH_TOKEN env var that gh CLI consumes. When
 # bubble-ops-bot is the auth path ({{OPERATOR}}'s personal account can't
 # createRepository via App token, but the org install can), GH_TOKEN holds
-# a `ghs_*` installation token. We have to write that token into the
-# remote URL explicitly so git can use it. Then we strip it after the
-# push so the saved remote stays clean.
+# a `ghs_*` installation token. We have to hand that token to git explicitly
+# so it's used for the push.
 # Caught 2026-05-24 (Maya éclosion msg 3094): without this, push fails
 # silently and the GitHub repo stays empty, and Maya's wake-up scaffold
 # can't be cloned by anyone else.
+#
+# board #923 (same class as #921/PR#310): the token used to be embedded in
+# the remote URL (`x-access-token:<token>@github.com/...`), which lands the
+# token in a subprocess argv (`git remote set-url origin <url>` — visible in
+# `ps`/bash-command transcripts) AND, transiently, on disk in
+# `.git/config` between the set-url and the revert. Instead, the token now
+# travels ONLY via a `GIT_CONFIG_*` env-var triad passed to the `git push`
+# invocation (git >= 2.31; this fleet runs 2.50+) that sets
+# `http.https://github.com/.extraHeader: Authorization: Basic <b64 of
+# x-access-token:$GH_TOKEN>` — the exact header an embedded-URL push would
+# have sent, so auth behaviour is unchanged; only WHERE the token travels
+# changes. `credential.helper=` is neutralized the same way so no ambient
+# helper chain can intercept/duplicate the auth attempt (mirrors PR#310's
+# generic-fallback branch). The remote URL is never rewritten, so the
+# set-url/revert dance is gone entirely.
 # -----------------------------------------------------------------------------
 echo "[bootstrap] pushing $BRANCH + main to origin..."
 # If GH_TOKEN looks like an App installation token (ghs_*) OR a fine-grained
-# PAT (github_pat_*), inject it into the URL for the push. Otherwise rely
-# on whatever credential helper is configured (back-compat for ssh remotes).
-_push_url="$REMOTE_URL"
+# PAT (github_pat_*), auth the push via env (see above). Otherwise rely on
+# whatever credential helper is configured (back-compat for ssh remotes).
+_push_auth_b64=""
 case "${GH_TOKEN:-}" in
   ghs_*|github_pat_*|ghp_*)
-    # Strip any embedded http(s):// then re-add with the token prefix
-    _bare_url="$(echo "$REMOTE_URL" | sed -E 's#^https?://[^/]*##')"
-    _push_url="https://x-access-token:${GH_TOKEN}@github.com${_bare_url}"
+    _push_auth_b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
     ;;
 esac
-# Temporarily set the token URL, push BOTH branches, then revert.
-git -C "$CLONE_DIR" remote set-url origin "$_push_url"
+# Runs `git -C "$CLONE_DIR" "$@"`, injecting the GIT_CONFIG_* extraHeader
+# triad as env (never argv) when $1 (a base64 Basic-auth value) is non-empty.
+# NOTE: this script does not run under `set -x`, so these env-var values are
+# never echoed by tracing either.
+_push_with_auth() {
+  local b64="$1"; shift
+  if [[ -n "$b64" ]]; then
+    GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0=credential.helper \
+    GIT_CONFIG_VALUE_0= \
+    GIT_CONFIG_KEY_1='http.https://github.com/.extraHeader' \
+    GIT_CONFIG_VALUE_1="Authorization: Basic ${b64}" \
+    git -C "$CLONE_DIR" "$@"
+  else
+    git -C "$CLONE_DIR" "$@"
+  fi
+}
 # Push the work branch first
-git -C "$CLONE_DIR" push -u origin "$BRANCH" 2>&1 | sed 's/^/[git] /' || {
-  git -C "$CLONE_DIR" remote set-url origin "$REMOTE_URL"
+_push_with_auth "$_push_auth_b64" push -u origin "$BRANCH" 2>&1 | sed 's/^/[git] /' || {
   echo "[bootstrap] ERROR: push of $BRANCH failed; aborting" >&2
   exit 1
 }
 # Also push as main so the repo has a default branch other systems can
 # see (dept_registry, gh CLI, web UI etc.).
-git -C "$CLONE_DIR" push origin "HEAD:main" 2>&1 | sed 's/^/[git] /' || {
+_push_with_auth "$_push_auth_b64" push origin "HEAD:main" 2>&1 | sed 's/^/[git] /' || {
   echo "[bootstrap] WARN: could not push main (branch may already exist)" >&2
 }
-# Wipe the token from the saved remote URL.
-git -C "$CLONE_DIR" remote set-url origin "$REMOTE_URL"
 
 # -----------------------------------------------------------------------------
 # Output: hand off to operator.

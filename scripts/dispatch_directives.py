@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +60,18 @@ try:
 except ImportError:  # pragma: no cover
     print("dispatch_directives: PyYAML required", file=sys.stderr)
     sys.exit(1)
+
+# board #923 (same class as #921/PR#310): the GitHub App push token must never
+# land in subprocess argv (bash-command transcripts / `ps` expose argv, not
+# env). Reuse the shared helper rather than re-deriving the GIT_CONFIG_*
+# extraHeader logic here. dispatch_directives.py is always invoked directly
+# (`python3 <path>/dispatch_directives.py`, see loop-backup.sh), so
+# sys.path[0] is this file's own `scripts/` dir — add `scripts/lib` so the
+# vendored module is importable the same way its own test suite imports it.
+_LIB_DIR = Path(__file__).resolve().parent / "lib"
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
+from dispatch_helpers import _env_with_bearer_auth_header  # noqa: E402
 
 _OUTBOUND_REL = "queues/management/outbound"
 _INBOX_REL = "queues/management"
@@ -76,9 +89,14 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _run(cmd: list[str], cwd: "Path | None" = None, stdin: "str | None" = None):
+def _run(
+    cmd: list[str],
+    cwd: "Path | None" = None,
+    stdin: "str | None" = None,
+    env: "dict | None" = None,
+):
     return subprocess.run(
-        cmd, cwd=str(cwd) if cwd else None, input=stdin,
+        cmd, cwd=str(cwd) if cwd else None, input=stdin, env=env,
         capture_output=True, text=True,
     )
 
@@ -125,9 +143,23 @@ def _push_repo(repo_dir: Path, repo_name: str, message: str, dry_run: bool) -> t
     token = _mint_token(repo_name)
     if not token:
         return False, f"could not mint token for {repo_name}"
-    url = f"https://x-access-token:{token}@github.com/{_GH_ORG}/{repo_name}.git"
-    push = _run(["git", "-C", str(repo_dir), "push", url, "HEAD:main"])
-    # Never let the token live in git config; we passed it inline only.
+    # #923 (same class as #921): token travels via env (GIT_CONFIG_*
+    # extraHeader), NEVER in the URL/argv — see
+    # dispatch_helpers._env_with_bearer_auth_header's docstring. The remote
+    # URL stays clean, so a failed-push stderr/stdout line can't echo the
+    # token either. Auth behaviour (the Authorization header git sends) is
+    # identical to the old inline-URL form — only WHERE the token travels
+    # changes. `-c credential.helper=` (empty — not a secret, fine in argv)
+    # neutralizes any ambient credential helper chain so our explicit
+    # extraHeader is what's actually used — matches the live-validated
+    # #310 generic-fallback push in dispatch_helpers.py byte-for-byte in
+    # shape (same env mechanism + same argv-level neutralization flag).
+    url = f"https://github.com/{_GH_ORG}/{repo_name}.git"
+    push_env = _env_with_bearer_auth_header(os.environ.copy(), token)
+    push = _run(
+        ["git", "-C", str(repo_dir), "-c", "credential.helper=", "push", url, "HEAD:main"],
+        env=push_env,
+    )
     if push.returncode != 0:
         return False, f"push rejected: {(push.stderr or push.stdout).strip()[:200]}"
     return True, "pushed"
