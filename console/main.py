@@ -58,6 +58,16 @@ def create_app() -> FastAPI:
     templates.env.globals["gate_channel"] = gate_channel
     templates.env.globals["gate_human_title"] = gate_human_title
     templates.env.globals["humanize_channel"] = humanize_channel
+    # Auto cache-buster for /static/style.css: tie the ?v= to the file's mtime
+    # so every CSS change busts the browser cache automatically. Without this,
+    # a hand-bumped ?v= string goes stale and deployed CSS fixes look "reverted"
+    # until users manually hard-refresh (bit us on the 4-moments fix, 2026-08-12).
+    def _css_version() -> str:
+        try:
+            return str(int((settings.STATIC_DIR / "style.css").stat().st_mtime))
+        except OSError:
+            return "0"
+    templates.env.globals["css_version"] = _css_version
     # Expose dept_registry + sidebar_agents for navigation ({{OPERATOR}} 2026-06-09)
     from console.services import dept_registry  # noqa: WPS433
     templates.env.globals["dept_registry"] = dept_registry
