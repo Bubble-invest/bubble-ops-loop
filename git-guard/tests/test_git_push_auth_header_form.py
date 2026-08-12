@@ -11,6 +11,14 @@ Empirically discovered 2026-05-20 during Step 7 deployment on Morty:
 This test locks in the corrected auth-header form so a future refactor
 cannot silently regress back to Bearer (which would fail closed in
 production, but with a misleading "401 / could not read Username" error).
+
+#923 (final argv-leak site of this class, after #921/#311): the header value
+now travels via the `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/
+`GIT_CONFIG_VALUE_<n>` env triad instead of a `-c http.extraheader=...` argv
+override — same header, same git-side behavior, different (non-argv,
+non-cmdline-visible) transport. This test now reads the header out of `env`
+rather than `cmd`; see test_git_push_token_never_in_argv.py for the
+argv-cleanliness assertion.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ def test_git_push_uses_http_basic_with_x_access_token(
     mock_broker_binary,
     mock_git_push,
 ):
-    """The `-c http.extraheader=...` arg must use HTTP Basic, NOT Bearer."""
+    """The `GIT_CONFIG_*`-carried extraHeader must use HTTP Basic, NOT Bearer."""
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
@@ -40,15 +48,20 @@ def test_git_push_uses_http_basic_with_x_access_token(
     )
     assert rc == 0
     assert len(mock_git_push.calls) == 1, "expected exactly one git push"
-    cmd, _env = mock_git_push.calls[0]
+    _cmd, env = mock_git_push.calls[0]
 
-    # Locate the `-c http.extraheader=...` arg.
-    header_args = [
-        a for a in cmd
-        if isinstance(a, str) and a.startswith("http.extraheader=")
-    ]
-    assert len(header_args) == 1, f"missing http.extraheader -c arg in {cmd!r}"
-    header_value = header_args[0].split("=", 1)[1]
+    # Locate the GIT_CONFIG_KEY_<n> entry whose value is "http.extraheader".
+    count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    assert count >= 1, f"expected at least one GIT_CONFIG_* entry, env={env!r}"
+    header_idx = None
+    for i in range(count):
+        if env.get(f"GIT_CONFIG_KEY_{i}") == "http.extraheader":
+            header_idx = i
+            break
+    assert header_idx is not None, (
+        f"missing GIT_CONFIG_KEY_<n>=http.extraheader in env; env={env!r}"
+    )
+    header_value = env[f"GIT_CONFIG_VALUE_{header_idx}"]
 
     # MUST be Basic, MUST NOT be Bearer.
     assert header_value.lower().startswith("authorization: basic "), (

@@ -15,7 +15,8 @@ This module IS the "wrapper local / git guard sur Morty". Flow:
   5. Else → subprocess-invoke the broker to mint a token.
      - If broker exits non-zero → audit `status:mint_failed`, return 1, NO push.
   6. Invoke `git push` with the token injected via `http.extraheader` ONLY for
-     this single command. Token never echoed, never logged, never persisted.
+     this single command, set via env (GIT_CONFIG_* triad — #923), never
+     argv. Token never echoed, never logged, never persisted.
   7. Audit `status:pushed` or `status:push_failed`. Return 0 or 1 accordingly.
 
 Design invariants (enforced by tests):
@@ -278,13 +279,28 @@ class Guard:
     ) -> Tuple[int, str]:
         """Invoke `git push` with the token injected ONLY for this command.
 
-        We use the `http.extraheader` mechanism per GitHub App docs. The token
-        is passed via `-c` (config override) which is scoped to this single
-        process — git does not write it to .git/config or any pack.
+        We use the `http.extraheader` mechanism per GitHub App docs. The
+        header VALUE travels via the process ENVIRONMENT — the
+        `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`
+        triad (supported since git 2.31; this fleet runs 2.50+) — NOT via
+        `-c` on argv. `env=` is not recorded in `/proc/<pid>/cmdline` (unlike
+        argv), so the token never appears in process listings or
+        bash-command transcripts. git sends the IDENTICAL `Authorization`
+        header either way — only WHERE the token travels changes; the HTTP
+        request git makes to github.com is unchanged by this fix.
 
-        IMPORTANT: do NOT inline the token into the URL (it would appear in
-        process listings via /proc/<pid>/cmdline). The `-c` form puts it in
-        the env-derived config, which is process-private.
+        Board #923 (final site of this class, same as #921/#311 — see
+        scripts/lib/dispatch_helpers.py's `_env_with_bearer_auth_header`,
+        live-validated on the VPS with a real broker token): the previous
+        form here was `-c http.extraheader=Authorization: Basic <b64>` on
+        argv, which IS visible via /proc/<pid>/cmdline on Linux — the exact
+        leak this function's own comment used to flag. Fixed by moving the
+        header value into env instead of argv.
+
+        `-c credential.helper=` (empty string; not a secret, fine on argv)
+        is added to argv to neutralize any ambient credential-helper chain,
+        so the explicit `extraHeader` set below (via env) is unambiguously
+        what git uses to authenticate — matching the fleet-standard pattern.
 
         Auth header form: GitHub's git smart-HTTP endpoint (github.com)
         requires HTTP Basic auth using `x-access-token` as the username and
@@ -293,18 +309,16 @@ class Guard:
         401 by the git push endpoint (empirically verified 2026-05-20 on
         Morty, Step 7 deployment smoke).
         """
-        # NOTE: this string contains the token. We pass it as an arg to git -c,
-        # which on Linux IS visible via /proc/<pid>/cmdline. The broker's
-        # short TTL (60 min max) is the compensating control. A future hardening
-        # is to pipe the credential via `credential.helper` over a tempfs FD.
         import base64
         basic_b64 = base64.b64encode(
             f"x-access-token:{token}".encode("ascii")
         ).decode("ascii")
-        auth_header = f"http.extraheader=Authorization: Basic {basic_b64}"
+        # credential.helper="" is NOT a secret — safe to keep on argv. It
+        # disables any ambient helper chain so the explicit extraHeader
+        # (set via env below, never argv) is what git actually uses.
         cmd = [
             "git",
-            "-c", auth_header,
+            "-c", "credential.helper=",
             "push",
             remote,
             ref,
@@ -317,6 +331,18 @@ class Guard:
         # on Linux (it's a char device), which would itself raise an error.
         env["GIT_ASKPASS"] = env.get("GIT_ASKPASS", "/bin/true")
         env["GIT_TERMINAL_PROMPT"] = "0"
+        # #923: the auth header travels via the GIT_CONFIG_* env triad,
+        # NEVER via argv (see docstring). Append at the next free index
+        # rather than clobbering index 0, in case an ambient GIT_CONFIG_*
+        # entry is already present in the environment (defensive — no
+        # caller of this method currently sets one).
+        try:
+            gc_count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        except ValueError:
+            gc_count = 0
+        env[f"GIT_CONFIG_KEY_{gc_count}"] = "http.extraheader"
+        env[f"GIT_CONFIG_VALUE_{gc_count}"] = f"Authorization: Basic {basic_b64}"
+        env["GIT_CONFIG_COUNT"] = str(gc_count + 1)
 
         proc = subprocess.run(
             cmd,
@@ -326,8 +352,10 @@ class Guard:
             env=env,
             check=False,
         )
-        # IMPORTANT: do NOT include the cmd in any logged output — it contains
-        # the bearer token AND its base64 form. Strip BOTH from any stderr.
+        # IMPORTANT: do NOT log `env` (it carries the token via GIT_CONFIG_*
+        # — see above). `cmd` itself is token-free after #923, but we still
+        # scrub stderr defensively in case git ever echoes the header/token
+        # (e.g. verbose curl tracing) into its own error output.
         stderr_redacted = proc.stderr
         if token:
             stderr_redacted = stderr_redacted.replace(token, "<TOKEN-REDACTED>")
