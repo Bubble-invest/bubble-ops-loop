@@ -100,6 +100,26 @@ properties:
           `claude-opus-4-8[1m]`. OPTIONAL and back-compat: when absent,
           isolation_scaffold falls back to its DEFAULT_MODEL (the platform Opus
           pin), so existing depts are unchanged until they explicitly set it.
+      subagent_model:
+        type: string
+        minLength: 1
+        description: |
+          Optional per-dept model pin for the dept's SCAFFOLDED SUBAGENTS
+          (executor / task-orchestrator / mandate-guardian / data-curator) —
+          the value written into each subagents/<persona>.md `model:`
+          frontmatter by isolation_scaffold (via
+          isolation_scaffold.subagent_model_from_dept_yaml). Accepts a CLI
+          alias or the `<alias>[1m]` 1M-context form, e.g. `sonnet`,
+          `opus[1m]`, or a full id like `claude-opus-4-8[1m]`. Added (board
+          #908, 2026-08-12) so a dept can pin its subagents to a specific
+          model version instead of drifting with whatever the `sonnet` alias
+          resolves to. Doctrine: a version PIN belongs in the subagent
+          agent-definition frontmatter (this field), not in the spawn-time
+          `model` param passed to the Agent/Task tool (alias-only in this
+          harness). OPTIONAL and back-compat: when absent,
+          isolation_scaffold falls back to DEFAULT_SUBAGENT_MODEL
+          ("sonnet" — today's behaviour), so existing depts are unchanged
+          until they explicitly set it.
       runtime:
         type: string
         minLength: 1

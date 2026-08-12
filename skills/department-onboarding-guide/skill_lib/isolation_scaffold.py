@@ -47,6 +47,7 @@ QUEUE_DIRS = ("research", "gates", "management", "improvements")
 INBOX_DIRS = ("decisions", "feedback")
 
 DEFAULT_MODEL = "claude-opus-4-8[1m]"
+DEFAULT_SUBAGENT_MODEL = "sonnet"
 
 
 def model_from_dept_yaml(dept_yaml: dict | None) -> str:
@@ -74,6 +75,35 @@ def model_from_dept_yaml(dept_yaml: dict | None) -> str:
     if isinstance(model, str) and model.strip():
         return model.strip()
     return DEFAULT_MODEL
+
+
+def subagent_model_from_dept_yaml(dept_yaml: dict | None) -> str:
+    """Resolve the per-dept SUBAGENT model pin from a loaded dept.yaml mapping.
+
+    Mirrors `model_from_dept_yaml` above but for the bounded-scope subagents
+    (executor / task-orchestrator / mandate-guardian / data-curator) rather
+    than the dept orchestrator. Reads `department.subagent_model` (optional,
+    schema-validated string) and falls back to DEFAULT_SUBAGENT_MODEL
+    ("sonnet" — today's behaviour) when absent or empty. This is the single
+    point that turns the per-dept `subagent_model` field into the value
+    callers pass through to `scaffold_isolation_surface(subagent_model=...)`
+    — so existing depts that DON'T set the field keep the current Sonnet
+    subagent default unchanged, while a dept that pins its subagents to a
+    specific model (e.g. `claude-opus-4-8` to lock a version, or `opus` to
+    upgrade subagent quality) is honoured verbatim.
+
+    Doctrine (board #908): a version PIN belongs in the subagent's own
+    agent-definition frontmatter (`model:` in subagents/<persona>.md, which
+    accepts a full dated model id per Claude Code docs), not in the
+    spawn-time `model` param passed to the Agent/Task tool — that param is
+    alias-only in this harness. `department.subagent_model` is how a dept
+    author sets that pinned value at scaffold time.
+    """
+    dept = (dept_yaml or {}).get("department") or {}
+    subagent_model = dept.get("subagent_model")
+    if isinstance(subagent_model, str) and subagent_model.strip():
+        return subagent_model.strip()
+    return DEFAULT_SUBAGENT_MODEL
 
 
 def _env() -> jinja2.Environment:
@@ -118,7 +148,7 @@ def scaffold_isolation_surface(
     enabled_skills: Iterable[str],
     all_dept_slugs: Iterable[str],
     model: str = DEFAULT_MODEL,
-    subagent_model: str = "sonnet",
+    subagent_model: str = DEFAULT_SUBAGENT_MODEL,
 ) -> list[Path]:
     """Write the full isolation + anti-regression surface into `dept_root`.
 
