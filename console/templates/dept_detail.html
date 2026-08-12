@@ -747,6 +747,7 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
            none" instruction). #}
         {% if layer_bands and layer_bands.get(l) %}
           {% set _band = layer_bands[l] %}
+          <li class="moment-connector">
           <div class="flow-arrow" aria-hidden="true">▼ déposent dans ▼</div>
           <div class="pool-band{% if not _band.is_pool %} pool-band--generic{% endif %}">
             <div class="pool-band-head">
@@ -756,13 +757,16 @@ document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMa
               <a class="pool-band-schema" href="/dept/{{ dept.slug }}/mission-file?f={{ _band.schema_rel_path | urlencode }}">📂 schéma du pool</a>
             {% endif %}
           </div>
+          </li>
         {% endif %}
         {% if gate_band and gate_band.after_layer == l %}
+          <li class="moment-connector">
           <div class="flow-arrow" aria-hidden="true">▼</div>
           <div class="gate-band">
             ◇ <b>Gate humaine</b> — validation dans le cockpit (approve · reject · modify · defer) avant publication.
             <a href="/gate/{{ dept.slug }}/kind/{{ gate_band.gate_url_kind }}">voir les gates en attente →</a>
           </div>
+          </li>
         {% endif %}
       {% endfor %}
     </ul>
