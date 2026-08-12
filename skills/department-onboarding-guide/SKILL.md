@@ -341,6 +341,19 @@ It writes (parameterised per-dept via Jinja2):
 - `subagents/{data-curator,task-orchestrator,executor,mandate-guardian}.md` —
   the four mandated isolated personas (one per OODA layer), each with `tools:`,
   `permission-mode:` and a `Forbidden` scope section.
+- `.claude/agents/plan-executor.md` + `.claude/skills/plan-executor/SKILL.md` —
+  fleet-standard artifacts (board #911 part 2), copied byte-for-byte from
+  `templates/fleet/` (canonical source: Rick's `Rick_RnD/fleet/`). Unlike the
+  four personas above these are NOT dept-parameterised — they're identical
+  everywhere by design, including the version-pinned `model: claude-opus-4-6`
+  frontmatter, which must survive vendoring unchanged (board #908 doctrine: the
+  pin lives in the definition, never in the spawn-time `model` param). Claude
+  Code auto-discovers project-scoped `.claude/agents/` + `.claude/skills/` from
+  the session's cwd, so a fresh `git clone` of the dept repo (already how
+  `scripts/deploy-to-morty.sh` provisions a dept) is enough — no more manual
+  `scp` to the machine's `~/.claude/` per dept/machine. `plan-executor` is also
+  appended to `enabledSkills` automatically, so it's enabled by default.
+  See `skill_lib.isolation_scaffold.FLEET_STANDARD_AGENTS` to add more.
 - `tests/test_anti_regression_coverage.py` — the **Part-A test triple** (below),
   so every new dept is BORN with execute-the-code coverage, not just
   file-existence checks.
@@ -769,6 +782,9 @@ templates/
     subagent_executor.md.template
     subagent_mandate-guardian.md.template
     test_anti_regression_coverage.py.template  # the Part-A test triple (generated)
+  fleet/                                # Step 4b — fleet-standard agents (board #911 pt2)
+    agents/plan-executor.md             #   static copy -> .claude/agents/plan-executor.md
+    skills/plan-executor/SKILL.md       #   static copy -> .claude/skills/plan-executor/
 examples/
   maya/dept.yaml                        # live sales-prospection dept (full)
   ben/dept.yaml                         # live family-office dept (with SQLite ledger)
