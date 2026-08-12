@@ -412,8 +412,18 @@ def test_classify_auth_failure_case_insensitive_and_backtick_variant():
     assert outcome == HB_BACKUP_AUTH_FAILED
 
 
-def test_classify_timeout_from_raw_text():
+def test_classify_timeout_from_exit_124():
+    """exit_code 124 is the POSIX `timeout(1)` convention for "killed by
+    SIGTERM after the wall-clock deadline" — a deterministic signal, trusted
+    on its own even without a subtype."""
     outcome = classify_tick_outcome(124, subtype=None, raw_output="command timed out after 45m")
+    assert outcome == HB_BACKUP_TIMEOUT
+
+
+def test_classify_timeout_from_subtype():
+    """subtype "error_timeout" (parsed JSON envelope) is trusted on its own,
+    even with no corroborating raw-text signature."""
+    outcome = classify_tick_outcome(1, subtype="error_timeout", raw_output="")
     assert outcome == HB_BACKUP_TIMEOUT
 
 
@@ -431,6 +441,34 @@ def test_classify_subtype_wins_over_raw_text_when_both_present():
         1, subtype="error_max_budget_usd", raw_output="Not logged in · Please run /login"
     )
     assert outcome == HB_BACKUP_BUDGET_EXCEEDED
+
+
+# ── #825: fuzzy "timed out" TEXT ALONE (no subtype, no exit 124) must NOT ──
+# be trusted as the benign TIMEOUT label — it must fall through to
+# HB_BACKUP_FAILED so a genuinely-dead dept still gets its auto-restart.
+
+
+def test_classify_fuzzy_timeout_text_without_deterministic_signal_is_not_benign():
+    """The #825 regression case: a network-layer failure (DNS/proxy/firewall
+    to the Anthropic API) on a truly-DOWN dept can emit CLI/curl text
+    containing "timed out" with no subtype and no exit-124. Before the fix
+    this classified BACKUP-TIMEOUT ("may be transient", no restart) and
+    silently denied the dept its auto-restart. It must now classify
+    BACKUP-FAILED (restart) — ambiguous text alone never wins over the
+    fails-safe default."""
+    outcome = classify_tick_outcome(
+        1, subtype=None, raw_output="curl: (28) Connection timed out after 30000 milliseconds"
+    )
+    assert outcome == HB_BACKUP_FAILED
+    assert outcome != HB_BACKUP_TIMEOUT
+
+
+def test_classify_fuzzy_timeout_text_with_unrelated_nonzero_exit_is_not_benign():
+    """Same regression, generic non-zero exit (e.g. 1) instead of a curl-style
+    exit code — the point is exit_code must equal 124 specifically, not just
+    be 'some non-zero' exit that happens to accompany "timed out" text."""
+    outcome = classify_tick_outcome(1, subtype=None, raw_output="request timed out")
+    assert outcome == HB_BACKUP_FAILED
 
 
 def test_external_hb_budget_exceeded_shape():
