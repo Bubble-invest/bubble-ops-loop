@@ -216,6 +216,91 @@ def test_execution_subagents_render_sonnet(tmp_path):
 
 
 # -------------------------------------------------------------------------
+# 4d) `department.subagent_model` dept.yaml knob (board #908) — pins the
+#     scaffolded subagents to a specific model version instead of drifting
+#     with whatever the `sonnet` alias resolves to.
+#     - absent in dept.yaml -> DEFAULT_SUBAGENT_MODEL ("sonnet", today's
+#       default behaviour — no regression for existing depts)
+#     - present in dept.yaml -> honoured verbatim and flows into every
+#       scaffolded subagent's `model:` frontmatter line
+# -------------------------------------------------------------------------
+def test_subagent_model_from_dept_yaml_defaults_when_absent():
+    assert (
+        iso.subagent_model_from_dept_yaml({"department": {"slug": "ben"}})
+        == iso.DEFAULT_SUBAGENT_MODEL
+    )
+    assert iso.subagent_model_from_dept_yaml({}) == iso.DEFAULT_SUBAGENT_MODEL
+    assert iso.subagent_model_from_dept_yaml(None) == iso.DEFAULT_SUBAGENT_MODEL
+    # Empty / whitespace-only is treated as unset.
+    assert (
+        iso.subagent_model_from_dept_yaml({"department": {"subagent_model": "  "}})
+        == iso.DEFAULT_SUBAGENT_MODEL
+    )
+
+
+def test_subagent_model_from_dept_yaml_honours_explicit_pin():
+    dept_yaml = {"department": {"slug": "ben", "subagent_model": "claude-opus-4-8"}}
+    assert iso.subagent_model_from_dept_yaml(dept_yaml) == "claude-opus-4-8"
+
+
+def test_scaffold_renders_pinned_subagent_model_into_frontmatter(tmp_path):
+    """dept.yaml sets `department.subagent_model: claude-opus-4-8` -> the
+    caller resolves it via subagent_model_from_dept_yaml and passes it
+    through to scaffold_isolation_surface's existing `subagent_model` param
+    -> every scaffolded subagent's frontmatter carries the pinned model."""
+    dept_root = tmp_path / "bubble-ops-pinned"
+    dept_root.mkdir()
+    dept_yaml = {
+        "department": {"slug": "pinned", "subagent_model": "claude-opus-4-8"}
+    }
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="pinned",
+        display_name="Pinned",
+        level="ops",
+        enabled_skills=["x"],
+        all_dept_slugs=["pinned", "ben", "maya"],
+        subagent_model=iso.subagent_model_from_dept_yaml(dept_yaml),
+    )
+
+    def model_line(name):
+        txt = (dept_root / "subagents" / name).read_text()
+        return next(l for l in txt.splitlines() if l.startswith("model:"))
+
+    for persona in (
+        "data-curator.md",
+        "task-orchestrator.md",
+        "executor.md",
+        "mandate-guardian.md",
+    ):
+        assert model_line(persona) == "model: claude-opus-4-8", persona
+
+
+def test_scaffold_subagent_model_absent_field_keeps_default_behavior(tmp_path):
+    """No `department.subagent_model` in dept.yaml -> caller resolves via
+    subagent_model_from_dept_yaml -> DEFAULT_SUBAGENT_MODEL ("sonnet") ->
+    unchanged from today's default. Proves the omitted-field path is a
+    no-op / non-breaking default, matching `model_from_dept_yaml`'s
+    established back-compat contract."""
+    dept_root = tmp_path / "bubble-ops-unpinned"
+    dept_root.mkdir()
+    dept_yaml = {"department": {"slug": "unpinned"}}  # no subagent_model key
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="unpinned",
+        display_name="Unpinned",
+        level="ops",
+        enabled_skills=["x"],
+        all_dept_slugs=["unpinned", "ben", "maya"],
+        subagent_model=iso.subagent_model_from_dept_yaml(dept_yaml),
+    )
+    body = (dept_root / "subagents" / "executor.md").read_text()
+    model_line = next(l for l in body.splitlines() if l.startswith("model:"))
+    assert model_line == "model: sonnet"
+    assert model_line == f"model: {iso.DEFAULT_SUBAGENT_MODEL}"
+
+
+# -------------------------------------------------------------------------
 # 5) the generated anti-regression test triple is present + valid Python
 # -------------------------------------------------------------------------
 def test_scaffold_emits_anti_regression_test(scaffolded):

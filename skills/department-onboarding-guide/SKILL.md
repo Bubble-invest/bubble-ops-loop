@@ -121,6 +121,18 @@ and into the systemd unit's `--model` pin (via `deploy-to-morty.sh --model=`,
 default `opus[1m]`). When the field is absent, depts keep the platform Opus pin
 (`DEFAULT_MODEL`) — existing depts are unchanged until they opt in.
 
+`dept.yaml::department.subagent_model` (board #908) is the same knob for the
+dept's SCAFFOLDED SUBAGENTS (executor / task-orchestrator / mandate-guardian /
+data-curator) rather than the orchestrator. It flows into each
+`subagents/<persona>.md` `model:` frontmatter line via
+`isolation_scaffold.subagent_model_from_dept_yaml`. When absent, subagents keep
+today's `sonnet` default (`DEFAULT_SUBAGENT_MODEL`) — no change for existing
+depts. Use it to PIN subagents to a specific dated model id (e.g.
+`claude-opus-4-8`) instead of drifting with whatever the `sonnet` / `opus`
+alias resolves to going forward — the version pin belongs in the subagent's own
+agent-definition frontmatter, not in the spawn-time `model` param passed to the
+Agent/Task tool (alias-only in this harness).
+
 **Cost-optimization default for ops/management depts:** pin `sonnet` (the
 cheap 24/7 orchestrator) and spawn an **Opus subagent for any non-trivial
 
@@ -277,15 +289,27 @@ each dept retrofitted them by hand (Maya herself lacked the isolation surface).
 This is now scaffolded in one call:
 
 ```python
-from skill_lib.isolation_scaffold import scaffold_isolation_surface
+from skill_lib.isolation_scaffold import (
+    scaffold_isolation_surface,
+    model_from_dept_yaml,
+    subagent_model_from_dept_yaml,
+)
 scaffold_isolation_surface(
     dept_root,
     slug="<slug>", display_name="<DisplayName>", level="<level>",
     enabled_skills=[...],          # this dept's owned/reused skills
     all_dept_slugs=[...],          # every platform dept; the OTHERS go in deny
-    model="claude-opus-4-8[1m]",
+    model=model_from_dept_yaml(dept_yaml),                    # department.model
+    subagent_model=subagent_model_from_dept_yaml(dept_yaml),  # department.subagent_model
 )
 ```
+
+`model_from_dept_yaml` / `subagent_model_from_dept_yaml` read `department.model` /
+`department.subagent_model` from the dept's own dept.yaml and fall back to
+`DEFAULT_MODEL` / `DEFAULT_SUBAGENT_MODEL` when the field is absent — so a dept
+that hasn't opted in renders identically to before either field existed. Passing
+a literal string (e.g. `model="claude-opus-4-8[1m]"`) instead of the loaded
+dept.yaml is also fine for a one-off / not-yet-drafted dept.
 
 It writes (parameterised per-dept via Jinja2):
 

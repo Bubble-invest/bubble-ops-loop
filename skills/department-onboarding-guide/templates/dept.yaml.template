@@ -45,6 +45,26 @@ department:
                                            # mission execution; depts that must
                                            # stay Opus pin "opus[1m]".
 {% endif %}
+{% if subagent_model is defined and subagent_model %}
+  subagent_model: "{{ subagent_model }}"   # per-dept SUBAGENT model pin (see below)
+{% else %}
+  # subagent_model: "sonnet"           # OPTIONAL. Model pin for this dept's
+                                           # SCAFFOLDED SUBAGENTS (executor /
+                                           # task-orchestrator / mandate-guardian
+                                           # / data-curator) — written into each
+                                           # subagents/<persona>.md `model:`
+                                           # frontmatter by isolation_scaffold.
+                                           # Accepts a CLI alias or the
+                                           # `<alias>[1m]` 1M-context form, e.g.
+                                           # "sonnet", "opus[1m]", or a full id
+                                           # like "claude-opus-4-8[1m]". When
+                                           # absent, isolation_scaffold falls
+                                           # back to today's default ("sonnet") —
+                                           # no behaviour change. Set this to
+                                           # PIN subagents to a specific model
+                                           # version instead of drifting with
+                                           # whatever the alias resolves to.
+{% endif %}
 {% if runtime is defined and runtime %}
   runtime: "{{ runtime }}"                 # per-dept runtime (see below)
 {% else %}
