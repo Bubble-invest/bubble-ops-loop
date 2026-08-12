@@ -608,6 +608,36 @@ function fmtIndicatorValue(ind){
 }
 function pctClass(n){ if(n>0.05) return 'pos'; if(n<-0.05) return 'neg'; return 'flat'; }
 function esc(s){ return str(s); }
+/* mdInline — SAFE, LIMITED markdown for AUTHOR free-text (case/thesis) only.
+   The case/thesis body is authored by the Ben agent but is treated as UNTRUSTED
+   for rendering. Contract: HTML-escape & < > FIRST (do NOT rely on esc(), which
+   only stringifies), THEN apply a limited subset on the escaped string so no raw
+   author HTML can ever surface as a live tag. Subset ONLY: **bold** -> <strong>,
+   *italic* / _italic_ -> <em>, leading "- "/"* " -> a "•" bullet, newline -> <br>.
+   Nothing else (no links, no raw HTML, no images). Transforms run line-by-line so
+   nothing matches across a break. Returns an HTML string. Never throws — a bad
+   input falls back to a plain HTML-escaped string (keeps bootStep isolation intact
+   and never blanks the tab). Route ONLY free-text case/thesis through this via
+   innerHTML — never numeric/label fields. */
+function mdInline(s){
+  if(s===null || s===undefined) return '';
+  function escHtml(x){ return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  try{
+    var lines = escHtml(s).split('\n');
+    for(var i=0;i<lines.length;i++){
+      var line = lines[i];
+      var lead = line.replace(/^\s+/,'');
+      if(lead.slice(0,2)==='- ' || lead.slice(0,2)==='* '){ line = '• ' + lead.slice(2); }
+      line = line.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')   /* bold before italic */
+                 .replace(/\*(.+?)\*/g,'<em>$1</em>')
+                 .replace(/_(.+?)_/g,'<em>$1</em>');
+      lines[i] = line;
+    }
+    return lines.join('<br>');
+  }catch(e){
+    try{ return escHtml(s); }catch(_e){ return ''; }
+  }
+}
 function truncateName(name, max){
   max = max||20;
   if(!name) return '';
@@ -1146,7 +1176,7 @@ function renderThemeCard(theme, siblingGroup){
     if(built) return; built = true;
 
     const thesis = el('div',{cls:'thesis'});
-    buildThesis(theme).forEach(p=>{ if(p) thesis.appendChild(el('p',{text:p})); });
+    buildThesis(theme).forEach(p=>{ if(p){ const pEl = el('p'); pEl.innerHTML = mdInline(p); thesis.appendChild(pEl); } });   /* authored case prose -> safe limited markdown */
     body.appendChild(thesis);
 
     const stats = el('div',{cls:'stat-lines'});
@@ -1282,7 +1312,9 @@ function buildChipDetail(tid, node){
   const thesisText = node.thesis || (node.held ?
     'Core holding sized for structural exposure rather than a discretionary single-name call — no standalone research note on file.' :
     'On the watchlist; no standalone research note on file yet.');
-  card.appendChild(el('div',{cls:'chip-detail-body', text: thesisText}));
+  const thesisBody = el('div',{cls:'chip-detail-body'});
+  thesisBody.innerHTML = mdInline(thesisText);   /* authored free-text -> safe limited markdown */
+  card.appendChild(thesisBody);
 
   const catalyst = esc(node.catalyst) || 'No scheduled catalyst on file.';
   const catRow = el('div',{cls:'chip-detail-row'});
