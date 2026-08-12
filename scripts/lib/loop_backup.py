@@ -325,12 +325,33 @@ def classify_tick_outcome(
     Returns one of the HB_* outcome tokens. `exit_code == 0` always returns
     HB_BACKUP_RAN regardless of subtype (mirrors the pre-existing behavior:
     only a non-zero exit needs classifying at all).
+
+    #825 hardening — TIMEOUT is trusted ONLY on a deterministic signal
+    (`subtype == "error_timeout"`, parsed from the JSON envelope, or
+    `exit_code == 124`, the POSIX `timeout(1)` convention for "killed by
+    SIGTERM after the wall-clock deadline"). Both are facts the caller
+    MEASURED, not a text guess. Before this fix, a bare `"timed out" in
+    raw_output.lower()` substring was sufficient on its own: a dept that is
+    genuinely DOWN due to a network-layer failure (DNS/proxy/firewall to the
+    Anthropic API) can emit CLI/curl text containing "timed out" with
+    neither signal present, which would have classified it BACKUP-TIMEOUT
+    ("may be transient" — no restart) and silently denied the auto-restart a
+    truly-dead dept needs. A fuzzy text-only "timed out" no longer qualifies
+    as TIMEOUT; it now falls through to the auth check and then to the
+    unknown-crash default (HB_BACKUP_FAILED), which biases every ambiguous
+    case toward restart instead of the benign label — restarting a dept that
+    merely timed out costs one guardrail slot; silently skipping the restart
+    of a dead one costs the dept. The auth substring scan is left as-is: it
+    is the verified, dominant real signature for that failure mode (plain
+    text, not JSON — see 2026-07-25 note above), and a false "not logged in"
+    match is not a plausible network-failure text collision the way "timed
+    out" is.
     """
     if exit_code == 0:
         return HB_BACKUP_RAN
     if subtype == "error_max_budget_usd":
         return HB_BACKUP_BUDGET_EXCEEDED
-    if subtype == "error_timeout" or "timed out" in raw_output.lower():
+    if subtype == "error_timeout" or exit_code == 124:
         return HB_BACKUP_TIMEOUT
     text_l = raw_output.lower()
     if (
@@ -341,7 +362,9 @@ def classify_tick_outcome(
     ):
         return HB_BACKUP_AUTH_FAILED
     # Unknown non-zero exit with none of the above signatures — the ONLY case
-    # that should say "dept DOWN".
+    # that should say "dept DOWN". This is now also the fallback for a
+    # fuzzy/unverified "timed out" text match (see #825 note above):
+    # ambiguous → restart, never silently benign.
     return HB_BACKUP_FAILED
 
 
