@@ -199,7 +199,7 @@ REPO_ROOT="$(git -C "$REPO_DIR" rev-parse --show-toplevel)"
 ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
 [[ -n "$ORIGIN_URL" ]] || die "no 'origin' remote in $REPO_DIR — cannot derive the dept repo."
 # parse bubble-ops-<slug> (optionally .git) at the tail
-if [[ "$ORIGIN_URL" =~ (bubble-ops-([A-Za-z0-9_-]+?))(\.git)?$ ]]; then
+if [[ "$ORIGIN_URL" =~ (bubble-ops-([A-Za-z0-9_-]+))(\.git)?$ ]]; then
   REPO_NAME="${BASH_REMATCH[1]}"
   SLUG="${BASH_REMATCH[2]}"
 else
