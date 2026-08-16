@@ -473,22 +473,29 @@ when done → close the issue with evidence. Never silent-auto-exec anything non
 Some work carries a dollar budget: a board card may have a `budget:$N` label (read from STEP B.5,
 it rides along on the card's labels — just a new field on a source you already pull), and a
 `recurring_missions:` entry in `dept.yaml` may carry a `budget_usd: N`. This is the real-equivalent
-(cache-excluded) \$ this card/mission *should* cost. **The budget is set by the operator (Joris) — it
-is READ-ONLY for you. You read it and respect it; you never change your own allocation** (the card
-label and the `dept.yaml` budget are operator-owned; `dept.yaml` is push-locked for exactly this
-reason). Before you dispatch workers for a budgeted item:
-1. Read its spend-so-far: `python3 scripts/lib/budget.py consumed <card-or-mission-id>` (sums the
-   self-reported worker spend in `state/budget-ledger.jsonl`). Let `pct = consumed / budget`.
+(cache-excluded) \$ this card/mission *should* cost **per period** — per run for a one-off card, per
+Paris-day for a daily mission, per Paris-week for a weekly one. **The budget is set by the operator
+(Joris) — it is READ-ONLY for you. You read it and respect it; you never change your own allocation**
+(the card label and the `dept.yaml` budget are operator-owned; `dept.yaml` is push-locked for exactly
+this reason). Before you dispatch workers for a budgeted item:
+1. Read its spend for the CURRENT period: `python3 scripts/lib/budget.py consumed <card-or-mission-id>`
+   (sums the self-reported worker spend in `state/budget-ledger.jsonl` for **today's Paris-local day**
+   only — this is the default `--window day`). For a weekly mission, use
+   `python3 scripts/lib/budget.py consumed <mission-id> --window week` instead, so the window matches
+   the cadence the budget is meant to cap. Let `pct = consumed_this_period / budget` — a per-period
+   steer, not a cumulative one; a card's lifetime total is not what the cap is measuring against.
 2. Spend like a manager watching a number, not a machine hitting a wall:
    - `pct < 0.8` → proceed normally.
    - `0.8 ≤ pct < 1.0` → **tighten**: spawn fewer workers, prefer Sonnet over Opus, go less deep.
-   - `pct ≥ 1.0` → you've crossed budget. Do **NOT** hard-stop — finish only what's genuinely
-     needed, minimally — and **warn Joris** once (a one-line Telegram: `card #N over budget:
+   - `pct ≥ 1.0` → you've crossed budget for this period. Do **NOT** hard-stop — finish only what's
+     genuinely needed, minimally — and **warn Joris** once (a one-line Telegram: `card #N over budget:
      $consumed / $budget`). Then keep moving.
 The budget is a *steer*, not a *gate*. It informs how much you spend; it never blocks the work.
 **When a worker subagent finishes**, record its spend: have it report its real-\$ (input+output,
 cache-excluded) in its result, then append it to the ledger:
-`python3 scripts/lib/budget.py record --card <id> --usd <amount>`. That's how spend-so-far stays current.
+`python3 scripts/lib/budget.py record --card <id> --usd <amount>`. That's how spend-so-far stays
+current — and note that several runs landing in the SAME Paris day correctly sum together in the
+`day` window (daily spend vs. daily cap); that isn't a bug to re-fix.
 
 
 **STEP C** — decide what to dispatch via the CANONICAL deterministic helpers
