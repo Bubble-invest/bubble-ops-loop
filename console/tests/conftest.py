@@ -26,6 +26,37 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TEST_BEARER = "test-token-xyz"
 
 
+def install_base_template_globals(templates) -> None:
+    """Register the Jinja globals that ``base.html`` requires onto a test app's
+    ``Jinja2Templates`` env.
+
+    A few tests build a *minimal* FastAPI app with their own ``Jinja2Templates``
+    instead of ``create_app()``, so every global ``base.html`` references must be
+    mirrored here or Jinja raises ``UndefinedError`` at render. Centralised in
+    ONE place so this mirror can't silently drift from ``main.py`` again: a
+    ``css_version`` global was added to ``base.html`` on 2026-08-12 (the CSS
+    cache-buster) but not to these fixtures — which red-lined console-tests for
+    ~10 days until this helper. Add any new ``base.html`` global here, once.
+    """
+    from console.services import dept_registry
+    from console.services.humanize import (
+        capitalize_fr, humanize_cadence, humanize_future_modes,
+        humanize_kind, humanize_mode, humanize_risk, humanize_substep,
+        shadow_autonomy_label,
+    )
+    g = templates.env.globals
+    g["sidebar_agents"] = dept_registry.sidebar_agents
+    g["humanize_kind"] = humanize_kind
+    g["humanize_risk"] = humanize_risk
+    g["humanize_mode"] = humanize_mode
+    g["humanize_future_modes"] = humanize_future_modes
+    g["humanize_substep"] = humanize_substep
+    g["humanize_cadence"] = humanize_cadence
+    g["shadow_autonomy_label"] = shadow_autonomy_label
+    g["capitalize_fr"] = capitalize_fr
+    g["css_version"] = lambda: "test"  # base.html cache-buster; value irrelevant in tests
+
+
 @pytest.fixture(scope="session")
 def fixtures_dir() -> Path:
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
