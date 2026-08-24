@@ -139,7 +139,13 @@ def gate_batch(
     if channel not in GATE_CHANNELS:
         channel = ""
 
-    gates = [_attach_thesis_rendered(g) for g in github_reader.list_pending_gates(slug)
+    # Attach BOTH the thesis (summary) and the payload (the actual post/letter
+    # the gate points at via approval_bridge.item_ref). The batch view used to
+    # attach only the thesis, so content publish gates showed a wall of
+    # reasoning but never the content to validate — "la lettre ne s'affiche
+    # jamais" (#1034, Jade). The detail view already did both.
+    gates = [_attach_payload_rendered(slug, _attach_thesis_rendered(g))
+             for g in github_reader.list_pending_gates(slug)
              if (g.get("kind") or "decision") == kind]
     total_count = len(gates)
 

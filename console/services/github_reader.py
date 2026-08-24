@@ -793,13 +793,20 @@ def attachment_media_type(path: Path) -> str:
 #       queues/gates/assets/<NAME>.<ext>  (no per-date subdir — the gate YAML
 #       itself carries `created`, so assets are pooled flat under one dir;
 #       confirmed against the real bubble-ops-content repo, board #666).
+#   - ("outputs", "*", "*", "assets")  — Content/Ben publish gates that keep a
+#       draft + its figures together under a per-run dir (#1034, Jade):
+#       outputs/<YYYY-MM-DD>/<N>/assets/<NAME>.<ext> — this is where the real
+#       bubble-ops-content publish_proposal gates point their `attachments`
+#       (e.g. outputs/2026-08-23/2/assets/ben-report-spgi-1.png), which the two
+#       older shapes did not match, so every content image 404'd in the cockpit.
 #
 # "*" means any single path segment is accepted there (matches the date
 # component in the outputs/ shape). Each tuple is fixed-depth and fixed-name
 # everywhere else, so this stays exactly as tight as the single-shape check
-# it replaces — just no longer blind to a second, equally real, convention.
+# it replaces — just no longer blind to other, equally real, conventions.
 _ATTACHMENT_ROOT_SHAPES: tuple[tuple[str, ...], ...] = (
     ("outputs", "*", "attachments"),
+    ("outputs", "*", "*", "assets"),
     ("queues", "gates", "assets"),
 )
 
