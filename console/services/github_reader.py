@@ -504,6 +504,14 @@ def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> Lis
         # the gate's logical id, not the stem).  Fallback to p.stem
         # only when the YAML has no id field, for safety.
         gate_id = doc.get("id", p.stem)
+        # Guarantee every pending gate carries a usable `id` for the UI.  Some
+        # gate writers omit the top-level `id:` field (Maya's prospect_dm gates
+        # did — 2026-08-24), which left the cockpit's decide form posting to
+        # /gate/<slug>//decide (empty id → 404 "Échec de l'action"), so Jade
+        # could not approve them.  We already fall back to p.stem for the
+        # decided_map match above; write it back onto the doc so gate.id in
+        # gate_batch.html / gate_card.html is always populated too.
+        doc["id"] = gate_id
         if gate_id in decided_map:
             ddoc = decided_map[gate_id]
             if ddoc.get("action") == "modify":
