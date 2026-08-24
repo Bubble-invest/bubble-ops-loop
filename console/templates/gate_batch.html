@@ -328,13 +328,26 @@
       {# The actual draft {{OPERATOR}} is approving — rendered inline so he can triage
          without opening each gate. Mirrors gate_card.html's draft block.
          Shown only for non-content gates (content gates render above). #}
-      {% if gate.draft_body or gate.comment_body %}
+      {# Resolve the draft text across field shapes: DM/content gates use
+         draft_body/comment_body; email gates (prospect_email) put the message
+         in `body` with `subject`/`to_email` alongside. Without `gate.body`
+         here, cold-email drafts rendered blank and Jade could not review them
+         to validate (2026-08-24). #}
+      {% set draft_text = gate.draft_body or gate.comment_body or gate.body %}
+      {% if draft_text %}
       <div class="gate-draft-block" style="margin:12px 0; padding:12px 14px;
                   background: var(--paper-soft); border:1px solid var(--line);
                   border-left:3px solid var(--ochre); border-radius:2px;">
+        {% if gate.to_email or gate.subject %}
+        <div style="margin:0 0 10px; padding-bottom:8px; border-bottom:1px dashed var(--line);
+                    font-size:12.5px; line-height:1.6; color: var(--body-soft);">
+          {% if gate.to_email %}<div><span class="muted-italic" style="font-size:11px; color: var(--body-muted);">À</span>&nbsp; <span style="color: var(--ink);">{{ gate.to_email }}</span></div>{% endif %}
+          {% if gate.subject %}<div><span class="muted-italic" style="font-size:11px; color: var(--body-muted);">Objet</span>&nbsp; <span style="color: var(--ink); font-weight:500;">{{ gate.subject }}</span></div>{% endif %}
+        </div>
+        {% endif %}
         <div class="gate-draft-body"
              style="font-family: var(--font-body); font-size:14px; line-height:1.5;
-                    color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body or gate.comment_body }}</div>
+                    color: var(--ink); white-space:pre-wrap;">{{ draft_text }}</div>
         {% if gate.chosen_angle %}
         <div class="muted-italic" style="margin-top:10px; font-size:12.5px;
                     color: var(--body-muted); border-top:1px dashed var(--line); padding-top:8px;">
