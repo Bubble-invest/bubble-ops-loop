@@ -27,6 +27,8 @@ Reference: scripts/lib/scaffold.py::CLAUDE_MD_OPERATING_TEMPLATE STEP C.
 from __future__ import annotations
 
 import json
+import re
+
 from dataclasses import dataclass
 
 import yaml
@@ -1365,6 +1367,11 @@ def _time_reached(now_paris_t: "Any", layer: int) -> bool:
     return now_paris_t >= _LAYER_MIN_TIME[layer]
 
 
+# Board #898: subdirectory names treated as dated pool subdirs
+# (`queues/research/2026-08-25/item.yaml`), not archive dirs.
+_DATE_SUBDIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def _queue_has_items(queue_dir: Path,
                      drainable_kinds: "set[str] | None" = None) -> bool:
     """True if `queue_dir` holds at least one actionable item.
@@ -1372,6 +1379,16 @@ def _queue_has_items(queue_dir: Path,
     "Actionable" = a regular `*.yaml` file that is NOT a dotfile/hidden helper.
     Excludes `.gitkeep`, anything starting with `.`, and processed/archived
     subdirs. Missing dir -> False (fail-safe).
+
+    Dated pool subdirs (board #898, 2026-08-24): a producer may drop items
+    into a dated subdir (`queues/research/<YYYY-MM-DD>/<item>.yaml`) instead
+    of the queue root. The original root-only glob never saw those, so
+    `has_research_items` stayed False and L2 starved despite a full pool.
+    One level of subdirectories named `YYYY-MM-DD` is therefore scanned too.
+    Only date-shaped names are descended into — deliberately NOT every
+    subdirectory — so archive layouts like `processed/`, `.processed/` or
+    `_processed/` keep being ignored (counting processed items would
+    fire-spin the layer forever).
 
     Kind-aware quarantine (2026-06-17, Maya rick-requests): if
     `drainable_kinds` is given, only count items whose `kind` is in that set.
@@ -1388,7 +1405,22 @@ def _queue_has_items(queue_dir: Path,
     queue_dir = Path(queue_dir)
     if not queue_dir.is_dir():
         return False
-    for p in queue_dir.glob("*.yaml"):
+    candidates: "list[Path]" = list(queue_dir.glob("*.yaml"))
+    # #898: dated pool subdirs (queues/research/<YYYY-MM-DD>/*.yaml). See the
+    # docstring — date-shaped names ONLY, so archive subdirs stay excluded.
+    try:
+        children = sorted(queue_dir.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        if child.name.startswith(".") or child.name.startswith("_"):
+            continue
+        if not _DATE_SUBDIR_RE.fullmatch(child.name):
+            continue
+        candidates.extend(sorted(child.glob("*.yaml")))
+    for p in candidates:
         if p.name.startswith("."):
             continue
         if not p.is_file():
