@@ -196,8 +196,20 @@ run_critical_section() {
   if [[ -f "$BOOT_REARM_INSTALLER" ]]; then
     local br_args=()
     [[ "$DRY" == "1" ]] && br_args+=(--dry-run)
-    local br_out; br_out="$(mktemp -t install-channel-patches-boot-rearm)"
-    if BOOT_REARM_PLUGIN_GLOB="$PLUGIN_GLOB" BOOT_REARM_BUN="$BUN_BIN" \
+    # NOTE: no `-t` flag — BSD mktemp (macOS) accepts `-t PREFIX` with no X's
+    # and appends its own random suffix, but GNU mktemp (the VPS) requires the
+    # template itself to end in a run of X's and errors loudly
+    # ("too few X's in template") on a bare prefix. A template path with
+    # trailing X's and NO `-t` behaves identically on both implementations.
+    local br_out; br_out="$(mktemp "${TMPDIR:-/tmp}/install-channel-patches-boot-rearm.XXXXXX")"
+    if [[ -z "$br_out" || ! -f "$br_out" ]]; then
+      # Defensive: if mktemp itself ever fails (disk full, no /tmp write
+      # access, etc.), fail loudly HERE instead of cascading into a confusing
+      # "tail: cannot open '' " error from a downstream command run against an
+      # empty path (exactly how the GNU-mktemp template bug first surfaced).
+      log "boot_rearm: mktemp failed to create a scratch file — skipping this run's boot_rearm step"
+      section_rc=1
+    elif BOOT_REARM_PLUGIN_GLOB="$PLUGIN_GLOB" BOOT_REARM_BUN="$BUN_BIN" \
         bash "$BOOT_REARM_INSTALLER" "${br_args[@]+"${br_args[@]}"}" >"$br_out" 2>&1; then
       log "boot_rearm: OK ($(tail -1 "$br_out"))"
     else
@@ -205,7 +217,7 @@ run_critical_section() {
       log "boot_rearm: FAILED (rc=$br_rc) — $(tail -3 "$br_out" | tr '\n' ' ')"
       section_rc=1
     fi
-    rm -f "$br_out"
+    [[ -n "$br_out" ]] && rm -f "$br_out"
   else
     log "boot_rearm installer not found at $BOOT_REARM_INSTALLER — skip"
     section_rc=1
