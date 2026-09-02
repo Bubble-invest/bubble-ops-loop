@@ -113,7 +113,7 @@ def create_app() -> FastAPI:
     _PUBLIC_EXACT = {
         "/health-noauth",       # tailscale liveness ping (see route below)
         "/agents/setup-callback",  # GitHub App redirect — auth'd by one-shot state
-        "/login", "/logout",    # you can't be logged in to log in
+        "/login", "/login/link", "/logout",  # you can't be logged in to log in
     }
 
     def _needs_login(request: Request) -> Response:

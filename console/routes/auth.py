@@ -83,6 +83,38 @@ def login_submit(
     )
 
 
+@router.get("/login/link")
+def login_link(request: Request):
+    """Passwordless one-time login (board #997). The operator opens a link
+    `/login/link?t=<token>` (sent privately over Telegram); a valid, unused,
+    unexpired token mints a session as its user and drops the token. Lets Rick
+    enroll Joris/Jade with nothing to type — works on Mac and iPhone alike."""
+    user = sessions.consume_login_token(request.query_params.get("t", ""))
+    if user is None:
+        return request.app.state.templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": "/",
+                "error": "Lien invalide, déjà utilisé ou expiré. Demande un nouveau lien.",
+                "login_configured": sessions.login_configured(),
+            },
+            status_code=401,
+        )
+    sid = sessions.create_session(user)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(
+        key=settings.SESSION_COOKIE,
+        value=sid,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.SESSION_IDLE_SECONDS,
+        path="/",
+    )
+    return resp
+
+
 @router.get("/logout")
 @router.post("/logout")
 def logout(request: Request):

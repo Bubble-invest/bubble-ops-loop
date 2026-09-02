@@ -93,6 +93,19 @@ def test_session_expiry(monkeypatch, tmp_session_db):
     assert sessions.validate_and_touch(sid) is None
 
 
+def test_login_token_single_use(tmp_session_db):
+    tok = sessions.create_login_token("joris")
+    assert sessions.consume_login_token(tok) == "joris"   # first use → username
+    assert sessions.consume_login_token(tok) is None       # single-use → gone
+    assert sessions.consume_login_token("nope") is None
+    assert sessions.consume_login_token("") is None
+
+
+def test_login_token_expiry(tmp_session_db):
+    tok = sessions.create_login_token("jade", ttl_seconds=-1)  # already expired
+    assert sessions.consume_login_token(tok) is None
+
+
 def test_session_absolute_cap(monkeypatch, tmp_session_db):
     # idle window huge, absolute cap already exceeded → still expires
     monkeypatch.setattr(settings, "SESSION_IDLE_SECONDS", 10_000)
@@ -211,6 +224,31 @@ def test_bearer_header_still_works(login_ctx):
     s = login_ctx.settings
     r = login_ctx.client.get("/", headers={"Authorization": f"Bearer {s.BEARER_TOKEN}"})
     assert r.status_code == 200
+
+
+def test_login_link_grants_session(login_ctx):
+    """A valid one-time link logs the user in (passwordless) and attributes the
+    session to them."""
+    tok = login_ctx.sessions.create_login_token("jade")
+    r = login_ctx.client.get(f"/login/link?t={tok}", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+    sess = r.cookies.get(login_ctx.settings.SESSION_COOKIE)
+    assert sess and login_ctx.sessions.validate_and_touch(sess) == "jade"
+
+
+def test_login_link_single_use_then_401(login_ctx):
+    tok = login_ctx.sessions.create_login_token("joris")
+    first = login_ctx.client.get(f"/login/link?t={tok}", follow_redirects=False)
+    assert first.status_code == 303
+    # reusing the same link fails (single-use)
+    again = login_ctx.client.get(f"/login/link?t={tok}", follow_redirects=False)
+    assert again.status_code == 401
+
+
+def test_login_link_bad_token_401(login_ctx):
+    r = login_ctx.client.get("/login/link?t=not-a-real-token", follow_redirects=False)
+    assert r.status_code == 401
 
 
 def test_login_open_redirect_blocked(login_ctx):
