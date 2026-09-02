@@ -30,28 +30,70 @@
 #   1. Resolves the newest installed telegram plugin dir (handles version bumps
 #      — a plugin update always sorts higher, so `sort -V` picks it up with no
 #      config change needed).
-#   2. boot_rearm    — delegates to the existing, tested scripts/install-boot-rearm.sh
+#   2. Takes an EXCLUSIVE LOCK scoped to that plugin's telegram/ dir (see
+#      CONCURRENCY below) before touching anything.
+#   3. boot_rearm    — delegates to the existing, tested scripts/install-boot-rearm.sh
 #      (grep-preflight -> patch --dry-run check -> backup -> apply -> `bun build`
 #      validate -> restore-on-failure). This script does NOT reimplement that
 #      logic; it just points the tested installer at the resolved plugin dir.
-#   3. bubble-inject — same rigor, freshly implemented here (the sibling patch
+#   4. bubble-inject — same rigor, freshly implemented here (the sibling patch
 #      is a verbatim insert-after-anchor, not a `patch(1)` diff): grep-preflight
 #      -> anchor-presence check -> timestamped backup -> insert the CANONICAL
 #      block from deploy/telegram-plugin/bubble-inject.block.ts -> `bun build`
 #      validate -> restore-on-failure.
-#   4. Logs a one-line outcome per patch (to stderr + syslog via `logger`) so a
-#      fleet-health scan can grep for repeated failures.
+#   5. Releases the lock. Logs a one-line outcome per patch (to stderr + syslog
+#      via `logger`) so a fleet-health scan can grep for repeated failures.
+#
+# CONCURRENCY (board #956 review fix): on the VPS, EVERY dept runs as the same
+# `claude` user with the same $HOME, so ALL depts share ONE telegram plugin
+# cache — one `server.ts` per host. A fleet-wide restart (watchdog or an
+# operator) starts many depts ~together, so this script's own ExecStartPre/
+# pre-launch invocations run CONCURRENTLY against that SAME file. Without
+# mutual exclusion that's a real race: double-insert, a half-written file
+# failing `bun build`, or one run's restore-on-failure reverting another run's
+# good patch moments after it landed.
+#
+#   Lock scope: one lock per HOST, covering the telegram/ dir that holds every
+#   plugin version (not just the resolved PLUGIN_DIR) — because all versions
+#   under it share the same underlying race (a mid-bump moment could have two
+#   dirs briefly relevant) and because the lock must be stable across a
+#   version bump, not recomputed per-version.
+#     default lock path: <dirname of resolved PLUGIN_DIR>/.install-channel-patches.lock
+#     override:           CHANNEL_PATCHES_LOCK_PATH
+#
+#   Mechanism: prefers real `flock(1)` (present on the VPS via util-linux —
+#   confirmed on the box this actually races on) taking an exclusive lock on an
+#   fd tied to the lock file, bounded by -w so a wedged holder can never hang a
+#   dept's startup. Stock macOS ships NO `flock` binary (only Linux does, via
+#   util-linux), so when `flock` isn't on PATH this falls back to a portable
+#   mkdir-based lock (mkdir is atomic on every POSIX filesystem — no external
+#   dependency) with the SAME timeout + a stale-lock reap (a crashed holder's
+#   lock dir older than CHANNEL_PATCHES_LOCK_STALE_SEC is force-reaped rather
+#   than wedging the fleet forever). Both paths give the identical guarantee:
+#   only one invocation is ever inside the boot_rearm+bubble-inject critical
+#   section at a time, on a given host.
+#
+#   Fail-open on lock timeout: if the lock can't be acquired within
+#   CHANNEL_PATCHES_LOCK_TIMEOUT_SEC (default 30s — comfortably above a full
+#   boot_rearm+bubble-inject run, which is dominated by two `bun build` calls),
+#   this run SKIPS the critical section entirely (never touches server.ts) and
+#   logs loudly, rather than blocking the dept from starting. In practice two
+#   concurrent invocations just SERIALIZE: the second waits for the first,
+#   then finds both patches already present and no-ops (idempotency, unchanged
+#   from before this fix) — it does not need the timeout path at all.
 #
 # IDEMPOTENT: re-running when both patches are already present is a pure no-op
 # (two `grep -q` preflights, no writes, no backups). Safe to run on every
-# service/session start.
+# service/session start, including many times concurrently (serialized by the
+# lock above).
 #
 # FAIL-OPEN BY DEFAULT (the pre-launch-hook contract): never blocks a dept from
-# starting — this script exits 0 by default even if a patch failed to apply
-# (the failure is logged loudly; the dept just runs without that patch this
-# time, same as it would have with NO installer at all). Pass --strict to get a
-# real nonzero exit code instead (used by the test harness / manual runs where
-# you WANT to know if it actually worked).
+# starting — this script exits 0 by default even if a patch failed to apply,
+# or the lock could not be acquired in time (the failure is logged loudly; the
+# dept just runs without that patch this time, same as it would have with NO
+# installer at all). Pass --strict to get a real nonzero exit code instead
+# (used by the test harness / manual runs where you WANT to know if it
+# actually worked).
 #
 # REVERSIBLE: every write is preceded by a timestamped backup
 # (server.ts.bak-boot-rearm-<ts> / server.ts.bak-bubble-inject-<ts>); a failed
@@ -61,17 +103,24 @@
 # Usage:
 #   install-channel-patches.sh                # hook mode (fail-open, exit 0)
 #   install-channel-patches.sh --dry-run       # report what would happen, touch nothing
-#   install-channel-patches.sh --strict        # exit nonzero if either patch failed
+#   install-channel-patches.sh --strict        # exit nonzero if either patch (or the lock) failed
 #   install-channel-patches.sh --dry-run --strict
 #
 # Env overrides (host-agnostic; both default to $HOME so the SAME script works
 # unmodified on a Mac local dept and a VPS `claude`-user dept):
-#   CHANNEL_PATCHES_PLUGIN_GLOB  default: $HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/
-#   CHANNEL_PATCHES_BUN          default: $HOME/.bun/bin/bun (falls back to `command -v bun`)
+#   CHANNEL_PATCHES_PLUGIN_GLOB      default: $HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/
+#   CHANNEL_PATCHES_BUN              default: $HOME/.bun/bin/bun (falls back to `command -v bun`)
+#   CHANNEL_PATCHES_LOCK_PATH        default: <telegram-dir>/.install-channel-patches.lock
+#   CHANNEL_PATCHES_LOCK_TIMEOUT_SEC default: 30
+#   CHANNEL_PATCHES_LOCK_STALE_SEC   default: 120 (mkdir-lock fallback only)
+#   CHANNEL_PATCHES_DEBUG_LOCK_SLEEP test-only: seconds to sleep AFTER acquiring
+#                                     the lock, before doing any work — used by
+#                                     tests/test_install_channel_patches.sh to
+#                                     deterministically widen the race window.
 #
 # Exit codes (only meaningful with --strict; default mode always exits 0):
 #   0  both patches present/applied OK (or nothing to do — no plugin found)
-#   1  at least one patch failed to apply (see logged detail)
+#   1  at least one patch (or the lock acquisition itself) failed
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +131,9 @@ INJECT_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/bubble-inject.block.ts"
 PLUGIN_GLOB="${CHANNEL_PATCHES_PLUGIN_GLOB:-$HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/}"
 BUN_BIN="${CHANNEL_PATCHES_BUN:-$HOME/.bun/bin/bun}"
 [[ -x "$BUN_BIN" ]] || BUN_BIN="$(command -v bun 2>/dev/null || true)"
+
+LOCK_TIMEOUT_SEC="${CHANNEL_PATCHES_LOCK_TIMEOUT_SEC:-30}"
+LOCK_STALE_SEC="${CHANNEL_PATCHES_LOCK_STALE_SEC:-120}"
 
 STRICT=0
 DRY=0
@@ -106,8 +158,6 @@ finish() {
   exit 0
 }
 
-OVERALL_RC=0
-
 # ── resolve the newest telegram plugin dir (version-bump-proof) ─────────────
 PLUGIN_DIR=""
 for d in $(ls -d $PLUGIN_GLOB 2>/dev/null | sort -V); do
@@ -125,26 +175,50 @@ if [[ ! -f "$SERVER_TS" ]]; then
 fi
 log "plugin dir: $PLUGIN_DIR"
 
-# ── 1. boot_rearm — delegate to the tested, dedicated installer ─────────────
-if [[ -f "$BOOT_REARM_INSTALLER" ]]; then
-  BR_ARGS=()
-  [[ "$DRY" == "1" ]] && BR_ARGS+=(--dry-run)
-  BR_OUT="$(mktemp -t install-channel-patches-boot-rearm)"
-  if BOOT_REARM_PLUGIN_GLOB="$PLUGIN_GLOB" BOOT_REARM_BUN="$BUN_BIN" \
-      bash "$BOOT_REARM_INSTALLER" "${BR_ARGS[@]+"${BR_ARGS[@]}"}" >"$BR_OUT" 2>&1; then
-    log "boot_rearm: OK ($(tail -1 "$BR_OUT"))"
-  else
-    br_rc=$?
-    log "boot_rearm: FAILED (rc=$br_rc) — $(tail -3 "$BR_OUT" | tr '\n' ' ')"
-    OVERALL_RC=1
-  fi
-  rm -f "$BR_OUT"
-else
-  log "boot_rearm installer not found at $BOOT_REARM_INSTALLER — skip"
-  OVERALL_RC=1
-fi
+# ── the critical section: everything that reads/patches/validates server.ts ─
+# Runs ONLY while the lock (below) is held. Sets no variables the caller
+# depends on — its outcome is entirely conveyed by its return code, so it is
+# safe to invoke from inside a subshell (the flock path below needs exactly
+# that: `exec {fd}> ...; flock ... 9 && run_critical_section` runs in a
+# subshell, whose variable writes would NOT be visible to the parent shell).
+run_critical_section() {
+  local section_rc=0
 
-# ── 2. bubble-inject — idempotent anchor-insert + bun-build validate ────────
+  # Test-only hook: widen the race window deterministically so the
+  # concurrency test doesn't depend on real scheduling luck. Unset in normal
+  # (hook/production) use.
+  if [[ -n "${CHANNEL_PATCHES_DEBUG_LOCK_SLEEP:-}" ]]; then
+    log "debug: sleeping ${CHANNEL_PATCHES_DEBUG_LOCK_SLEEP}s while holding the lock (test-only, pid $$)"
+    sleep "${CHANNEL_PATCHES_DEBUG_LOCK_SLEEP}"
+  fi
+
+  # ── 1. boot_rearm — delegate to the tested, dedicated installer ───────────
+  if [[ -f "$BOOT_REARM_INSTALLER" ]]; then
+    local br_args=()
+    [[ "$DRY" == "1" ]] && br_args+=(--dry-run)
+    local br_out; br_out="$(mktemp -t install-channel-patches-boot-rearm)"
+    if BOOT_REARM_PLUGIN_GLOB="$PLUGIN_GLOB" BOOT_REARM_BUN="$BUN_BIN" \
+        bash "$BOOT_REARM_INSTALLER" "${br_args[@]+"${br_args[@]}"}" >"$br_out" 2>&1; then
+      log "boot_rearm: OK ($(tail -1 "$br_out"))"
+    else
+      local br_rc=$?
+      log "boot_rearm: FAILED (rc=$br_rc) — $(tail -3 "$br_out" | tr '\n' ' ')"
+      section_rc=1
+    fi
+    rm -f "$br_out"
+  else
+    log "boot_rearm installer not found at $BOOT_REARM_INSTALLER — skip"
+    section_rc=1
+  fi
+
+  # ── 2. bubble-inject — idempotent anchor-insert + bun-build validate ──────
+  apply_bubble_inject
+  local inject_rc=$?
+  [[ "$inject_rc" != "0" ]] && section_rc=1
+
+  return "$section_rc"
+}
+
 apply_bubble_inject() {
   if grep -q "bubble-inject" "$SERVER_TS" 2>/dev/null; then
     log "bubble-inject: already present — no-op"
@@ -225,9 +299,71 @@ PY
   fi
 }
 
-apply_bubble_inject
-inject_rc=$?
-[[ "$inject_rc" != "0" ]] && OVERALL_RC=1
+# ── mkdir-based portable lock fallback (no `flock` binary on this host) ─────
+# mkdir is atomic on every POSIX filesystem, so "did I create the dir" is a
+# race-free test-and-set with zero external dependencies — the same guarantee
+# flock(1) gives, just without needing util-linux (which stock macOS lacks).
+_mkdir_lock_acquire() {  # $1 = lock dir path
+  local dir="$1" waited=0
+  while ! mkdir "$dir" 2>/dev/null; do
+    if [[ -d "$dir" ]]; then
+      local mtime now age
+      mtime="$(stat -f %m "$dir" 2>/dev/null || stat -c %Y "$dir" 2>/dev/null || echo 0)"
+      now="$(date +%s)"
+      age=$(( now - mtime ))
+      if (( age > LOCK_STALE_SEC )); then
+        log "mkdir-lock: stale lock at $dir (age ${age}s > ${LOCK_STALE_SEC}s) — reaping a crashed holder"
+        rm -rf "$dir" 2>/dev/null || true
+        continue
+      fi
+    fi
+    sleep 1
+    waited=$((waited + 1))
+    if (( waited >= LOCK_TIMEOUT_SEC )); then
+      return 1
+    fi
+  done
+  echo "$$" > "$dir/pid" 2>/dev/null || true
+  return 0
+}
+_mkdir_lock_release() { rm -rf "$1" 2>/dev/null || true; }
+
+# ── acquire the lock, run the critical section, release ─────────────────────
+LOCK_TELEGRAM_DIR="$(dirname "$PLUGIN_DIR")"
+LOCK_PATH="${CHANNEL_PATCHES_LOCK_PATH:-$LOCK_TELEGRAM_DIR/.install-channel-patches.lock}"
+
+if command -v flock >/dev/null 2>&1; then
+  log "lock: using flock(1) on ${LOCK_PATH}.fd (timeout ${LOCK_TIMEOUT_SEC}s)"
+  (
+    exec 9>"${LOCK_PATH}.fd"
+    if flock -w "$LOCK_TIMEOUT_SEC" 9; then
+      run_critical_section
+      exit $?
+    else
+      exit 75   # sentinel: lock not acquired (distinct from a real patch failure)
+    fi
+  )
+  SECTION_RC=$?
+else
+  log "lock: flock(1) not found on PATH — using the portable mkdir-based lock at $LOCK_PATH (timeout ${LOCK_TIMEOUT_SEC}s)"
+  if _mkdir_lock_acquire "$LOCK_PATH"; then
+    trap '_mkdir_lock_release "$LOCK_PATH"' EXIT
+    run_critical_section
+    SECTION_RC=$?
+    _mkdir_lock_release "$LOCK_PATH"
+    trap - EXIT
+  else
+    SECTION_RC=75
+  fi
+fi
+
+OVERALL_RC=0
+if [[ "$SECTION_RC" == "75" ]]; then
+  log "lock: could not acquire within ${LOCK_TIMEOUT_SEC}s — skipping this run untouched (fail-open; another invocation is very likely applying the same patches right now)"
+  OVERALL_RC=1
+elif [[ "$SECTION_RC" != "0" ]]; then
+  OVERALL_RC=1
+fi
 
 log "done. overall_rc=$OVERALL_RC (strict=$STRICT dry_run=$DRY)"
 finish "$OVERALL_RC"

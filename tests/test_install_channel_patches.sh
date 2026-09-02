@@ -207,6 +207,96 @@ run_installer "$GLOB_F"
 [[ "$(grep -c bootRearmNotification "$TGT_F/server.ts")" == "2" ]] && ok "Mac-shaped glob: boot_rearm applied" || bad "Mac-shaped glob: boot_rearm NOT applied"
 grep -q "bubble-inject" "$TGT_F/server.ts" && ok "Mac-shaped glob: bubble-inject applied" || bad "Mac-shaped glob: bubble-inject NOT applied"
 
+# ── G/H. CONCURRENCY (board #956 review fix) ────────────────────────────────
+# The confirmed regression: on the VPS every dept runs as the same `claude`
+# user / $HOME, so ALL depts share ONE telegram plugin server.ts. A fleet-wide
+# restart launches N ExecStartPre invocations of this installer ~together
+# against that SAME file with no coordination — a race (double-insert, a
+# half-written file failing `bun build`, or one run's restore-on-failure
+# reverting another run's good patch). The fix is a per-host exclusive lock
+# (flock(1) when available, a portable mkdir-based lock otherwise) around the
+# whole boot_rearm+bubble-inject critical section.
+#
+# run_concurrency_case <label> <extra-env-prefix-for-the-SLOW-run> — launches
+# a SLOW run (holds the lock ~3s via CHANNEL_PATCHES_DEBUG_LOCK_SLEEP, which
+# deterministically widens the race window instead of depending on scheduling
+# luck) and a normal run ~simultaneously against the SAME fixture dir, then
+# asserts: both exit 0, exactly ONE backup per patch type (not two — proving
+# they serialized rather than both writing), both patches present exactly
+# once, the result still `bun build`s, and (the actual proof of
+# serialization, not just of no-corruption) the pair took at least as long as
+# the slow run's own sleep — i.e. the fast run genuinely WAITED rather than
+# running concurrently and getting lucky.
+run_concurrency_case() {
+  local label="$1" env_prefix="$2" root tgt glob t_start t_end elapsed
+  root="$WORK/conc-$label"; tgt="$(make_fixture "$root")"
+  glob="$root/claude-plugins-official/telegram/*/"
+
+  t_start="$(date +%s)"
+  ( eval "$env_prefix" CHANNEL_PATCHES_DEBUG_LOCK_SLEEP=3 \
+      CHANNEL_PATCHES_PLUGIN_GLOB="'$glob'" CHANNEL_PATCHES_BUN="'$BUN_BIN'" \
+      bash "$INSTALLER" > "$WORK/conc-$label-slow.log" 2>&1 ) &
+  local slow_pid=$!
+  sleep 0.3   # let the slow run win the race for the lock
+  ( eval "$env_prefix" \
+      CHANNEL_PATCHES_PLUGIN_GLOB="'$glob'" CHANNEL_PATCHES_BUN="'$BUN_BIN'" \
+      bash "$INSTALLER" > "$WORK/conc-$label-fast.log" 2>&1 ) &
+  local fast_pid=$!
+
+  wait "$slow_pid"; local slow_rc=$?
+  wait "$fast_pid"; local fast_rc=$?
+  t_end="$(date +%s)"
+  elapsed=$(( t_end - t_start ))
+
+  [[ "$slow_rc" == "0" ]] && ok "$label: slow (lock-holding) run exits 0" || bad "$label: slow run exit was $slow_rc"
+  [[ "$fast_rc" == "0" ]] && ok "$label: concurrent run exits 0" || bad "$label: concurrent run exit was $fast_rc"
+  (( elapsed >= 2 )) && ok "$label: concurrent run actually SERIALIZED (elapsed ${elapsed}s >= the 3s hold, not two independent fast runs)" \
+                      || bad "$label: elapsed only ${elapsed}s — looks like NO serialization happened (lock not effective)"
+  [[ "$(grep -c bootRearmNotification "$tgt/server.ts")" == "2" ]] && ok "$label: boot_rearm present exactly once (no double-insert)" || bad "$label: boot_rearm wiring corrupted/duplicated"
+  [[ "$(grep -c "BUBBLE-INJECT PATCH BEGIN" "$tgt/server.ts")" == "1" ]] && ok "$label: bubble-inject present exactly once (no double-insert)" || bad "$label: bubble-inject wiring corrupted/duplicated"
+  [[ "$(ls "$tgt"/server.ts.bak-boot-rearm-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "$label: exactly one boot_rearm backup (not two concurrent writers)" || bad "$label: expected exactly one boot_rearm backup"
+  [[ "$(ls "$tgt"/server.ts.bak-bubble-inject-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "$label: exactly one bubble-inject backup (not two concurrent writers)" || bad "$label: expected exactly one bubble-inject backup"
+  ( cd "$tgt" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$WORK/conc-$label-build-check" ) >"$WORK/conc-$label-build-check.log" 2>&1
+  [[ "$?" == "0" ]] && ok "$label: final server.ts is NOT corrupted — still bun-builds" || bad "$label: final server.ts FAILED to bun-build (corruption!)"
+  [[ "$VERBOSE" == "1" ]] && { echo "  -- $label slow.log --"; cat "$WORK/conc-$label-slow.log"; echo "  -- $label fast.log --"; cat "$WORK/conc-$label-fast.log"; }
+}
+
+echo "G. concurrency: two invocations racing the SAME server.ts (native lock — $( command -v flock >/dev/null 2>&1 && echo flock || echo mkdir-fallback ) on this box)"
+run_concurrency_case "native" ""
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "H. concurrency via the flock(1) code path, forced with a minimal test-only shim"
+  echo "   (this box has no real flock — see WHY THIS EXISTS in install-channel-patches.sh;"
+  echo "    the shim exercises the SAME 'exec fd> ...; flock -w SEC fd' logic real flock(1) uses,"
+  echo "    just backed by Python's fcntl.flock instead of util-linux's C implementation)"
+  SHIM_DIR="$WORK/shim-bin"; mkdir -p "$SHIM_DIR"
+  cat > "$SHIM_DIR/flock" <<'SHIM'
+#!/usr/bin/env python3
+import fcntl, sys, time
+args = sys.argv[1:]
+timeout = None
+fdnum = None
+i = 0
+while i < len(args):
+    if args[i] == '-w':
+        timeout = float(args[i + 1]); i += 2
+    else:
+        fdnum = int(args[i]); i += 1
+deadline = None if timeout is None else time.time() + timeout
+while True:
+    try:
+        fcntl.flock(fdnum, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(0)
+    except BlockingIOError:
+        if deadline is not None and time.time() >= deadline:
+            sys.exit(1)
+        time.sleep(0.05)
+SHIM
+  chmod +x "$SHIM_DIR/flock"
+  [[ "$(PATH="$SHIM_DIR:$PATH" command -v flock)" == "$SHIM_DIR/flock" ]] && ok "H setup: flock shim is first on PATH" || bad "H setup: flock shim not resolving via PATH"
+  run_concurrency_case "flockshim" "PATH='$SHIM_DIR:$PATH'"
+fi
+
 echo ""
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ "$FAIL" == "0" ]] && exit 0 || exit 1
