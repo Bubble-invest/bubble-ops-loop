@@ -153,10 +153,13 @@ def test_dept_detail_omits_section_when_no_value_chains(client):
     assert "dept-value-chains-heading" not in r.text
 
 
-def test_dept_detail_renders_value_chains_section(client, fixture_root):
-    """Writing vault/value-chains/ under the 'fixture' dept's on-disk repo
-    (same READ_FROM_DISK root the app/client fixtures already point at) must
-    surface the overview + sector maps + tag legend on /dept/fixture."""
+def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
+    """Card #1065: the FULL value-chain render (overview, sector bodies, tag
+    legend) moved off /dept/<slug> onto its own /dept/<slug>/value-chains
+    sub-page — the main page keeps only a compact one-line summary + link.
+    Writing vault/value-chains/ under the 'fixture' dept's on-disk repo (same
+    READ_FROM_DISK root the app/client fixtures already point at) must
+    surface that compact summary, but NOT the sector bodies or legend."""
     vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text(
@@ -169,9 +172,48 @@ def test_dept_detail_renders_value_chains_section(client, fixture_root):
     r = client.get("/dept/fixture")
     assert r.status_code == 200
     body = r.text
+    # section heading + compact summary + link to the sub-page are present
+    assert "dept-value-chains-heading" in body
+    assert "/dept/fixture/value-chains" in body
+    assert "1 carte GICS" in body
+    # the FULL render (sector title/body, overview text, tag legend) must NOT
+    # ship inline on the main page any more (that's the whole point of #1065)
+    assert "Technology" not in body
+    assert "Eleven GICS sectors" not in body
+    for label in ("Own", "Watch", "Early", "Ran", "Private"):
+        assert label not in body
+
+
+# ─── Route-level tests (/dept/<slug>/value-chains) — card #1065 ────────
+
+def test_value_chains_subpage_404_when_unavailable(client):
+    """No vault/value-chains/ for this dept → 404, not a crash."""
+    r = client.get("/dept/fixture/value-chains")
+    assert r.status_code == 404
+
+
+def test_value_chains_subpage_renders_full_content(client, fixture_root):
+    """The dedicated sub-page renders the overview, sector maps, and tag
+    legend that used to live inline on /dept/<slug> (moved by card #1065)."""
+    vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
+    vc.mkdir(parents=True)
+    (vc / "_index.md").write_text(
+        "# Value chains — overview\n\nEleven GICS sectors.\n", encoding="utf-8",
+    )
+    (vc / "technology.md").write_text(
+        "# Technology\n\n- AAPL — own\n- MSFT — watch\n", encoding="utf-8",
+    )
+
+    r = client.get("/dept/fixture/value-chains")
+    assert r.status_code == 200
+    body = r.text
     assert "dept-value-chains-heading" in body
     assert "Technology" in body
-    assert "Value chains" in body
-    # tag legend labels
+    assert "Eleven GICS sectors" in body
     for label in ("Own", "Watch", "Early", "Ran", "Private"):
         assert label in body
+    # the overview <details> must NOT be forced open any more (card #1065)
+    assert '<details class="value-chain-overview-details" open>' not in body
+    assert '<details class="value-chain-overview-details">' in body
+    # link back to the main dept page
+    assert "/dept/fixture" in body

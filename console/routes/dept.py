@@ -361,6 +361,32 @@ def output_file(slug: str, f: str, request: Request):
     )
 
 
+@router.get("/dept/{slug}/value-chains", response_class=HTMLResponse)
+def dept_value_chains(slug: str, request: Request):
+    """Dedicated value-chain maps sub-page (card #1065).
+
+    Moves the 11 GICS sector maps (board #727, Part 2 of #725) OFF the main
+    /dept/<slug> page and onto their own view, mirroring the
+    /dept/<slug>/portfolio 2nd-tab pattern (thesis_book.py). Inline on the
+    main page they were 596KB / ~52% of that page's HTML — this changes only
+    WHERE/HOW the console renders them; the vault/value-chains/ read path
+    (value_chains.load_value_chains) is unchanged.
+    """
+    d = dept_registry.get_department(slug)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
+    value_chain_data = value_chains.load_value_chains(slug)
+    if not value_chain_data.available:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Pas de cartes de chaîne de valeur pour {slug}",
+        )
+    return request.app.state.templates.TemplateResponse(
+        "dept_value_chains.html",
+        {"request": request, "dept": d, "value_chains": value_chain_data},
+    )
+
+
 @router.get("/dept/{slug}/mission-file", response_class=HTMLResponse)
 def mission_file(slug: str, f: str, request: Request):
     """View a single L1/L2 mission file in-browser, read-only (card #622).
