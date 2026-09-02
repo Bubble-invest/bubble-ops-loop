@@ -1061,6 +1061,10 @@ def materialize_due_missions_for_tick(
     _mat_has_research = _queue_has_items(
         repo_dir / "queues" / "research",
         drainable_kinds=(_drainable_kinds_for_queue(repo_dir, "queues/research/") or None),
+        # #898 follow-up: `today_dir.name` is the same `<today>` date string
+        # L1 writes the pool subdir under and L2's desk prompt reads from —
+        # keep this signal's date scope identical to the real drain.
+        today=today_dir.name,
     )
     # Layer fired-today signals come from today_dir markers. Read round_counter
     # FIRST so _mat_layer_fired can mirror _layer_fired_today's fallback
@@ -1367,28 +1371,46 @@ def _time_reached(now_paris_t: "Any", layer: int) -> bool:
     return now_paris_t >= _LAYER_MIN_TIME[layer]
 
 
-# Board #898: subdirectory names treated as dated pool subdirs
-# (`queues/research/2026-08-25/item.yaml`), not archive dirs.
+# Board #898: subdirectory name shape for a dated pool subdir
+# (`queues/research/2026-08-25/item.yaml`), used to sanity-check `today`
+# before treating it as a pool subdir (defense in depth — the caller is
+# expected to pass a real `YYYY-MM-DD` string, never user input).
 _DATE_SUBDIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _queue_has_items(queue_dir: Path,
-                     drainable_kinds: "set[str] | None" = None) -> bool:
+                     drainable_kinds: "set[str] | None" = None,
+                     *,
+                     today: "str | None" = None) -> bool:
     """True if `queue_dir` holds at least one actionable item.
 
     "Actionable" = a regular `*.yaml` file that is NOT a dotfile/hidden helper.
     Excludes `.gitkeep`, anything starting with `.`, and processed/archived
     subdirs. Missing dir -> False (fail-safe).
 
-    Dated pool subdirs (board #898, 2026-08-24): a producer may drop items
+    Dated pool subdir, TODAY ONLY (board #898, 2026-08-24, narrowed
+    2026-09-02 — see the #898 follow-up review): a producer may drop items
     into a dated subdir (`queues/research/<YYYY-MM-DD>/<item>.yaml`) instead
     of the queue root. The original root-only glob never saw those, so
     `has_research_items` stayed False and L2 starved despite a full pool.
-    One level of subdirectories named `YYYY-MM-DD` is therefore scanned too.
-    Only date-shaped names are descended into — deliberately NOT every
-    subdirectory — so archive layouts like `processed/`, `.processed/` or
-    `_processed/` keep being ignored (counting processed items would
-    fire-spin the layer forever).
+
+    An EARLIER version of this fix scanned EVERY `YYYY-MM-DD`-named subdir,
+    not just today's. That is only safe if whatever actually DRAINS the
+    queue (the L2 desk that reads and consumes items) also reads every dated
+    subdir. It does not: the content dept's L2 desk prompt
+    (`layers/2/PROMPT.md`, "STEP 0" required reads) reads **only**
+    `queues/research/<today>/*.yaml` — the exact same `<today>` the L1
+    gatherers write into (`layers/1/PROMPT.md`: `queues/research/<today>/
+    <source>.yaml`). There is no code or prompt path that ever revisits an
+    OLDER dated subdir. So counting all dated subdirs would let a stale,
+    never-drained old-dated item pin `has_research_items=True` FOREVER —
+    counted every tick, read by no desk — which is the exact fire-spin class
+    #898 exists to prevent, just relocated from "kind" to "date". Scanning
+    is therefore restricted to the ONE subdir named `today` (when given),
+    matching the drain's actual scope exactly. `today=None` (the safe
+    default for callers with no dated-pool convention, e.g. the
+    inbox/decisions queues) scans the root only, unchanged from
+    pre-#898 behaviour.
 
     Kind-aware quarantine (2026-06-17, Maya rick-requests): if
     `drainable_kinds` is given, only count items whose `kind` is in that set.
@@ -1406,20 +1428,13 @@ def _queue_has_items(queue_dir: Path,
     if not queue_dir.is_dir():
         return False
     candidates: "list[Path]" = list(queue_dir.glob("*.yaml"))
-    # #898: dated pool subdirs (queues/research/<YYYY-MM-DD>/*.yaml). See the
-    # docstring — date-shaped names ONLY, so archive subdirs stay excluded.
-    try:
-        children = sorted(queue_dir.iterdir())
-    except OSError:
-        children = []
-    for child in children:
-        if not child.is_dir():
-            continue
-        if child.name.startswith(".") or child.name.startswith("_"):
-            continue
-        if not _DATE_SUBDIR_RE.fullmatch(child.name):
-            continue
-        candidates.extend(sorted(child.glob("*.yaml")))
+    # #898: TODAY's dated pool subdir ONLY (queues/research/<today>/*.yaml).
+    # See the docstring for why this must match the drain's scope exactly and
+    # not scan every date-shaped subdir.
+    if today and _DATE_SUBDIR_RE.fullmatch(today):
+        today_dir = queue_dir / today
+        if today_dir.is_dir():
+            candidates.extend(sorted(today_dir.glob("*.yaml")))
     for p in candidates:
         if p.name.startswith("."):
             continue
@@ -1704,6 +1719,11 @@ def build_dispatch_ctx(
         "has_research_items": _queue_has_items(
             repo / "queues" / "research",
             drainable_kinds=(_drainable_kinds_for_queue(repo, "queues/research/") or None),
+            # #898 follow-up: scope the dated-pool-subdir scan to `today` only
+            # — the exact subdir L2's desk prompt reads from (see
+            # _queue_has_items' docstring). An older, never-drained dated
+            # subdir must NOT pin this True forever.
+            today=today,
         ),
         # Approved decisions land in the dept top-level `inbox/decisions/`
         # — that is where the cockpit approve-click writes (console
@@ -2089,6 +2109,14 @@ def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
     `today_dir` are present), or at minimum must carry `_repo_dir` if the
     caller injects it. When no `_repo_dir` is available we fail-open (return
     True) so a misconfigured ctx never silently starves a mission.
+
+    #898 follow-up: threads `ctx["today"]` through to `_queue_has_items` so a
+    consumer mission whose `input_queue` is the dated-pool convention
+    (`queues/research/`) is gated on the SAME `<today>` subdir its own desk
+    prompt actually reads — never on a stale, never-drained older dated
+    subdir (see `_queue_has_items`'s docstring for why that would fire-spin).
+    Harmless for any `input_queue` that doesn't use dated subdirs — no
+    `<today>`-named child exists there, so the extra scan is a no-op.
     """
     input_queue = mission.get("input_queue")
     if not input_queue:
@@ -2102,7 +2130,7 @@ def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
 
     queue_path = Path(repo_dir) / input_queue
     drainable = _drainable_kinds_for_queue(Path(repo_dir), input_queue) or None
-    return _queue_has_items(queue_path, drainable_kinds=drainable)
+    return _queue_has_items(queue_path, drainable_kinds=drainable, today=ctx.get("today"))
 
 
 def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
