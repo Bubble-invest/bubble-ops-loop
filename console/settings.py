@@ -25,7 +25,33 @@ BACKUP_LOG_PATH = Path(
 # ---- Env-var driven knobs --------------------------------------------
 
 # Bearer token — operator MUST set this in prod. Tests inject via conftest.
+# NOTE: after the /login page (board #997 option C) lands, the bearer is kept
+# only as an API/CI credential + a cutover fallback; the browser session is the
+# opaque `console_session` cookie, no longer the raw bearer.
 BEARER_TOKEN = os.environ.get("CONSOLE_BEARER_TOKEN", "")
+
+# ---- Login page + opaque session (board #997 option C) ----------------
+# Password credentials for the /login page. Prefer per-user hashes (cleaner
+# password-manager/Keychain entries, per-person revoke/audit):
+#   CONSOLE_LOGIN_USERS='{"joris":"pbkdf2_sha256$...","jade":"pbkdf2_sha256$..."}'
+# Or a single shared password (any username accepted):
+#   CONSOLE_LOGIN_PASSWORD_HASH='pbkdf2_sha256$...'
+# Generate hashes with console/deploy/make_password_hash.py and store in SOPS.
+# With neither set, password login is disabled (the bearer still admits the
+# operator — not a lockout).
+LOGIN_USERS_JSON = os.environ.get("CONSOLE_LOGIN_USERS", "")
+LOGIN_PASSWORD_HASH = os.environ.get("CONSOLE_LOGIN_PASSWORD_HASH", "")
+
+# Opaque session store (SQLite). The browser cookie carries this session's
+# random id, never the bearer.
+SESSION_COOKIE = "console_session"
+SESSION_DB_PATH = Path(
+    os.environ.get("CONSOLE_SESSION_DB", str(PROJECT_ROOT / "state" / "console-sessions.db"))
+)
+# Sliding idle window (refreshed on every authenticated request) and the hard
+# absolute cap. An actively-used cockpit never expires; an abandoned one does.
+SESSION_IDLE_SECONDS = int(os.environ.get("CONSOLE_SESSION_IDLE_DAYS", "30")) * 86400
+SESSION_ABSOLUTE_SECONDS = int(os.environ.get("CONSOLE_SESSION_ABSOLUTE_DAYS", "180")) * 86400
 
 # Read mode: if READ_FROM_DISK is set, the services read repo content from
 # this directory (each subdir = a bubble-ops-<slug> repo). Otherwise they

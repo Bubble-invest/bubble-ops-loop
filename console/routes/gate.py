@@ -294,12 +294,19 @@ def gate_decide(
     gate = github_reader.load_gate(slug, gate_id)
     if gate is None:
         raise HTTPException(404, f"Gate not found: {gate_id}")
+    # Attribute the decision to the logged-in person (per-user login → per-name
+    # audit, board #997). `request.state.user` is set by the auth middleware:
+    # a login username (e.g. "joris"/"jade"), or "bearer" for API/legacy access
+    # (normalised to "operator" here).
+    actor = getattr(request.state, "user", None) or "operator"
+    if actor.startswith("bearer"):
+        actor = "operator"
     decision = {
         "gate_id": gate_id,
         "action": action,
         "comment": comment or "",
         "decided_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "decided_by": "operator",  # single-operator console
+        "decided_by": actor,
     }
     # `choose` (#730 — question gates): the operator picks one of the 2-3
     # options the agent proposed. Only valid when the submitted option id

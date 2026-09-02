@@ -735,7 +735,8 @@ def _ensure_board_label(name: str, color: str, token: str) -> None:
         return
 
 
-def _apply_card_decision(number: int, action: str, comment: str, token: str) -> None:
+def _apply_card_decision(number: int, action: str, comment: str, token: str,
+                         actor: str = "operator") -> None:
     """Record `action` on board issue #number: label + comment (+ close, or
     un-queue for defer). Reuses the board token. Raises urllib.error.HTTPError /
     URLError on a failed REST call so the route can render an error partial.
@@ -746,6 +747,12 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
     - clarify : -needs:human, byte-exact marker comment, THEN the note (if any) as
                 a second «📝 Note de Joris : …» comment (stays OPEN — Rick re-works)
     """
+    # Display name for the acting person (per-user login → per-name audit, #997).
+    # `actor` is the auth middleware's request.state.user: a login username
+    # ("joris"/"jade") or "bearer" (API/legacy → shown as "operator").
+    who = actor or "operator"
+    who = "operator" if who.startswith("bearer") else who
+    who = who[:1].upper() + who[1:]
     extra = (comment or "").strip()
     suffix = ("\n\n" + extra) if extra else ""
 
@@ -764,7 +771,7 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
         _board_api("POST", f"/issues/{number}/labels", token,
                    {"labels": ["decision:approved"]})
         _board_api("POST", f"/issues/{number}/comments", token,
-                   {"body": "✅ Approved by Joris via cockpit" + suffix})
+                   {"body": f"✅ Approved by {who} via cockpit" + suffix})
         _board_api("PATCH", f"/issues/{number}", token, {"state": "closed"})
     elif action == "reject":
         # Remove needs:human FIRST — same reason as approve (board #356): a
@@ -778,7 +785,7 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
         _board_api("POST", f"/issues/{number}/labels", token,
                    {"labels": ["decision:rejected"]})
         _board_api("POST", f"/issues/{number}/comments", token,
-                   {"body": "❌ Rejected by Joris via cockpit" + suffix})
+                   {"body": f"❌ Rejected by {who} via cockpit" + suffix})
         _board_api("PATCH", f"/issues/{number}", token, {"state": "closed"})
     elif action == "defer":
         # Remove the needs:human label so the card drops off Joris's queue and
@@ -790,7 +797,7 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
             if exc.code != 404:
                 raise
         _board_api("POST", f"/issues/{number}/comments", token,
-                   {"body": "⏳ Deferred by Joris — back to Rick's queue" + suffix})
+                   {"body": f"⏳ Deferred by {who} — back to Rick's queue" + suffix})
     elif action == "clarify":
         # Same board mechanics as defer (needs:human off, stays OPEN, no other
         # label change, no close) but a DISTINCT marker comment. Rick's loop keys
@@ -811,7 +818,7 @@ def _apply_card_decision(number: int, action: str, comment: str, token: str) -> 
         # breaking the byte-exact marker, so it gets its own).
         if extra:
             _board_api("POST", f"/issues/{number}/comments", token,
-                       {"body": "📝 Note de Joris : " + extra})
+                       {"body": f"📝 Note de {who} : " + extra})
     else:  # pragma: no cover — route validates before calling
         raise ValueError(f"unknown action: {action}")
 
@@ -973,7 +980,8 @@ def kanban_card_decide(
         )
 
     try:
-        _apply_card_decision(number, action, comment, token)
+        _apply_card_decision(number, action, comment, token,
+                             actor=getattr(request.state, "user", None) or "operator")
     except urllib.error.HTTPError as exc:
         return _decision_error_partial(
             request, number,
