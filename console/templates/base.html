@@ -67,6 +67,13 @@
             {% endif %}
           </a>
         {% endfor %}
+
+        {# Account: who's logged in + logout (login feature #997) #}
+        <div class="sidebar-section-label">Compte</div>
+        {% if request.state.user is defined and request.state.user and request.state.user != 'bearer' %}
+          <div class="sidebar-account-user" style="font-size:12px; color: var(--body-muted); padding:0 0 6px 2px;">connecté : <strong>{{ request.state.user }}</strong></div>
+        {% endif %}
+        <a href="/logout" class="sidebar-bottom-link">⎋ Se déconnecter</a>
       </nav>
 
       <div class="sidebar-foot">le labo est ouvert, ce matin aussi</div>
