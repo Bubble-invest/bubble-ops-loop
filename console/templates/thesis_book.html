@@ -484,6 +484,13 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
     tabs.forEach(function(x){x.setAttribute("aria-selected", x.getAttribute("data-pane")===p?"true":"false");});
   }
   tabs.forEach(function(x){x.addEventListener("click",function(){show(x.getAttribute("data-pane"));});});
+  // Deep-link support (card #1079): /dept/<slug>/portfolio#maps opens the
+  // Value-Chain Maps tab on load, so the main dept page's compact summary
+  // link can jump straight to it instead of landing on Thesis Book and
+  // requiring an extra click. Tab-nav only — Ben's panel content/logic
+  // (maps_html) is untouched.
+  var h=(location.hash||"").replace("#","");
+  if(h && document.getElementById("pane-"+h)) show(h);
 })();
 </script>
 
