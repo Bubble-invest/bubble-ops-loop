@@ -159,10 +159,11 @@ def dept_detail(
     # + vault/investment-cases/ (per-thesis memos), read-only. Empty/graceful
     # for any dept without vault/clusters/ (only Ben has one today).
     risk_cluster_table = risk_clusters.load_risk_clusters(slug)
-    # Value-chain sector maps (board #727, Part 2 of #725) — reads
-    # vault/value-chains/ (_index.md overview + per-sector *.md), read-only.
-    # Empty/graceful for any dept without that vault subdir (only Ben has
-    # it today).
+    # Value-chain sector-map COUNT for the compact summary (board #727, Part 2
+    # of #725; trimmed to count-only by #1082 once the full HTML render lost
+    # its last consumer — see value_chains.py docstring). Cheap directory
+    # listing over vault/value-chains/, no markdown parsing. Empty/graceful
+    # for any dept without that vault subdir (only Ben has it today).
     value_chain_data = value_chains.load_value_chains(slug)
     # Loop-run history — one entry per active day, with clickable outputs.
     # {{OPERATOR}} msg 1168, 2026-06-01.
