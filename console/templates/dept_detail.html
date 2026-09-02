@@ -41,10 +41,11 @@ window.bubbleRenderMarkdown = function (root) {
 };
 // initial + after every htmx swap (the session feed refreshes every 5s)
 document.addEventListener('DOMContentLoaded', function () { window.bubbleRenderMarkdown(document); });
+// Single afterSwap listener — a duplicate on `document` used to run the
+// DOMPurify markdown pass TWICE on every 5s poll (needless CPU/heat).
 document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
   window.bubbleRenderMarkdown(e.target);
 });
-document.addEventListener('htmx:afterSwap', function (e) { window.bubbleRenderMarkdown(e.target); });
 </script>
 {% endblock %}
 {% block content %}

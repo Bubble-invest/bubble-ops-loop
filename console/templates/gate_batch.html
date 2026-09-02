@@ -137,6 +137,8 @@
          github_reader.resolve_attachment_path (now incl. outputs/<date>/<N>/assets/). #}
       {% if gate.attachments %}
       <div class="gate-attachments" style="margin:0 0 12px;">
+        <div class="gate-attachments-label muted-italic" style="font-size:11px; margin-bottom:6px;
+             color: var(--body-muted); text-transform:uppercase; letter-spacing:.04em;">Pièces jointes ({{ gate.attachments|length }})</div>
         {% for att in gate.attachments %}
           {% set att_path = att if att is string else att.path %}
           {% set att_caption = none if att is string else att.caption %}

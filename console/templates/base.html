@@ -122,6 +122,17 @@
       document.body.addEventListener('htmx:sendError', function () {
         showToast("Échec de l'action — réessaie.");
       });
+
+      // Pause htmx polling while the tab is backgrounded. Several pages poll a
+      // fragment every 5s (dept inbox/session, onboarding, concierge); left
+      // unchecked they keep firing in a hidden tab — needless refreshes + CPU
+      // that warmed the machine. Cancelling the request when document.hidden
+      // stops the churn; the next `every Ns` tick resumes once the tab is
+      // visible again. Users don't act on a hidden tab, so this only drops
+      // background polls, never an interaction.
+      document.body.addEventListener('htmx:beforeRequest', function (ev) {
+        if (document.hidden) { ev.preventDefault(); }
+      });
     }());
   </script>
 
