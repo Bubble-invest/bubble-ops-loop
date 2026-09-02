@@ -31,6 +31,27 @@
 #      VPS-only (/home/claude hardcoded), so a Mac plugin bump had nothing
 #      re-applying it.
 #
+#   G/H. Concurrency (independent-review finding) — two invocations racing the
+#      SAME server.ts (all VPS depts share one $HOME, hence one plugin cache)
+#      must serialize via the lock, never corrupt: exactly one backup per
+#      patch type, both patches present exactly once, still bun-builds, and
+#      the pair's wall-clock proves real serialization (not scheduling luck).
+#      Run against the box's native lock (G) and, when this box has no real
+#      flock(1) (true on stock macOS), again forcing the flock(1) code path
+#      via a Python-fcntl shim (H) so both lock backends are exercised.
+#
+#   I. GNU-mktemp regression (live-VPS dry-run finding) — the boot_rearm
+#      step's `mktemp -t install-channel-patches-boot-rearm` (no XXXXXX) is a
+#      silent no-op difference between BSD mktemp (macOS: `-t PREFIX` just
+#      works) and GNU mktemp (the VPS: errors "too few X's in template"),
+#      which is exactly why this bug survived 44 passing tests run only on a
+#      Mac. A Python-based GNU-mktemp work-alike shim is used to reproduce
+#      that stricter behavior on THIS (Mac) box, first proving the shim is
+#      faithful (I1: it fails on the exact original buggy invocation), then
+#      proving the FIXED script produces a true clean no-op (rc=0 even under
+#      --strict — not fail-open masking a real failure) against an
+#      already-fully-patched plugin under that same strict mktemp.
+#
 # Hermetic: builds throw-away fake plugin dirs under a tmpdir, each seeded from
 # a genuinely PRISTINE server.ts (neither patch) + the real package.json + a
 # SYMLINK to the real plugin node_modules, so `bun build` resolves grammy /
@@ -296,6 +317,121 @@ SHIM
   [[ "$(PATH="$SHIM_DIR:$PATH" command -v flock)" == "$SHIM_DIR/flock" ]] && ok "H setup: flock shim is first on PATH" || bad "H setup: flock shim not resolving via PATH"
   run_concurrency_case "flockshim" "PATH='$SHIM_DIR:$PATH'"
 fi
+
+# ── I. GNU-mktemp regression (live-VPS dry-run finding) ─────────────────────
+# A real dry-run on the VPS (GNU mktemp, via util-linux/coreutils) hit:
+#   mktemp: too few X's in template 'install-channel-patches-boot-rearm'
+#   ./scripts/install-channel-patches.sh: line 200: : No such file or directory
+#   tail: cannot open '' for reading: No such file or directory
+#   [install-channel-patches] boot_rearm: FAILED (rc=1)
+# on a plugin that WAS already correctly patched — a false failure caused by
+# `mktemp -t install-channel-patches-boot-rearm` (no XXXXXX): BSD mktemp
+# (macOS, this dev box) treats `-t PREFIX` as a prefix and appends its own
+# random suffix — no error — which is exactly why the 44 tests run on a Mac
+# never caught this. GNU mktemp requires the template argument itself to end
+# in a run of X's and errors loudly on a bare prefix. The fix drops `-t`
+# entirely in favor of an explicit "$TMPDIR/name.XXXXXX" template, which both
+# implementations handle identically.
+#
+# This section proves BOTH halves: (1) the shim below faithfully reproduces
+# GNU mktemp's stricter behavior (so it would have caught the ORIGINAL bug —
+# without this we can't trust it proves anything), and (2) the CURRENT
+# (fixed) script produces a clean no-op (rc=0 even under --strict, not just
+# fail-open masking a real failure) when boot_rearm+bubble-inject are BOTH
+# already applied, under that same strict mktemp.
+echo "I. GNU-mktemp regression (board #956 live-VPS dry-run finding)"
+GNU_MKTEMP_SHIM_DIR="$WORK/gnu-mktemp-shim"; mkdir -p "$GNU_MKTEMP_SHIM_DIR"
+cat > "$GNU_MKTEMP_SHIM_DIR/mktemp" <<'SHIM'
+#!/usr/bin/env python3
+# Minimal GNU-mktemp work-alike, just strict enough to reproduce the ONE
+# behavioral difference this test cares about: `-t TEMPLATE` REQUIRES
+# TEMPLATE to end in a run of X's (GNU errors "too few X's in template" on a
+# bare prefix, unlike BSD's -t which silently appends its own suffix).
+import os, re, sys, tempfile
+
+args = sys.argv[1:]
+directory = False
+template = None
+use_dash_t = False
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == '-d':
+        directory = True
+    elif a == '-t':
+        use_dash_t = True
+    elif not a.startswith('-'):
+        template = a
+    i += 1
+
+if use_dash_t:
+    if not template or not re.search(r'X{3,}$', template):
+        sys.stderr.write(f"mktemp: too few X's in template '{template}'\n")
+        sys.exit(1)
+    template = os.path.join(os.environ.get('TMPDIR', '/tmp'), template)
+
+if template:
+    if not re.search(r'X{3,}$', template):
+        sys.stderr.write(f"mktemp: too few X's in template '{template}'\n")
+        sys.exit(1)
+    if directory:
+        print(tempfile.mkdtemp(prefix=re.sub(r'X+$', '', os.path.basename(template)) or 'tmp',
+                                dir=os.path.dirname(template) or None))
+    else:
+        fd, path = tempfile.mkstemp(prefix=re.sub(r'X+$', '', os.path.basename(template)) or 'tmp',
+                                     dir=os.path.dirname(template) or None)
+        os.close(fd)
+        print(path)
+else:
+    if directory:
+        print(tempfile.mkdtemp())
+    else:
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        print(path)
+SHIM
+chmod +x "$GNU_MKTEMP_SHIM_DIR/mktemp"
+[[ "$(PATH="$GNU_MKTEMP_SHIM_DIR:$PATH" command -v mktemp)" == "$GNU_MKTEMP_SHIM_DIR/mktemp" ]] \
+  && ok "I setup: GNU-mktemp shim is first on PATH" || bad "I setup: GNU-mktemp shim not resolving via PATH"
+
+# I1: prove the shim is FAITHFUL — it must reproduce the exact original error
+# for the exact original (buggy) invocation pattern, or this test proves nothing.
+SHIM_REPRO_OUT="$(PATH="$GNU_MKTEMP_SHIM_DIR:$PATH" mktemp -t install-channel-patches-boot-rearm 2>&1)"
+SHIM_REPRO_RC=$?
+[[ "$SHIM_REPRO_RC" != "0" ]] && ok "I1: shim reproduces GNU mktemp's failure on the ORIGINAL buggy template" \
+  || bad "I1: shim did NOT fail on the buggy template — shim is not faithful, rest of section I is untrustworthy"
+echo "$SHIM_REPRO_OUT" | grep -qi "too few X" && ok "I1b: shim's error message matches the real GNU mktemp wording" || bad "I1b: shim error message doesn't match"
+
+# I2: build a fixture with BOTH patches already applied (using the real host
+# mktemp — this setup step, not the thing under test).
+ROOT_I="$WORK/i"; TGT_I="$(make_fixture "$ROOT_I")"
+GLOB_I="$ROOT_I/claude-plugins-official/telegram/*/"
+run_installer "$GLOB_I"   # first pass applies both patches (sanity: uses host mktemp)
+[[ "$RC" == "0" ]] || { echo "FATAL: could not build the fully-patched fixture for section I (rc=$RC)"; exit 2; }
+[[ "$(grep -c bootRearmNotification "$TGT_I/server.ts")" == "2" ]] || { echo "FATAL: fixture for I is missing boot_rearm"; exit 2; }
+grep -q "bubble-inject" "$TGT_I/server.ts" || { echo "FATAL: fixture for I is missing bubble-inject"; exit 2; }
+
+# I3: THE actual regression check — re-run against the fully-patched fixture
+# with the GNU-mktemp shim first on PATH, under --strict so a masked (fail-open)
+# failure can't hide as a false rc=0. This is the exact scenario from the live
+# VPS dry-run: both patches already present, installer should cleanly no-op.
+CONC_OUT="$(PATH="$GNU_MKTEMP_SHIM_DIR:$PATH" CHANNEL_PATCHES_PLUGIN_GLOB="$GLOB_I" CHANNEL_PATCHES_BUN="$BUN_BIN" \
+  bash "$INSTALLER" --strict 2>&1)"
+CONC_RC=$?
+[[ "$VERBOSE" == "1" ]] && { echo "---- section I installer output (under GNU-mktemp shim) ----"; echo "$CONC_OUT"; echo "-------------------------------------------------------------"; }
+[[ "$CONC_RC" == "0" ]] && ok "I3: --strict exits 0 under GNU mktemp on an already-fully-patched plugin (TRUE clean no-op, not fail-open masking)" \
+  || bad "I3: --strict exit was $CONC_RC — boot_rearm regression is back (or a new mktemp issue)"
+echo "$CONC_OUT" | grep -q "boot_rearm: OK" && ok "I3b: boot_rearm reports OK (not FAILED)" || bad "I3b: boot_rearm did not report OK — see output"
+# Matches either failure wording: "FAILED" (install-boot-rearm.sh itself
+# errored) or "mktemp failed" (the defensive guard added alongside the fix,
+# which turns a future mktemp breakage into a clear message instead of the
+# original confusing cascade — "tail: cannot open '' " etc.). Either one means
+# the same regression.
+echo "$CONC_OUT" | grep -qiE "boot_rearm: FAILED|boot_rearm: mktemp failed" \
+  && bad "I3c: boot_rearm reports a failure — the live-VPS bug (or its defensive guard) fired" \
+  || ok "I3c: no boot_rearm failure/mktemp-guard line"
+echo "$CONC_OUT" | grep -q "bubble-inject: already present — no-op" && ok "I3d: bubble-inject still reports its own clean no-op" || bad "I3d: bubble-inject no-op line missing"
+[[ "$(grep -c bootRearmNotification "$TGT_I/server.ts")" == "2" ]] && ok "I3e: boot_rearm wiring unchanged (still exactly once)" || bad "I3e: boot_rearm wiring was touched/corrupted"
 
 echo ""
 echo "== RESULT: $PASS passed, $FAIL failed =="
