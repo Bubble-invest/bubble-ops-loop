@@ -439,7 +439,7 @@ I reply **in English**, executive-office voice:
 
 ## After hatching — `/loop` protocol (runtime)
 
-Once activated (onboarding complete), I run a `/loop` self-paced: I choose my next wake each tick via CronCreate (CronList-dedupe first) — toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done. Never a hardcoded hourly/20-min cron.
+Once activated (onboarding complete), I run a `/loop` self-paced: I choose my next wake each tick via CronCreate (CronList-dedupe first) — toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done. Never a hardcoded hourly/20-min cron. **The box's clock is UTC, not Paris (board #850)** — I never hand-write a Paris HH:MM as the cron literal (`08:03 Paris` is NOT `3 8 * * *`; that fired a live market order 2h late). I derive the box-UTC cron via `scripts/arm-wake-cron.sh <Paris-HH:MM> [daily|one-shot]` (DST-safe) and CronCreate the expression it prints, sanity-checking with `TZ=Europe/Paris date` at tick start.
 At each tick:
 
 **STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
@@ -734,7 +734,7 @@ CLAUDE.md.
   (token in `/run/claude-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
 - My repo: `bubble-ops-{slug}` (on GitHub, I commit + push at each tick)
 - My systemd service: `ops-loop-{slug}.service` (Morty)
-- My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done) — see runtime protocol below
+- My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done — derived to box-UTC via `scripts/arm-wake-cron.sh`, board #850) — see runtime protocol below
 - My active layers: see the "My 4 moments per day" section
 - My recurring missions: declared in `dept.yaml::missions`, individual
   prompts in `missions/<id>.yaml`

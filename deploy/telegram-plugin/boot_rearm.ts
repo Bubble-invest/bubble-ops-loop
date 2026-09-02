@@ -49,9 +49,10 @@ export function bootRearmNotification(
     "FIRST run ONE normal session-start + dispatch tick now — do this unconditionally on boot/heal (the floor timers are a net, not a substitute). " +
     "THEN " +
     "arm your OWN next wake with a single CronCreate (run CronList first and delete any stale/duplicate loop task so you never stack two). " +
+    "The box's clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 — treating 08:03 Paris as `3 8 * * *` fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via `scripts/arm-wake-cron.sh <Paris-HH:MM> [daily|one-shot]` (DST-safe — reads the tz database, never a hardcoded offset) and CronCreate the expression it prints. Sanity-check with `TZ=Europe/Paris date` at the top of every tick rather than trusting a stale header. " +
     "The CronCreate prompt MUST be your full tick protocol text (STEP A-F per CLAUDE.md), NEVER a bare slash-command like /loop-now (a bare slash-command delivers as a malformed inbound that can trip the deaf-watchdog). " +
-    "work pending or a layer still due today -> schedule toward that layer time; quiet but more may come today -> a longer cadence is fine (e.g. 0 */2 * * *); " +
-    "all 4 layers done and nothing explicitly awaited -> set ONE one-shot for tomorrow 08:03 Paris (3 8 * * *) and arm nothing else. " +
+    "work pending or a layer still due today -> schedule toward that layer time; quiet but more may come today -> a longer cadence is fine (e.g. 0 */2 * * *, TZ-neutral); " +
+    "all 4 layers done and nothing explicitly awaited -> run `scripts/arm-wake-cron.sh 08:03 one-shot` for the correct box-UTC one-shot and arm nothing else. " +
     "Never hardcode an hourly cron. Your loop-layer floor timers remain the safety net. " +
     "Do not reply to a human; just resume cadence."
 
