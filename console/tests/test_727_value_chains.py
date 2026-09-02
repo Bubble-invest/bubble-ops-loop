@@ -1,11 +1,26 @@
 """
-test_727_value_chains.py — value-chain sector maps on /dept/<slug>
-(board #727, Part 2 of #725).
+test_727_value_chains.py — value-chain sector-map COUNT on /dept/<slug>
+(board #727, Part 2 of #725; trimmed to count-only by #1082).
 
 Mirrors test_364_risk_cluster_table.py's fixture style: a temp READ_FROM_DISK
 root shaped like bubble-ops-<slug>/vault/value-chains/. Covers the service
-module directly (present + absent vault subdir, empty dir, malformed/frontmatter
-files, escaping) and the /dept/<slug> route rendering the section.
+module directly (present + absent vault subdir, empty dir, counting) and the
+/dept/<slug> route rendering the compact summary.
+
+Card #1082: the FULL render this module used to do (overview HTML, per-sector
+HTML, tag legend — added for #727, exposed on a dedicated sub-page by #1065)
+lost its last consumer when #1079 removed that sub-page in favor of Ben's live
+Value-Chain Maps panel (#1078, served by
+console.routes.thesis_book._latest_maps_html from a pre-rendered
+outputs/<date>/value-chain-maps-panel.html — a wholly separate code path).
+The only thing left reading this module was /dept/<slug>'s compact one-line
+summary, which only ever used `.available` / `.sector_count` — so
+load_value_chains() was trimmed to compute exactly that, cheaply (a directory
+listing, no markdown parsing/sanitizing of ~11 sector maps per page load).
+The tests that used to cover the dropped rendering (overview_html content,
+per-sector HTML, frontmatter stripping, H1/title extraction, XSS sanitization,
+the tag legend) are gone with the feature they covered; see git history on
+this file (pre-#1082) if that rendering is ever revived.
 """
 from __future__ import annotations
 
@@ -14,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from console import settings
-from console.services import value_chains
+from console.services import markdown_render, value_chains
 
 
 @pytest.fixture
@@ -37,8 +52,7 @@ def _build_repo(root: Path, slug: str = "ben") -> Path:
 def test_unavailable_when_no_repo(disk_root):
     data = value_chains.load_value_chains("nonexistent")
     assert data.available is False
-    assert data.sectors == []
-    assert data.overview_html is None
+    assert data.sector_count == 0
 
 
 def test_unavailable_when_no_vault_dir(disk_root):
@@ -61,7 +75,19 @@ def test_unavailable_when_value_chains_dir_empty(disk_root):
     assert data.available is False
 
 
-def test_loads_index_and_sectors(disk_root):
+def test_unavailable_when_only_empty_index(disk_root):
+    """An _index.md that exists but is empty still counts as "nothing here"
+    (mirrors the pre-#1082 behavior of only an overview with content making
+    the section available) — cheap stat-based check, not a content read."""
+    repo = _build_repo(disk_root, "ben")
+    vc = repo / "vault" / "value-chains"
+    vc.mkdir(parents=True)
+    (vc / "_index.md").write_text("", encoding="utf-8")
+    data = value_chains.load_value_chains("ben")
+    assert data.available is False
+
+
+def test_loads_available_with_sector_count(disk_root):
     repo = _build_repo(disk_root, "ben")
     vc = repo / "vault" / "value-chains"
     vc.mkdir(parents=True)
@@ -79,67 +105,47 @@ def test_loads_index_and_sectors(disk_root):
     )
     data = value_chains.load_value_chains("ben")
     assert data.available is True
-    assert data.overview_html is not None
-    assert "Value chains" in str(data.overview_html)
     assert data.sector_count == 2
-    titles = sorted(s.title for s in data.sectors)
-    assert titles == ["Energy", "Technology"]
-    # frontmatter is stripped, not rendered as stray markdown
-    energy = next(s for s in data.sectors if s.slug == "energy")
-    assert "title: Energy value chain" not in str(energy.html)
 
 
-def test_index_only_file_ignored_as_sector(disk_root):
-    """_index.md must never appear in the sectors list itself."""
+def test_index_only_dir_is_available_with_zero_sectors(disk_root):
+    """_index.md alone (no per-sector maps yet) is "available" with count 0
+    — an overview page, no sector cards. Also confirms _index.md itself is
+    never counted as a sector."""
     repo = _build_repo(disk_root, "ben")
     vc = repo / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text("# Overview\n", encoding="utf-8")
     data = value_chains.load_value_chains("ben")
     assert data.available is True
-    assert data.sectors == []
-    assert all(s.slug != "_index" for s in data.sectors)
+    assert data.sector_count == 0
 
 
-def test_sector_without_h1_falls_back_to_filename(disk_root):
+def test_dotfiles_and_underscore_files_not_counted_as_sectors(disk_root):
     repo = _build_repo(disk_root, "ben")
     vc = repo / "vault" / "value-chains"
     vc.mkdir(parents=True)
-    (vc / "consumer-staples.md").write_text("- WMT — own\n", encoding="utf-8")
+    (vc / "technology.md").write_text("- AAPL — own\n", encoding="utf-8")
+    (vc / ".hidden.md").write_text("noise\n", encoding="utf-8")
+    (vc / "_draft.md").write_text("noise\n", encoding="utf-8")
+    (vc / "readme.txt").write_text("not markdown\n", encoding="utf-8")
     data = value_chains.load_value_chains("ben")
     assert data.available is True
-    assert data.sectors[0].title == "Consumer Staples"
+    assert data.sector_count == 1
 
 
-def test_untrusted_content_is_sanitized(disk_root):
-    """Vault markdown is agent/human-authored but rendered via the SAME
-    sanitizer as the whiteboard — a <script> tag must never survive."""
+def test_load_value_chains_never_reads_file_contents(disk_root, monkeypatch):
+    """#1082: the count-only path must not open/parse sector or index files —
+    only stat the directory listing. A file whose content would blow up any
+    reader (binary garbage under a .md name) must not raise."""
     repo = _build_repo(disk_root, "ben")
     vc = repo / "vault" / "value-chains"
     vc.mkdir(parents=True)
-    (vc / "tech.md").write_text(
-        "# Tech\n\n<script>alert('xss')</script>\n\nAAPL — own\n",
-        encoding="utf-8",
-    )
-    data = value_chains.load_value_chains("ben")
-    assert "<script>" not in str(data.sectors[0].html)
-
-
-def test_tag_legend_present_and_matches_the_nine_known_tags(disk_root):
-    """Legend must cover the FULL union of tags used across Ben's live
-    per-sector deep-dive files, not just the 5 named in _index.md's summary
-    (#727 review finding — financials/industrials/information-technology use
-    `excluded-own` as an 8th tag; energy.md uses `wrong-sector` instead)."""
-    repo = _build_repo(disk_root, "ben")
-    vc = repo / "vault" / "value-chains"
-    vc.mkdir(parents=True)
+    (vc / "technology.md").write_bytes(b"\xff\xfe\x00\xff not valid utf-8")
     (vc / "_index.md").write_text("# Overview\n", encoding="utf-8")
     data = value_chains.load_value_chains("ben")
-    codes = {t["code"] for t in data.tag_legend}
-    assert codes == {
-        "own", "watch", "early", "ran", "private",
-        "broken", "arb", "excluded-own", "wrong-sector",
-    }
+    assert data.available is True
+    assert data.sector_count == 1
 
 
 # ─── Route-level tests (/dept/<slug>) ──────────────────────────────────
@@ -160,13 +166,7 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     /dept/<slug>/portfolio#maps 3rd tab (Ben's live Value-Chain Maps panel,
     #1078) since the #1065 dedicated /dept/<slug>/value-chains sub-page (a
     console-rendered snapshot of the same vault data) was redundant with it
-    and has been removed. The #maps hash deep-links straight into the Value-
-    Chain Maps tab (see thesis_book.html's on-load hash handler) instead of
-    landing on Thesis Book and requiring an extra click — that's the "ONE
-    entry point" the consolidation is going for. Writing vault/value-chains/
-    under the 'fixture' dept's on-disk repo (same READ_FROM_DISK root the
-    app/client fixtures already point at) must surface that compact summary,
-    but NOT the sector bodies or legend."""
+    and has been removed."""
     vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text(
@@ -184,12 +184,40 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     assert "/dept/fixture/portfolio#maps" in body
     assert "/dept/fixture/value-chains" not in body
     assert "1 carte GICS" in body
-    # the FULL render (sector title/body, overview text, tag legend) must NOT
-    # ship inline on the main page any more (that's the whole point of #1065)
+    # the FULL render (sector title/body, overview text) must NOT ship
+    # inline on the main page any more (that's the whole point of #1065)
     assert "Technology" not in body
     assert "Eleven GICS sectors" not in body
-    for label in ("Own", "Watch", "Early", "Ran", "Private"):
-        assert label not in body
+
+
+def test_main_dept_page_never_invokes_markdown_render(client, fixture_root, monkeypatch):
+    """Card #1082: /dept/<slug>'s compact summary must not parse any of the
+    ~11 sector maps to HTML — only count them. Sabotage the sanitizing
+    markdown renderer used to build overview/sector HTML pre-#1082: if the
+    main-page request path still touched it, this would blow up the request
+    instead of quietly rendering the compact count."""
+    def _boom(*_args, **_kwargs):
+        raise AssertionError(
+            "load_value_chains must not render markdown on the main /dept "
+            "page path (card #1082) — the compact summary only needs "
+            "available + sector_count."
+        )
+
+    monkeypatch.setattr(markdown_render, "render_markdown_safe", _boom)
+
+    vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
+    vc.mkdir(parents=True)
+    (vc / "_index.md").write_text("# Overview\n", encoding="utf-8")
+    for sector in (
+        "communication-services", "consumer-discretionary", "consumer-staples",
+        "energy", "financials", "health-care", "industrials",
+        "information-technology", "materials", "real-estate", "utilities",
+    ):
+        (vc / f"{sector}.md").write_text(f"# {sector}\n\n- TICK — own\n", encoding="utf-8")
+
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "11 carte" in r.text
 
 
 # ─── Route-level tests (/dept/<slug>/value-chains) — card #1065 ────────

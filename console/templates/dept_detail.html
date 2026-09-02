@@ -486,14 +486,19 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
    sector maps, tag legend, overview) moved off this page. Graceful
    no-op (section omitted) for any dept without vault/value-chains/ —
    value_chains.available is False for every dept but Ben today (same
-   gating idiom as risk_clusters above). Vault read path unchanged
-   (value_chains.load_value_chains) — only WHERE it renders moved.
+   gating idiom as risk_clusters above).
 
    Card #1079: the dedicated /dept/<slug>/value-chains sub-page (#1065) was
    itself superseded by Ben's self-contained Value-Chain Maps panel, now
    embedded as the /dept/<slug>/portfolio 3rd tab (#1078) — that live panel
    is the real, up-to-date view. The sub-page route/template were removed;
-   this link now points at the portfolio tab instead. #}
+   this link now points at the portfolio tab instead.
+
+   Card #1082: with the sub-page gone, this compact summary (available +
+   sector_count only) was the LAST consumer of value_chains.load_value_chains
+   — so that service was trimmed to compute exactly this, cheaply (a
+   directory listing), instead of parsing all ~11 sector maps to sanitized
+   HTML on every /dept/<slug> load just to throw the HTML away. #}
 {% if value_chains and value_chains.available %}
 <section class="cabinet-section m4-section" aria-labelledby="dept-value-chains-heading">
   <div class="section-head">

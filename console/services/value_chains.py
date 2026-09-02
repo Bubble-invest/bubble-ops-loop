@@ -1,119 +1,63 @@
 """
-value_chains.py — read-only render of Ben's GICS value-chain sector maps on
-/dept/ben (board #727, Part 2 of #725).
+value_chains.py — count-only read of Ben's GICS value-chain sector maps for
+the /dept/<slug> compact summary (board #1082, trimming #727/Part 2 of #725).
 
 Ben's `vault/value-chains/` holds an `_index.md` overview plus one Markdown
 file per GICS sector (~11 sector maps, ~500 names tagged own/watch/early/ran/
-private — see #727/#725). This module reads those files directly, using the
-SAME repo_path(slug) -> vault_dir access pattern as risk_clusters.py /
-thesis_book.py (read-only, no recompute, no new dependency) and the SAME
-markdown-render helper the whiteboard/thesis-book panes already use
-(markdown_render.render_markdown_safe — agent-authored markdown is untrusted,
-so it's sanitized to a strict HTML allowlist, never raw).
+private — see #727/#725). This module used to also render that vault to HTML
+(overview + per-sector bodies + a tag legend) for a dedicated /dept/<slug>/
+value-chains sub-page (#1065). That sub-page was removed in #1079 once Ben's
+live Value-Chain Maps panel became the embedded 3rd tab on /dept/<slug>/
+portfolio (#1078, rendered separately by
+console.routes.thesis_book._latest_maps_html straight from
+outputs/<date>/value-chain-maps-panel.html — NOT this module). That left the
+main /dept/<slug> page's compact summary (dept_detail.html section "02b") as
+the ONLY consumer of this module, and it only ever read `.available` /
+`.sector_count` — never the rendered HTML. So as of #1082 this module does
+the cheap thing the one remaining consumer actually needs: check the dir
+exists and count sector files, no markdown parsing/sanitizing/rendering of
+all 11 maps on every main-page load.
 
-Graceful degradation: any dept without a `vault/value-chains/` dir (every dept
-but Ben today) gets `ValueChainData(available=False)` — the template omits the
-whole section, never a crash or an empty shell (mirrors risk_clusters.py's
-`has_clusters` gate).
+Graceful degradation is unchanged: any dept without a `vault/value-chains/`
+dir (every dept but Ben today) gets `ValueChainData(available=False)` — the
+template omits the whole section, never a crash or an empty shell (mirrors
+risk_clusters.py's `has_clusters` gate).
 """
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
-
-from markupsafe import Markup
 
 from console.services.dept_registry import repo_path
-from console.services.markdown_render import render_markdown_safe
 
 _log = logging.getLogger(__name__)
 
-# Sector map files to skip when listing "per-sector" maps.
+# Sector map files to skip when counting "per-sector" maps.
 _INDEX_FILENAME = "_index.md"
-
-_H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
-# Minimal frontmatter stripper (a sector map may or may not open with a
-# `---`-delimited YAML block) — this module only ever needs the BODY text to
-# render, unlike risk_clusters.py which reads specific frontmatter fields, so
-# a full parse isn't warranted here; just don't let a raw `---\nkey: val\n---`
-# block render as a stray markdown rule + prose in the output.
-_FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
-
-#: Static tag legend — the union of every tag actually used inline across
-#: Ben's live vault/value-chains/*.md sector maps (verified against
-#: /home/claude/agents/bubble-ops-ben/vault/value-chains/ during #727 review;
-#: the card's own summary only named the first 5). The vault does not (yet)
-#: ship a machine-readable legend of its own, so this mirrors the vault's own
-#: emoji + tag vocabulary rather than scraping one from content. If Ben's
-#: vault ever adds a legend file, prefer reading it over this constant.
-#: `excluded-own` and `wrong-sector` are both included as variants seen
-#: across different sector files (financials/industrials/information-
-#: technology use `excluded-own` as an 8th tag; energy.md uses
-#: `wrong-sector` instead).
-TAG_LEGEND: List[dict] = [
-    {"code": "early", "label": "🟢 Early", "desc": "Early-stage, watchlist-adjacent."},
-    {"code": "watch", "label": "🔵 Watch", "desc": "Watching."},
-    {"code": "own", "label": "🟡 Own", "desc": "We hold."},
-    {"code": "ran", "label": "🔴 Ran", "desc": "Ran — exited, a past position."},
-    {"code": "private", "label": "⚪ Private", "desc": "Private, not investable."},
-    {"code": "broken", "label": "⚫ Broken", "desc": "Cheap for a structural reason, not an opportunity."},
-    {"code": "arb", "label": "🔶 Arb", "desc": "Deal pending, not an entry."},
-    {"code": "excluded-own", "label": "🚫 Excluded-own", "desc": "Held via another sleeve — excluded here to avoid double-counting."},
-    {"code": "wrong-sector", "label": "⛔ Wrong-sector", "desc": "Mapped here in error — belongs to another GICS sector."},
-]
-
-
-@dataclass(frozen=True)
-class SectorMap:
-    """One rendered `vault/value-chains/<slug>.md` sector map."""
-    slug: str                     # filename stem, e.g. "technology"
-    title: str                    # sector map's own H1, or a humanized filename
-    html: Optional[Markup] = None  # sanitized markdown->HTML body; None if empty
 
 
 @dataclass(frozen=True)
 class ValueChainData:
-    """Everything /dept/ben's value-chains section needs to render, or the
-    graceful empty state when the vault subdir isn't present."""
+    """Everything /dept/<slug>'s compact value-chains summary needs, or the
+    graceful empty state when the vault subdir isn't present. Count-only —
+    see module docstring for why the full HTML render (overview/sectors/tag
+    legend) was dropped in #1082; nothing reads it any more."""
     available: bool = False
-    overview_html: Optional[Markup] = None
-    sectors: List[SectorMap] = field(default_factory=list)
-    tag_legend: List[dict] = field(default_factory=lambda: list(TAG_LEGEND))
-
-    @property
-    def sector_count(self) -> int:
-        return len(self.sectors)
-
-
-def _strip_frontmatter(text: str) -> str:
-    m = _FRONTMATTER_RE.match(text)
-    return text[m.end():] if m else text
-
-
-def _first_h1(text: str) -> str:
-    m = _H1_RE.search(text)
-    return m.group(1).strip() if m else ""
-
-
-def _title_from_filename(stem: str) -> str:
-    return (stem.replace("_", " ").replace("-", " ").strip() or stem).title()
-
-
-def _read_text(path: Path) -> Optional[str]:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        _log.warning("value_chains: failed reading %s: %s", path, exc)
-        return None
+    sector_count: int = 0
 
 
 def load_value_chains(slug: str) -> ValueChainData:
-    """Return the value-chains render data for a dept. Empty/unavailable
-    (graceful) for any dept without vault/value-chains/ — only Ben has this
-    vault subdir today."""
+    """Return the value-chains COUNT for a dept's compact summary. Empty/
+    unavailable (graceful) for any dept without vault/value-chains/ — only
+    Ben has this vault subdir today.
+
+    Cheap by construction: this only stats the directory listing to decide
+    availability and count sector files by filename — it never reads or
+    parses file contents, and never touches markdown rendering (#1082;
+    contrast with the pre-#1082 version, which rendered all ~11 sector maps
+    to sanitized HTML plus the overview on every call, for a number nothing
+    but this same summary read)."""
     root = repo_path(slug)
     if root is None:
         return ValueChainData()
@@ -122,30 +66,27 @@ def load_value_chains(slug: str) -> ValueChainData:
     if not vc_dir.exists() or not vc_dir.is_dir():
         return ValueChainData()
 
-    overview_html: Optional[Markup] = None
-    index_text = _read_text(vc_dir / _INDEX_FILENAME)
-    if index_text:
-        overview_html = render_markdown_safe(_strip_frontmatter(index_text))
-
-    sectors: List[SectorMap] = []
-    for p in sorted(vc_dir.glob("*.md")):
-        if p.name == _INDEX_FILENAME or p.name.startswith((".", "_")):
+    has_index = False
+    sector_count = 0
+    for p in vc_dir.iterdir():
+        if not p.is_file() or p.suffix != ".md":
             continue
-        text = _read_text(p)
-        if text is None:
+        if p.name == _INDEX_FILENAME:
+            # Non-empty check mirrors the pre-#1082 behavior of only treating
+            # a readable/non-empty _index.md as "there's an overview" —
+            # cheap (a stat), not a read.
+            try:
+                has_index = p.stat().st_size > 0
+            except OSError as exc:
+                _log.warning("value_chains: failed stat-ing %s: %s", p, exc)
             continue
-        body = _strip_frontmatter(text)
-        title = _first_h1(body) or _title_from_filename(p.stem)
-        html = render_markdown_safe(body)
-        sectors.append(SectorMap(slug=p.stem, title=title, html=html))
+        if p.name.startswith((".", "_")):
+            continue
+        sector_count += 1
 
-    if overview_html is None and not sectors:
-        # Dir exists but is empty (or unreadable) — still "not available" from
-        # the page's point of view; nothing to render.
+    if not has_index and sector_count == 0:
+        # Dir exists but is empty (or holds only an empty/unreadable
+        # _index.md) — still "not available" from the page's point of view.
         return ValueChainData()
 
-    return ValueChainData(
-        available=True,
-        overview_html=overview_html,
-        sectors=sectors,
-    )
+    return ValueChainData(available=True, sector_count=sector_count)
