@@ -2590,6 +2590,13 @@ a.piece-tile:hover {
   font-style: italic;
   margin: 6px 0 2px;
 }
+/* Compact one-line summary left on /dept/<slug> after the full render moved
+   to /dept/<slug>/value-chains (card #1065). */
+.value-chain-compact-summary {
+  font-size: 13px;
+  color: var(--body-muted);
+  margin: 4px 0 2px;
+}
 
 /* ─── Loop-run history + output viewer ({{OPERATOR}} msg 1168) ─────────── */
 .loop-runs { list-style: none; margin: 0; padding: 0; }
