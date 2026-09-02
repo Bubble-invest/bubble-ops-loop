@@ -148,9 +148,14 @@ ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
 # silently reverted fleet-wide because vendored on-disk, not committed). Fail-open.
 ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG}
 
-# Re-apply the bubble-inject patch to the telegram plugin (delivers a message into
-# this live session as if from {{OPERATOR}}) — self-heals after a plugin update. Fail-open.
-ExecStartPre=+/usr/local/bin/apply-inject-patch.sh
+# Re-apply BOTH telegram-plugin patches (bubble-inject — delivers a message into
+# this live session as if from {{OPERATOR}} — and boot_rearm, see the OPS_LOOP_BOOT_REARM
+# block above) on every start — self-heals after a plugin update, which WIPES the
+# plugin cache dir (board #956, superseding the one-off manual re-apply in #1047 and
+# the VPS-only, boot_rearm-blind scripts/apply-inject-patch.sh it replaces here).
+# Idempotent, `bun build`-validated, fail-open (never blocks a dept from starting).
+# Canonical source: scripts/install-channel-patches.sh.
+ExecStartPre=+/usr/local/bin/install-channel-patches.sh
 
 # Guard against a stale ~/.claude/.credentials.json SHADOWING the env CLAUDE_CODE_OAUTH_TOKEN
 # (board #294 / incident 2026-06-25: the shared on-disk creds expired and 401'd all 5 depts,

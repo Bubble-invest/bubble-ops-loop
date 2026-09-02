@@ -25,8 +25,16 @@
 # backstop. See deploy/local/README.md.
 #
 # GENERIC: parameterized by --dept-dir / --slug / --claude-bin / --tmux-bin /
-# --telegram-state-dir / --extra-path / --workspace-dir — any future local dept
-# (ours or a client's) uses the same script. NOT Miranda-hardcoded.
+# --telegram-state-dir / --extra-path / --workspace-dir / --channel-patches-script
+# — any future local dept (ours or a client's) uses the same script. NOT
+# Miranda-hardcoded.
+#
+# --channel-patches-script (board #956): re-applies the telegram plugin's
+# boot_rearm + bubble-inject patches before every claude launch, so a plugin
+# auto-update (which wipes the plugin cache dir) self-heals instead of
+# silently breaking /loop re-arm or agent-to-agent inject. Defaults to the
+# sibling scripts/install-channel-patches.sh in THIS checkout, resolved to an
+# absolute path; pass "" to disable.
 #
 # --workspace-dir (brain↔body): a host:local dept that REUSES an existing
 # workspace's skills/tools (e.g. Miranda → Miranda_Socials, whose 8 skills live
@@ -46,7 +54,8 @@
 #                         [--workspace-dir <dir>] [--claude-bin <path>]
 #                         [--tmux-bin <path>] [--telegram-state-dir <dir>]
 #                         [--extra-path <PATH>] [--launch-agents-dir <dir>]
-#                         [--log-dir <dir>] [--wrapper-dir <dir>] [--activate]
+#                         [--log-dir <dir>] [--wrapper-dir <dir>]
+#                         [--channel-patches-script <path>] [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
 #                         [--wrapper-dir <dir>]
 # =============================================================================
@@ -66,6 +75,12 @@ TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-tmux}"
 TELEGRAM_STATE_DIR=""               # default derived from slug below if unset
 EXTRA_PATH="${LOCAL_LOOP_EXTRA_PATH:-/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.npm-global/bin}"
 WORKSPACE_DIR="${LOCAL_LOOP_WORKSPACE_DIR:-}"   # optional: existing workspace whose .claude/skills the dept reuses (passed as --add-dir)
+# Board #956: self-heal the telegram plugin's boot_rearm + bubble-inject patches
+# on every launch. Defaults to the sibling install-channel-patches.sh in THIS
+# bubble-ops-loop checkout (the one running this installer) — resolved to an
+# absolute path so the rendered wrapper keeps working even if this checkout
+# later moves relative to the dept. Pass --channel-patches-script "" to opt out.
+CHANNEL_PATCHES_SCRIPT="${LOCAL_LOOP_CHANNEL_PATCHES_SCRIPT-$SCRIPT_DIR/../../scripts/install-channel-patches.sh}"
 ACTIVATE=0
 UNINSTALL=0
 
@@ -93,6 +108,8 @@ while [[ $# -gt 0 ]]; do
         --extra-path=*)       EXTRA_PATH="${1#--extra-path=}"; shift ;;
         --workspace-dir)      WORKSPACE_DIR="${2:?}"; shift 2 ;;
         --workspace-dir=*)    WORKSPACE_DIR="${1#--workspace-dir=}"; shift ;;
+        --channel-patches-script)   CHANNEL_PATCHES_SCRIPT="${2-}"; shift 2 ;;
+        --channel-patches-script=*) CHANNEL_PATCHES_SCRIPT="${1#--channel-patches-script=}"; shift ;;
         --activate)           ACTIVATE=1; shift ;;
         --uninstall)          UNINSTALL=1; shift ;;
         -h|--help)            sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -137,6 +154,19 @@ fi
 [[ -d "$DEPT_DIR" ]] || say "WARNING: dept-dir '$DEPT_DIR' does not exist yet (agent will idle until it does)"
 [[ -z "$WORKSPACE_DIR" || -d "$WORKSPACE_DIR" ]] || say "WARNING: workspace-dir '$WORKSPACE_DIR' does not exist (--add-dir would be skipped by claude)"
 
+# Resolve channel-patches-script to an absolute path if it exists; otherwise
+# warn + drop it (fail-open at install time too — never block the dept install
+# over a missing optional self-heal script).
+if [[ -n "$CHANNEL_PATCHES_SCRIPT" ]]; then
+    if [[ -f "$CHANNEL_PATCHES_SCRIPT" ]]; then
+        CHANNEL_PATCHES_SCRIPT="$(cd "$(dirname "$CHANNEL_PATCHES_SCRIPT")" && pwd)/$(basename "$CHANNEL_PATCHES_SCRIPT")"
+        chmod +x "$CHANNEL_PATCHES_SCRIPT" 2>/dev/null || true
+    else
+        say "WARNING: channel-patches-script '$CHANNEL_PATCHES_SCRIPT' not found — wrapper will NOT self-heal telegram plugin patches (pass --channel-patches-script to fix, or --channel-patches-script \"\" to silence this)"
+        CHANNEL_PATCHES_SCRIPT=""
+    fi
+fi
+
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$WRAPPER_DIR"
 
 say "rendering main /loop runner (persistent KeepAlive session):"
@@ -148,12 +178,13 @@ say "  tmux          = $TMUX_BIN"
 say "  telegram-dir  = $TELEGRAM_STATE_DIR"
 say "  extra-path    = $EXTRA_PATH"
 say "  workspace-dir = ${WORKSPACE_DIR:-<none> (no --add-dir; dept must hold its own skills)}"
+say "  channel-patches-script = ${CHANNEL_PATCHES_SCRIPT:-<none> (patch self-heal disabled)}"
 say "  wrapper       = $WRAPPER_PATH"
 say "  plist         = $PLIST_PATH"
 
 # 1) Render the generic persistent-session wrapper (the Mac twin of the VPS
 #    systemd ExecStart): claude --channels telegram inside tmux, KeepAlive-supervised.
-render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" > "$WRAPPER_PATH" \
+render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_PATH" \
     || die "failed to render wrapper to $WRAPPER_PATH"
 chmod +x "$WRAPPER_PATH"
 say "wrote $WRAPPER_PATH (chmod +x)"

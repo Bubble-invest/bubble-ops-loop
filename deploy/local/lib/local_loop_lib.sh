@@ -110,7 +110,7 @@ _lll_xml_escape() {
     printf '%s' "$s"
 }
 
-# ── render_loop_wrapper <dept-dir> <slug> <claude-bin> <tmux-bin> <telegram-state-dir> <extra-path> [workspace-dir] ──
+# ── render_loop_wrapper <dept-dir> <slug> <claude-bin> <tmux-bin> <telegram-state-dir> <extra-path> [workspace-dir] [channel-patches-script] ──
 # Echo a generic MAIN-runner wrapper script to stdout. This is the Mac twin of
 # the VPS systemd ExecStart: a PERSISTENT interactive `claude --channels` session
 # (NOT a per-tick headless relaunch). It mirrors the proven production pattern on
@@ -138,13 +138,35 @@ _lll_xml_escape() {
 # port-existing-working-components, brain in the dept repo, body in the workspace.
 #
 # GENERIC: parameterized by dept-dir/slug/claude-bin/tmux-bin/telegram-state-dir/
-# extra-path/workspace-dir. NO SOPS / NO token-broker / NO tmpfs (Mac pushes via
-# its own gh/git credential). The telegram env file (TELEGRAM_BOT_TOKEN etc.) is
-# sourced from <telegram-state-dir>/.env if present, matching the convention.
+# extra-path/workspace-dir/channel-patches-script. NO SOPS / NO token-broker / NO
+# tmpfs (Mac pushes via its own gh/git credential). The telegram env file
+# (TELEGRAM_BOT_TOKEN etc.) is sourced from <telegram-state-dir>/.env if present,
+# matching the convention.
+#
+# channel-patches-script (board #956): before every claude launch, self-heal the
+# telegram plugin's boot_rearm + bubble-inject patches — the plugin cache is
+# VOLATILE (re-extracted on auto-update, wiping both hand-applied patches; this
+# is exactly how the 2026-08-15 incident, board #1047, happened on this class of
+# Mac dept). Resolved by install-local-loop.sh to the sibling
+# scripts/install-channel-patches.sh in the SAME bubble-ops-loop checkout that is
+# rendering this wrapper. Runs in default (fail-open) mode: it never blocks the
+# dept from starting, even if a patch fails to (re)apply. Omitted entirely
+# (no-op) when not resolvable, so this stays backward-compatible with any caller
+# that doesn't pass one.
 render_loop_wrapper() {
-    local dept_dir="$1" slug="$2" claude_bin="$3" tmux_bin="$4" tg_state="$5" extra_path="$6" workspace_dir="${7:-}"
+    local dept_dir="$1" slug="$2" claude_bin="$3" tmux_bin="$4" tg_state="$5" extra_path="$6" workspace_dir="${7:-}" channel_patches_script="${8:-}"
     local add_dir_arg=""
     [[ -n "$workspace_dir" ]] && add_dir_arg=" --add-dir '${workspace_dir}'"
+    local patch_block=""
+    if [[ -n "$channel_patches_script" ]]; then
+        patch_block="
+# Self-heal the telegram plugin's boot_rearm + bubble-inject patches before
+# every launch (board #956) — fail-open, never blocks this dept from starting.
+if [ -x '${channel_patches_script}' ]; then
+  '${channel_patches_script}' >>\"${tg_state}/install-channel-patches.log\" 2>&1 || true
+fi
+"
+    fi
     cat <<WRAPPER
 #!/bin/bash
 # ops-loop LOCAL main-runner wrapper for dept '${slug}' (host: local).
@@ -168,7 +190,7 @@ if [ -f "${tg_state}/.env" ]; then
   . "${tg_state}/.env"
   set +a
 fi
-
+${patch_block}
 TMUX_BIN="${tmux_bin}"
 SESSION="ops-loop-${slug}"
 

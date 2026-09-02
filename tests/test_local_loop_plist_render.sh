@@ -27,6 +27,10 @@
 #   T8  --uninstall (no --activate) removes the plist without launchctl.
 #   T9  NO launchctl was ever invoked (a PATH shim tripwire stays untouched).
 #   T10 fixture safety — the LaunchAgents dir is a throwaway, not the real one.
+#   T11 (board #956) the wrapper self-heals the telegram plugin's boot_rearm +
+#       bubble-inject patches before every launch: --channel-patches-script
+#       is honored, and OMITTING it (or passing "") disables the hook cleanly
+#       (backward-compatible no-op) rather than erroring.
 # =============================================================================
 set -uo pipefail
 
@@ -143,6 +147,43 @@ WRAP2="$WORK/wrappers-nows"
     --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
     >"$WORK/main3.log" 2>&1
 nowant "T7c no --workspace-dir => wrapper has NO --add-dir" "add-dir" "$WRAP2/ops-loop-selfcontained-wrapper.sh"
+
+# -----------------------------------------------------------------------------
+# T11 (board #956): channel-patches self-heal hook
+# -----------------------------------------------------------------------------
+echo ""
+echo "T11: telegram-plugin patch self-heal hook (board #956)"
+FAKE_PATCHER="$WORK/fake-install-channel-patches.sh"
+cat > "$FAKE_PATCHER" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$FAKE_PATCHER"
+
+WRAP3="$WORK/wrappers-patches"
+"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "patched" \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP3" \
+    --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+    --channel-patches-script "$FAKE_PATCHER" \
+    >"$WORK/main-patches.log" 2>&1
+rc=$?
+chk "T11a install with --channel-patches-script exits 0" 0 "$rc"
+want "T11b wrapper invokes the channel-patches script" "$FAKE_PATCHER" "$WRAP3/ops-loop-patched-wrapper.sh"
+want "T11c invocation is fail-open (|| true)" "|| true" "$WRAP3/ops-loop-patched-wrapper.sh"
+
+# T11d: explicitly opting OUT (empty string) disables the hook cleanly.
+WRAP4="$WORK/wrappers-nopatches"
+"$INSTALL_LOOP" --dept-dir "$DEPT" --slug "nopatch" \
+    --launch-agents-dir "$LA" --log-dir "$LOGS" --wrapper-dir "$WRAP4" \
+    --claude-bin /usr/bin/claude --tmux-bin /opt/homebrew/bin/tmux \
+    --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+    --channel-patches-script "" \
+    >"$WORK/main-nopatches.log" 2>&1
+rc=$?
+chk "T11d install with --channel-patches-script '' exits 0" 0 "$rc"
+nowant "T11e opted-out wrapper mentions no channel-patches script" "install-channel-patches" "$WRAP4/ops-loop-nopatch-wrapper.sh"
+nowant "T11f opted-out wrapper has no self-heal comment" "Self-heal" "$WRAP4/ops-loop-nopatch-wrapper.sh"
 
 # -----------------------------------------------------------------------------
 # T8: --uninstall (no --activate) removes the plist + wrapper, no launchctl
