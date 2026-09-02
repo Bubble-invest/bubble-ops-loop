@@ -35,5 +35,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
 
+# Persistent, writable state dir for the cockpit login sessions DB (board #997).
+# The service runs with ProtectHome=read-only, so the default
+# PROJECT_ROOT/state/console-sessions.db path is unwritable. StateDirectory gives
+# a systemd-managed persistent dir (/var/lib/bubble-ops-console, claude:claude)
+# that survives across restarts/redeploys (board #1074).
+StateDirectory=bubble-ops-console
+Environment=CONSOLE_SESSION_DB=/var/lib/bubble-ops-console/sessions.db
+
 [Install]
 WantedBy=multi-user.target
