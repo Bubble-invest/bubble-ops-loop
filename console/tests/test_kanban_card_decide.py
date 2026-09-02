@@ -67,7 +67,7 @@ def test_approve_labels_comments_and_closes(client, captured_board):
     comment_calls = [pl for (m, p, pl) in captured_board
                      if p == "/issues/427/comments"]
     assert comment_calls, "no comment posted on approve"
-    assert "Approved by Joris via cockpit" in comment_calls[0]["body"]
+    assert "Approved by Operator via cockpit" in comment_calls[0]["body"]
     assert "go" in comment_calls[0]["body"]
     # Issue closed
     assert ("PATCH", "/issues/427") in methods_paths
@@ -89,7 +89,7 @@ def test_reject_labels_comments_and_closes(client, captured_board):
     assert label_payload == {"labels": ["decision:rejected"]}
     comment_calls = [pl for (m, p, pl) in captured_board
                      if p == "/issues/500/comments"]
-    assert "Rejected by Joris via cockpit" in comment_calls[0]["body"]
+    assert "Rejected by Operator via cockpit" in comment_calls[0]["body"]
     assert ("PATCH", "/issues/500") in methods_paths
 
 
@@ -102,7 +102,7 @@ def test_defer_removes_needs_human_and_does_not_close(client, captured_board):
     assert ("DELETE", "/issues/600/labels/needs:human") in methods_paths
     comment_calls = [pl for (m, p, pl) in captured_board
                      if p == "/issues/600/comments"]
-    assert "Deferred by Joris" in comment_calls[0]["body"]
+    assert "Deferred by Operator" in comment_calls[0]["body"]
     # MUST NOT close on defer
     assert not any(m == "PATCH" for (m, p, _pl) in captured_board), \
         "defer must not close the issue"
@@ -140,7 +140,7 @@ def test_clarify_removes_needs_human_marker_comment_no_close(client, captured_bo
 
 def test_clarify_with_note_posts_marker_then_note_in_order(client, captured_board):
     """clarify WITH a typed note → EXACTLY two comments, in order: the byte-exact
-    marker FIRST, then the note verbatim behind a «📝 Note de Joris : » prefix
+    marker FIRST, then the note verbatim behind a «📝 Note de Operator : » prefix
     (board #483 fix-pass — the note IS the clarify instruction; the marker stays
     first + byte-exact so the loop-detection prefix is untouched)."""
     from console.routes import kanban as _kanban
@@ -156,7 +156,7 @@ def test_clarify_with_note_posts_marker_then_note_in_order(client, captured_boar
         "clarify+note must post exactly 2 comments (marker, then note)"
     # Order + byte-exactness
     assert comment_bodies[0] == _kanban._CLARIFY_MARKER
-    assert comment_bodies[1] == "📝 Note de Joris : " + note
+    assert comment_bodies[1] == "📝 Note de Operator : " + note
     # The note comment carries the operator's words verbatim
     assert note in comment_bodies[1]
     # Still no close / no label change
