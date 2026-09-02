@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from console.services import dept_registry
 from console.services import thesis_book as thesis_book_service
+from console.services import value_chains
 
 router = APIRouter()
 
@@ -46,7 +47,8 @@ def thesis_book_page(slug: str, request: Request):
     return request.app.state.templates.TemplateResponse(
         "thesis_book.html",
         {"request": request, "dept": d, "data_json": data_json,
-         "review_html": _latest_review_html(slug)},
+         "review_html": _latest_review_html(slug),
+         "value_chains": value_chains.load_value_chains(slug)},
     )
 
 
