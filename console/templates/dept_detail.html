@@ -500,12 +500,12 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
     <span class="section-num">02b</span>
     <h2 id="dept-value-chains-heading" class="section-title">Cartes de chaîne de valeur</h2>
     <span class="section-sub">
-      <a href="/dept/{{ dept.slug }}/portfolio" class="discreet-link">ouvrir dans l'onglet Portfolio →</a>
+      <a href="/dept/{{ dept.slug }}/portfolio#maps" class="discreet-link">ouvrir dans l'onglet Portfolio →</a>
     </span>
   </div>
   <p class="value-chain-compact-summary">
     {{ value_chains.sector_count }} carte{{ 's' if value_chains.sector_count != 1 else '' }} GICS ·
-    <a href="/dept/{{ dept.slug }}/portfolio" class="discreet-link">ouvrir dans l'onglet Portfolio →</a>
+    <a href="/dept/{{ dept.slug }}/portfolio#maps" class="discreet-link">ouvrir dans l'onglet Portfolio →</a>
   </p>
 </section>
 {% endif %}

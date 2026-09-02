@@ -157,13 +157,16 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     """Card #1065: the FULL value-chain render (overview, sector bodies, tag
     legend) moved off /dept/<slug> — the main page keeps only a compact
     one-line summary + link. Card #1079: that link now points at the
-    /dept/<slug>/portfolio 3rd tab (Ben's live Value-Chain Maps panel, #1078)
-    since the #1065 dedicated /dept/<slug>/value-chains sub-page (a
+    /dept/<slug>/portfolio#maps 3rd tab (Ben's live Value-Chain Maps panel,
+    #1078) since the #1065 dedicated /dept/<slug>/value-chains sub-page (a
     console-rendered snapshot of the same vault data) was redundant with it
-    and has been removed. Writing vault/value-chains/ under the 'fixture'
-    dept's on-disk repo (same READ_FROM_DISK root the app/client fixtures
-    already point at) must surface that compact summary, but NOT the sector
-    bodies or legend."""
+    and has been removed. The #maps hash deep-links straight into the Value-
+    Chain Maps tab (see thesis_book.html's on-load hash handler) instead of
+    landing on Thesis Book and requiring an extra click — that's the "ONE
+    entry point" the consolidation is going for. Writing vault/value-chains/
+    under the 'fixture' dept's on-disk repo (same READ_FROM_DISK root the
+    app/client fixtures already point at) must surface that compact summary,
+    but NOT the sector bodies or legend."""
     vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text(
@@ -176,9 +179,9 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     r = client.get("/dept/fixture")
     assert r.status_code == 200
     body = r.text
-    # section heading + compact summary + link to the portfolio tab are present
+    # section heading + compact summary + deep link to the maps tab present
     assert "dept-value-chains-heading" in body
-    assert "/dept/fixture/portfolio" in body
+    assert "/dept/fixture/portfolio#maps" in body
     assert "/dept/fixture/value-chains" not in body
     assert "1 carte GICS" in body
     # the FULL render (sector title/body, overview text, tag legend) must NOT
@@ -202,3 +205,22 @@ def test_value_chains_subpage_route_removed(client):
     (#1078). This must 404 (route removed), not resolve to stale content."""
     r = client.get("/dept/fixture/value-chains")
     assert r.status_code == 404
+
+
+def test_portfolio_page_has_maps_hash_deep_link_handler(client):
+    """Card #1079 follow-up: /dept/<slug>/portfolio's tab bar does not honour
+    a URL hash by default (the pf-tab JS just defaults to Thesis Book on
+    load), which would make the main page's new '/portfolio#maps' link land
+    on the wrong tab — undermining the "ONE entry point" this consolidation
+    is for. thesis_book.html's tab-nav IIFE must read location.hash on load
+    and open the matching pane (id="pane-<hash>") via the same show() used by
+    the tab click handlers. This is a client-side behavior a server-rendered
+    TestClient response can't execute, so this test only asserts the handler
+    is present in the shipped markup — not that a specific hash resolves in
+    a browser. Unconditional (not gated on Ben's maps_html), so it renders
+    for every dept regardless of whether the 3rd tab itself is present."""
+    r = client.get("/dept/fixture/portfolio")
+    assert r.status_code == 200
+    body = r.text
+    assert 'location.hash' in body
+    assert 'document.getElementById("pane-"+h)' in body
