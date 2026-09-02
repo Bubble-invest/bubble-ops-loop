@@ -1,14 +1,22 @@
 # /etc/systemd/system/bubble-ops-console.service
 #
-# Template — UX-5 will deliver the pyinfra recipe that materializes this on
-# Morty. For v1 (UX-3) we ship the template only.
+# Bubble Ops Console — single-binary FastAPI frontend for ops-loop departments.
+# Reads SOPS-encrypted /etc/bubble/secrets.sops.env at boot; binds 127.0.0.1
+# only (exposed externally via tailscale serve).
 #
-# Required env vars at deploy time (operator-set via SOPS+age):
-#   CONSOLE_BEARER_TOKEN
-#   READ_FROM_DISK           (path to the parent of all bubble-ops-* clones)
+# Canonical unit source. Reconciled 2026-09 (board #1081) with the unit that
+# was actually hand-installed on joris-cx33 — the template had drifted since
+# the original UX-3 draft (missing RuntimeDirectory, the SOPS decrypt
+# ExecStartPre chain, ProtectHome=read-only, ReadWritePaths, and #1074's
+# StateDirectory). Install this template with `scripts/deploy-console-to-vps.sh`
+# (fresh box / on every template change) — see deploy/INSTALL.md step 2.
+#
+# No secrets live here: ExecStartPre resolves them at service-start time from
+# /etc/bubble/secrets.sops.env (path only, decrypted into tmpfs under
+# RuntimeDirectory). Nothing here needs operator substitution before install.
 
 [Unit]
-Description=bubble-ops-console (UX-3 unified frontend)
+Description=bubble-ops-console (operational frontend for bubble-ops-loop)
 After=network-online.target
 Wants=network-online.target
 
@@ -17,23 +25,38 @@ Type=simple
 User=claude
 Group=claude
 WorkingDirectory=/home/claude/bubble-ops-loop
-Environment="CONSOLE_BEARER_TOKEN=__OPERATOR_SET__"
+
+# RuntimeDirectory: systemd creates /run/bubble-ops-console as claude:claude 0750
+# automatically before namespace setup. Removes the chicken-and-egg with ExecStartPre.
+RuntimeDirectory=bubble-ops-console
+RuntimeDirectoryMode=0750
+
+# Decrypt secrets into tmpfs at startup (mirror of claude-agent-morty pattern)
+ExecStartPre=+/bin/sh -c "SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops --decrypt --output /run/bubble-ops-console/env.tmp /etc/bubble/secrets.sops.env"
+ExecStartPre=+/bin/mv /run/bubble-ops-console/env.tmp /run/bubble-ops-console/env
+ExecStartPre=+/bin/sh -c 'grep -q "^GH_TOKEN=" /run/bubble-ops-console/env || sed -n "s/^GITHUB_TOKEN=/GH_TOKEN=/p" /run/bubble-ops-console/env >> /run/bubble-ops-console/env'
+ExecStartPre=+/bin/chmod 0400 /run/bubble-ops-console/env
+ExecStartPre=+/bin/chown claude:claude /run/bubble-ops-console/env
+
+Environment="PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+EnvironmentFile=-/run/bubble-ops-console/env
 Environment="READ_FROM_DISK=/home/claude/agents"
 Environment="CONSOLE_BIND_HOST=127.0.0.1"
 Environment="CONSOLE_BIND_PORT=8642"
-ExecStart=/home/claude/bubble-ops-loop/venv/bin/python -m uvicorn console.main:app \
-            --host 127.0.0.1 --port 8642 --workers 1
+Environment="PYTHONPATH=/home/claude/bubble-ops-loop"
+
+ExecStart=/home/claude/bubble-ops-loop/venv/bin/python -m uvicorn console.main:app --host 127.0.0.1 --port 8642 --workers 1
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
 # Hardening
-ProtectSystem=strict
-ReadWritePaths=/home/claude/agents
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=/home/claude/agents
 
 # Persistent, writable state dir for the cockpit login sessions DB (board #997).
 # The service runs with ProtectHome=read-only, so the default
