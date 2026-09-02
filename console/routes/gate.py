@@ -139,7 +139,13 @@ def gate_batch(
     if channel not in GATE_CHANNELS:
         channel = ""
 
-    gates = [_attach_thesis_rendered(g) for g in github_reader.list_pending_gates(slug)
+    # Attach BOTH the thesis (summary) and the payload (the actual post/letter
+    # the gate points at via approval_bridge.item_ref). The batch view used to
+    # attach only the thesis, so content publish gates showed a wall of
+    # reasoning but never the content to validate — "la lettre ne s'affiche
+    # jamais" (#1034, Jade). The detail view already did both.
+    gates = [_attach_payload_rendered(slug, _attach_thesis_rendered(g))
+             for g in github_reader.list_pending_gates(slug)
              if (g.get("kind") or "decision") == kind]
     total_count = len(gates)
 
@@ -288,12 +294,19 @@ def gate_decide(
     gate = github_reader.load_gate(slug, gate_id)
     if gate is None:
         raise HTTPException(404, f"Gate not found: {gate_id}")
+    # Attribute the decision to the logged-in person (per-user login → per-name
+    # audit, board #997). `request.state.user` is set by the auth middleware:
+    # a login username (e.g. "joris"/"jade"), or "bearer" for API/legacy access
+    # (normalised to "operator" here).
+    actor = getattr(request.state, "user", None) or "operator"
+    if actor.startswith("bearer"):
+        actor = "operator"
     decision = {
         "gate_id": gate_id,
         "action": action,
         "comment": comment or "",
         "decided_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "decided_by": "operator",  # single-operator console
+        "decided_by": actor,
     }
     # `choose` (#730 — question gates): the operator picks one of the 2-3
     # options the agent proposed. Only valid when the submitted option id

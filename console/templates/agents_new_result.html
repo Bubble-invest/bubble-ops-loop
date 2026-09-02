@@ -133,7 +133,14 @@
       es.addEventListener('close', () => es.close());
       es.onerror = () => {
         statusEl.textContent = 'Connexion au flux interrompue. Recharge si l\'éclosion ne se termine pas.';
+        // Close on error: a browser EventSource auto-reconnects forever, and
+        // without this the stream reconnected every ~3s indefinitely — a real
+        // memory/CPU leak (accumulating server generators + client churn).
+        es.close();
       };
+      // Tear the stream down when leaving the page so no server-side generator
+      // is left dangling.
+      window.addEventListener('pagehide', () => es.close());
     })();
   </script>
 {% endif %}

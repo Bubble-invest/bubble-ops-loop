@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connexion — Bubble Cockpit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Klee+One:wght@400;600&display=swap"
+        rel="stylesheet">
+  <meta name="theme-color" content="#faf7f2">
+  <style>
+    :root { --paper:#faf7f2; --ink:#1a2b4a; --ochre:#b8804a; --line:#e7dfd2; --err:#a4372a; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; background:var(--paper); color:var(--ink);
+                 font-family:"IBM Plex Sans", system-ui, sans-serif; }
+    body { display:flex; align-items:center; justify-content:center; padding:24px; }
+    .card { width:100%; max-width:380px; background:#fff; border:1px solid var(--line);
+            border-radius:16px; padding:32px 28px; box-shadow:0 8px 30px rgba(26,43,74,.06); }
+    .brand { font-family:"Klee One", serif; font-weight:600; font-size:1.5rem;
+             margin:0 0 4px; color:var(--ink); }
+    .sub { margin:0 0 24px; font-size:.85rem; color:#7c8598; }
+    label { display:block; font-size:.8rem; font-weight:600; margin:0 0 6px; color:var(--ink); }
+    input[type=text], input[type=password] {
+      width:100%; padding:11px 13px; margin:0 0 18px; font-size:1rem;
+      border:1px solid var(--line); border-radius:10px; background:var(--paper);
+      color:var(--ink); font-family:inherit; }
+    input:focus { outline:none; border-color:var(--ochre); box-shadow:0 0 0 3px rgba(184,128,74,.15); }
+    button { width:100%; padding:12px; font-size:1rem; font-weight:600; color:#fff;
+             background:var(--ink); border:none; border-radius:10px; cursor:pointer;
+             font-family:inherit; }
+    button:hover { background:#24365a; }
+    .err { background:#f7e9e6; color:var(--err); border:1px solid #e6c9c2;
+           border-radius:10px; padding:9px 12px; font-size:.82rem; margin:0 0 18px; }
+    .note { margin:18px 0 0; font-size:.72rem; color:#9aa2b1; line-height:1.4; text-align:center; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 class="brand">Bubble Cockpit</h1>
+    <p class="sub">Connexion sécurisée · tailnet only</p>
+
+    {% if error %}<div class="err" role="alert">{{ error }}</div>{% endif %}
+    {% if not login_configured %}
+      <div class="err" role="alert">
+        Aucun mot de passe configuré côté serveur. Utilise ton lien bearer, puis
+        pose un mot de passe (voir make_password_hash.py).
+      </div>
+    {% endif %}
+
+    <form method="post" action="/login" autocomplete="on">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="username">Utilisateur</label>
+      <input id="username" name="username" type="text" autocomplete="username"
+             autocapitalize="none" autocorrect="off" spellcheck="false" autofocus required>
+      <label for="password">Mot de passe</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Se connecter</button>
+    </form>
+
+    <p class="note">Ton navigateur peut enregistrer ce mot de passe dans le
+      Trousseau (macOS + iCloud → iPhone) pour le remplir automatiquement.</p>
+  </main>
+</body>
+</html>

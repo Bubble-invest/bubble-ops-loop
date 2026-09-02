@@ -61,11 +61,29 @@ FAILED=0
 log(){ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [deploy] $*"; }
 g(){ sudo -u claude git -C "$1" "${@:2}"; }
 
+# git_fetch_retry $dir — fetch origin/main with a bounded retry. A SINGLE
+# transient blip must not fail the whole 2-hourly deploy: the credential helper
+# mints a GitHub App token via one un-retried curl, so an occasional GitHub 5xx /
+# rate-limit / network hiccup yields an empty token → git falls through to
+# unauthenticated → a PRIVATE repo answers 404 "Repository not found". Retrying
+# rides that out. A genuine, persistent failure still returns non-zero after the
+# attempts, so real breakage is still surfaced (behaviour preserved). 3 tries,
+# 2s+4s backoff (~6s worst case ≪ the 2h cadence).
+git_fetch_retry(){
+  local d="$1" n=0
+  until g "$d" fetch origin main --quiet; do
+    n=$((n+1)); [[ $n -ge 3 ]] && return 1
+    log "retry fetch $d (attempt $n failed, likely a transient token/network blip)"
+    sleep $((n*2))
+  done
+  return 0
+}
+
 sync_repo_reset(){ # $1=dir  — hard-reset to origin/main (infra: no local work expected)
   local d="$1"
   g "$d" config --global --get-all safe.directory 2>/dev/null | grep -qx "$d" \
     || g "$d" config --global --add safe.directory "$d" 2>/dev/null || true
-  g "$d" fetch origin main --quiet || { log "FAIL fetch $d"; return 1; }
+  git_fetch_retry "$d" || { log "FAIL fetch $d (after 3 attempts)"; return 1; }
   local behind; behind=$(g "$d" rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
   local ahead;  ahead=$(g "$d" rev-list --count origin/main..HEAD 2>/dev/null || echo "?")
   if [[ "$ahead" != "0" ]]; then log "WARN $d is $ahead AHEAD — has local commits; reset would lose them. SKIPPING."; return 2; fi
@@ -106,7 +124,7 @@ sync_dept_ff(){ # $1=slug — stop loop, ff, restart (avoids the live-loop race)
   [[ -d "$d/.git" ]] || { log "skip $slug (no clone)"; return 0; }
   g "$d" config --global --get-all safe.directory 2>/dev/null | grep -qx "$d" \
     || g "$d" config --global --add safe.directory "$d" 2>/dev/null || true
-  g "$d" fetch origin main --quiet || { log "FAIL fetch $slug"; FAILED=1; return 1; }
+  git_fetch_retry "$d" || { log "FAIL fetch $slug (after 3 attempts)"; FAILED=1; return 1; }
   local behind ahead; behind=$(g "$d" rev-list --count HEAD..origin/main 2>/dev/null||echo "?")
   ahead=$(g "$d" rev-list --count origin/main..HEAD 2>/dev/null||echo "?")
   if [[ "$ahead" != "0" ]]; then log "$slug: $ahead ahead (unpushed) — loop will pull itself; not forcing"; return 0; fi

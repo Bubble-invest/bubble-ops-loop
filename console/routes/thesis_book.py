@@ -36,6 +36,26 @@ def _latest_review_html(slug: str) -> str:
     return ""
 
 
+def _latest_maps_html(slug: str) -> str:
+    """Ben's self-contained Value-Chain Maps panel, pre-rendered by his L1 tool
+    (outputs/<date>/value-chain-maps-panel.html — #vcm-root-scoped so it cannot
+    collide with the thesis-book styles). Same read pattern as the Portfolio
+    Review artifact; empty string if none (the 3rd tab then hides itself). This
+    is board #1078 (Ben's design), replacing an earlier link-to-sub-page tab."""
+    root = dept_registry.repo_path(slug)
+    if root is None:
+        return ""
+    for i in range(7):
+        day = (date.today() - timedelta(days=i)).isoformat()
+        p = root / "outputs" / day / "value-chain-maps-panel.html"
+        if p.exists():
+            html = p.read_text(errors="replace")
+            html = re.sub(r"^\s*<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
+            html = re.sub(r"^\s*(?:<meta\b[^>]*>\s*)+", "", html, count=1, flags=re.I)
+            return html
+    return ""
+
+
 @router.get("/dept/{slug}/portfolio", response_class=HTMLResponse)
 def thesis_book_page(slug: str, request: Request):
     d = dept_registry.get_department(slug)
@@ -46,7 +66,8 @@ def thesis_book_page(slug: str, request: Request):
     return request.app.state.templates.TemplateResponse(
         "thesis_book.html",
         {"request": request, "dept": d, "data_json": data_json,
-         "review_html": _latest_review_html(slug)},
+         "review_html": _latest_review_html(slug),
+         "maps_html": _latest_maps_html(slug)},
     )
 
 

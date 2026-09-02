@@ -67,6 +67,13 @@
             {% endif %}
           </a>
         {% endfor %}
+
+        {# Account: who's logged in + logout (login feature #997) #}
+        <div class="sidebar-section-label">Compte</div>
+        {% if request.state.user is defined and request.state.user and request.state.user != 'bearer' %}
+          <div class="sidebar-account-user" style="font-size:12px; color: var(--body-muted); padding:0 0 6px 2px;">connecté : <strong>{{ request.state.user }}</strong></div>
+        {% endif %}
+        <a href="/logout" class="sidebar-bottom-link">⎋ Se déconnecter</a>
       </nav>
 
       <div class="sidebar-foot">le labo est ouvert, ce matin aussi</div>
@@ -121,6 +128,17 @@
       // Network failure (no response at all — offline, DNS, timeout).
       document.body.addEventListener('htmx:sendError', function () {
         showToast("Échec de l'action — réessaie.");
+      });
+
+      // Pause htmx polling while the tab is backgrounded. Several pages poll a
+      // fragment every 5s (dept inbox/session, onboarding, concierge); left
+      // unchecked they keep firing in a hidden tab — needless refreshes + CPU
+      // that warmed the machine. Cancelling the request when document.hidden
+      // stops the churn; the next `every Ns` tick resumes once the tab is
+      // visible again. Users don't act on a hidden tab, so this only drops
+      // background polls, never an interaction.
+      document.body.addEventListener('htmx:beforeRequest', function (ev) {
+        if (document.hidden) { ev.preventDefault(); }
       });
     }());
   </script>

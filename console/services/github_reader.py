@@ -504,6 +504,14 @@ def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> Lis
         # the gate's logical id, not the stem).  Fallback to p.stem
         # only when the YAML has no id field, for safety.
         gate_id = doc.get("id", p.stem)
+        # Guarantee every pending gate carries a usable `id` for the UI.  Some
+        # gate writers omit the top-level `id:` field (Maya's prospect_dm gates
+        # did — 2026-08-24), which left the cockpit's decide form posting to
+        # /gate/<slug>//decide (empty id → 404 "Échec de l'action"), so Jade
+        # could not approve them.  We already fall back to p.stem for the
+        # decided_map match above; write it back onto the doc so gate.id in
+        # gate_batch.html / gate_card.html is always populated too.
+        doc["id"] = gate_id
         if gate_id in decided_map:
             ddoc = decided_map[gate_id]
             if ddoc.get("action") == "modify":
@@ -785,13 +793,20 @@ def attachment_media_type(path: Path) -> str:
 #       queues/gates/assets/<NAME>.<ext>  (no per-date subdir — the gate YAML
 #       itself carries `created`, so assets are pooled flat under one dir;
 #       confirmed against the real bubble-ops-content repo, board #666).
+#   - ("outputs", "*", "*", "assets")  — Content/Ben publish gates that keep a
+#       draft + its figures together under a per-run dir (#1034, Jade):
+#       outputs/<YYYY-MM-DD>/<N>/assets/<NAME>.<ext> — this is where the real
+#       bubble-ops-content publish_proposal gates point their `attachments`
+#       (e.g. outputs/2026-08-23/2/assets/ben-report-spgi-1.png), which the two
+#       older shapes did not match, so every content image 404'd in the cockpit.
 #
 # "*" means any single path segment is accepted there (matches the date
 # component in the outputs/ shape). Each tuple is fixed-depth and fixed-name
 # everywhere else, so this stays exactly as tight as the single-shape check
-# it replaces — just no longer blind to a second, equally real, convention.
+# it replaces — just no longer blind to other, equally real, conventions.
 _ATTACHMENT_ROOT_SHAPES: tuple[tuple[str, ...], ...] = (
     ("outputs", "*", "attachments"),
+    ("outputs", "*", "*", "assets"),
     ("queues", "gates", "assets"),
 )
 

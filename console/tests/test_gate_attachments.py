@@ -343,7 +343,9 @@ def test_gate_batch_renders_pièces_jointes_label(client, ben_root):
     _add_gate_with_attachments(ben_root, "att-batch-1", [{"path": rel}])
     r = client.get("/gate/fixture/kind/trade_proposal")
     assert r.status_code == 200, r.text
-    assert "pièces jointes" in r.text
+    # The batch view labels the attachments section (case-insensitive: the
+    # visible label is "Pièces jointes (N)", uppercased via CSS).
+    assert "pièces jointes" in r.text.lower()
 
 
 # ── 11. Content-dept asset shape — queues/gates/assets/ (board #666) ─────────

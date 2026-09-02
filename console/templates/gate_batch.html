@@ -115,11 +115,70 @@
          graceful no-op when chart_path is absent or the file 404s. Render the
          <details> if there's a thesis OR a chart so a chart-only gate still has
          a container. Mirrors gate_card.html's chart block. #}
+      {# ─── Content to validate — surfaced ABOVE the fold (#1034, Jade) ───────
+         The real deliverable (the post / the Substack letter) lives in a
+         separate file the gate points at via approval_bridge.item_ref; the
+         route renders it into gate.payload_rendered. It used to be buried
+         under (or behind) the thesis wall, so Jade "never saw the letter".
+         Render it first, prominently, as the thing being approved. #}
+      {% if gate.payload_rendered %}
+      <div class="gate-payload markdown-body" style="margin:0 0 12px; padding:14px 16px;
+           background: var(--paper-soft); border:1px solid var(--line);
+           border-left:3px solid var(--ochre); border-radius:3px;
+           font-size:15px; line-height:1.65; color: var(--ink); overflow-wrap:anywhere;">
+        <div class="muted-italic" style="font-size:11px; margin-bottom:8px; color: var(--body-muted);
+             text-transform:uppercase; letter-spacing:.04em;">Contenu à publier — à valider</div>
+        {{ gate.payload_rendered }}
+      </div>
+      {% endif %}
+      {# Attachments (images/files) pulled OUT of the collapsible thesis so a
+         visual is ALWAYS visible without expanding (#1034 — "les png ne
+         s'affichent jamais"). Image root shapes resolved server-side by
+         github_reader.resolve_attachment_path (now incl. outputs/<date>/<N>/assets/). #}
+      {% if gate.attachments %}
+      <div class="gate-attachments" style="margin:0 0 12px;">
+        <div class="gate-attachments-label muted-italic" style="font-size:11px; margin-bottom:6px;
+             color: var(--body-muted); text-transform:uppercase; letter-spacing:.04em;">Pièces jointes ({{ gate.attachments|length }})</div>
+        {% for att in gate.attachments %}
+          {% set att_path = att if att is string else att.path %}
+          {% set att_caption = none if att is string else att.caption %}
+          {% if att_path and (att_path.lower().endswith('.png') or att_path.lower().endswith('.jpg')
+              or att_path.lower().endswith('.jpeg') or att_path.lower().endswith('.gif')
+              or att_path.lower().endswith('.svg') or att_path.lower().endswith('.webp')) %}
+          <figure class="gate-chart" style="margin:0 0 8px;">
+            <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
+               target="_blank" rel="noopener" title="Ouvrir en grand">
+              <img src="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
+                   alt="{{ att_caption or att_path.split('/')[-1] }}"
+                   loading="lazy"
+                   onerror="this.closest('figure').classList.add('gate-attachment-broken')"
+                   style="display:block; width:auto; max-width:min(100%, 360px);
+                          height:auto; max-height:460px; object-fit:contain;
+                          border:1px solid var(--line);
+                          border-radius:3px; background: var(--paper-soft);">
+            </a>
+            <figcaption class="muted-italic gate-attachment-caption" style="font-size:12px; margin-top:4px;
+                        color: var(--body-muted);">{% if att_caption %}{{ att_caption }} — {% endif %}<span class="gate-attachment-caption-ok">Cliquer pour agrandir.</span><span class="gate-attachment-caption-broken">aperçu indisponible.</span></figcaption>
+          </figure>
+          {% elif att_path %}
+          <div style="margin-bottom:6px;">
+            <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
+               target="_blank" rel="noopener"
+               style="font-size:13px; color: var(--ochre); text-decoration:none;">
+              📎 {{ att_caption or att_path.split('/')[-1] }}
+            </a>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
       {# question gates (#730): summary is context for the question block
-         below, not a thesis — skip it here (attachments/chart still show). #}
-      {% if (gate.summary and gate.kind != 'question') or gate.chart_path or gate.attachments %}
-        <details {% if not (gate.kind == 'trade_proposal' or gate.ticker) %}open{% endif %} style="margin:0 0 10px;">
-          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}{% if gate.attachments %} & pièces jointes{% endif %}</summary>
+         below, not a thesis — skip it here (chart still shows). Thesis is
+         COLLAPSED by default whenever there's a payload above (#1034), so the
+         reasoning no longer buries the content; open otherwise (non-trade). #}
+      {% if (gate.summary and gate.kind != 'question') or gate.chart_path %}
+        <details {% if not (gate.kind == 'trade_proposal' or gate.ticker or gate.payload_rendered) %}open{% endif %} style="margin:0 0 10px;">
+          <summary class="muted-italic" style="cursor:pointer; font-size:12.5px; color:var(--body-muted);">Thèse / raisonnement{% if gate.chart_path %} & graphique{% endif %}</summary>
           {# Summary: skip for content gates — they render their summary in the
              dedicated proposal block below (outside this <details>). #}
           {% if gate.summary and gate.kind not in ('social_post', 'content_publish',
@@ -149,54 +208,9 @@
             </figcaption>
           </figure>
           {% endif %}
-          {# ─── General attachments (additive — back-compat with chart_path) ─
-             Mirrors gate_card.html's attachments block. Image types render
-             inline; everything else renders as a labeled download link.
-             Served via auth-gated /gate/<slug>/attachment route, which
-             resolves both known attachment-root shapes (Ben-style
-             outputs/<date>/attachments/ and content-dept-style
-             queues/gates/assets/, #666). Graceful no-op when list absent or
-             file missing. #}
-          {% if gate.attachments %}
-          <div class="gate-attachments" style="margin:10px 0 0;">
-            {% for att in gate.attachments %}
-              {# An attachment may be either an object {path, caption} OR a bare
-                 path string (agents emit both shapes). Normalize so a string
-                 attachment can't crash the render with 'str has no attribute path'. #}
-              {% set att_path = att if att is string else att.path %}
-              {% set att_caption = none if att is string else att.caption %}
-              {% if att_path and (att_path.lower().endswith('.png') or att_path.lower().endswith('.jpg')
-                  or att_path.lower().endswith('.jpeg') or att_path.lower().endswith('.gif')
-                  or att_path.lower().endswith('.svg') or att_path.lower().endswith('.webp')) %}
-              <figure class="gate-chart" style="margin:0 0 8px;">
-                <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
-                   target="_blank" rel="noopener" title="Ouvrir en grand">
-                  {# Capped preview thumbnail (see gate_card.html note) — keeps a
-                     tall post screenshot card-sized; click opens full size. #}
-                  <img src="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
-                       alt="{{ att_caption or att_path.split('/')[-1] }}"
-                       loading="lazy"
-                       onerror="this.closest('figure').classList.add('gate-attachment-broken')"
-                       style="display:block; width:auto; max-width:min(100%, 360px);
-                              height:auto; max-height:460px; object-fit:contain;
-                              border:1px solid var(--line);
-                              border-radius:3px; background: var(--paper-soft);">
-                </a>
-                <figcaption class="muted-italic gate-attachment-caption" style="font-size:12px; margin-top:4px;
-                            color: var(--body-muted);">{% if att_caption %}{{ att_caption }} — {% endif %}<span class="gate-attachment-caption-ok">Cliquer pour agrandir.</span><span class="gate-attachment-caption-broken">aperçu indisponible.</span></figcaption>
-              </figure>
-              {% elif att_path %}
-              <div style="margin-bottom:6px;">
-                <a href="/gate/{{ slug }}/attachment?path={{ att_path | urlencode }}"
-                   target="_blank" rel="noopener"
-                   style="font-size:13px; color: var(--ochre); text-decoration:none;">
-                  📎 {{ att_caption or att_path.split('/')[-1] }}
-                </a>
-              </div>
-              {% endif %}
-            {% endfor %}
-          </div>
-          {% endif %}
+          {# Attachments now render prominently ABOVE the thesis (#1034), not
+             inside this collapsible block. Chart (chart_path) stays here as
+             trade-context. #}
         </details>
       {% endif %}
 
@@ -328,13 +342,26 @@
       {# The actual draft {{OPERATOR}} is approving — rendered inline so he can triage
          without opening each gate. Mirrors gate_card.html's draft block.
          Shown only for non-content gates (content gates render above). #}
-      {% if gate.draft_body or gate.comment_body %}
+      {# Resolve the draft text across field shapes: DM/content gates use
+         draft_body/comment_body; email gates (prospect_email) put the message
+         in `body` with `subject`/`to_email` alongside. Without `gate.body`
+         here, cold-email drafts rendered blank and Jade could not review them
+         to validate (2026-08-24). #}
+      {% set draft_text = gate.draft_body or gate.comment_body or gate.body %}
+      {% if draft_text %}
       <div class="gate-draft-block" style="margin:12px 0; padding:12px 14px;
                   background: var(--paper-soft); border:1px solid var(--line);
                   border-left:3px solid var(--ochre); border-radius:2px;">
+        {% if gate.to_email or gate.subject %}
+        <div style="margin:0 0 10px; padding-bottom:8px; border-bottom:1px dashed var(--line);
+                    font-size:12.5px; line-height:1.6; color: var(--body-soft);">
+          {% if gate.to_email %}<div><span class="muted-italic" style="font-size:11px; color: var(--body-muted);">À</span>&nbsp; <span style="color: var(--ink);">{{ gate.to_email }}</span></div>{% endif %}
+          {% if gate.subject %}<div><span class="muted-italic" style="font-size:11px; color: var(--body-muted);">Objet</span>&nbsp; <span style="color: var(--ink); font-weight:500;">{{ gate.subject }}</span></div>{% endif %}
+        </div>
+        {% endif %}
         <div class="gate-draft-body"
              style="font-family: var(--font-body); font-size:14px; line-height:1.5;
-                    color: var(--ink); white-space:pre-wrap;">{{ gate.draft_body or gate.comment_body }}</div>
+                    color: var(--ink); white-space:pre-wrap;">{{ draft_text }}</div>
         {% if gate.chosen_angle %}
         <div class="muted-italic" style="margin-top:10px; font-size:12.5px;
                     color: var(--body-muted); border-top:1px dashed var(--line); padding-top:8px;">
