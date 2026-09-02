@@ -155,11 +155,15 @@ def test_dept_detail_omits_section_when_no_value_chains(client):
 
 def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     """Card #1065: the FULL value-chain render (overview, sector bodies, tag
-    legend) moved off /dept/<slug> onto its own /dept/<slug>/value-chains
-    sub-page — the main page keeps only a compact one-line summary + link.
-    Writing vault/value-chains/ under the 'fixture' dept's on-disk repo (same
-    READ_FROM_DISK root the app/client fixtures already point at) must
-    surface that compact summary, but NOT the sector bodies or legend."""
+    legend) moved off /dept/<slug> — the main page keeps only a compact
+    one-line summary + link. Card #1079: that link now points at the
+    /dept/<slug>/portfolio 3rd tab (Ben's live Value-Chain Maps panel, #1078)
+    since the #1065 dedicated /dept/<slug>/value-chains sub-page (a
+    console-rendered snapshot of the same vault data) was redundant with it
+    and has been removed. Writing vault/value-chains/ under the 'fixture'
+    dept's on-disk repo (same READ_FROM_DISK root the app/client fixtures
+    already point at) must surface that compact summary, but NOT the sector
+    bodies or legend."""
     vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
     vc.mkdir(parents=True)
     (vc / "_index.md").write_text(
@@ -172,9 +176,10 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
     r = client.get("/dept/fixture")
     assert r.status_code == 200
     body = r.text
-    # section heading + compact summary + link to the sub-page are present
+    # section heading + compact summary + link to the portfolio tab are present
     assert "dept-value-chains-heading" in body
-    assert "/dept/fixture/value-chains" in body
+    assert "/dept/fixture/portfolio" in body
+    assert "/dept/fixture/value-chains" not in body
     assert "1 carte GICS" in body
     # the FULL render (sector title/body, overview text, tag legend) must NOT
     # ship inline on the main page any more (that's the whole point of #1065)
@@ -185,35 +190,15 @@ def test_dept_detail_renders_compact_value_chains_summary(client, fixture_root):
 
 
 # ─── Route-level tests (/dept/<slug>/value-chains) — card #1065 ────────
+# The dedicated sub-page route was removed by card #1079: it was a
+# console-rendered snapshot of the same vault/value-chains/ data that had
+# become redundant with Ben's live Value-Chain Maps panel embedded as the
+# /dept/<slug>/portfolio 3rd tab (#1078). See test_1078_* / thesis_book tests
+# for coverage of that panel, and the 404-on-removed-route check below.
 
-def test_value_chains_subpage_404_when_unavailable(client):
-    """No vault/value-chains/ for this dept → 404, not a crash."""
+def test_value_chains_subpage_route_removed(client):
+    """The old /dept/<slug>/value-chains sub-page (#1065) is gone — the
+    value-chain view now lives solely at /dept/<slug>/portfolio's 3rd tab
+    (#1078). This must 404 (route removed), not resolve to stale content."""
     r = client.get("/dept/fixture/value-chains")
     assert r.status_code == 404
-
-
-def test_value_chains_subpage_renders_full_content(client, fixture_root):
-    """The dedicated sub-page renders the overview, sector maps, and tag
-    legend that used to live inline on /dept/<slug> (moved by card #1065)."""
-    vc = fixture_root / "bubble-ops-fixture" / "vault" / "value-chains"
-    vc.mkdir(parents=True)
-    (vc / "_index.md").write_text(
-        "# Value chains — overview\n\nEleven GICS sectors.\n", encoding="utf-8",
-    )
-    (vc / "technology.md").write_text(
-        "# Technology\n\n- AAPL — own\n- MSFT — watch\n", encoding="utf-8",
-    )
-
-    r = client.get("/dept/fixture/value-chains")
-    assert r.status_code == 200
-    body = r.text
-    assert "dept-value-chains-heading" in body
-    assert "Technology" in body
-    assert "Eleven GICS sectors" in body
-    for label in ("Own", "Watch", "Early", "Ran", "Private"):
-        assert label in body
-    # the overview <details> must NOT be forced open any more (card #1065)
-    assert '<details class="value-chain-overview-details" open>' not in body
-    assert '<details class="value-chain-overview-details">' in body
-    # link back to the main dept page
-    assert "/dept/fixture" in body
