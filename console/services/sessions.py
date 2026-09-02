@@ -123,6 +123,17 @@ def _connect() -> sqlite3.Connection:
         " last_seen REAL NOT NULL,"
         " expires_at REAL NOT NULL)"
     )
+    # One-time passwordless login links (board #997): a single-use, short-lived
+    # token the operator opens once to mint a session as `username`. Lets the
+    # manager enroll Joris/Jade from Telegram without anyone typing a password.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_tokens ("
+        " token TEXT PRIMARY KEY,"
+        " username TEXT NOT NULL,"
+        " created_at REAL NOT NULL,"
+        " expires_at REAL NOT NULL,"
+        " used_at REAL)"
+    )
     return conn
 
 
@@ -185,4 +196,41 @@ def purge_expired() -> int:
     now = time.time()
     with _connect() as conn:
         cur = conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.execute("DELETE FROM login_tokens WHERE expires_at < ?", (now,))
         return cur.rowcount or 0
+
+
+# ---- one-time passwordless login links -------------------------------
+
+
+def create_login_token(username: str, ttl_seconds: int = 86400) -> str:
+    """Mint a single-use login token for `username`, valid for `ttl_seconds`."""
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO login_tokens (token, username, created_at, expires_at, used_at)"
+            " VALUES (?,?,?,?,NULL)",
+            (token, username, now, now + ttl_seconds),
+        )
+    return token
+
+
+def consume_login_token(token: str) -> Optional[str]:
+    """Return the token's username and mark it used, or None if the token is
+    unknown, already used, or expired. Single-use + constant-ish behavior."""
+    if not token:
+        return None
+    now = time.time()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT username, expires_at, used_at FROM login_tokens WHERE token=?",
+            (token,),
+        ).fetchone()
+        if row is None:
+            return None
+        username, expires_at, used_at = row
+        if used_at is not None or now > expires_at:
+            return None
+        conn.execute("UPDATE login_tokens SET used_at=? WHERE token=?", (now, token))
+    return str(username)
