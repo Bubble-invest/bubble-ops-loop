@@ -54,6 +54,7 @@ StandardError=journal
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/claude/agents
 
