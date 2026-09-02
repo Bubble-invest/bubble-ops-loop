@@ -377,10 +377,11 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
 <div class="pf-tabbar" role="tablist">
   <button class="pf-tab" data-pane="thesis" role="tab" aria-selected="true">Thesis Book</button>
   <button class="pf-tab" data-pane="review" role="tab" aria-selected="false">Portfolio Review</button>
-  {# 3rd tab — a LINK (not a pane toggle) to the dedicated value-chains sub-page,
-     so the 596KB of GICS maps never re-inline here (board #1065). Ben-only. #}
-  {% if value_chains and value_chains.available %}
-  <a class="pf-tab pf-tab-link" href="/dept/{{ dept.slug }}/value-chains">Cartes de chaîne de valeur</a>
+  {# 3rd tab — Ben's self-contained Value-Chain Maps panel embedded as an
+     in-page pane (board #1078), same injection pattern as Portfolio Review.
+     Hidden when no panel file was emitted (i.e. every dept but Ben today). #}
+  {% if maps_html %}
+  <button class="pf-tab" data-pane="maps" role="tab" aria-selected="false">Value-Chain Maps</button>
   {% endif %}
 </div>
 <div id="pane-thesis" class="pf-pane">
@@ -469,13 +470,17 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
 </footer>
 </div><!-- /pane-thesis -->
 <div id="pane-review" class="pf-pane" hidden>{{ review_html | safe }}</div>
+{% if maps_html %}<div id="pane-maps" class="pf-pane" hidden>{{ maps_html | safe }}</div>{% endif %}
 
 <script>
 (function(){
-  var tabs=document.querySelectorAll("button.pf-tab");  // buttons only — the value-chains .pf-tab-link navigates, not a pane toggle
+  var tabs=document.querySelectorAll(".pf-tab");
   function show(p){
-    var t=document.getElementById("pane-thesis"), r=document.getElementById("pane-review");
-    if(t){t.hidden=(p!=="thesis");} if(r){r.hidden=(p!=="review");}
+    // Toggle whichever of the (up to 3) panes matches the clicked tab.
+    ["thesis","review","maps"].forEach(function(name){
+      var el=document.getElementById("pane-"+name);
+      if(el){el.hidden=(name!==p);}
+    });
     tabs.forEach(function(x){x.setAttribute("aria-selected", x.getAttribute("data-pane")===p?"true":"false");});
   }
   tabs.forEach(function(x){x.addEventListener("click",function(){show(x.getAttribute("data-pane"));});});
