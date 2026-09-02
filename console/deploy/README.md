@@ -36,9 +36,9 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 | `CONSOLE_BIND_HOST` | `127.0.0.1` | Bind host (do NOT change to `0.0.0.0`) |
 | `CONSOLE_BIND_PORT` | `8642` | Bind port |
 
-## systemd unit (VPS, follow-up — UX-5)
+## systemd unit (VPS)
 
-A template lives at `deploy/bubble-ops-console.service.template`. UX-5 will deliver the pyinfra integration for `bubble-vps-platform`.
+Canonical unit source: `deploy/bubble-ops-console.service.template` — kept in sync with what production actually runs (board #1081). Install/update it on a box with `scripts/deploy-console-to-vps.sh` (see `deploy/INSTALL.md` step 2); `scripts/deploy-console-to-morty.sh` re-syncs it automatically on every ongoing git-pull deploy. Full `bubble-vps-platform` pyinfra integration is still a follow-up (UX-5).
 
 ## Routes
 

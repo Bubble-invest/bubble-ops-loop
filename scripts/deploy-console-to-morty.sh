@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # deploy-console-to-morty.sh — git-pull console deploy (post-migration).
 #
+# Board #1081: after pulling, this also re-syncs the systemd UNIT from
+# console/deploy/bubble-ops-console.service.template via
+# deploy-console-to-morty.sh's sibling scripts/deploy-console-to-vps.sh
+# (--no-restart — this script does its own restart+verify below). That
+# closes the gap where template edits (e.g. #1074's StateDirectory) never
+# reached the box: previously this script restarted the OLD installed unit,
+# never the checked-in one. For a box that has never had the unit installed
+# at all, run scripts/deploy-console-to-vps.sh directly first (fresh box —
+# see deploy/INSTALL.md step 2); this script assumes the unit already
+# exists (it reads WorkingDirectory from it in step 1 below).
+#
 # Migration 2026-05-31 ({{OPERATOR}} msg 3443/3445): bubble-ops-loop is now its
 # OWN GitHub repo (Bubble-invest/bubble-ops-loop). The VPS
 # /home/claude/bubble-ops-loop is a git CLONE tracking origin/main. There
@@ -21,10 +32,14 @@
 #
 # Requires:
 #   - SSH alias to the box (default: $BUBBLE_VPS_HOST, else "morty"), OR run on the box
-#   - sudo NOPASSWD for `systemctl restart bubble-ops-console` on the box
+#   - sudo NOPASSWD for `systemctl restart bubble-ops-console` on the box, plus
+#     (for the Step 3.5 unit re-sync) `install` and `systemctl daemon-reload` —
+#     see scripts/deploy-console-to-vps.sh
 #   - the box's git credential helper can read the private repo (GitHub App)
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SSH_HOST="${SSH_HOST:-${BUBBLE_VPS_HOST:-morty}}"
 SERVICE="${SERVICE:-bubble-ops-console}"
@@ -89,6 +104,18 @@ if ! run_remote "cd '$WORKDIR' && git merge --ff-only 'origin/${BRANCH}'"; then
   exit 5
 fi
 echo "[deploy-console] Pulled to $(run_remote "cd '$WORKDIR' && git rev-parse --short HEAD")."
+
+# ── Step 3.5: re-sync the systemd unit from the checked-in template ────
+# Board #1081: without this, a template edit (e.g. #1074's StateDirectory)
+# lands on origin/main but the box keeps running whatever unit was
+# hand-installed at some point in the past — this step is what makes
+# "git pull" actually apply unit changes too. Restart happens once, below
+# (Step 4), so pass --no-restart here.
+SSH_HOST="$SSH_HOST" SERVICE="$SERVICE" CONSOLE_WORKDIR="$WORKDIR" \
+  "$SCRIPT_DIR/deploy-console-to-vps.sh" --no-restart || {
+  echo "ERR: unit re-sync (deploy-console-to-vps.sh) failed — see above." >&2
+  exit 7
+}
 
 # ── Step 4: restart + confirm active ──────────────────────────────────
 echo "[deploy-console] Restarting ${SERVICE} …"
