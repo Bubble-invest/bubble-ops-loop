@@ -3684,6 +3684,249 @@ def _is_archived_at_head(repo_dir: "Path | str", path: str) -> bool:
 # Returns (ok, summary). ok=False only on a genuine pull failure the caller
 # should surface; a clean no-op or a kept-stash-on-conflict still returns True
 # with a descriptive summary (the tick must not crash on sync).
+#
+# ─── mtime-index-wedge guarded fallback (#720, 2026-09-03) ─────────────────
+#
+# WHY: a live process (another agent process, a filter, a backup tool...)
+# can bump a TRACKED file's mtime with its CONTENT unchanged. `git status`/
+# `git diff HEAD` correctly report the tree clean (they're content-aware).
+# But a specific git wedge can leave the INDEX itself "stuck" for that path:
+# `git pull --rebase` (step 4 below) aborts with "Your local changes ...
+# would be overwritten" or "Entry '<path>' not uptodate. Cannot merge.", and
+# even `git reset --hard` / `git update-index --really-refresh` — the usual
+# unwedge incantations — abort with the SAME "not uptodate" signature. The
+# stash step (step 2) can't clear it either: the path isn't dirty by
+# content, so it's never staged into the stash in the first place. Left
+# alone, this permanently wedges the dept's sync (never fatal, always
+# retried, never resolved) — the auto-redeploy gap this whole safe_pull
+# machinery exists to close (see the top-of-file WHY).
+#
+# THE GUARD IS NON-NEGOTIABLE. This fallback is engaged ONLY when the pull
+# failure text matches the exact "not uptodate"/"would be overwritten"
+# signature (`_parse_wedge_stuck_paths` — never for a generic pull failure),
+# and even then it rewrites a path ONLY when `_recover_mtime_wedge` has
+# PROVEN, for every stuck path:
+#   1. the on-disk content is byte-identical to HEAD or to
+#      origin/<default_branch> (empty `git diff <ref> -- <path>`); and
+#   2. HEAD carries NO commit origin doesn't already have — i.e. HEAD is an
+#      ancestor of origin/<default_branch> via `merge-base`. This is
+#      deliberately STRICTER than "no unpushed commit touching just the
+#      stuck path": the remedy is a repo-wide `git reset --hard
+#      origin/<default_branch>`, so if HEAD carried ANY unpushed commit at
+#      all (e.g. step 1's runtime push failed a moment earlier), a
+#      path-scoped check would still let that unrelated commit be silently
+#      discarded by the reset. Requiring the whole of HEAD to already be on
+#      origin closes that hole; and
+#   3. the working tree carries NO OTHER uncommitted change besides the
+#      stuck paths themselves (`git status --porcelain`, repo-wide — same
+#      stricter-than-path-scoped stance as #2). `git reset --hard` is
+#      repo-wide: it discards EVERY uncommitted change in the tree, not
+#      just the stuck paths. Both callers that reach this fallback can
+#      legitimately leave OTHER real, unrelated uncommitted work sitting in
+#      the tree — step 2's "stash failed, continuing" branch, and step 1a's
+#      sandbox-unreadable-path exclusion (paths intentionally left
+#      untouched on disk because they might be real unsandboxed work). A
+#      path-scoped check here would let that unrelated work be silently
+#      discarded by the reset — exactly the hole #2 closes for unpushed
+#      commits, just for uncommitted content instead.
+# If ANY check fails for ANY stuck path (or for the tree as a whole), the
+# fallback REFUSES — returns without touching the working tree, the index,
+# or HEAD — and safe_pull surfaces the original pull failure plus the
+# refusal reason. Only when every stuck path clears every check does it
+# `rm` them and `git reset --hard origin/<default_branch>`, logging exactly
+# which paths it rewrote. This is recovery-from-known-safe-clutter, never a
+# substitute for "give up and reset" — the line between hygiene recovery
+# and data loss is the entire point of this guard.
+
+
+def _parse_wedge_stuck_paths(git_output: "str | None") -> "list[str]":
+    """Extract tracked paths from a git failure that carries the
+    mtime-index-wedge signature — either form git is known to emit for it:
+
+      - ``error: Entry '<path>' not uptodate. Cannot merge.`` (the
+        `git reset --hard` / merge-style form named explicitly in #720)
+      - ``... local changes to the following files would be overwritten by
+        (merge|checkout|rebase):`` followed by one path per indented line,
+        up to the next blank line or a "Please commit/stash/move"/"Aborting"
+        trailer (the `git pull --rebase` form this module's step 4 actually
+        hits).
+
+    Returns [] (no match) for any other failure text — callers MUST treat an
+    empty list as "not the wedge signature, do not engage the fallback".
+    Never raises; a malformed/unexpected format just yields no paths.
+    """
+    if not git_output:
+        return []
+    paths: "set[str]" = set()
+
+    for m in re.finditer(
+        r"error: Entry '([^']+)' not uptodate\. Cannot merge\.", git_output,
+    ):
+        paths.add(m.group(1))
+
+    in_block = False
+    for line in git_output.splitlines():
+        if re.search(
+            r"local changes to the following files would be overwritten by "
+            r"(merge|checkout|rebase)",
+            line,
+        ):
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith((
+            "Please commit", "Please move", "Please stash", "Aborting",
+        )):
+            in_block = False
+            continue
+        paths.add(stripped)
+
+    return sorted(paths)
+
+
+def _recover_mtime_wedge(
+    repo_dir: "Path | str", stuck_paths: "list[str]",
+    default_branch: str = "main",
+) -> "tuple[bool, str]":
+    """Guarded fallback for the mtime-index-wedge signature (#720). See the
+    module comment block directly above `safe_pull` for the full guard
+    rationale. Returns (ok, message):
+
+    ok=True  — every stuck path was proven content-safe (== HEAD or ==
+               origin/<default_branch>) AND HEAD was already an ancestor of
+               origin/<default_branch> (no unpushed commit anywhere on
+               HEAD) AND the working tree carried no OTHER uncommitted
+               change beside the stuck paths; the paths were `rm`'d and
+               `git reset --hard origin/<default_branch>` applied. `message`
+               names exactly which paths were rewritten.
+
+    ok=False — REFUSED: at least one check could not be proven safe (real
+               divergent content, an unpushed commit, an unrelated
+               uncommitted change elsewhere in the tree, or an unresolvable
+               HEAD/merge-base). NOTHING was touched — no rm, no reset, no
+               HEAD move. `message` names the reason and, where possible,
+               which path(s) tripped the guard.
+    """
+    import subprocess
+    repo_dir = Path(repo_dir)
+
+    def _git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo_dir), *args],
+            capture_output=True, text=True,
+        )
+
+    origin_ref = f"origin/{default_branch}"
+
+    # Refresh our view of origin's tip. Fetch is non-destructive — it only
+    # updates the remote-tracking ref, never the working tree or local HEAD
+    # — so this cannot itself be the source of any data loss.
+    _git("fetch", "origin", default_branch)
+
+    head = _git("rev-parse", "HEAD")
+    origin_tip = _git("rev-parse", origin_ref)
+    if head.returncode != 0 or origin_tip.returncode != 0:
+        return False, (
+            "REFUSED mtime-wedge fallback: could not resolve HEAD/"
+            f"{origin_ref} — touching nothing: " + ", ".join(stuck_paths)
+        )
+
+    mb = _git("merge-base", "HEAD", origin_ref)
+    if mb.returncode != 0 or not mb.stdout.strip():
+        return False, (
+            "REFUSED mtime-wedge fallback: could not resolve merge-base "
+            f"with {origin_ref} — touching nothing: "
+            + ", ".join(stuck_paths)
+        )
+    merge_base = mb.stdout.strip()
+
+    # Guard 2 (repo-wide, deliberately stricter than path-scoped — see WHY
+    # above): HEAD must not carry ANY commit origin doesn't already have.
+    if merge_base != head.stdout.strip():
+        unpushed_log = _git("log", "--oneline", f"{merge_base}..HEAD")
+        return False, (
+            "REFUSED mtime-wedge fallback: HEAD has unpushed commit(s) "
+            f"beyond {origin_ref} — refusing the repo-wide reset so they "
+            "are never silently discarded: "
+            + unpushed_log.stdout.strip().replace("\n", " | ")[:300]
+        )
+
+    # Guard 1 (per path): content must be provably == HEAD or == origin.
+    unsafe = []
+    for p in stuck_paths:
+        diff_head = _git("diff", "--quiet", "HEAD", "--", p)
+        diff_origin = _git("diff", "--quiet", origin_ref, "--", p)
+        content_safe = diff_head.returncode == 0 or diff_origin.returncode == 0
+        if not content_safe:
+            unsafe.append(
+                f"{p} (content diverges from both HEAD and {origin_ref})"
+            )
+    if unsafe:
+        return False, (
+            "REFUSED mtime-wedge fallback (guard tripped — will NOT rm/"
+            "reset, possible real local content): " + "; ".join(unsafe)
+        )
+
+    # Guard 3 (repo-wide, deliberately stricter than path-scoped — see WHY
+    # above): `git reset --hard` below is repo-wide, so it would discard ANY
+    # uncommitted change anywhere in the tree, not just the stuck paths.
+    # Callers can legitimately leave OTHER real, unrelated uncommitted work
+    # sitting in the tree at this point (the "stash failed, continuing"
+    # branch, or the sandbox-unreadable-path exclusion) — refuse rather than
+    # let the reset silently discard it.
+    tree_status = _git("status", "--porcelain")
+    if tree_status.returncode != 0:
+        return False, (
+            "REFUSED mtime-wedge fallback: could not read working-tree "
+            "status — touching nothing: " + ", ".join(stuck_paths)
+        )
+    stuck_set = set(stuck_paths)
+    extra_dirty = []
+    for line in tree_status.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip().strip('"')
+        path = path.split(" -> ")[-1] if " -> " in path else path
+        if path not in stuck_set:
+            extra_dirty.append(path)
+    if extra_dirty:
+        return False, (
+            "REFUSED mtime-wedge fallback: working tree has unrelated "
+            "uncommitted change(s) beyond the stuck path(s) — refusing the "
+            "repo-wide reset so they are never silently discarded: "
+            + ", ".join(sorted(extra_dirty))
+        )
+
+    # All guards cleared for every stuck path — rewrite them clean from
+    # origin. `rm` first (clears the on-disk file the index considers
+    # "stuck") then a full `reset --hard` to origin's tip, which is also
+    # what completes the pull this fallback stands in for.
+    for p in stuck_paths:
+        target = repo_dir / p
+        try:
+            if target.exists() or target.is_symlink():
+                target.unlink()
+        except OSError:
+            pass
+
+    reset = _git("reset", "--hard", origin_ref)
+    if reset.returncode != 0:
+        return False, (
+            "mtime-wedge fallback FAILED: reset --hard "
+            f"{origin_ref} failed after guard-verified rm of "
+            + ", ".join(stuck_paths) + ": "
+            + (reset.stderr or reset.stdout).strip()[:200]
+        )
+
+    return True, (
+        "mtime-wedge fallback engaged (#720) — REWROTE clean from "
+        f"{origin_ref} (guard-verified: content==HEAD/origin, HEAD had no "
+        "unpushed commits) for: " + ", ".join(stuck_paths)
+    )
+
+
 def safe_pull(
     repo_dir: "Path | str",
     bubble_git_guard_path: str = "/usr/local/bin/bubble-git-guard",
@@ -3798,17 +4041,50 @@ def safe_pull(
     # 4. Pull --rebase (now the tree is clean → it succeeds).
     pull = _git("pull", "--quiet", "--rebase", "origin", "main")
     if pull.returncode != 0:
+        pull_output = (pull.stderr or pull.stdout)
         # Abort a half-applied rebase so we don't wedge the tree.
         _git("rebase", "--abort")
-        _git("tag", "-d", backup_tag)
-        if stashed:
-            _git("stash", "pop")  # restore the agent's work
-        return False, (
-            "pull --rebase FAILED: "
-            + (pull.stderr or pull.stdout).strip()[:200]
-            + " | " + "; ".join(notes)
-        )
-    notes.append("pulled")
+
+        # 4w. Guarded mtime-index-wedge fallback (#720) — ONLY engaged when
+        # the failure carries the exact "not uptodate"/"would be
+        # overwritten" signature; see the comment block + `_recover_mtime_
+        # wedge` docstring above `safe_pull` for the full non-negotiable
+        # guard. A refusal here is NOT swallowed — it's appended to notes
+        # and the pull is still reported as failed below.
+        wedge_recovered = False
+        wedge_paths = _parse_wedge_stuck_paths(pull_output)
+        if wedge_paths:
+            wedge_ok, wedge_msg = _recover_mtime_wedge(
+                repo_dir, wedge_paths, default_branch="main",
+            )
+            notes.append(wedge_msg)
+            wedge_recovered = wedge_ok
+            if wedge_ok:
+                # The wedge is cleared (and the reset already completed the
+                # sync to origin's tip) — retry so the normal success path
+                # (4a runtime-file recovery, stash pop) still runs.
+                pull = _git("pull", "--quiet", "--rebase", "origin", "main")
+
+        if pull.returncode != 0:
+            # Defensive: if the retried pull (post wedge-recovery) started
+            # and failed a fresh rebase for an unrelated reason, abort it too
+            # — a no-op (git errors quietly, non-fatal here) when there's no
+            # rebase in progress, e.g. the very first (non-retried) failure.
+            _git("rebase", "--abort")
+            _git("tag", "-d", backup_tag)
+            if stashed:
+                _git("stash", "pop")  # restore the agent's work
+            return False, (
+                "pull --rebase FAILED: "
+                + (pull.stderr or pull.stdout).strip()[:200]
+                + " | " + "; ".join(notes)
+            )
+        if wedge_recovered:
+            notes.append("pulled (after mtime-wedge recovery)")
+        else:
+            notes.append("pulled")
+    else:
+        notes.append("pulled")
 
     # 4a. Detect and restore any runtime files the pull deleted.
     #     This closes the Maya 2026-06-15 data-loss bug: when a merge
