@@ -12,10 +12,13 @@ transport is plain http, so httpx would not resend it on its own.
 from __future__ import annotations
 
 import json
+import logging
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
+from console import main as console_main
 from console import settings
 from console.services import sessions
 
@@ -104,6 +107,100 @@ def test_login_token_single_use(tmp_session_db):
 def test_login_token_expiry(tmp_session_db):
     tok = sessions.create_login_token("jade", ttl_seconds=-1)  # already expired
     assert sessions.consume_login_token(tok) is None
+
+
+def test_login_token_default_ttl_is_short(tmp_session_db):
+    """#1073 review finding 1: default TTL shrunk 24h -> 15min to bound the
+    prefetch/leak exposure window."""
+    import time
+    before = time.time()
+    tok = sessions.create_login_token("joris")  # default ttl_seconds
+    with sessions._connect() as conn:  # noqa: SLF001 (test-only introspection)
+        row = conn.execute(
+            "SELECT expires_at FROM login_tokens WHERE token=?", (tok,)
+        ).fetchone()
+    assert row is not None
+    ttl = row[0] - before
+    assert 0 < ttl <= 900 + 5  # ~15 minutes, allow a hair of test slop
+
+
+def test_consume_login_token_race_exactly_one_wins(tmp_session_db):
+    """#1073 review finding 2: the SELECT-then-UPDATE TOCTOU is fixed by a
+    single atomic conditional UPDATE. Simulate two concurrent openers of the
+    same one-time link (e.g. a prefetching proxy racing the real click) and
+    assert exactly one of them claims the token."""
+    tok = sessions.create_login_token("joris")
+    results: list[str | None] = [None, None]
+    barrier = threading.Barrier(2)
+
+    def worker(i: int) -> None:
+        barrier.wait()  # maximize the chance both threads overlap in the DB call
+        results[i] = sessions.consume_login_token(tok)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    winners = [r for r in results if r is not None]
+    losers = [r for r in results if r is None]
+    assert winners == ["joris"]
+    assert len(losers) == 1
+    # the token is now burned for good, even for a fresh third caller
+    assert sessions.consume_login_token(tok) is None
+
+
+# ---- uvicorn access-log token redaction (#1073 review finding 1) -----
+
+def _fake_access_record(full_path: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="uvicorn.access", level=logging.INFO, pathname=__file__, lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:0", "GET", full_path, "1.1", 303),
+        exc_info=None,
+    )
+
+
+def test_access_log_filter_redacts_login_link_token():
+    f = console_main._RedactTokenAccessFilter()
+    record = _fake_access_record("/login/link?t=SUPERSECRETTOKEN")
+    assert f.filter(record) is True
+    assert "SUPERSECRETTOKEN" not in record.args[2]
+    assert "redacted" in record.args[2]
+
+
+def test_access_log_filter_redacts_bootstrap_token():
+    f = console_main._RedactTokenAccessFilter()
+    record = _fake_access_record("/kanban?token=abc123&next=/home")
+    assert f.filter(record) is True
+    assert "abc123" not in record.args[2]
+    assert "next=/home" in record.args[2]  # only the token param is touched
+
+
+def test_access_log_filter_leaves_untokened_paths_alone():
+    f = console_main._RedactTokenAccessFilter()
+    record = _fake_access_record("/kanban?status=open")
+    assert f.filter(record) is True
+    assert record.args[2] == "/kanban?status=open"
+
+
+def test_access_log_redaction_installed_on_create_app(app):
+    """`app` fixture calls create_app() — the filter should be attached to
+    uvicorn's real access logger, exactly once even across repeated rebuilds.
+
+    NOTE: the `app` fixture purges + re-imports console.* (see the module note
+    above `login_ctx`), so we grab the LIVE `console.main` from sys.modules
+    rather than this file's top-level import — otherwise the isinstance()
+    check compares against a stale class object from a different module
+    instance and always fails.
+    """
+    import sys
+    live_main = sys.modules["console.main"]
+    access_logger = logging.getLogger("uvicorn.access")
+    matching = [f for f in access_logger.filters
+                if isinstance(f, live_main._RedactTokenAccessFilter)]
+    assert len(matching) == 1
 
 
 def test_session_absolute_cap(monkeypatch, tmp_session_db):
