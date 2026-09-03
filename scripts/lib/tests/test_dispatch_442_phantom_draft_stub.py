@@ -51,6 +51,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
+    read_last_materialized,
     materialize_due_missions_for_tick,
     read_last_run,
 )
@@ -194,13 +195,21 @@ def test_board_442_missions_real_shape_produce_no_gates_stub(tmp_path: Path):
         )
 
     # research_draft is SHIM-resolved and covered by #302, which DOES stamp
-    # .last-run (anti-fire-spin) for suppressed gate missions with no dedicated
-    # prompt. linkedin_sage_batch is dedicated → NOT pre-stamped (#428).
-    assert read_last_run(today_dir / "missions" / "research_draft") is not None, (
+    # its materialization-attempt marker (anti-fire-spin) for suppressed gate
+    # missions with no dedicated prompt — on .last-materialized, never
+    # .last-run (#870: nothing was actually authored). linkedin_sage_batch is
+    # dedicated → NOT pre-stamped at all (#428).
+    assert read_last_run(today_dir / "missions" / "research_draft") is None, (
+        "a suppressed bare-gate-stub tick must never write .last-run (#870)"
+    )
+    assert read_last_materialized(today_dir / "missions" / "research_draft") is not None, (
         "shim-resolved gate mission must be stamped by #302 (anti-fire-spin)"
     )
     assert read_last_run(today_dir / "missions" / "linkedin_sage_batch") is None, (
         "dedicated-prompt mission must not be pre-stamped (#428)"
+    )
+    assert read_last_materialized(today_dir / "missions" / "linkedin_sage_batch") is None, (
+        "dedicated-prompt mission must not be pre-stamped, on either marker (#428)"
     )
 
 
@@ -273,8 +282,12 @@ def test_shim_resolved_non_gates_mission_still_materialises(tmp_path: Path):
                   if f.is_file() and not f.name.startswith(".")]
     assert len(yaml_files) == 1
 
-    marker = read_last_run(today_dir / "missions" / "content_daily_rotation")
+    assert read_last_run(today_dir / "missions" / "content_daily_rotation") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    marker = read_last_materialized(today_dir / "missions" / "content_daily_rotation")
     assert marker is not None, (
         "shim-resolved mission must still be stamped — its only per-mission "
-        "idempotence source"
+        "idempotence source, now on .last-materialized (#870)"
     )

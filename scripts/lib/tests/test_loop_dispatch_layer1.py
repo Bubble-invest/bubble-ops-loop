@@ -808,11 +808,18 @@ def test_for_tick_stamps_last_run_even_when_card_already_queued(tmp_path):
 
     # No NEW card (already_queued) ...
     assert created == []
-    # ... but .last-run IS stamped, so the next tick sees the mission as fired.
-    stamp = dispatch_helpers.read_last_run(today_dir / "missions" / "warming_batch")
+    # ... but its materialization marker IS stamped, so the next tick sees the
+    # mission as fired. #870: this is .last-materialized, not .last-run — the
+    # card was never actually PROCESSED, only found already live in the
+    # queue; .last-run stays reserved for a real executor's own stamp.
+    assert dispatch_helpers.read_last_run(today_dir / "missions" / "warming_batch") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    stamp = dispatch_helpers.read_last_materialized(today_dir / "missions" / "warming_batch")
     assert stamp is not None, (
-        "already_queued mission must still stamp .last-run — otherwise it "
-        "re-materializes / fire-spins every tick (deaf-restart storm)."
+        "already_queued mission must still stamp .last-materialized — "
+        "otherwise it re-materializes / fire-spins every tick (deaf-restart storm)."
     )
 
     # End-to-end idempotence: a second tick produces nothing and the mission is

@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     materialize_due_missions_for_tick,
     read_last_run,
+    read_last_materialized,
 )
 
 # ---------------------------------------------------------------------------
@@ -89,11 +90,16 @@ def test_gates_output_queue_produces_no_file(tmp_path: Path):
             f"Expected no stub files in queues/gates/ but found: {yaml_files}"
         )
 
-    # .last-run IS stamped (prevents fire-spin on next tick).
-    last_run = read_last_run(today_dir / "missions" / "investment_case")
-    assert last_run is not None, (
-        ".last-run must be stamped even when the gate stub is suppressed "
-        "(otherwise the mission fire-spins every tick)"
+    # .last-materialized IS stamped (prevents fire-spin on next tick).
+    # #870: never .last-run — no gate card was actually authored.
+    assert read_last_run(today_dir / "missions" / "investment_case") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    last_materialized = read_last_materialized(today_dir / "missions" / "investment_case")
+    assert last_materialized is not None, (
+        ".last-materialized must be stamped even when the gate stub is "
+        "suppressed (otherwise the mission fire-spins every tick)"
     )
 
 
@@ -125,8 +131,14 @@ def test_gates_output_queue_no_trailing_slash(tmp_path: Path):
                       if f.is_file() and not f.name.startswith(".")]
         assert yaml_files == []
 
-    last_run = read_last_run(today_dir / "missions" / "prospect_dm_gate")
-    assert last_run is not None, ".last-run must be stamped for no-trailing-slash variant"
+    assert read_last_run(today_dir / "missions" / "prospect_dm_gate") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    last_materialized = read_last_materialized(today_dir / "missions" / "prospect_dm_gate")
+    assert last_materialized is not None, (
+        ".last-materialized must be stamped for no-trailing-slash variant"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +187,14 @@ def test_non_gates_output_queue_still_materialises(tmp_path: Path):
     assert data.get("kind") == "market_brief"
     assert data.get("created_by") == "materialize_due_missions"
 
-    # .last-run is also stamped.
-    last_run = read_last_run(today_dir / "missions" / "market_research")
-    assert last_run is not None
+    # .last-materialized is stamped (the item was CREATED, not yet
+    # processed) — #870: never .last-run.
+    assert read_last_run(today_dir / "missions" / "market_research") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    last_materialized = read_last_materialized(today_dir / "missions" / "market_research")
+    assert last_materialized is not None
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +251,9 @@ def test_mixed_missions_gates_suppressed_research_materialised(tmp_path: Path):
                   if f.is_file() and not f.name.startswith(".")]
     assert len(yaml_files) == 1
 
-    # Both missions have .last-run stamped.
-    assert read_last_run(today_dir / "missions" / "signal_gate") is not None
-    assert read_last_run(today_dir / "missions" / "prospect_research") is not None
+    # Both missions have their materialization-attempt marker stamped, never
+    # .last-run (#870: neither has actually been run/processed yet).
+    assert read_last_run(today_dir / "missions" / "signal_gate") is None
+    assert read_last_run(today_dir / "missions" / "prospect_research") is None
+    assert read_last_materialized(today_dir / "missions" / "signal_gate") is not None
+    assert read_last_materialized(today_dir / "missions" / "prospect_research") is not None

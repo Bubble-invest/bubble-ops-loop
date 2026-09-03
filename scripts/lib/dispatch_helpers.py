@@ -137,6 +137,95 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
     (layer_dir / ".last-run").write_text(when.isoformat(), encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# .last-materialized file I/O (#870)
+# ---------------------------------------------------------------------------
+#
+# `.last-run` is meant to mean "this mission's real work happened" — written
+# by the mission's OWN executor (a dedicated `missions/<id>/PROMPT.md`'s
+# STEP 0, or any future real per-mission execution path). `build_dispatch_ctx`
+# / `materialize_due_missions_for_tick` are a context BUILDER, not an
+# executor: for a SHIM-resolved mission (no dedicated prompt — the only kind
+# the materializer ever pre-stamps, see `_mission_authors_own_marker`) there
+# is today no independent "it really ran" signal, so the materializer still
+# needs to record something to prevent re-materializing/re-attempting the
+# same due mission every tick (the #261/#277 fire-spin class). It now records
+# that attempt under a SEPARATELY NAMED marker, `.last-materialized`, instead
+# of overloading `.last-run` — so a human (or a dashboard) reading
+# `outputs/<today>/missions/<id>/.last-run` directly gets an honest signal:
+# that file exists ONLY when the mission's real executor stamped it, never as
+# a side effect of merely building/deciding dispatch context (board #870 —
+# the exact confusion in the original bug report, where `.last-run` looked
+# "fired" though `draft_batch` never produced any artifact).
+#
+# `_mission_handled_marker` (below) is the READ side: every consumer that
+# used to treat a per-mission `.last-run` as "has this mission been handled
+# today" (whether written by a real executor OR by the materializer's old
+# proxy stamp) now unions BOTH markers, so existing anti-fire-spin/idempotence
+# behaviour for shim-resolved missions is UNCHANGED — only the on-disk
+# artifact identity is now honest. Closing the remaining gap (giving
+# proactive shim-only missions like `draft_batch`/`qualify` a real executor
+# that stamps genuine `.last-run` on completion, so they stop being "stuck"
+# as materialized-forever) is dept-side follow-up work (per #884's precedent
+# of a dedicated `missions/<id>/PROMPT.md`), out of scope for this file.
+
+def read_last_materialized(layer_dir: Path) -> "datetime | None":
+    """Read the ISO-8601 timestamp from `<layer_dir>/.last-materialized`.
+
+    Mirrors `read_last_run` exactly, but for the separate materialization-
+    attempt marker (see the module comment above, #870).
+    """
+    f = layer_dir / ".last-materialized"
+    if not f.exists():
+        return None
+    body = f.read_text(encoding="utf-8").strip()
+    if not body:
+        return None
+    return _parse_iso(body)
+
+
+def write_last_materialized(layer_dir: Path, when: "datetime | None" = None) -> None:
+    """Write the ISO-8601 timestamp to `<layer_dir>/.last-materialized`.
+
+    Mirrors `write_last_run` exactly, but for the separate materialization-
+    attempt marker (see the module comment above, #870). Only
+    `materialize_due_missions_for_tick` (the ctx-builder's mutating step)
+    calls this — it must never call `write_last_run` for a mission it has
+    not actually executed.
+    """
+    if when is None:
+        when = datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        raise ValueError("write_last_materialized requires a tz-aware datetime")
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    (layer_dir / ".last-materialized").write_text(when.isoformat(), encoding="utf-8")
+
+
+def _mission_handled_marker(today_dir: Path, mid: str) -> "datetime | None":
+    """The per-mission "has this been handled today" timestamp for `mid`,
+    combining the TRUE completion marker (`.last-run`) with the
+    materialization-attempt marker (`.last-materialized`) — see the
+    `.last-materialized` module comment above (#870).
+
+    `.last-run` is checked first (and returned alone when present) because
+    it is the authoritative "really ran" signal for missions with a real
+    executor (dedicated-prompt missions stamp ONLY `.last-run`, never
+    `.last-materialized` — the materializer skips them entirely, see
+    `_mission_authors_own_marker`). Shim-resolved missions have no such
+    executor today, so `.last-materialized` — the materializer's own
+    anti-fire-spin proxy stamp — is the only signal available for them;
+    falling back to it here preserves every existing idempotence/fire-spin
+    guarantee (#261/#277/#428/#432/#442/#454) bit-for-bit, while making
+    `build_dispatch_ctx` / `materialize_due_missions_for_tick` never write a
+    file literally named `.last-run` for a mission that has not actually run.
+    """
+    mdir = today_dir / "missions" / mid
+    real = read_last_run(mdir)
+    if real is not None:
+        return real
+    return read_last_materialized(mdir)
+
+
 def write_l3_human_deferred(layer3_dir: Path, when: datetime | None = None,
                              *, reason: str = "") -> None:
     """Stamp Layer 3's `.last-run` (AND advance its round_counter) for a
@@ -1110,12 +1199,14 @@ def materialize_due_missions_for_tick(
     if not missions:
         return []
 
-    # Per-mission .last-run timestamps: outputs/<today>/missions/<id>/.last-run
+    # Per-mission "handled today" timestamps: .last-run (real completion) OR
+    # .last-materialized (this function's own anti-fire-spin proxy for a
+    # shim-resolved mission — #870, see _mission_handled_marker).
     last_fired_per_mission: dict[str, datetime] = {}
     for m in missions:
         mid = m.get("id", "")
         if mid:
-            last = read_last_run(today_dir / "missions" / mid)
+            last = _mission_handled_marker(today_dir, mid)
             if last:
                 last_fired_per_mission[mid] = last
 
@@ -1257,7 +1348,11 @@ def materialize_due_missions_for_tick(
                 pending = _event_pending_trigger_ids(repo_dir, today_dir, m, now_utc=now_utc)
                 if pending:
                     _record_dispatched_trigger_ids(today_dir, mid, pending, now_utc=now_utc)
-                    write_last_run(today_dir / "missions" / mid, when=now_utc)
+                    # #870: this is the materializer claiming the trigger is
+                    # about to be dispatched, not proof the mission's real
+                    # work ran — write the materialization-attempt marker,
+                    # not .last-run (see _mission_handled_marker).
+                    write_last_materialized(today_dir / "missions" / mid, when=now_utc)
             continue
         if is_mission_due(m, now=now_utc, last_fired=last_fired_per_mission.get(mid)):
             # #428 — do NOT pre-stamp at DECISION time for missions that author
@@ -1280,8 +1375,13 @@ def materialize_due_missions_for_tick(
             # tick). A mission whose layer IS eligible is being dispatched now,
             # so stamping it is the correct idempotence (anti-fire-spin
             # #261/#277) — it must not be re-materialized next tick.
+            #
+            # #870: this stamp records that the mission was MATERIALIZED this
+            # tick, not that its real work ran — write .last-materialized,
+            # never .last-run (only the mission's own executor may write
+            # that; see _mission_handled_marker for the unioned read side).
             if not _mission_authors_own_marker(repo_dir, m) and layer_n == highest_eligible:
-                write_last_run(today_dir / "missions" / mid, when=now_utc)
+                write_last_materialized(today_dir / "missions" / mid, when=now_utc)
 
     due = materialize_due_missions(
         missions, now=now_utc, last_fired_per_mission=last_fired_per_mission
@@ -1323,34 +1423,39 @@ def materialize_due_missions_for_tick(
 
         if already_queued:
             # The mission's card is still live in the queue — it has effectively
-            # "fired" for today, so stamp .last-run too. Without this, a mission
-            # whose card lingers (e.g. an orphan kind with no draining layer, or
-            # work awaiting a later layer's min-time) stays last_fired=None →
-            # due=True on every tick → the dispatcher fire-spins on it hourly.
-            # That fire-spin is what drove the 2026-06-16 Maya deaf-restart storm
-            # (heavy re-dispatch every tick → CC-core notification drop #61797).
-            # See maya rick-requests: research-queue-poison-routing /
+            # "fired" for today, so stamp its materialization marker too.
+            # Without this, a mission whose card lingers (e.g. an orphan kind
+            # with no draining layer, or work awaiting a later layer's
+            # min-time) stays last_fired=None → due=True on every tick → the
+            # dispatcher fire-spins on it hourly. That fire-spin is what drove
+            # the 2026-06-16 Maya deaf-restart storm (heavy re-dispatch every
+            # tick → CC-core notification drop #61797). See maya
+            # rick-requests: research-queue-poison-routing /
             # mission-lastrun-never-stamped (2026-06-16).
-            # #428: skip for dedicated-prompt missions — their subagent stamps the
-            # per-mission marker at STEP 0 when it actually runs.
+            # #428: skip for dedicated-prompt missions — their subagent stamps
+            # their own .last-run at STEP 0 when it actually runs.
+            # #870: this queue item exists but has not been PROCESSED by a
+            # real executor — stamp .last-materialized, never .last-run.
             if not _mission_authors_own_marker(repo_dir, {"id": mid}):
-                write_last_run(today_dir / "missions" / mid, when=now_utc)
+                write_last_materialized(today_dir / "missions" / mid, when=now_utc)
             continue
 
         # Guard (#302): never write a bare stub into queues/gates/ — gate cards
         # are always hand-authored by the agent layers (rich payload, no
         # created_by). A bare stub would create a phantom ghost decision card
         # whenever the upstream funnel is dry (confirmed across ben/maya/content).
-        # Still stamp .last-run so the mission doesn't fire-spin on the next tick.
+        # Still stamp .last-materialized so the mission doesn't fire-spin on
+        # the next tick (#870: NOT .last-run — nothing has actually run).
         if oq.rstrip("/") == "queues/gates":
             print(
                 f"[materialize] suppressed bare gate stub for mission={mid!r}"
                 f" (output_queue={oq!r} — gates are hand-authored by agents)"
             )
             # #428: gate-card missions (newsletter, sage, …) hand-author their gate
-            # in a subagent and stamp the per-mission marker at STEP 0 themselves.
-            # Stamping here at decision time is the silent-failure bug — only the
-            # real run may write the marker.
+            # in a subagent and stamp their own .last-run at STEP 0 themselves.
+            # Stamping .last-run here at decision time is the silent-failure
+            # bug — only the real run may write THAT marker; this branch may
+            # only ever write .last-materialized (#870).
             #
             # ACCOUNTANT FIX (2026-09, Géraldine daily_categorisation_reconciliation),
             # upstreamed from the live dept's local patch — #1084/#1085: a
@@ -1376,7 +1481,7 @@ def materialize_due_missions_for_tick(
                 and _lyr in _LAYER_MIN_TIME
                 and _time_reached(_mat_now_paris_t, _lyr)
             ):
-                write_last_run(today_dir / "missions" / mid, when=now_utc)
+                write_last_materialized(today_dir / "missions" / mid, when=now_utc)
             continue
 
         # Guard (#442, defense-in-depth GENERALIZATION of #302): never write a
@@ -1435,13 +1540,15 @@ def materialize_due_missions_for_tick(
         item_path.write_text(
             yaml.dump(queue_item, allow_unicode=True, default_flow_style=False)
         )
-        # Stamp the mission .last-run so it is not re-materialized next tick.
-        # #428: skip for dedicated-prompt missions — their subagent stamps the
-        # per-mission marker at STEP 0 when it actually runs (the created card is a
-        # stub the subagent fills). Idempotence for the materialized stub still
-        # holds via the mission_id dedup scan above.
+        # Stamp .last-materialized so it is not re-materialized next tick
+        # (#870: NOT .last-run — the queue item was only just CREATED, not
+        # processed). #428: skip for dedicated-prompt missions — their
+        # subagent stamps its own .last-run at STEP 0 when it actually runs
+        # (the created card is a stub the subagent fills). Idempotence for
+        # the materialized stub still holds via the mission_id dedup scan
+        # above.
         if not _mission_authors_own_marker(repo_dir, {"id": mid}):
-            write_last_run(today_dir / "missions" / mid, when=now_utc)
+            write_last_materialized(today_dir / "missions" / mid, when=now_utc)
         created.append(item)
 
     return created
@@ -1739,7 +1846,13 @@ def _any_mission_fired_today_for_layer(
         mid = m.get("id", "")
         if not mid:
             continue
-        stamped = read_last_run(today_dir / "missions" / mid)
+        # #870: union .last-run (real completion) with .last-materialized
+        # (the materializer's own anti-fire-spin proxy for a shim-resolved
+        # mission — see _mission_handled_marker) so this fallback signal is
+        # unchanged in behaviour, even though the materializer no longer
+        # writes a file literally named .last-run for a mission that has not
+        # actually run.
+        stamped = _mission_handled_marker(today_dir, mid)
         if stamped is None:
             continue
         if now_utc is not None and stamped >= now_utc:
@@ -2305,19 +2418,25 @@ def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int) -> bool:
 
 
 def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
-    """Return the per-mission .last-run timestamp, or None if absent, stamped
-    THIS tick, or unable to prove REAL output exists (#1080).
+    """Return the per-mission "handled today" timestamp, or None if absent,
+    stamped THIS tick, or unable to prove REAL output exists (#1080).
 
-    Per-mission marker path: outputs/<today>/missions/<id>/.last-run
+    Per-mission marker paths: outputs/<today>/missions/<id>/.last-run (real
+    completion) and .last-materialized (materialization-attempt proxy) —
+    see `_mission_handled_marker` (#870).
 
-    This is written either by:
-      a) materialize_due_missions_for_tick — runs at the TOP of build_dispatch_ctx
-         and stamps the marker at the CURRENT tick's now_utc for every due
-         layer-1..3 mission (anti-fire-spin, issue #261). Because this runs in the
-         SAME tick as the dispatch decision, the marker it writes equals
-         ctx['now_utc'].
-      b) The mission's own subagent — on a LATER tick, after it completes, stamps
-         this path so the next tick's select_due_missions skips it.
+    The returned timestamp comes from either:
+      a) `.last-materialized`, written by materialize_due_missions_for_tick —
+         runs at the TOP of build_dispatch_ctx and stamps it at the CURRENT
+         tick's now_utc for every due, shim-resolved layer-1..3 mission
+         (anti-fire-spin, issue #261). Because this runs in the SAME tick as
+         the dispatch decision, the marker it writes equals ctx['now_utc'].
+         `build_dispatch_ctx` / this materializer NEVER write `.last-run` —
+         only a mission's own real executor may (#870).
+      b) `.last-run`, written by the mission's own subagent (a dedicated
+         `missions/<id>/PROMPT.md`'s STEP 0) — on a LATER tick, after it
+         completes, stamps this path so the next tick's select_due_missions
+         skips it.
 
     Critical "this-tick" exclusion (fixes the tick-1-vs-tick-2 ambiguity):
     a marker whose timestamp == ctx['now_utc'] was written by the materializer
@@ -2363,7 +2482,7 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     if not mid:
         return None
 
-    marker = read_last_run(Path(today_dir_str) / "missions" / mid)
+    marker = _mission_handled_marker(Path(today_dir_str), mid)
     if marker is None:
         return None
 
