@@ -62,6 +62,29 @@
 #   T15 review-round-2 regression guard: the benign skip-worktree self-heal
 #       (T8's scenario) still produces the OLD "mirror self-healed" wording,
 #       NOT the new DISCARDED wording — proves the two paths stay distinct.
+#   T16 board #1064 — a clone stranded on a STALE FEATURE BRANCH with NO
+#       upstream (the real-incident shape: bubble-ops-content stuck on
+#       worker-953 for ~8 days) is SELF-HEALED to origin's canonical branch —
+#       checked out, upstream set, converged — NOT warn-skipped forever. A
+#       healthy dept on its canonical branch in the SAME run still converges
+#       unaffected (proves the fix doesn't disturb the normal path).
+#   T17 board #1064 — a clone on a NON-canonical branch that DOES carry its
+#       own upstream (e.g. someone pushed the feature branch) is likewise
+#       self-healed to canonical — proves the fix isn't limited to the
+#       no-upstream case alone.
+#   T18 board #1064 — escalation: when the canonical branch genuinely cannot
+#       be resolved (origin is an empty repo with no HEAD), the dept is
+#       WARN-skipped every run (never silently) and, after
+#       BUBBLE_SYNC_ESCALATE_AFTER consecutive misses, a kanban card is
+#       emitted via the (stubbed) emitter — never skipped into silence.
+#   T19 board #1064 review round — a clone stranded on a no-upstream feature
+#       branch (T16's shape) that ALSO carries an UNTRACKED file (never
+#       `git add`-ed — the realistic shape of stray work left on a throwaway
+#       branch) must have that file quarantined via `git stash
+#       --include-untracked` BEFORE the branch is abandoned, NOT silently
+#       wiped by the unconditional `git clean -fd` on that path.
+#       `tracked_dirt_count()` alone would miss it (it counts only tracked
+#       dirt), so the quarantine trigger must also look at untracked dirt.
 # =============================================================================
 set -uo pipefail
 
@@ -884,6 +907,232 @@ rc9=$?
 chk "T15 real-git run exits 0" 0 "$rc9"
 want "T15a benign skip-worktree self-heal keeps the OLD wording" "mirror self-healed" "$WORK/run-real9.log"
 nowant "T15b benign skip-worktree self-heal does NOT trigger the DISCARDED path" "DISCARDED" "$WORK/run-real9.log"
+
+# -----------------------------------------------------------------------------
+# T16: board #1064 — stranded clone with NO upstream, on a stale feature
+#      branch, in the SAME run as a healthy canonical-branch dept. Must
+#      self-heal (checkout canonical + set upstream + converge), never
+#      warn-skip forever, and the healthy dept must converge unaffected.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS10="$WORK/agents-real10"; rm -rf "$REALGIT_AGENTS10"; mkdir -p "$REALGIT_AGENTS10"
+
+# Stranded dept: origin's canonical branch is "main"; the mirror gets left on
+# a throwaway feature branch created with NO upstream configured — exactly
+# `git checkout -b worker-953` with no `git push -u`, the real-incident shape.
+ORIGIN10="$WORK/origin-stranded.git"
+WORKTREE10="$WORK/seed-stranded"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN10"
+"${real_git_env[@]}" git clone -q "$ORIGIN10" "$WORKTREE10" 2>/dev/null
+mkdir -p "$WORKTREE10/onboarding"
+printf 'v: 1\n' > "$WORKTREE10/framework.txt"
+printf 'slug: stranded\nstatus: Live\nhost: local\n' > "$WORKTREE10/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE10" add -A
+"${real_git_env[@]}" git -C "$WORKTREE10" commit -qm "seed10"
+"${real_git_env[@]}" git -C "$WORKTREE10" push -q origin HEAD:main
+MIRROR10="$REALGIT_AGENTS10/bubble-ops-stranded"
+"${real_git_env[@]}" git clone -q "$ORIGIN10" "$MIRROR10"
+
+# origin advances main AFTER the mirror strands (real convergence work must
+# still land once healed).
+printf 'v: 2\n' > "$WORKTREE10/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE10" commit -qam "advance10"
+"${real_git_env[@]}" git -C "$WORKTREE10" push -q origin HEAD:main
+origin_head10="$("${real_git_env[@]}" git -C "$WORKTREE10" rev-parse HEAD)"
+
+# Strand the mirror: a NEW local branch, no upstream, no push.
+"${real_git_env[@]}" git -C "$MIRROR10" checkout -q -b worker-953
+before_branch10="$("${real_git_env[@]}" git -C "$MIRROR10" symbolic-ref --short HEAD)"
+upstream_before10="$("${real_git_env[@]}" git -C "$MIRROR10" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")"
+
+# A SECOND, healthy dept in the SAME run, already on canonical "main" — must
+# converge unaffected by the stranded dept's self-heal.
+ORIGIN10B="$WORK/origin-healthy10.git"; WORKTREE10B="$WORK/seed-healthy10"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN10B"
+"${real_git_env[@]}" git clone -q "$ORIGIN10B" "$WORKTREE10B" 2>/dev/null
+mkdir -p "$WORKTREE10B/onboarding"
+printf 'v: 1\n' > "$WORKTREE10B/framework.txt"
+printf 'slug: healthy10\nstatus: Live\nhost: local\n' > "$WORKTREE10B/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE10B" add -A
+"${real_git_env[@]}" git -C "$WORKTREE10B" commit -qm "seed10b"
+"${real_git_env[@]}" git -C "$WORKTREE10B" push -q origin HEAD:main
+MIRROR10B="$REALGIT_AGENTS10/bubble-ops-healthy10"
+"${real_git_env[@]}" git clone -q "$ORIGIN10B" "$MIRROR10B"
+printf 'v: 2\n' > "$WORKTREE10B/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE10B" commit -qam "advance10b"
+"${real_git_env[@]}" git -C "$WORKTREE10B" push -q origin HEAD:main
+origin_head10b="$("${real_git_env[@]}" git -C "$WORKTREE10B" rev-parse HEAD)"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS10" >"$WORK/run-real10.log" 2>&1
+rc10=$?
+after_head10="$("${real_git_env[@]}" git -C "$MIRROR10" rev-parse HEAD)"
+after_branch10="$("${real_git_env[@]}" git -C "$MIRROR10" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+after_upstream10="$("${real_git_env[@]}" git -C "$MIRROR10" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")"
+
+[[ "$before_branch10" == "worker-953" ]] && { echo "  PASS: T16 precondition: mirror stranded on worker-953"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T16 precondition broken (mirror not on worker-953)"; FAIL=$((FAIL+1)); }
+[[ "$upstream_before10" == "NONE" ]] && { echo "  PASS: T16 precondition: worker-953 has NO upstream configured"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL: T16 precondition broken (worker-953 unexpectedly has upstream '$upstream_before10')"; FAIL=$((FAIL+1)); }
+chk "T16 real-git run exits 0" 0 "$rc10"
+chk_eq "T16a stranded mirror self-healed onto canonical branch 'main'" "main" "$after_branch10"
+chk_eq "T16b stranded mirror upstream now tracks origin/main" "origin/main" "$after_upstream10"
+chk_eq "T16c stranded mirror converged to origin's advanced HEAD (was frozen before this fix)" "$origin_head10" "$after_head10"
+want "T16d self-heal is logged naming the stranded dept + old branch" "stranded.*worker-953\|worker-953.*stranded" "$WORK/run-real10.log"
+nowant "T16e NOT the old forever-skip wording" "no upstream tracking branch configured" "$WORK/run-real10.log"
+after_head10b="$("${real_git_env[@]}" git -C "$MIRROR10B" rev-parse HEAD)"
+chk_eq "T16f healthy canonical-branch dept in the same run still converged unaffected" "$origin_head10b" "$after_head10b"
+want "T16g healthy dept's own sync line present" "healthy10" "$WORK/run-real10.log"
+
+# -----------------------------------------------------------------------------
+# T17: board #1064 — a clone on a NON-canonical branch that DOES carry its
+#      own upstream (someone pushed the stray branch) must ALSO self-heal to
+#      canonical — proves the fix isn't gated on "no upstream" alone.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS11="$WORK/agents-real11"; rm -rf "$REALGIT_AGENTS11"; mkdir -p "$REALGIT_AGENTS11"
+ORIGIN11="$WORK/origin-offbranch.git"
+WORKTREE11="$WORK/seed-offbranch"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN11"
+"${real_git_env[@]}" git clone -q "$ORIGIN11" "$WORKTREE11" 2>/dev/null
+mkdir -p "$WORKTREE11/onboarding"
+printf 'v: 1\n' > "$WORKTREE11/framework.txt"
+printf 'slug: offbranch\nstatus: Live\nhost: local\n' > "$WORKTREE11/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE11" add -A
+"${real_git_env[@]}" git -C "$WORKTREE11" commit -qm "seed11"
+"${real_git_env[@]}" git -C "$WORKTREE11" push -q origin HEAD:main
+MIRROR11="$REALGIT_AGENTS11/bubble-ops-offbranch"
+"${real_git_env[@]}" git clone -q "$ORIGIN11" "$MIRROR11"
+printf 'v: 2\n' > "$WORKTREE11/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE11" commit -qam "advance11"
+"${real_git_env[@]}" git -C "$WORKTREE11" push -q origin HEAD:main
+origin_head11="$("${real_git_env[@]}" git -C "$WORKTREE11" rev-parse HEAD)"
+
+# A stray branch that DOES get pushed (so it has a real upstream) and the
+# mirror is checked out on it — non-canonical, but upstream IS configured.
+"${real_git_env[@]}" git -C "$MIRROR11" checkout -q -b review-branch
+"${real_git_env[@]}" git -C "$MIRROR11" push -q -u origin review-branch
+upstream_before11="$("${real_git_env[@]}" git -C "$MIRROR11" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS11" >"$WORK/run-real11.log" 2>&1
+rc11=$?
+after_head11="$("${real_git_env[@]}" git -C "$MIRROR11" rev-parse HEAD)"
+after_branch11="$("${real_git_env[@]}" git -C "$MIRROR11" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+
+chk_eq "T17 precondition: mirror ON review-branch WITH a real upstream" "origin/review-branch" "$upstream_before11"
+chk "T17a real-git run exits 0" 0 "$rc11"
+chk_eq "T17b mirror self-healed onto canonical branch 'main' despite having a valid (non-canonical) upstream" "main" "$after_branch11"
+chk_eq "T17c mirror converged to origin/main's advanced HEAD" "$origin_head11" "$after_head11"
+
+# -----------------------------------------------------------------------------
+# T18: board #1064 — escalation. Origin has NO commits at all (no canonical
+#      branch resolvable). The dept must be WARN-skipped every run (never
+#      silent) and, once BUBBLE_SYNC_ESCALATE_AFTER consecutive misses are
+#      hit, a kanban card is emitted via the (stubbed) EMIT_KANBAN — proving
+#      the "never silently skip forever" half of the fix for the one case
+#      self-heal genuinely can't run.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS12="$WORK/agents-real12"; rm -rf "$REALGIT_AGENTS12"; mkdir -p "$REALGIT_AGENTS12"
+ORIGIN12="$WORK/origin-empty.git"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN12"   # NO commits ever pushed — no canonical branch exists
+MIRROR12="$REALGIT_AGENTS12/bubble-ops-noheadorigin"
+"${real_git_env[@]}" git clone -q "$ORIGIN12" "$MIRROR12" 2>/dev/null   # empty-repo clone warning expected
+mkdir -p "$MIRROR12/onboarding"
+printf 'slug: noheadorigin\nstatus: Live\nhost: local\n' > "$MIRROR12/onboarding/STATE.yaml"
+
+EMIT_STUB_DIR="$WORK/emit-stub"; mkdir -p "$EMIT_STUB_DIR"
+EMIT_CALLS="$WORK/emit-calls.log"; : > "$EMIT_CALLS"
+cat > "$EMIT_STUB_DIR/emit_kanban_item.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$EMIT_CALLS_FILE"
+exit 0
+EOF
+chmod +x "$EMIT_STUB_DIR/emit_kanban_item.sh"
+
+run_t18() {
+  EMIT_CALLS_FILE="$EMIT_CALLS" BUBBLE_SYNC_ESCALATE_AFTER=3 \
+  BUBBLE_SYNC_EMIT_KANBAN="$EMIT_STUB_DIR/emit_kanban_item.sh" \
+  "${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS12"
+}
+
+: > "$WORK/run-real12-1.log"; run_t18 >"$WORK/run-real12-1.log" 2>&1; rc12_1=$?
+: > "$WORK/run-real12-2.log"; run_t18 >"$WORK/run-real12-2.log" 2>&1; rc12_2=$?
+: > "$WORK/run-real12-3.log"; run_t18 >"$WORK/run-real12-3.log" 2>&1; rc12_3=$?
+
+chk "T18 run 1 exits 0 (fail-safe, no timer flap)" 0 "$rc12_1"
+chk "T18 run 2 exits 0" 0 "$rc12_2"
+chk "T18 run 3 exits 0" 0 "$rc12_3"
+want "T18a run 1 WARN-skips (not silent)" "WARN.*noheadorigin.*canonical branch could not be resolved" "$WORK/run-real12-1.log"
+want "T18b run 1 names the consecutive-miss count" "consecutive misses: 1" "$WORK/run-real12-1.log"
+want "T18c run 2 names the consecutive-miss count" "consecutive misses: 2" "$WORK/run-real12-2.log"
+want "T18d run 3 names the consecutive-miss count" "consecutive misses: 3" "$WORK/run-real12-3.log"
+nowant "T18e no escalation fired before the threshold (run 1)" "ESCALATE" "$WORK/run-real12-1.log"
+nowant "T18f no escalation fired before the threshold (run 2)" "ESCALATE" "$WORK/run-real12-2.log"
+want "T18g escalation fires exactly at the threshold (run 3)" "ESCALATE noheadorigin" "$WORK/run-real12-3.log"
+emit_call_count="$(grep -c . "$EMIT_CALLS" 2>/dev/null || echo 0)"
+chk_eq "T18h the (stubbed) kanban emitter was invoked exactly once (only at the threshold)" "1" "$emit_call_count"
+want "T18i the kanban emit call names the dept + task" "task=sync-local-dept-clones" "$EMIT_CALLS"
+want "T18j the kanban emit call is a real incident title naming the dept" "noheadorigin" "$EMIT_CALLS"
+
+# -----------------------------------------------------------------------------
+# T19: board #1064 review round — stranded no-upstream branch (T16's shape)
+#      that ALSO carries an UNTRACKED file (never `git add`-ed). The
+#      unconditional `git clean -fd` on the branch-abandon path must NOT
+#      silently wipe it: the quarantine (git stash --include-untracked) must
+#      fire even though NO tracked file is dirty, so the file is recoverable
+#      afterward via `git stash list` / `stash show -u`, not gone with no
+#      trace.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS13="$WORK/agents-real13"; rm -rf "$REALGIT_AGENTS13"; mkdir -p "$REALGIT_AGENTS13"
+ORIGIN13="$WORK/origin-stranded13.git"
+WORKTREE13="$WORK/seed-stranded13"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN13"
+"${real_git_env[@]}" git clone -q "$ORIGIN13" "$WORKTREE13" 2>/dev/null
+mkdir -p "$WORKTREE13/onboarding"
+printf 'v: 1\n' > "$WORKTREE13/framework.txt"
+printf 'slug: stranded13\nstatus: Live\nhost: local\n' > "$WORKTREE13/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE13" add -A
+"${real_git_env[@]}" git -C "$WORKTREE13" commit -qm "seed13"
+"${real_git_env[@]}" git -C "$WORKTREE13" push -q origin HEAD:main
+MIRROR13="$REALGIT_AGENTS13/bubble-ops-stranded13"
+"${real_git_env[@]}" git clone -q "$ORIGIN13" "$MIRROR13"
+
+# origin advances main AFTER the mirror strands (same shape as T16).
+printf 'v: 2\n' > "$WORKTREE13/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE13" commit -qam "advance13"
+"${real_git_env[@]}" git -C "$WORKTREE13" push -q origin HEAD:main
+origin_head13="$("${real_git_env[@]}" git -C "$WORKTREE13" rev-parse HEAD)"
+
+# Strand the mirror on a NEW local branch, no upstream, no push — then drop an
+# UNTRACKED file on it. Never `git add`-ed: the realistic shape of "work
+# someone left on a stray branch" (a note, a scratch export, etc).
+"${real_git_env[@]}" git -C "$MIRROR13" checkout -q -b worker-stray13
+printf 'do not lose this — real notes\n' > "$MIRROR13/important_notes.txt"
+untracked_before13="$("${real_git_env[@]}" git -C "$MIRROR13" status --porcelain 2>/dev/null | grep -c '^?? important_notes.txt')"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS13" >"$WORK/run-real13.log" 2>&1
+rc13=$?
+after_branch13="$("${real_git_env[@]}" git -C "$MIRROR13" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+after_head13="$("${real_git_env[@]}" git -C "$MIRROR13" rev-parse HEAD)"
+
+chk_eq "T19 precondition: important_notes.txt is untracked (never git add-ed) before the run" "1" "$untracked_before13"
+chk "T19a real-git run exits 0" 0 "$rc13"
+chk_eq "T19b stranded mirror still self-healed onto canonical branch 'main'" "main" "$after_branch13"
+chk_eq "T19c stranded mirror still converged to origin's advanced HEAD" "$origin_head13" "$after_head13"
+
+# The core assertion: the untracked file must be QUARANTINED (recoverable via
+# git stash), NOT silently gone with nothing to recover it from. Pre-fix,
+# quarantine_endangered_state() only stashes when tracked_dirt_count() > 0,
+# so an untracked-only dirty tree never triggers the stash at all and
+# `git clean -fd` wipes the file with no trace — this must fail on that code.
+stash_list13="$("${real_git_env[@]}" git -C "$MIRROR13" stash list 2>/dev/null)"
+if [[ -n "$stash_list13" ]]; then
+  stash_has_file13="$("${real_git_env[@]}" git -C "$MIRROR13" stash show -p -u stash@{0} 2>/dev/null | grep -c 'important_notes.txt')"
+else
+  stash_has_file13=0
+fi
+if [[ -n "$stash_list13" && "${stash_has_file13:-0}" -gt 0 ]]; then
+  echo "  PASS: T19d untracked file on the abandoned branch was quarantined via git stash (recoverable, not silently wiped)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T19d untracked file was NOT quarantined — no stash entry contains it (silently wiped by git clean -fd)"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
