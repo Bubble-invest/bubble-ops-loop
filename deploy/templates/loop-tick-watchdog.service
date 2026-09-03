@@ -1,0 +1,30 @@
+[Unit]
+Description=ops-loop TICK watchdog — re-kick a dept loop whose tick died mid-flight (board #724)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/scripts/loop-tick-watchdog.py
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+WorkingDirectory=/home/claude/bubble-ops-loop
+Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+# ONE iterating unit for the whole fleet: depts are auto-discovered at runtime
+# (glob /home/claude/agents/bubble-ops-* + enabled ops-loop-<slug>.service +
+# host != local). A new dept inherits it with ZERO config.
+#
+# Knobs (all optional; defaults live in scripts/lib/loop_tick_watchdog.py):
+#   BUBBLE_TICKWD_STALL_IDLE_SEC=600   error must be ≥10 min old before acting
+#   BUBBLE_TICKWD_COOLDOWN_SEC=1800    ≥30 min between kicks of one dept
+#   BUBBLE_TICKWD_MAX_KICKS=3          per BUBBLE_TICKWD_WINDOW_SEC=21600 (6h), then escalate
+#   BUBBLE_TICKWD_MAX_CONSECUTIVE=6    hard stop: kicks since the last healthy observation
+#                                      (the 6h window is ROLLING — without this a permanently
+#                                      broken dept would get 12 kicks/day for ever); 0 = off
+#   BUBBLE_TICKWD_RESTART=1            level-2 (stop→start) allowed when inject proved deaf
+#   BUBBLE_TICKWD_DRY_RUN=1            decide + log only (first-deploy soak)
+Environment=BUBBLE_TICKWD_DRY_RUN=0
+ExecStart=/home/claude/bubble-ops-loop/scripts/loop-tick-watchdog.py --host vps
+# A level-2 restart waits for stop+start; everything else is sub-second.
+TimeoutStartSec=300
+# The script exits 0 on every completed pass and 2 only on a structural
+# error; never let a transient hiccup mark the timer's service failed.
+SuccessExitStatus=0 2

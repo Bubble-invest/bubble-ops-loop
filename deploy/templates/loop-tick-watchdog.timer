@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the ops-loop TICK watchdog every 10 min (board #724)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/scripts/loop-tick-watchdog.py
+
+[Timer]
+Unit=loop-tick-watchdog.service
+# 10 min cadence: with STALL_IDLE_SEC=600 a stalled tick is re-kicked within
+# ~10–20 min (vs. hours for the layer floor). Boot delay lets every dept's
+# --continue boot + boot-rearm tick land first so we never judge a cold start.
+OnBootSec=5min
+OnUnitActiveSec=10min
+# Deterministic-ish jitter so it does not land on the same second as the
+# five telegram-watchdog-*.timer units (they use 90s).
+RandomizedDelaySec=45s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
