@@ -134,3 +134,75 @@ def test_empty_stdin_fails_open():
 def test_unknown_tool_is_allowed():
     code, parsed = _run("Read", {"file_path": "MANDATE.md"})
     assert parsed is None  # Read is fine — only Edit/Write/Bash gated
+
+
+# ── #961: framework-repo-scoped protection (scripts/lib/, scripts/ broadly) ─
+#
+# Board incident: an agent edited+committed scripts/lib/budget.py directly in
+# the bubble-ops-loop working tree (commit 5513824) with no deny from this
+# hook, because it only consulted the repo-agnostic STRUCTURAL_PATH_GLOBS.
+# These tests build a REAL git repo (so `git config --get remote.origin.url`
+# resolves) with an `origin` remote named after the repo under test, mirroring
+# token-broker/tests/test_is_structural_push.py's `_repo_with_named_remote`.
+
+
+def _git_repo_with_remote(tmp_path: Path, remote_name: str) -> Path:
+    bare = tmp_path / f"{remote_name}.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    clone = tmp_path / f"clone-{remote_name}"
+    clone.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "HOME": str(tmp_path), "PATH": __import__("os").environ.get("PATH", "")}
+    subprocess.run(["git", "init"], cwd=str(clone), env=env, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=str(clone), env=env,
+                    check=True, capture_output=True)
+    (clone / "README.md").write_text("hi\n")
+    subprocess.run(["git", "add", "-A"], cwd=str(clone), env=env, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(clone), env=env, check=True, capture_output=True)
+    return clone
+
+
+def test_edit_scripts_lib_on_framework_repo_is_denied(tmp_path):
+    """scripts/lib/budget.py, edited with cwd inside a bubble-ops-loop clone
+    -> DENIED. This is the exact #961 incident, caught pre-commit."""
+    repo = _git_repo_with_remote(tmp_path, "bubble-ops-loop")
+    code, parsed = _run("Edit", {"file_path": "scripts/lib/budget.py"}, cwd=str(repo))
+    assert _is_deny(parsed), "scripts/lib/ edit in the framework repo must be denied"
+
+
+def test_edit_scripts_broadly_on_framework_repo_is_denied(tmp_path):
+    """scripts/vendor-dept-libs.sh (NOT under lib/) on bubble-ops-loop -> DENIED
+    (scripts/** broadened in #961, not just scripts/lib/)."""
+    repo = _git_repo_with_remote(tmp_path, "bubble-ops-loop")
+    code, parsed = _run("Edit", {"file_path": "scripts/vendor-dept-libs.sh"}, cwd=str(repo))
+    assert _is_deny(parsed), "scripts/ (broadly) edit in the framework repo must be denied"
+
+
+def test_edit_scripts_lib_on_dept_repo_is_still_allowed(tmp_path):
+    """The SAME scripts/lib/ path, cwd inside a DEPT repo (bubble-ops-maya)
+    -> stays ALLOWED. Depts vendor & sync the lib at runtime (sync-dispatch-
+    lib.sh); the framework-only glob must not 403 that legitimate workflow."""
+    repo = _git_repo_with_remote(tmp_path, "bubble-ops-maya")
+    code, parsed = _run("Edit", {"file_path": "scripts/lib/dispatch_helpers.py"}, cwd=str(repo))
+    assert parsed is None, f"scripts/lib/ edit in a dept repo must stay allowed, got {parsed}"
+
+
+def test_edit_mandate_on_dept_repo_still_denied_with_repo_awareness(tmp_path):
+    """Sanity: repo-aware lookup must not regress the shared mission-file lock."""
+    repo = _git_repo_with_remote(tmp_path, "bubble-ops-maya")
+    code, parsed = _run("Edit", {"file_path": "MANDATE.md"}, cwd=str(repo))
+    assert _is_deny(parsed), "MANDATE.md must stay denied regardless of repo"
+
+
+def test_repo_lookup_failure_falls_back_to_shared_globs_only(tmp_path):
+    """cwd is not a git repo at all (git config lookup fails) -> repo_name is
+    None -> framework-only globs simply don't apply (fail-open on the REPO
+    NAME lookup, not on structural detection) -> scripts/lib/ allowed, but
+    the shared MANDATE.md lock is untouched."""
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    code, parsed = _run("Edit", {"file_path": "scripts/lib/budget.py"}, cwd=str(plain))
+    assert parsed is None
+    code, parsed = _run("Edit", {"file_path": "MANDATE.md"}, cwd=str(plain))
+    assert _is_deny(parsed)

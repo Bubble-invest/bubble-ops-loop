@@ -88,6 +88,33 @@ bubble-git-guard push --dept tony --action open_priority_pr \
 - `templates/**`, `policies/**`
 - `.claude/**`
 
+These apply in **every** `bubble-ops-*` repo (`STRUCTURAL_PATH_GLOBS` in
+`token-broker/src/policy.py`).
+
+### Framework-repo-only structural — DENY for `runtime_write_own`, ALLOW for
+`settings_pr`, **only when the target repo is `bubble-ops-loop` itself**
+(`FRAMEWORK_STRUCTURAL_PATH_GLOBS`, `is_structural_for_repo()`):
+- `scripts/**` (broadened #961; was `scripts/lib/**` + two named files only)
+- `.github/**`, `token-broker/**`, `git-guard/**`
+
+**#961 (2026-09-03)**: this list existed since governance fix 2026-06-09
+(`#55`, commit `ce90bb2` — a direct reaction to commit `f3213b7` reverting
+`scaffold.py` unreviewed) but `Policy.enforce()`'s `runtime_write_own` and
+`settings_pr` branches never actually called `is_structural_for_repo()` —
+only the repo-agnostic `_is_structural()` above. That gap let commit
+`5513824` push `scripts/lib/budget.py` straight to `bubble-ops-loop/main`
+with no PR/review, the same class of incident `#55` was meant to close.
+`#961` wires `is_structural_for_repo()` into both enforcement branches, adds
+the matching pre-commit-time check to `deploy/hooks/mission-file-guard.py`
+(same repo-name derivation as `deploy/is-structural-push.py`), broadens the
+framework glob from `scripts/lib/**`-only to `scripts/**`, and adds
+`.github/CODEOWNERS` to `bubble-ops-loop` for the first time (it did not
+exist on the canonical repo before this PR — only on the separate
+`vdk888/bubble-ops-fixture` fixture repo `tests/test_branch_protection.py`
+targets). Any change under a framework-only path — including a *contribution
+to this doctrine section itself* — requires a PR: use `action=settings_pr`,
+never `runtime_write_own`.
+
 ### `open_priority_pr` (e.g. Tony → child dept):
 - target `queues/management/**` ONLY
 - repo MUST be in policy `pull_requests.can_open_to`
@@ -158,6 +185,20 @@ python3 -m pytest --cov=src tests/          # 90% coverage
   for secret-scanning is a separate concern (Layer 4 audit covers it).
 - **It does NOT enforce branch protection** — that's GitHub-side config.
   See Notion v4 line 725 for the four layers; this guard is layer 1.
+  **As of #961 (2026-09-03), `main` on `Bubble-invest/bubble-ops-loop` has
+  NO branch protection at all** (`gh api repos/.../branches/main/protection`
+  -> 404) and `.github/CODEOWNERS` did not exist before this PR — so this
+  layer is currently the ONLY layer, for anyone who bypasses the guard/
+  credential-helper entirely (e.g. a human with a personal PAT/SSH key
+  pushing straight to `main` — the class of push this guard cannot see at
+  all, since it's not the caller). Enabling "require PR before merge" on
+  `main` would ALSO block the loop's own routine direct pushes
+  (`outputs/**`/`queues/**`/`inbox/**`), since GitHub has no native
+  path-scoped branch protection — that's the whole reason this guard
+  exists. Turning it on safely needs a real design (e.g. a required status
+  check from a path-policy Action, per `tests/test_branch_protection.py`'s
+  `test_path_policy_workflow_present`, rather than a blanket PR requirement)
+  — flagged `needs:human`, out of scope for this PR.
 - **It does NOT prevent direct `git push`** — that's the deploy wrapper's job.
   The `loop-autostart.sh` calls `bubble-git-guard push`, not `git push`.
 
