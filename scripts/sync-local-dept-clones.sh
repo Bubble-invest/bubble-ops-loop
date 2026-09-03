@@ -205,17 +205,31 @@ tracked_dirt_count() {
     git -C "$dir" status --porcelain 2>/dev/null | grep -vc '^?? ' || true
 }
 
-# any_dirt_count <dir>: count of ALL `git status --porcelain` lines — tracked
-# edits AND untracked paths alike. Review-round fix (board #1064): the
-# quarantine trigger in quarantine_endangered_state() must NOT gate on
-# tracked_dirt_count() alone, or a working tree whose ONLY dirt is an
-# untracked file (never `git add`-ed — the realistic shape of stray work left
-# on an abandoned branch) never triggers the stash at all, and a subsequent
-# `git clean -fd` (branch-abandon path) wipes it with nothing quarantined —
-# silent data loss, not just benign drift.
+# any_dirt_count <dir> [exclude_regex]: count of ALL `git status --porcelain`
+# lines — tracked edits AND untracked paths alike — optionally excluding any
+# line matching <exclude_regex> (grep -E, matched against the whole porcelain
+# line). Review-round fix (board #1064): the quarantine trigger in
+# quarantine_endangered_state() must NOT gate on tracked_dirt_count() alone,
+# or a working tree whose ONLY dirt is an untracked file (never `git add`-ed
+# — the realistic shape of stray work left on an abandoned branch) never
+# triggers the stash at all, and a subsequent `git clean -fd` (branch-abandon
+# path) wipes it with nothing quarantined — silent data loss, not just benign
+# drift. The optional exclude_regex (board #1096) exists for the #667
+# converge path's own endangered-state gate below: inbox/decisions/*
+# hide-markers are untracked-but-benign (already copied aside + restored by
+# preserve_hide_markers/restore_hide_markers, and already excluded from this
+# script's own `clean -fd --exclude=inbox/decisions`), so counting them here
+# would misfire the loud "DISCARDED" WARN on every ordinary sync of a dept
+# with a pending hide-marker. Called with NO exclude_regex (default "",
+# unchanged behavior) on the stranded-branch path, per #339/#1064 — every
+# untracked path there is genuinely at risk once the branch is abandoned.
 any_dirt_count() {
-    local dir="$1"
-    git -C "$dir" status --porcelain 2>/dev/null | grep -c '.' || true
+    local dir="$1" exclude="${2:-}"
+    if [[ -n "$exclude" ]]; then
+        git -C "$dir" status --porcelain 2>/dev/null | grep -vE "$exclude" | grep -c '.' || true
+    else
+        git -C "$dir" status --porcelain 2>/dev/null | grep -c '.' || true
+    fi
 }
 
 # local_only_commit_shas <dir> <upstream_head>: short SHAs (oldest-first) of
@@ -499,6 +513,16 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     # would ALREADY have shown the operator before any of this script's own
     # bookkeeping ran — i.e. genuine local edits, not self-heal side effects.
     tracked_dirt_n="$(tracked_dirt_count "$dir")"
+    # any_dirt_n (tracked + untracked) snapshotted at the same point, for the
+    # same reason — feeds the endangered-state gate below (board #1096: an
+    # untracked-only dirty tree must not slip past that gate uncounted).
+    # inbox/decisions/* is excluded — see any_dirt_count's header comment.
+    # Two porcelain shapes both need excluding: an individual untracked file
+    # under an already-(partly)-tracked inbox/ ("?? inbox/decisions/x.yaml",
+    # the common production shape once inbox/decisions/.gitkeep is tracked),
+    # and the WHOLE untracked "inbox/" dir collapsed to one line by git
+    # ("?? inbox/") when nothing under it is tracked yet.
+    any_dirt_n="$(any_dirt_count "$dir" '^\?\? "?inbox/decisions/|^\?\? "?inbox/?$')"
 
     # Failure mode 1: clear skip-worktree flags. A read mirror has no business
     # hiding paths from git's own change detection.
@@ -594,6 +618,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
             # the endangered-state DISCARDED warning below for state we
             # already quarantined+logged under our own, more specific line.
             tracked_dirt_n=0
+            any_dirt_n=0
             current_branch="$canonical_branch"
             upstream="$target_ref"
         else
@@ -623,21 +648,26 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     dirty="$(git -C "$dir" status --porcelain 2>/dev/null)"
     [[ -n "$dirty" ]] && would_have_ff=0
 
-    # ── Endangered-state detection (review round 2, board #667) ────────────
+    # ── Endangered-state detection (review round 2, board #667; extended
+    # board #1096) ──────────────────────────────────────────────────────────
     # reset --hard is about to run regardless (origin is authoritative for a
-    # read-only mirror) but TWO cases would silently destroy REAL local work
-    # rather than routine drift: (1) a dirty TRACKED file at HEAD (an
+    # read-only mirror) but THREE cases would silently destroy REAL local
+    # work rather than routine drift: (1) a dirty TRACKED file at HEAD (an
     # uncommitted hot-patch — tracked_dirt_n was snapshotted BEFORE the
     # skip-worktree clear above, so benign vendored-file drift never counts
-    # here), and (2) HEAD not a strict ancestor of upstream (a local-only
-    # commit that never got pushed). Detect BOTH before the reset so we can
+    # here), (2) an UNTRACKED-only file (any_dirt_n, same snapshot point —
+    # board #1096: gating on tracked_dirt_n alone missed this, so the
+    # unconditional `git clean -fd` below wiped it with no quarantine, the
+    # identical gap #339/#1064 fixed on the stranded-branch path), and
+    # (3) HEAD not a strict ancestor of upstream (a local-only commit that
+    # never got pushed). Detect ALL THREE before the reset so we can
     # quarantine + WARN distinctly instead of using the same generic
     # self-heal wording as the benign skip-worktree/collision cases.
     local_only_shas="$(local_only_commit_shas "$dir" "$upstream_head")"
     local_only_n=0
     [[ -n "$local_only_shas" ]] && local_only_n="$(echo "$local_only_shas" | grep -c .)"
     endangered=0
-    if [[ "${tracked_dirt_n:-0}" -gt 0 || "${local_only_n:-0}" -gt 0 ]]; then
+    if [[ "${tracked_dirt_n:-0}" -gt 0 || "${any_dirt_n:-0}" -gt 0 || "${local_only_n:-0}" -gt 0 ]]; then
         endangered=1
     fi
 
@@ -677,12 +707,16 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
 
     after_head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")"
     if [[ "$endangered" == "1" ]]; then
-        # DISTINCT loud line (review round 2): this is NOT routine drift — the
-        # tree had uncommitted tracked edits and/or local-only commits that
-        # reset --hard just discarded. Wording is deliberately different from
-        # the benign self-heal WARN below so an operator scanning the journal
-        # can tell "nothing to see here" from "we ate real work" at a glance.
-        log "WARN ${slug}: DISCARDED ${tracked_dirt_n:-0} uncommitted change(s) / ${local_only_n:-0} local-only commit(s) (${local_only_shas//$'\n'/,}) — verify this wasn't real work (quarantined under ${dir}/.selfheal-quarantine/)"
+        # DISTINCT loud line (review round 2; count fixed board #1096): this is
+        # NOT routine drift — the tree had uncommitted tracked and/or untracked
+        # changes and/or local-only commits that reset --hard + clean -fd just
+        # discarded. any_dirt_n (not tracked_dirt_n) is used for the count so
+        # an untracked-only tree doesn't misreport "0 uncommitted change(s)"
+        # despite genuinely having some. Wording is deliberately different
+        # from the benign self-heal WARN below so an operator scanning the
+        # journal can tell "nothing to see here" from "we ate real work" at a
+        # glance.
+        log "WARN ${slug}: DISCARDED ${any_dirt_n:-0} uncommitted change(s) (tracked+untracked) / ${local_only_n:-0} local-only commit(s) (${local_only_shas//$'\n'/,}) — verify this wasn't real work (quarantined under ${dir}/.selfheal-quarantine/)"
     elif [[ "$before_head" == "$after_head" ]]; then
         log "synced ${slug}: already up to date (${after_head:0:12})"
     elif [[ "$would_have_ff" == "1" ]]; then

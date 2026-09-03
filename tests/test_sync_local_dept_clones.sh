@@ -85,6 +85,14 @@
 #       wiped by the unconditional `git clean -fd` on that path.
 #       `tracked_dirt_count()` alone would miss it (it counts only tracked
 #       dirt), so the quarantine trigger must also look at untracked dirt.
+#   T20 board #1096 — the SAME untracked-file gap T19/#339/#1064 fixed on the
+#       stranded-branch-abandon path also existed on the PRE-EXISTING #667
+#       converge-to-origin path, for a HEALTHY dept already on its canonical
+#       branch with a live upstream. An untracked-only file left in the
+#       mirror must be quarantined via `git stash --include-untracked` before
+#       the routine `reset --hard` + `clean -fd`, not silently wiped — the
+#       endangered-state gate must count any_dirt_count(), not just
+#       tracked_dirt_count() + local-only commits.
 # =============================================================================
 set -uo pipefail
 
@@ -1132,6 +1140,76 @@ if [[ -n "$stash_list13" && "${stash_has_file13:-0}" -gt 0 ]]; then
   echo "  PASS: T19d untracked file on the abandoned branch was quarantined via git stash (recoverable, not silently wiped)"; PASS=$((PASS+1))
 else
   echo "  FAIL: T19d untracked file was NOT quarantined — no stash entry contains it (silently wiped by git clean -fd)"; FAIL=$((FAIL+1))
+fi
+
+
+# -----------------------------------------------------------------------------
+# T20: board #1096 — the SAME untracked-file data-loss gap #339/#1064 fixed on
+#      the stranded-branch-abandon path also existed on the PRE-EXISTING #667
+#      converge-to-origin path, for a HEALTHY dept already on its canonical
+#      branch with a live upstream (no stale/stranded branch involved at all).
+#      An untracked-only file (never `git add`-ed — a stray note/scratch
+#      export left in the mirror) must be QUARANTINED via `git stash
+#      --include-untracked` BEFORE the unconditional `git reset --hard` +
+#      `git clean -fd` a few lines below, NOT silently wiped with no trace.
+#      Pre-fix, the converge path's endangered-state gate counted only
+#      tracked_dirt_count() (+ local-only commits), so an untracked-only tree
+#      never set `endangered=1` and the file was clean -fd'd with nothing
+#      quarantined and no WARN — this must fail on that code (RED), and pass
+#      once the gate also counts any_dirt_count() (GREEN), reusing #339's
+#      helpers rather than a new mechanism.
+# -----------------------------------------------------------------------------
+ORIGIN14="$WORK/origin-content14.git"
+WORKTREE14="$WORK/seed-content14"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN14"
+"${real_git_env[@]}" git clone -q "$ORIGIN14" "$WORKTREE14" 2>/dev/null
+mkdir -p "$WORKTREE14/onboarding"
+printf 'v: 1\n' > "$WORKTREE14/framework.txt"
+printf 'slug: content\nstatus: Live\nhost: local\n' > "$WORKTREE14/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE14" add -A
+"${real_git_env[@]}" git -C "$WORKTREE14" commit -qm "seed14"
+"${real_git_env[@]}" git -C "$WORKTREE14" push -q origin HEAD:main
+
+REALGIT_AGENTS14="$WORK/agents-real14"; rm -rf "$REALGIT_AGENTS14"; mkdir -p "$REALGIT_AGENTS14"
+MIRROR14="$REALGIT_AGENTS14/bubble-ops-content"
+"${real_git_env[@]}" git clone -q "$ORIGIN14" "$MIRROR14"
+# Healthy clone: on canonical branch 'main' with a live upstream — no stale
+# branch, no stranding, nothing for the #339/#1064 stranded-branch path to do.
+# This is the routine #667 converge path, exercised on its own.
+
+# origin advances (real convergence work, same shape as T13/T14) WHILE the
+# mirror carries a stray UNTRACKED file — never committed, never staged.
+printf 'v: 2\n' > "$WORKTREE14/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE14" commit -qam "advance14"
+"${real_git_env[@]}" git -C "$WORKTREE14" push -q origin HEAD:main
+printf 'do not lose this — real scratch notes\n' > "$MIRROR14/scratch_notes.txt"
+untracked_before14="$("${real_git_env[@]}" git -C "$MIRROR14" status --porcelain 2>/dev/null | grep -c '^?? scratch_notes.txt')"
+
+origin_head14="$("${real_git_env[@]}" git -C "$WORKTREE14" rev-parse HEAD)"
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS14" >"$WORK/run-real14.log" 2>&1
+rc14=$?
+after_head14="$("${real_git_env[@]}" git -C "$MIRROR14" rev-parse HEAD)"
+
+chk_eq "T20 precondition: scratch_notes.txt is untracked (never git add-ed) before the run" "1" "$untracked_before14"
+chk "T20a real-git run exits 0" 0 "$rc14"
+chk_eq "T20b healthy mirror still converged to origin/main (quarantine never blocks convergence)" "$origin_head14" "$after_head14"
+want "T20c loud DISCARDED warn fired for the untracked-only file" "DISCARDED" "$WORK/run-real14.log"
+want "T20d DISCARDED warn names the dept" "content" "$WORK/run-real14.log"
+
+# The core assertion (RED before #1096, GREEN after): the untracked file must
+# be QUARANTINED (recoverable via `git stash show -u`), NOT silently gone with
+# nothing to recover it from — `git clean -fd` would otherwise wipe it because
+# the pre-#1096 gate only counted tracked_dirt_count()/local_only commits.
+stash_list14="$("${real_git_env[@]}" git -C "$MIRROR14" stash list 2>/dev/null)"
+if [[ -n "$stash_list14" ]]; then
+  stash_has_file14="$("${real_git_env[@]}" git -C "$MIRROR14" stash show -p -u stash@{0} 2>/dev/null | grep -c 'scratch_notes.txt')"
+else
+  stash_has_file14=0
+fi
+if [[ -n "$stash_list14" && "${stash_has_file14:-0}" -gt 0 ]]; then
+  echo "  PASS: T20e untracked file survived (quarantined) a routine sync of a healthy dept on the converge path"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T20e untracked file was NOT quarantined on the converge path — silently wiped by git clean -fd (board #1096 regression)"; FAIL=$((FAIL+1))
 fi
 
 echo
