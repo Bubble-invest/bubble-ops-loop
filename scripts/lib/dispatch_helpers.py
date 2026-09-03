@@ -1667,6 +1667,17 @@ def _queue_has_items(queue_dir: Path,
     for p in candidates:
         if p.name.startswith("."):
             continue
+        # Hand-off / state files (e.g. `external-signal-latest.yaml`,
+        # `linkedin-sage-scan-latest.yaml` in the content dept's
+        # queues/research/) legitimately carry no `kind` and would otherwise
+        # hit the kind-less fail-open below — pinning the signal True FOREVER
+        # and starving lower layers (L1 daily-floor starvation → L4 silent-kill,
+        # board #886). They are STATE, not pending work. Upstreamed from the
+        # content dept's live local stopgap (2026-08-10, Joris/Miranda) during
+        # the #1084 re-vendor audit so a canonical re-vendor no longer re-opens
+        # #886 on that dept.
+        if p.name.endswith("-latest.yaml"):
+            continue
         if not p.is_file():
             continue
         if drainable_kinds is None:
