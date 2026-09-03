@@ -3618,6 +3618,33 @@ def force_commit_and_push(
 #   5. git stash pop (best-effort). On conflict we KEEP the stash (never drop)
 #      and report — a human/agent can recover it; we never destroy work.
 #
+def _is_archived_at_head(repo_dir: "Path | str", path: str) -> bool:
+    """True if `path`'s basename exists under a sibling `.processed/` dir at
+    HEAD — i.e. the file was not LOST, it was legitimately archived there.
+
+    #1043 (2026-08-25): L3's execution convention is `git mv
+    <queue>/<id>.yaml <queue>/.processed/<id>.yaml` after a decision is
+    executed (layer_templates.py L3 PROMPT: "After successful execution:
+    move the item to `inbox/decisions/.processed/`" — same convention for
+    queues/gates/.processed/ and queues/management/.processed/, see
+    console/services/github_reader.py and mgmt_note_state.py). That move
+    shows up as a plain deletion of the top-level path in a
+    `git diff --diff-filter=D`, indistinguishable — by path alone — from the
+    genuine Maya 2026-06-15 data-loss case (a merge commit dropping files).
+    This check disambiguates them so safe_pull's 4a restore step never
+    resurrects an already-executed, already-archived decision back into the
+    live inbox (which a later L3 tick would then re-send/re-execute).
+    """
+    import subprocess
+    p = Path(path)
+    processed_path = f"{p.parent.as_posix()}/.processed/{p.name}"
+    check = subprocess.run(
+        ["git", "-C", str(repo_dir), "cat-file", "-e", f"HEAD:{processed_path}"],
+        capture_output=True, text=True,
+    )
+    return check.returncode == 0
+
+
 # Returns (ok, summary). ok=False only on a genuine pull failure the caller
 # should surface; a clean no-op or a kept-stash-on-conflict still returns True
 # with a descriptive summary (the tick must not crash on sync).
@@ -3753,6 +3780,24 @@ def safe_pull(
     #     (because the merged branch was forked before the dept's push),
     #     the fast-forward silently drops them.  We recover them from
     #     the pre-pull backup tag.
+    #
+    #     #1043 GUARD (2026-08-25, re-send-critical): a "deletion" here is
+    #     NOT always data loss. The L3 execution convention (layer_templates.py
+    #     "After successful execution: move the item to
+    #     `inbox/decisions/.processed/`") is a `git mv` — it shows up in this
+    #     same diff as a delete of `inbox/decisions/<id>.yaml`. If THIS repo's
+    #     backup_tag was cut before that archive commit was pulled in, the old
+    #     "restore anything runtime-shaped that vanished" logic below blindly
+    #     `checkout`'d the pre-archive copy back onto disk at the TOP-LEVEL
+    #     inbox/decisions/ path — resurrecting an ALREADY-EXECUTED, already
+    #     -archived decision (7 prospect_dm approvals on 2026-08-25) into the
+    #     live inbox, where a later L3 tick would re-send it. Same blind-spot
+    #     applies to queues/gates/.processed/ and queues/management/.processed/
+    #     (same archive convention, console/services/github_reader.py +
+    #     mgmt_note_state.py). Fix: before restoring a deleted path, check
+    #     whether its basename now lives under a sibling `.processed/` dir at
+    #     HEAD — if so, the pull didn't lose it, it correctly archived it, so
+    #     we must NOT bring the pre-archive copy back.
     diff = _git("diff", "--name-only", "--diff-filter=D",
                 backup_tag, "HEAD")
     if diff.returncode == 0 and diff.stdout.strip():
@@ -3766,12 +3811,26 @@ def safe_pull(
                 or p.startswith("missions/"))
         ]
         if runtime_deleted:
+            restored: "list[str]" = []
+            archived_skipped: "list[str]" = []
             for p in runtime_deleted:
+                if _is_archived_at_head(repo_dir, p):
+                    archived_skipped.append(p)
+                    continue
                 _git("checkout", backup_tag, "--", p)
-            notes.append(
-                f"RESTORED {len(runtime_deleted)} runtime file(s) "
-                "dropped by pull: " + ", ".join(runtime_deleted)
-            )
+                restored.append(p)
+            if restored:
+                notes.append(
+                    f"RESTORED {len(restored)} runtime file(s) "
+                    "dropped by pull: " + ", ".join(restored)
+                )
+            if archived_skipped:
+                notes.append(
+                    f"SKIPPED restore for {len(archived_skipped)} file(s) — "
+                    "legitimately archived to .processed/ upstream, NOT a "
+                    "lost file (#1043, re-send-prevention): "
+                    + ", ".join(archived_skipped)
+                )
     _git("tag", "-d", backup_tag)
 
     # 5. Restore the stash (best-effort). On conflict, KEEP the stash (do not
