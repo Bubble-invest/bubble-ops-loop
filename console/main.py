@@ -79,8 +79,79 @@ def _install_access_log_redaction() -> None:
         access_logger.addFilter(_RedactTokenAccessFilter())
 
 
+# ---- app/root-logger token redaction (#1086, hardening #1 of #1073 review) -
+# `_RedactTokenAccessFilter` above only ever sees `uvicorn.access`'s specific
+# 5-arg record shape. It says nothing about a traceback or an app-level
+# `logger.exception(...)`/`logger.warning(...)` call that happens to include
+# `request.url` (which carries the same `?t=`/`?token=` secret) in its
+# message or %-args — e.g. a future `_log.warning("failed for %s", request.url)`
+# in this module, or in any `console.services.*` logger. This filter makes
+# the SAME redaction generic: it doesn't assume any particular `record.args`
+# shape, so it can sit on any logger/handler.
+class _RedactTokenLogFilter(logging.Filter):
+    """logging.Filter for arbitrary (non-access-log) records: redact any
+    `t=`/`token=` query value found in `record.msg` (an f-string message with
+    no separate args) or in any string element of `record.args` (a %-style
+    call, e.g. `logger.warning("failed for %s", request.url)`).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _TOKEN_QS_RE.sub(r"\1<redacted>", record.msg)
+        args = record.args
+        if isinstance(args, tuple) and args:
+            new_args = tuple(
+                _TOKEN_QS_RE.sub(r"\1<redacted>", a) if isinstance(a, str) else a
+                for a in args
+            )
+            if new_args != args:
+                record.args = new_args
+        elif isinstance(args, dict) and args:
+            new_dict_args = {
+                k: (_TOKEN_QS_RE.sub(r"\1<redacted>", v) if isinstance(v, str) else v)
+                for k, v in args.items()
+            }
+            if new_dict_args != args:
+                record.args = new_dict_args
+        return True
+
+
+def _install_app_log_redaction() -> None:
+    """Idempotently attach `_RedactTokenLogFilter` everywhere an app-level log
+    record could reach a sink other than `uvicorn.access` — the "app/root
+    logger" hardening from the #1073 review (#1086).
+
+    This app never calls `logging.basicConfig()`/`dictConfig()` for its own
+    loggers (`console.main`, `console.services.*`, ...) — only uvicorn's own
+    `uvicorn`/`uvicorn.error`/`uvicorn.access` loggers get explicit handlers
+    (uvicorn's internal logging config). That means every app-level logger
+    call propagates with NO handler anywhere in its ancestry, and stdlib
+    `logging` falls back to the module-level `logging.lastResort` handler —
+    a `Handler` singleton that writes WARNING+ straight to stderr, which is
+    what actually reaches the systemd journal in production.
+
+    Crucially, a `Logger.filters` list is only consulted for the record's
+    *originating* logger (`Logger.handle()` calls `self.filter(record)` on
+    itself, not on any ancestor it propagates through) — so attaching this
+    filter to the root logger ALONE would silently miss every named child
+    logger (`console.services.github_reader`, etc.). `Handler.filters`, by
+    contrast, run for every record that reaches that handler regardless of
+    which logger emitted it — so the filter has to sit on `lastResort`
+    itself to actually cover every current app logger. Belt-and-suspenders:
+    also attach directly to the root logger and to this module's `_log`, in
+    case a future deploy adds a real handler to either.
+    """
+    targets: list[logging.Filterer] = [logging.getLogger(), _log]
+    if logging.lastResort is not None:
+        targets.append(logging.lastResort)
+    for target in targets:
+        if not any(isinstance(f, _RedactTokenLogFilter) for f in target.filters):
+            target.addFilter(_RedactTokenLogFilter())
+
+
 def create_app() -> FastAPI:
     _install_access_log_redaction()
+    _install_app_log_redaction()
     app = FastAPI(
         title="bubble-ops-console",
         version="0.1.0-ux3",
