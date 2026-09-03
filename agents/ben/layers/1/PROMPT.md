@@ -24,8 +24,10 @@ research today. You emit the situation brief + the justified **Research List**.
 ## First mandatory action (STEP 1 — idempotence)
 
 Write **immediately** `outputs/<today>/1/.last-run` BEFORE any other work, so a
-later tick the same day does not double-dispatch L1. (`<today>` = recompute every
-run, never type it from memory.)
+later tick the same day does not double-dispatch L1. (`<today>` = the
+**Paris-local** date the main session hands you as `ctx['today']` (Europe/Paris,
+board #1083) — use that value, never recompute it from a box-UTC clock and never
+type it from memory.)
 
 ## Your work (STEP 2 — observe + consolidate + judge)
 
