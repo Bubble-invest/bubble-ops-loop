@@ -225,3 +225,145 @@ def test_safe_pull_preserves_outputs_when_upstream_merge_deletes_them(
         "L4 output summary.md content was corrupted"
     assert (today_dir / ".last-run").read_text() == "2026-06-15T19:43:00Z\n", \
         "L4 output .last-run content was corrupted"
+
+
+def test_safe_pull_does_not_resurrect_executed_decision_from_processed(
+    tmp_path,
+):
+    """
+    Regression test for #1043 (2026-08-25, re-send-critical).
+
+    Reproduced mechanism:
+
+    1. A decision (`inbox/decisions/prospect-dm-001.yaml`, an approved
+       prospect_dm) exists on origin/main (commit A) and is present in the
+       local clone's working tree.
+    2. L3 (elsewhere — another sync of the same dept, or this same box on a
+       prior tick) EXECUTES the decision and archives it per the standard
+       convention (layer_templates.py L3 PROMPT): `git mv
+       inbox/decisions/prospect-dm-001.yaml
+       inbox/decisions/.processed/prospect-dm-001.yaml`, committed and
+       pushed as commit B.
+    3. This box's local clone is still on commit A (has NOT pulled B yet)
+       when its next safe_pull tick starts. safe_pull tags backup_tag at
+       commit A — which still contains the PRE-archive, top-level decision
+       file.
+    4. safe_pull's `git pull --rebase` fast-forwards to commit B: the
+       top-level file is (correctly) gone, replaced by the `.processed/`
+       copy.
+    5. Step 4a's "restore anything runtime-shaped the pull deleted" logic
+       sees `inbox/decisions/prospect-dm-001.yaml` in the diff-filter=D
+       list and — pre-fix — blindly `checkout`'d it back from backup_tag,
+       resurrecting the ALREADY-EXECUTED decision at the top-level path.
+       `decide_dispatch`'s `has_inbox_decisions` would then see it and a
+       later L3 tick (or the backup-floor tick) would RE-SEND it from
+       Joris's account.
+
+    The fix (`_is_archived_at_head`): before restoring a deleted path,
+    check whether its basename now lives under a sibling `.processed/` dir
+    at HEAD. It does here, so the restore must be SKIPPED.
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(origin)],
+        check=True, capture_output=True,
+    )
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "clone", str(origin), str(seed)],
+        check=True, capture_output=True,
+    )
+    _git(seed, "config", "user.email", "t@t.t")
+    _git(seed, "config", "user.name", "t")
+    (seed / "CLAUDE.md").write_text("v1\n")
+    (seed / "outputs").mkdir()
+    (seed / "outputs" / ".keep").write_text("baseline\n")
+    decisions_dir = seed / "inbox" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    decision_body = (
+        "gate_id: prospect-dm-001\n"
+        "action: approve\n"
+        "decided_at: '2026-08-25T09:00:00Z'\n"
+        "decided_by: joris\n"
+    )
+    (decisions_dir / "prospect-dm-001.yaml").write_text(decision_body)
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-m", "seed: approved prospect_dm decision")
+    _git(seed, "push", "origin", "main")
+
+    # ── Local clone: still on commit A (has the pending, un-archived decision) ──
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", str(origin), str(local)],
+        check=True, capture_output=True,
+    )
+    _git(local, "config", "user.email", "l@l.l")
+    _git(local, "config", "user.name", "l")
+    assert (local / "inbox" / "decisions" / "prospect-dm-001.yaml").exists()
+
+    # ── L3 (elsewhere) executes + archives the decision: commit B on origin ──
+    # NOTE: L3 doesn't just `git mv` the file byte-for-byte — it appends
+    # execution metadata (send result, callback confirmation, pool status —
+    # exactly what #1043 describes: "sent, callbacks confirmed, Pool=Warming
+    # -DM-Sent"). That's enough content delta to drop the archived file
+    # BELOW git's default rename-similarity threshold, so `git diff
+    # --diff-filter=D` sees a plain delete+add rather than a detected
+    # rename (R100) — this is what makes the archived-vs-lost ambiguity
+    # real; a byte-identical `git mv` would be caught by rename detection
+    # and never reach safe_pull's 4a restore logic at all.
+    processed_dir = seed / "inbox" / "decisions" / ".processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    _git(seed, "mv", "inbox/decisions/prospect-dm-001.yaml",
+         "inbox/decisions/.processed/prospect-dm-001.yaml")
+    (processed_dir / "prospect-dm-001.yaml").write_text(
+        decision_body
+        + "executed_at: '2026-08-25T09:05:00Z'\n"
+          "executed_by: l3\n"
+          "send_result: sent\n"
+          "callback_confirmed: true\n"
+          "pool: Warming-DM-Sent\n"
+          "message_id: msg_abc123\n"
+          "recipient: prospect@example.com\n"
+          "thread_url: https://linkedin.com/messaging/thread/abc123\n"
+    )
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-m", "L3: executed + archived prospect-dm-001")
+    _git(seed, "push", "origin", "main")
+
+    # Sanity-check the premise: this must be a plain delete+add in git's
+    # diff (NOT a detected rename) — otherwise this test would not exercise
+    # the vulnerable code path (a byte-identical rename is never even
+    # considered for restoration; see helper docstring above).
+    name_status = _git(seed, "diff", "--name-status", "HEAD~1", "HEAD").stdout
+    assert "D\tinbox/decisions/prospect-dm-001.yaml" in name_status, (
+        "test premise broken: git detected this as a rename, not a delete — "
+        f"got: {name_status!r}"
+    )
+
+    # ── local's next tick: safe_pull fast-forwards A -> B ──
+    ok, summary = dh.safe_pull(
+        local, bubble_git_guard_path="/nonexistent/guard",
+    )
+    assert ok, f"safe_pull should succeed; got: {summary}"
+
+    # ═══ THE RE-SEND-PREVENTION ASSERTION ═══
+    # The executed decision must NOT reappear at the top-level inbox path —
+    # that is exactly the path decide_dispatch's has_inbox_decisions reads,
+    # and a re-appearance there is a re-send.
+    assert not (local / "inbox" / "decisions" / "prospect-dm-001.yaml").exists(), (
+        "#1043 REGRESSION: safe_pull resurrected an already-executed, "
+        "already-archived decision back into the live inbox/decisions/ — "
+        "this is the exact condition that causes Layer 3 to RE-SEND an "
+        "already-sent prospect_dm from Joris's account."
+    )
+    # The archived copy (the actual executed record) must survive intact.
+    archived = local / "inbox" / "decisions" / ".processed" / "prospect-dm-001.yaml"
+    assert archived.exists(), "archived decision record must survive the sync"
+    assert "send_result: sent" in archived.read_text(), \
+        "archived decision content was corrupted"
+    # `has_inbox_decisions` (the dispatcher's L3 trigger) must see NOTHING
+    # pending for this dept after the sync — the whole point of the fix.
+    assert dh._queue_has_items(local / "inbox" / "decisions") is False, (
+        "has_inbox_decisions-equivalent scan still sees a pending item after "
+        "safe_pull — L3 would fire and re-send"
+    )
