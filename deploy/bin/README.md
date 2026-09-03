@@ -106,15 +106,26 @@ pings the operator on Telegram with the verdict. Idempotent (writes a daily log)
 
 ## bubble-watchdog-resume-dropin
 
-Root-owned helper that installs/removes the watchdog's TRANSIENT resume drop-in
-with FIXED, non-caller-controlled content. The unprivileged `claude` watchdog
-calls it via a tightly-scoped sudoers rule.
+Root-owned helper that installs/removes the watchdog's TRANSIENT resume drop-in.
+The override ExecStart is DERIVED from the unit's own ExecStart (its root-owned
+fragment file) plus the resume flags `--continue --fork-session` — never
+caller-supplied content. The unprivileged `claude` watchdog calls it via a
+tightly-scoped sudoers rule.
 
 - **Why it matters:** closes a privilege-escalation vuln (SPEC-021 FIX-6). The
   prior design let `claude` write arbitrary `[Service]` override content (e.g.
-  `User=root`) and escalate via systemd. Here the override content is hardcoded
-  root-owned, and the only caller input is the service NAME, validated against a
-  strict anchored allowlist.
+  `User=root`) and escalate via systemd. Here the override content is produced by
+  this root-owned script from a TRUSTED source (the unit fragment `claude`
+  cannot edit), and the only caller input is the service NAME, validated against
+  a strict anchored allowlist.
+- **Board #1100:** the override used to HARDCODE a `/usr/bin/script -qfc "… \
+  --model \"opus[1m]\" …"` launch line. That silently reverted the #1097 dtach
+  interactive-terminal durability on any watchdog recovery (the dept came back
+  on a NON-attachable pty) and pinned a drifting model id. Deriving from the
+  unit's ExecStart instead means the drop-in inherits the unit's dtach launcher,
+  `/run/<unit>/dtach.sock` socket, `--model` and `--channels` verbatim — zero
+  drift, and it can never revert dtach. The helper FAILS CLOSED (writes nothing,
+  non-zero exit) if it can't resolve the fragment or find the claude binary.
 - **Install:** `/usr/local/bin/bubble-watchdog-resume-dropin`, root-owned `0755`.
 - **Sudoers:** `sudo /usr/local/bin/bubble-watchdog-resume-dropin install|remove <svc>`
   for the watchdog; the script itself runs `systemctl daemon-reload`.
