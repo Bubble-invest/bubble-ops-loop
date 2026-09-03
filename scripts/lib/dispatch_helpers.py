@@ -137,6 +137,62 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
     (layer_dir / ".last-run").write_text(when.isoformat(), encoding="utf-8")
 
 
+def write_l3_human_deferred(layer3_dir: Path, when: datetime | None = None,
+                             *, reason: str = "") -> None:
+    """Stamp Layer 3's `.last-run` for a STRUCTURAL human-supervised defer —
+    distinct from the STEP 0bis transient guard-rail ABORT path, which
+    deliberately does NOT stamp (see `layer_templates.py::_L3`).
+
+    THE BUG THIS CLOSES (#1085, Géraldine/accountant, 2026-09-03): since
+    board #17 made booking permanently human-supervised for this dept, L3's
+    STEP 0bis guard-rail check ALWAYS blocks, on EVERY tick, forever — there
+    is no "later today" at which it will clear. The canonical STEP 0bis
+    contract ("if a guard-rail blocks -> ABORT, do not stamp, the decision
+    stays in inbox/decisions/ for later") is correct for a TRANSIENT block
+    (kill-switch, quiet-hours, quota, action-policy) that may genuinely lift
+    before midnight — L3 should keep getting re-dispatched (C.3 has no
+    `not l3_fired` gate, see decide_dispatch) and L4's C.1 prerequisite
+    `(l3_fired or not has_decisions)` should keep waiting so the evening
+    debrief reflects a trade that might still execute today. But for a
+    STRUCTURAL policy block (no autonomous execution capability exists for
+    this decision AT ALL, e.g. human-supervised booking) that prerequisite
+    can never be satisfied by waiting — `has_inbox_decisions` stays True
+    forever (the pending items are never auto-archived) and `l3_fired` stays
+    False forever -> L4 (`outputs/<today>/4/management-export.yaml` +
+    `risk-brief.md`, "the export Tony reads") never fires. No export since
+    2026-06-24.
+
+    Why NOT narrow `has_inbox_decisions` instead (issue #757's option (a)):
+    every item that reaches `inbox/decisions/` is, by construction, an
+    ALREADY-APPROVED decision (see `build_dispatch_ctx`'s docstring — the
+    cockpit approve-click is what writes here; pre-approval holds live in
+    `queues/gates/`, a different directory entirely). So these are not
+    "holds awaiting approval" to filter out — they are approved decisions
+    genuinely awaiting a human's hand to execute. `has_inbox_decisions`
+    computing "is there approved work outstanding" is already correct; the
+    gap is that L3 had no way to say "I looked, and — per this dept's
+    policy — there is nothing *I* can do about it today" without also
+    claiming falsely that it might still act later. This function is that
+    missing signal. (#757 already noted the decision schema carries no
+    broker/manual-execution field to key off of, and adding one would
+    require a dept.yaml/decision-schema change on every dept that carries
+    manual-execution items — out of scope here; this ships without one.)
+
+    Call this ONLY from the STRUCTURAL human-supervised-defer branch of the
+    L3 prompt (`layer_templates.py::_L3` STEP 0bis) — a transient guard-rail
+    abort must keep using the no-stamp path so it retries the same day.
+    Mechanically identical to `write_last_run` (the `_layer_fired_today` /
+    `_mat_layer_fired` signal it feeds only checks marker PRESENCE, not why
+    it was written) — kept as a distinctly named entry point purely for
+    auditability/grep-ability of the two semantically different call sites,
+    and so a future dispatch-level special-case has somewhere to hook.
+    `reason` is accepted for caller-side logging/tests; it is not persisted
+    by this function (the L3 prompt's own `logs.jsonl` entry is the audit
+    trail L4's STEP 0 required-reads already picks up).
+    """
+    write_last_run(layer3_dir, when=when)
+
+
 def layer_output_present(layer_dir: Path) -> bool:
     """True iff `<layer_dir>` (`outputs/<today>/<N>/`) has evidence of REAL
     layer output, distinct from the STEP-1 idempotence marker.
@@ -1086,6 +1142,13 @@ def materialize_due_missions_for_tick(
     _mat_l1_fired = _mat_layer_fired(1)
     _mat_l2_fired = _mat_layer_fired(2)
     _mat_l3_fired = _mat_layer_fired(3)
+
+    # mission_id -> layer, for the layer-window gate on the gates-suppression
+    # fire-spin stamp below (accountant daily_categorisation_reconciliation fix,
+    # upstreamed from the live dept's local patch — #1084/#1085).
+    layer_by_mid = {
+        m.get("id", ""): int(m.get("layer", 0)) for m in missions if m.get("id")
+    }
     # has_mgmt_notes: conservative read (same as build_dispatch_ctx).
     _mat_has_mgmt_notes = _scan_mgmt_notes(repo_dir, since=read_last_mgmt_scan(repo_dir))
     _mat_now_paris_t = _to_paris(now_utc).time()
@@ -1251,9 +1314,32 @@ def materialize_due_missions_for_tick(
             # #428: gate-card missions (newsletter, sage, …) hand-author their gate
             # in a subagent and stamp the per-mission marker at STEP 0 themselves.
             # Stamping here at decision time is the silent-failure bug — only the
-            # real run may write the marker. Shim-resolved gate missions (none on
-            # queues/gates today) would still be stamped to avoid fire-spin.
-            if not _mission_authors_own_marker(repo_dir, {"id": mid}):
+            # real run may write the marker.
+            #
+            # ACCOUNTANT FIX (2026-09, Géraldine daily_categorisation_reconciliation),
+            # upstreamed from the live dept's local patch — #1084/#1085: a
+            # SHIM-resolved gate mission (no dedicated PROMPT.md) whose cadence
+            # `time` is EARLIER than its layer's min fire time gets materialized on
+            # the morning L1 tick — e.g. the L2 categorisation mission has
+            # time='08:00' but the L2 floor is 12:00 Paris. The old unconditional
+            # stamp here marked it fired-today at ~08:00, BEFORE L2 was ever
+            # eligible, so `is_mission_due` then vetoed it in `select_due_missions`
+            # once L2 DID become eligible at 12:00 → the mission never ran. Live
+            # impact: ~3 weeks of ledger/invoices read (L1) but never categorised
+            # (L2), Aug 12 → Sep 2 2026. (The old comment here even assumed "none
+            # on queues/gates today" — the accountant dept violates that.)
+            #
+            # Fix: only apply the fire-spin stamp once the mission's LAYER fire
+            # window has opened (`_time_reached`). This still stamps during the
+            # eligible window (preserving the #302 fire-spin guard — see
+            # test_dispatch_gate_mission_layer_window.py) but never before it, so
+            # the mission stays DUE until its layer can actually dispatch it.
+            _lyr = layer_by_mid.get(mid, 0)
+            if (
+                not _mission_authors_own_marker(repo_dir, {"id": mid})
+                and _lyr in _LAYER_MIN_TIME
+                and _time_reached(_mat_now_paris_t, _lyr)
+            ):
                 write_last_run(today_dir / "missions" / mid, when=now_utc)
             continue
 
