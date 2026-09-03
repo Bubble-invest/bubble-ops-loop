@@ -234,4 +234,8 @@ def test_any_mission_fired_wellformed_still_resolves(tmp_path: Path):
     # Stamp a PRIOR-tick marker (strictly before _NOW) for m1 → True.
     prior = datetime(2026, 6, 21, 9, 0, 0, tzinfo=timezone.utc)
     write_last_run(today_dir / "missions" / "m1", prior)
+    # #1080 output-truth: L1 is output-evidence-gated — a marker alone is no
+    # longer sufficient proof m1 genuinely produced its output.
+    (today_dir / "1").mkdir(parents=True, exist_ok=True)
+    (today_dir / "1" / "situation_brief.md").write_text("ok")
     assert _any_mission_fired_today_for_layer(repo, today_dir, 1, now_utc=_NOW) is True

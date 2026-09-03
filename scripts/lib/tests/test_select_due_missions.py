@@ -235,6 +235,10 @@ def test_daily_already_fired_today_excluded(tmp_path: Path):
     prior_tick = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)  # 07:30 Paris
     _stamp_mission_lastrun(repo, "morning_sync", prior_tick)
     today_dir = str(repo / "outputs" / MORNING.strftime("%Y-%m-%d"))
+    # #1080 output-truth: L1 is output-evidence-gated — a marker alone is no
+    # longer sufficient proof morning_sync genuinely produced its output.
+    (Path(today_dir) / "1").mkdir(parents=True, exist_ok=True)
+    (Path(today_dir) / "1" / "situation_brief.md").write_text("ok")
 
     ctx = _bare_ctx(MORNING, today_dir=today_dir)
     due = select_due_missions(ctx, [m])
@@ -427,6 +431,10 @@ def test_l4_missions_absent_when_already_fired(tmp_path: Path):
 
     # Build a ctx where L4 window is open (L1/L2/L3 fired, time >= 19:00 Paris).
     today_dir = str(repo / "outputs" / check_tick.strftime("%Y-%m-%d"))
+    # #1080 output-truth: L4 is output-evidence-gated — a marker alone is no
+    # longer sufficient proof debrief genuinely produced its output.
+    (Path(today_dir) / "4").mkdir(parents=True, exist_ok=True)
+    (Path(today_dir) / "4" / "risk-brief.md").write_text("ok")
     ctx = _bare_ctx(
         check_tick,
         today_dir=today_dir,
@@ -799,6 +807,12 @@ def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
         "FIX 2: materializer must stamp outputs/<today>/missions/<id>/.last-run "
         "even for a creates:[] mission, so it cannot fire-spin"
     )
+    # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
+    # decision time — corroborate the dispatched session's genuine completion
+    # with real STEP-3 output, or tick 2 would (correctly, under the new
+    # invariant) treat it as died-mid-dispatch and re-select it.
+    (repo / "outputs" / today / "1").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "1" / "situation_brief.md").write_text("ok")
 
     # ── TICK 2 ── (09:00 Paris, same day) — must NOT be re-selected.
     LATER = datetime(2026, 6, 23, 7, 0, tzinfo=timezone.utc)  # 09:00 Paris
@@ -834,6 +848,10 @@ def test_fire_spin_guard_prior_tick_marker_excludes(tmp_path: Path):
     prior = datetime(2026, 6, 23, 5, 30, tzinfo=timezone.utc)  # 07:30 Paris
     correct_path = repo / "outputs" / today / "missions" / "market_wrapup"
     write_last_run(correct_path, prior)
+    # #1080 output-truth: L1 is output-evidence-gated — corroborate the
+    # marker with real STEP-3 output, or it is not "fired" at all.
+    (repo / "outputs" / today / "1").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "1" / "situation_brief.md").write_text("ok")
 
     ctx = _full_ctx(repo, MORNING)  # 08:00 Paris, after the prior stamp
     due = select_due_missions(ctx, [m])
@@ -930,6 +948,13 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
         "outputs/<today>/missions/<id>/.last-run for L4 missions too, "
         "providing per-mission idempotence"
     )
+    # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
+    # decision time, not by a real completed run — it is not yet proof
+    # market_wrapup produced anything. Simulate the dispatched subagent
+    # actually completing before tick 2, or the (correct) new invariant would
+    # treat it as died-mid-dispatch and re-select it for recovery.
+    (repo / "outputs" / today / "4").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "4" / "wrapup.md").write_text("ok")
 
     # ── TICK 2 ── (20:30 Paris, same day) — mission marker from prior tick → excluded.
     LATER_L4 = datetime(2026, 6, 23, 18, 30, tzinfo=timezone.utc)  # 20:30 Paris
@@ -992,6 +1017,10 @@ def test_three_l4_missions_only_market_wrapup_due_at_2231(tmp_path: Path):
 
     # risk_control also stamps the LAYER marker (as the primary shim does in prod).
     write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+    # #1080 output-truth: corroborate risk_control's genuine completion with
+    # real STEP-3 output — a marker alone (per-mission or layer) is no longer
+    # sufficient for L4.
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     # Build ctx at 22:31 Paris.
     ctx = _full_ctx(repo, AT_22_31_UTC)
@@ -1033,6 +1062,9 @@ def test_risk_control_does_not_refire_same_day(tmp_path: Path):
 
     # risk_control per-mission marker stamped at 21:00 (prior tick).
     _stamp_mission_lastrun(repo, "risk_control", AT_21_00_UTC)
+    # #1080 output-truth: corroborate genuine completion with real output.
+    (repo / "outputs" / today / "4").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     # Check at 22:31 — well after 21:00 but still same Paris day.
     ctx = _full_ctx(repo, AT_22_31_UTC)
@@ -1071,6 +1103,12 @@ def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
     assert per_mission_marker.exists(), (
         "materializer must stamp per-mission marker for market_wrapup on tick 1"
     )
+    # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
+    # decision time, not by a real completed run. Simulate the dispatched
+    # subagent actually completing before tick 2, or the (correct) new
+    # invariant would treat it as died-mid-dispatch and re-select it.
+    (repo / "outputs" / today / "4").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "4" / "wrapup.md").write_text("ok")
 
     # ── TICK 2 ── (23:00 Paris) — per-mission marker from prior tick → excluded.
     AT_23_00_UTC = datetime(2026, 6, 23, 21, 0, tzinfo=timezone.utc)  # 23:00 Paris
