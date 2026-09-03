@@ -25,6 +25,12 @@ jobs:
         run: python3 -m pytest token-broker/tests/ -q --tb=short
       - name: Git-guard tests
         run: python3 -m pytest git-guard/tests/ -q --tb=short
+      # Deploy-time hooks (SessionStart re-arm #754, mission-file guard, output
+      # guard) run on every live agent. They were previously untested in CI, so a
+      # regression in the compact re-arm (loop goes dormant, #754) could ship
+      # silently. Gate them here.
+      - name: Deploy hooks tests
+        run: python3 -m pytest deploy/hooks/ -q --tb=short
 
   console-tests:
     runs-on: ubuntu-latest
