@@ -15,8 +15,13 @@ safe_pull's step 4 via `_parse_wedge_stuck_paths`) that only ever rewrites a
 stuck path from origin when it has PROVEN doing so discards nothing real:
 content == HEAD or == origin for every stuck path, AND HEAD carries no
 commit origin doesn't already have (merge-base-confirmed — a repo-wide
-guard, since the remedy is a repo-wide `git reset --hard`). Any path that
-fails either check → REFUSE, touch nothing.
+guard, since the remedy is a repo-wide `git reset --hard`), AND the working
+tree carries no OTHER uncommitted change besides the stuck paths themselves
+(also repo-wide, `git status --porcelain` confirmed — an adversarial review
+of this same PR found the reset would otherwise silently discard an
+unrelated dirty tracked file left in the tree by safe_pull's own
+"stash failed, continuing" or sandbox-unreadable-path-exclusion branches).
+Any path/tree state that fails any check → REFUSE, touch nothing.
 
 This suite uses REAL git temp repos throughout (same style as
 test_safe_pull.py) — only the single `git pull --rebase origin main`
@@ -263,6 +268,53 @@ def test_mtime_wedge_refuses_when_head_has_unpushed_commit(
         "REFUSED fallback must never move HEAD (would discard the unpushed commit)"
     assert (local / "unpushed_runtime.txt").read_text() == "important unpushed work\n", \
         "REFUSED fallback must never destroy an unrelated unpushed commit — DATA LOSS"
+
+
+def test_mtime_wedge_refuses_when_unrelated_uncommitted_file_present(
+    origin_and_local,
+):
+    """Reproduces the SILENT DATA-LOSS bug an adversarial reviewer found in
+    this same PR: `wedged.txt` clears BOTH pre-existing guards (content ==
+    HEAD via a mtime-only touch, and HEAD has no unpushed commit vs.
+    origin/main) — but a genuinely DIFFERENT tracked file (`CLAUDE.md`) has
+    real, unrelated uncommitted content sitting in the tree at the same
+    time. safe_pull can reach this fallback with such a file still dirty
+    via two paths it already anticipates: (1) step 2's "stash failed,
+    continuing" branch, and (2) step 1a's sandbox-unreadable-path
+    exclusion, which deliberately leaves real un-sandboxed work untouched
+    on disk. Before the fix, `_recover_mtime_wedge` validated content ONLY
+    for the named stuck path(s), then ran a REPO-WIDE `git reset --hard
+    origin/main` — which reverts EVERY dirty tracked file in the tree, not
+    just the stuck ones, silently discarding CLAUDE.md's real edit. The
+    guard must catch this and REFUSE — no rm, no reset --hard, no HEAD
+    move — exactly like the existing unpushed-commit guard does for an
+    unrelated commit."""
+    origin, seed, local = origin_and_local
+
+    # wedged.txt clears both pre-existing guards: content-clean (mtime-only
+    # bump), HEAD unchanged/no unpushed commit.
+    (local / "wedged.txt").touch()
+
+    # A genuinely UNRELATED tracked file with real uncommitted content —
+    # e.g. real work left behind by safe_pull's stash-failed or
+    # sandbox-unreadable exclusion paths. Untracked files survive `git
+    # reset --hard` unharmed; a DIRTY TRACKED file does not — that's
+    # exactly what makes this the real silent-data-loss vector.
+    unrelated_edit = "REAL UNCOMMITTED EDIT to an unrelated file — must never be lost\n"
+    (local / "CLAUDE.md").write_text(unrelated_edit)
+    head_before = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    ok, msg = dh._recover_mtime_wedge(local, ["wedged.txt"], default_branch="main")
+
+    assert not ok, f"guard must REFUSE, not recover; got ok=True, msg: {msg}"
+    assert "REFUSED mtime-wedge fallback" in msg, msg
+    assert "CLAUDE.md" in msg, msg
+    # The guard must not have touched anything: HEAD unmoved, the unrelated
+    # file's uncommitted edit intact.
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == head_before, \
+        "REFUSED fallback must never move HEAD"
+    assert (local / "CLAUDE.md").read_text() == unrelated_edit, \
+        "REFUSED fallback must never discard an unrelated file's uncommitted edit — DATA LOSS"
 
 
 def test_parse_wedge_stuck_paths_ignores_unrelated_failures():

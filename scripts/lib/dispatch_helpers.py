@@ -3653,15 +3653,27 @@ def force_commit_and_push(
 #      all (e.g. step 1's runtime push failed a moment earlier), a
 #      path-scoped check would still let that unrelated commit be silently
 #      discarded by the reset. Requiring the whole of HEAD to already be on
-#      origin closes that hole.
-# If EITHER check fails for ANY stuck path, the fallback REFUSES — returns
-# without touching the working tree, the index, or HEAD — and safe_pull
-# surfaces the original pull failure plus the refusal reason. Only when
-# every stuck path clears both checks does it `rm` them and
-# `git reset --hard origin/<default_branch>`, logging exactly which paths
-# it rewrote. This is recovery-from-known-safe-clutter, never a substitute
-# for "give up and reset" — the line between hygiene recovery and data loss
-# is the entire point of this guard.
+#      origin closes that hole; and
+#   3. the working tree carries NO OTHER uncommitted change besides the
+#      stuck paths themselves (`git status --porcelain`, repo-wide — same
+#      stricter-than-path-scoped stance as #2). `git reset --hard` is
+#      repo-wide: it discards EVERY uncommitted change in the tree, not
+#      just the stuck paths. Both callers that reach this fallback can
+#      legitimately leave OTHER real, unrelated uncommitted work sitting in
+#      the tree — step 2's "stash failed, continuing" branch, and step 1a's
+#      sandbox-unreadable-path exclusion (paths intentionally left
+#      untouched on disk because they might be real unsandboxed work). A
+#      path-scoped check here would let that unrelated work be silently
+#      discarded by the reset — exactly the hole #2 closes for unpushed
+#      commits, just for uncommitted content instead.
+# If ANY check fails for ANY stuck path (or for the tree as a whole), the
+# fallback REFUSES — returns without touching the working tree, the index,
+# or HEAD — and safe_pull surfaces the original pull failure plus the
+# refusal reason. Only when every stuck path clears every check does it
+# `rm` them and `git reset --hard origin/<default_branch>`, logging exactly
+# which paths it rewrote. This is recovery-from-known-safe-clutter, never a
+# substitute for "give up and reset" — the line between hygiene recovery
+# and data loss is the entire point of this guard.
 
 
 def _parse_wedge_stuck_paths(git_output: "str | None") -> "list[str]":
@@ -3722,12 +3734,14 @@ def _recover_mtime_wedge(
     ok=True  — every stuck path was proven content-safe (== HEAD or ==
                origin/<default_branch>) AND HEAD was already an ancestor of
                origin/<default_branch> (no unpushed commit anywhere on
-               HEAD); the paths were `rm`'d and
+               HEAD) AND the working tree carried no OTHER uncommitted
+               change beside the stuck paths; the paths were `rm`'d and
                `git reset --hard origin/<default_branch>` applied. `message`
                names exactly which paths were rewritten.
 
     ok=False — REFUSED: at least one check could not be proven safe (real
-               divergent content, an unpushed commit, or an unresolvable
+               divergent content, an unpushed commit, an unrelated
+               uncommitted change elsewhere in the tree, or an unresolvable
                HEAD/merge-base). NOTHING was touched — no rm, no reset, no
                HEAD move. `message` names the reason and, where possible,
                which path(s) tripped the guard.
@@ -3792,7 +3806,37 @@ def _recover_mtime_wedge(
             "reset, possible real local content): " + "; ".join(unsafe)
         )
 
-    # Both guards cleared for every stuck path — rewrite them clean from
+    # Guard 3 (repo-wide, deliberately stricter than path-scoped — see WHY
+    # above): `git reset --hard` below is repo-wide, so it would discard ANY
+    # uncommitted change anywhere in the tree, not just the stuck paths.
+    # Callers can legitimately leave OTHER real, unrelated uncommitted work
+    # sitting in the tree at this point (the "stash failed, continuing"
+    # branch, or the sandbox-unreadable-path exclusion) — refuse rather than
+    # let the reset silently discard it.
+    tree_status = _git("status", "--porcelain")
+    if tree_status.returncode != 0:
+        return False, (
+            "REFUSED mtime-wedge fallback: could not read working-tree "
+            "status — touching nothing: " + ", ".join(stuck_paths)
+        )
+    stuck_set = set(stuck_paths)
+    extra_dirty = []
+    for line in tree_status.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip().strip('"')
+        path = path.split(" -> ")[-1] if " -> " in path else path
+        if path not in stuck_set:
+            extra_dirty.append(path)
+    if extra_dirty:
+        return False, (
+            "REFUSED mtime-wedge fallback: working tree has unrelated "
+            "uncommitted change(s) beyond the stuck path(s) — refusing the "
+            "repo-wide reset so they are never silently discarded: "
+            + ", ".join(sorted(extra_dirty))
+        )
+
+    # All guards cleared for every stuck path — rewrite them clean from
     # origin. `rm` first (clears the on-disk file the index considers
     # "stuck") then a full `reset --hard` to origin's tip, which is also
     # what completes the pull this fallback stands in for.
