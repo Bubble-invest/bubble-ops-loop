@@ -112,7 +112,30 @@ def render_mission_prompt_md(mission: Dict[str, Any], slug: str, display_name: s
     mission_pieces._mission_core_piece resolves FIRST (before the flat-
     yaml fallback). Carries the same fields as the flat missions/<id>.yaml
     so nothing is lost, in a human-readable card the piece view's
-    mission-core tile opens directly."""
+    mission-core tile opens directly.
+
+    MARKER CONTRACT (#1022): a mission that HAS a dedicated
+    `missions/<id>/PROMPT.md` is a "dedicated-prompt mission" —
+    `dispatch_helpers._mission_authors_own_marker` returns True for it, so
+    `materialize_due_missions_for_tick` deliberately does NOT pre-stamp any
+    per-mission marker for it (the #428 premature-stamp / weekly-silent-
+    failure guard). That fix ASSUMES the dedicated prompt stamps its OWN
+    per-mission `.last-run` when it actually runs. The dispatcher's
+    "handled today" read side (`_mission_handled_marker`) reads exactly
+    `outputs/<today>/missions/<id>/.last-run` (unioned with the
+    materializer's `.last-materialized` proxy, #870). A dedicated prompt
+    that stamps some OTHER sentinel instead (e.g. the L1 gather prompts'
+    `outputs/<today>/<layer>/.gather_<id>.done`, board #1022) writes a
+    marker the dispatcher never reads → the mission stays "due" every tick
+    → re-dispatch / fire-spin (wasted Opus spend). So every scaffolded
+    per-mission prompt now carries the explicit STEP that stamps the marker
+    the dispatcher actually reads, aligning new missions with the contract
+    by construction. Composition note (#1080 output-truth gate): for L1/L4
+    the per-mission marker is only TRUSTED once the layer has real output in
+    `outputs/<today>/<layer>/` — the marker stamp below is necessary but the
+    layer's normal artifacts (e.g. L1's morning_briefing.md/summary.md) must
+    also be produced that tick for it to count; do not treat the marker as a
+    substitute for the mission's real deliverable."""
     mission_id = str(mission.get("id") or "mission")
     description = str(mission.get("description") or "").strip()
     cadence = mission.get("cadence", "?")
@@ -136,7 +159,27 @@ def render_mission_prompt_md(mission: Dict[str, Any], slug: str, display_name: s
             s if isinstance(s, str) else str(s) for s in input_sources
         )
         lines.append(f"- Input sources : `{rendered_sources}`")
-    lines.append("")
+    lines.extend([
+        "",
+        "## Final mandatory action — stamp the per-mission run marker (#1022)",
+        "",
+        "As your **last** step, once your real work for this mission is done "
+        "(the artifact / queue item is written), stamp the per-mission "
+        "`.last-run` marker the dispatcher reads. Do NOT write a bespoke "
+        "`.done` sentinel instead — the dispatcher "
+        "(`dispatch_helpers._mission_handled_marker`) reads ONLY "
+        f"`outputs/<today>/missions/{mission_id}/.last-run`; any other "
+        "filename leaves the mission looking un-run and it re-fires every "
+        "tick (fire-spin / wasted spend):",
+        "",
+        "```python",
+        "from pathlib import Path",
+        "from scripts.lib.dispatch_helpers import write_last_run",
+        "# <today> is the tz-aware UTC date string the dispatch ctx passes you.",
+        f'write_last_run(Path("outputs/<today>/missions/{mission_id}"))',
+        "```",
+        "",
+    ])
     return "\n".join(lines)
 
 
