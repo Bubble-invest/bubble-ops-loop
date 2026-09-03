@@ -149,6 +149,12 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     ctx0["_repo_dir"] = str(repo)
     select_due_missions(ctx0, missions)
     write_last_run(today_dir / "1", when=now0)
+    # #1080 output-truth: a layer marker alone is no longer sufficient
+    # evidence of a genuine L1 fire (L1 is output-evidence-gated) — write the
+    # real STEP-3 artifact too, matching what a genuinely-completed L1 run
+    # produces.
+    (today_dir / "1").mkdir(parents=True, exist_ok=True)
+    (today_dir / "1" / "situation_brief.md").write_text("ok")
     increment_round_counter(today_dir, layer=1)
     write_l1_baseline(today_dir)
 
@@ -185,6 +191,13 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     due3 = select_due_missions(ctx3, missions)
     if "risk_control" in [m["id"] for m in due3]:
         write_last_run(today_dir / "missions" / "risk_control", when=now3)
+        # #1080 output-truth: L4 is output-evidence-gated too — write the real
+        # STEP-3 artifact alongside the marker, or a later tick would (per the
+        # new invariant, correctly) treat risk_control as died-mid-dispatch
+        # and re-select it, out-ranking L1 in _LAYER_PRIORITY and masking the
+        # exact starvation this test isolates.
+        (today_dir / "4").mkdir(parents=True, exist_ok=True)
+        (today_dir / "4" / "risk-brief.md").write_text("ok")
         increment_round_counter(today_dir, layer=4)
 
     # Tick 4 — 19:30 Paris: the tick under test.
@@ -281,6 +294,11 @@ def test_l4_fires_normally_and_no_regression_on_ordinary_l3_completion(tmp_path:
     # still is_mission_due otherwise), which would legitimately give L2 due
     # work this tick and outrank L1 — not what this test is isolating.
     write_last_run(today_dir / "missions" / "data_update", when=now0)
+    # #1080 output-truth: L1 is output-evidence-gated — a marker alone (layer
+    # or per-mission) is no longer sufficient proof data_update genuinely
+    # produced its brief.
+    (today_dir / "1").mkdir(parents=True, exist_ok=True)
+    (today_dir / "1" / "situation_brief.md").write_text("ok")
     increment_round_counter(today_dir, layer=1)
     write_l1_baseline(today_dir)
 
@@ -295,6 +313,9 @@ def test_l4_fires_normally_and_no_regression_on_ordinary_l3_completion(tmp_path:
     # which is not what this test is isolating.
     now_l4 = datetime(2026, 9, 3, 17, 0, tzinfo=timezone.utc)
     write_last_run(today_dir / "missions" / "risk_control", when=now_l4)
+    # #1080 output-truth: L4 is output-evidence-gated too.
+    (today_dir / "4").mkdir(parents=True, exist_ok=True)
+    (today_dir / "4" / "risk-brief.md").write_text("ok")
     increment_round_counter(today_dir, layer=4)
 
     now_evening = datetime(2026, 9, 3, 17, 30, tzinfo=timezone.utc)

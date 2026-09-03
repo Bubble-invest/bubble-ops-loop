@@ -112,6 +112,11 @@ def test_late_floor_tick_dispatches_only_the_pending_second_mission(tmp_path: Pa
     # be fooled by this into thinking L4 is "done" for the day.
     today = AT_22_31_UTC.strftime("%Y-%m-%d")
     write_last_run(repo / "outputs" / today / "4", AT_21_00_UTC)
+    # #1080 output-truth: a marker alone (per-mission or layer) is no longer
+    # trusted as "fired" for L1/L4 — corroborate risk_control's genuine
+    # completion with real STEP-3 output, or the gate would (correctly) treat
+    # it as died-mid-dispatch and re-select it for recovery.
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     due = select_due_missions_for_forced_layer(repo, 4, now_utc=AT_22_31_UTC)
     ids = [m["id"] for m in due]
@@ -176,6 +181,11 @@ def test_all_missions_already_fired_returns_empty_list(tmp_path: Path):
     _fire_prereqs(repo, AT_21_00_UTC)
     _stamp_mission_lastrun(repo, "risk_control", AT_21_00_UTC)
     _stamp_mission_lastrun(repo, "market_wrapup", AT_22_31_UTC)
+    # #1080 output-truth: corroborate genuine completion with real STEP-3
+    # output — a marker alone is no longer sufficient for L4.
+    today = AT_21_00_UTC.strftime("%Y-%m-%d")
+    (repo / "outputs" / today / "4").mkdir(parents=True, exist_ok=True)
+    (repo / "outputs" / today / "4" / "risk-brief.md").write_text("ok")
 
     later = datetime(2026, 6, 23, 21, 0, tzinfo=timezone.utc)  # 23:00 Paris
     due = select_due_missions_for_forced_layer(repo, 4, now_utc=later)

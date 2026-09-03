@@ -174,6 +174,14 @@ def test_default_materialize_true_second_tick_same_process_still_vetoes_as_befor
     missions = _missions(repo)
 
     build_dispatch_ctx(repo, now_utc=_NOW1)  # materialize=True: stamps for real
+    # #1080 output-truth: the marker above proves a DECISION was made, not
+    # that the mission's real output exists yet — simulate the dispatched
+    # session having genuinely completed by the second tick (this test is
+    # about idempotence for a GENUINE fire, not about the output-truth gate;
+    # see test_1080_dispatch_output_truth.py for the died-mid-dispatch case).
+    today_dir = repo / "outputs" / _NOW1.strftime("%Y-%m-%d")
+    (today_dir / "1").mkdir(parents=True, exist_ok=True)
+    (today_dir / "1" / "situation_brief.md").write_text("ok")
     now2 = _NOW1 + timedelta(seconds=9)
     ctx2 = build_dispatch_ctx(repo, now_utc=now2)
     due2 = select_due_missions(ctx2, missions)

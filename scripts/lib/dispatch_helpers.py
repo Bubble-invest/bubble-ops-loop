@@ -1703,7 +1703,23 @@ def _any_mission_fired_today_for_layer(
     Returns False if dept.yaml is absent/unreadable (fail toward the
     pre-existing behaviour — no new fallback signal, layer-marker /
     round_counter paths still apply).
+
+    #1080 OUTPUT-TRUTH GATE: this is a THIRD source of "the layer fired"
+    truth (alongside the layer marker and round_counter), fed by the exact
+    same per-mission markers `_mission_last_fired` reads — so it is subject
+    to the exact same false-marker risk: a per-mission marker stamped by
+    `materialize_due_missions_for_tick` at DECISION time proves a mission
+    became due, not that it (or its layer) produced anything. Without this
+    gate, `_mission_last_fired` correctly refusing to trust an
+    output-less marker for ONE mission's own due-check was not enough to fix
+    the live incident — this fallback would still report the LAYER as fired
+    via the identical marker, closing L1's eligibility (not merely its due
+    list) and starving the mission before `_due_missions_for_layer` was ever
+    reached. Gated the same way: only for L1/L4 (`_LAYERS_WITH_OUTPUT_EVIDENCE`),
+    only when `today_dir` corroborates real STEP-3 output; L2/L3 unaffected.
     """
+    if not _layer_output_evidence_ok(str(today_dir), layer):
+        return False
     dept_yaml = Path(repo_dir) / "dept.yaml"
     if not dept_yaml.is_file():
         return False
@@ -2255,9 +2271,42 @@ def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
     return _queue_has_items(queue_path, drainable_kinds=drainable, today=ctx.get("today"))
 
 
+def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int) -> bool:
+    """True unless `layer` is confirmed (`_LAYERS_WITH_OUTPUT_EVIDENCE`, L1/L4)
+    to write its real STEP-3 output into `outputs/<today>/<layer>/`, AND that
+    output is missing.
+
+    Card #1080 (dispatch output-truth): a `.last-run` marker — per-mission OR
+    layer-level — only ever proves a DISPATCH DECISION was made or a session
+    STARTED (every layer/mission prompt stamps it as its documented FIRST
+    action, before any real work: see `write_last_run`'s and
+    `layer_output_present`'s docstrings). It is not proof the mission actually
+    produced its deliverable. This is the single gate both `_mission_last_fired`
+    (the per-mission-marker path) and `_mission_last_fired_with_shim_fallback`
+    (the layer-marker fallback) apply before trusting either marker as "fired"
+    — so the two call sites can never diverge on what "fired" means.
+
+    L2/L3 are deliberately excluded: their real output lives in the vault / a
+    `trades`|`decisions` DB row, never in `outputs/<today>/{2,3}/` even on a
+    fully healthy run (see `layer_output_present`'s docstring) — gating them
+    here would falsely force a needless re-run of a genuinely completed
+    mission every tick, trading a real outage for a manufactured one.
+
+    Fail-open (True) when `today_dir_str` is absent — preserves pre-existing
+    behaviour for a bare/partial ctx (e.g. a caller/test that never populated
+    `today_dir`); such a ctx has no way to check output evidence at all, and
+    failing closed there would silently veto every mission on every such ctx.
+    """
+    if layer not in _LAYERS_WITH_OUTPUT_EVIDENCE:
+        return True
+    if not today_dir_str:
+        return True
+    return layer_output_present(Path(today_dir_str) / str(layer))
+
+
 def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
-    """Return the per-mission .last-run timestamp, or None if absent or stamped
-    THIS tick.
+    """Return the per-mission .last-run timestamp, or None if absent, stamped
+    THIS tick, or unable to prove REAL output exists (#1080).
 
     Per-mission marker path: outputs/<today>/missions/<id>/.last-run
 
@@ -2287,6 +2336,23 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     have their own per-mission marker and do not need a layer-marker fallback.
     A mission with no per-mission marker → last_fired=None → is_mission_due
     evaluates purely on cadence (time/day) without a "fired today" veto.
+
+    #1080 OUTPUT-TRUTH GATE: a PRIOR-tick marker here is not, on its own, proof
+    the mission actually produced anything. `materialize_due_missions_for_tick`
+    stamps this exact file for a shim-resolved mission at DECISION time — the
+    tick that DECIDES the mission is due, before the runtime has dispatched
+    (let alone completed) any subagent for it. Confirmed live (Ben, 2026-09-02,
+    L1+L2+L4 all hit): `build_dispatch_ctx(materialize=True)` — called merely
+    to DECIDE what to dispatch — stamped the marker as a side effect; a later
+    read of the same marker reported the mission as already "fired" even
+    though nothing had run, silently starving it for the rest of the day. The
+    output-evidence gate that `_mission_last_fired_with_shim_fallback` already
+    applies to ITS OWN layer-marker fallback did not help here: this function
+    is checked FIRST by that wrapper and returns early on any non-None value,
+    so the direct per-mission-marker path never went through the gate at all.
+    Applying `_layer_output_evidence_ok` here closes that gap uniformly for
+    every caller of `_mission_last_fired` (this is what actually fixes the
+    live-loop `select_due_missions` path — the one build_dispatch_ctx feeds).
     """
     today_dir_str = ctx.get("today_dir")
     if not today_dir_str:
@@ -2307,6 +2373,12 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     # next tick the marker will be < now_utc and correctly veto a re-dispatch.
     now_utc = ctx.get("now_utc")
     if now_utc is not None and marker == now_utc:
+        return None
+
+    # #1080: a genuine prior-tick marker still isn't "fired" for L1/L4 unless
+    # the mission's layer actually produced real output today — see
+    # _layer_output_evidence_ok's docstring. L2/L3 pass through unchanged.
+    if not _layer_output_evidence_ok(today_dir_str, int(mission.get("layer", 0))):
         return None
 
     return marker
@@ -2411,7 +2483,10 @@ def _mission_last_fired_with_shim_fallback(
     if layer_marker is None:
         return None
 
-    # Output-evidence gate (defect c): only for layers whose shim prompt is
+    # Output-evidence gate (defect c, generalized by #1080 into
+    # _layer_output_evidence_ok — the SAME helper _mission_last_fired now
+    # applies to the per-mission-marker path above, so the two can never
+    # diverge on what "fired" means): only for layers whose shim prompt is
     # confirmed to write real STEP-3 artifacts into outputs/<today>/<N>/.
     # A marker with NO corroborating output on one of these layers means the
     # session died mid-dispatch (STEP 1 done, STEP 3 never reached) — treat
@@ -2419,12 +2494,8 @@ def _mission_last_fired_with_shim_fallback(
     # Ambiguous/ungated layers (L2, L3) are left to the marker alone below —
     # see the docstring note above; a false "not fired" there would trigger
     # a needless re-run of a genuinely healthy mission, not a safe recovery.
-    if layer in _LAYERS_WITH_OUTPUT_EVIDENCE:
-        today_dir_str = ctx.get("today_dir")
-        if today_dir_str is not None:
-            layer_dir = Path(today_dir_str) / str(layer)
-            if not layer_output_present(layer_dir):
-                return None
+    if not _layer_output_evidence_ok(ctx.get("today_dir"), layer):
+        return None
 
     # Disambiguation: the layer marker can only represent THIS mission if its
     # own scheduled slot (daily/weekly `time:`, Paris-local) had already
