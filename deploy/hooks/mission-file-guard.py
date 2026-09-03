@@ -21,6 +21,18 @@ Structural-path list is SINGLE-SOURCED from the broker policy.py
 (STRUCTURAL_PATH_GLOBS) — same list the push-time lock uses, so the two layers
 never disagree.
 
+#961 (2026-09-03): also repo-aware via policy.is_structural_for_repo(), same
+as the push-time helper (deploy/is-structural-push.py). Board incident: an
+agent edited+committed scripts/lib/budget.py in the bubble-ops-loop working
+tree with NO deny from this hook, because it only ever consulted the
+repo-agnostic _is_structural() — which does not include
+FRAMEWORK_STRUCTURAL_PATH_GLOBS (scripts/lib/**, .github/**, token-broker/**,
+git-guard/**, all scripts/** as of #961). We resolve the repo name the same
+way is-structural-push.py does (git remote.origin.url, bare trailing
+segment) so a framework-repo edit is caught here too, before it's even
+committed — while a dept repo's legitimate scripts/lib/ vendored-lib edit
+stays allowed (is_structural_for_repo() is a no-op outside bubble-ops-loop).
+
 FAIL-OPEN by design: if we cannot parse the input or load the policy, we exit 0
 (allow) rather than block legitimate work. The push-time helper remains the hard
 enforcement; this hook is the early, visible guidance layer.
@@ -43,7 +55,18 @@ _POLICY_CANDIDATES = [
 ]
 
 
-def _load_is_structural():
+def _load_is_structural(cwd: str = ""):
+    """Return a `(path) -> bool` structural check, repo-aware when possible.
+
+    #961: prefer `is_structural_for_repo`, bound to the repo name at `cwd`
+    (via `_repo_name_at`, mirrors is-structural-push.py's own
+    `_repo_name()`), so FRAMEWORK_STRUCTURAL_PATH_GLOBS (scripts/lib/**,
+    .github/**, token-broker/**, git-guard/**, scripts/**) is enforced when
+    the agent is working in bubble-ops-loop itself. Falls back to the
+    repo-agnostic `_is_structural` on an older policy.py that lacks the new
+    function (same fallback pattern as is-structural-push.py), so this stays
+    fail-open/backward-compatible rather than erroring.
+    """
     for cand in _POLICY_CANDIDATES:
         if not cand:
             continue
@@ -55,10 +78,42 @@ def _load_is_structural():
             mod = importlib.util.module_from_spec(spec)
             sys.modules["bubble_broker_policy"] = mod
             spec.loader.exec_module(mod)
-            return mod._is_structural  # noqa: SLF001 — single-sourced glob check
+            is_structural_for_repo = getattr(mod, "is_structural_for_repo", None)
+            if is_structural_for_repo is None:
+                return mod._is_structural  # noqa: SLF001 — legacy policy.py fallback
+            repo_name = _repo_name_at(cwd)
+            return lambda path: is_structural_for_repo(path, repo_name)
         except Exception:
             continue
     return None
+
+
+def _repo_name_at(cwd: str) -> str | None:
+    """Bare repo name from `origin`'s remote URL at `cwd`, or None on failure.
+
+    Mirrors deploy/is-structural-push.py's `_repo_name()` exactly (same
+    single-sourced derivation) so both layers agree on which repo an edit is
+    happening in. Never raises — a lookup failure just means the
+    framework-only globs won't apply (fail-open, same posture as the rest of
+    this hook), NOT that the repo-agnostic STRUCTURAL_PATH_GLOBS check is
+    skipped.
+    """
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=cwd or os.getcwd(),
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        url = proc.stdout.strip()
+        tail = url.rstrip("/").split("/")[-1]
+        if tail.endswith(".git"):
+            tail = tail[:-4]
+        return tail or None
+    except Exception:
+        return None
 
 
 def _rel_to_repo(path_str: str, cwd: str) -> str | None:
@@ -160,7 +215,7 @@ def main() -> int:
     tin = data.get("tool_input", {}) or {}
     cwd = data.get("cwd", "") or os.getcwd()
 
-    is_structural = _load_is_structural()
+    is_structural = _load_is_structural(cwd)
     if is_structural is None:
         return 0  # fail-open: can't load policy -> don't block (push-lock still guards)
 

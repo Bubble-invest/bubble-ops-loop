@@ -1,0 +1,53 @@
+# CODEOWNERS — bubble-ops-loop
+#
+# #961 (2026-09-03): this file did not previously exist on this repo at all
+# (verified via `gh api repos/Bubble-invest/bubble-ops-loop/contents/.github/CODEOWNERS`
+# -> 404, and no branch protection on `main` -> 404 "Branch not protected").
+# It mirrors the structural-path set already enforced at runtime by
+# token-broker/src/policy.py (STRUCTURAL_PATH_GLOBS + — new in #961 —
+# FRAMEWORK_STRUCTURAL_PATH_GLOBS's is_structural_for_repo()) and by the
+# fixture-repo doctrine test (tests/test_branch_protection.py ::
+# test_codeowners_file_present, which checks vdk888/bubble-ops-fixture, a
+# separate fixture repo — this is the first time the equivalent file is
+# added to the CANONICAL bubble-ops-loop repo itself).
+#
+# IMPORTANT — this file only takes effect once branch protection on `main`
+# has "Require review from Code Owners" enabled. That setting is NOT
+# currently on (see above) and is intentionally NOT flipped by this PR: a
+# naive "require PR before merging to main" rule would also block the
+# ops-loop's own routine direct pushes (outputs/**, queues/**, inbox/**),
+# which is exactly the model documented in git-guard/README.md ("branch
+# protection on main is the third layer" — aspirational there, not yet
+# real). Enabling it safely needs a repo-settings decision (needs:human),
+# not a code change — flagged for the reviewer.
+
+# Default: no implicit owner — every path below is explicit.
+
+# Dept-mission-definition paths (repo-agnostic STRUCTURAL_PATH_GLOBS in
+# token-broker/src/policy.py — apply in every bubble-ops-* repo, including
+# this canonical one).
+/MANDATE.md            @vdk888
+/dept.yaml             @vdk888
+/CLAUDE.md              @vdk888
+/layers/                @vdk888
+/subagents/              @vdk888
+/skills/                @vdk888
+/tools/                  @vdk888
+/policies/                @vdk888
+/templates/                @vdk888
+/missions/                  @vdk888
+/.claude/                    @vdk888
+
+# Framework-source paths (FRAMEWORK_STRUCTURAL_PATH_GLOBS in
+# token-broker/src/policy.py — this repo IS bubble-ops-loop, so these apply
+# here directly). #961 closes the exact gap the card was filed for:
+# scripts/lib/ was reachable by direct push with no review (commit 5513824,
+# scripts/lib/budget.py). scripts/ is protected broadly per #961 scope
+# guidance — see the FRAMEWORK_STRUCTURAL_PATH_GLOBS comment in policy.py
+# for why this is judged safe (no deployed actor policy targets
+# bubble-ops-loop as a runtime_write_own repo, so nothing legitimate writes
+# here unreviewed today).
+/scripts/                @vdk888
+/token-broker/            @vdk888
+/git-guard/                @vdk888
+/.github/                    @vdk888

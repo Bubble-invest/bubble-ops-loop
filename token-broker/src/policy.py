@@ -79,6 +79,29 @@ FRAMEWORK_STRUCTURAL_PATH_GLOBS: tuple[str, ...] = (
     "scripts/lib/**",      # the scaffolder + canonical loop/dispatch library
     "scripts/bootstrap-dept.sh",
     "scripts/sync-dispatch-lib.sh",
+    "scripts/**",          # #961 (2026-09-03): broadened from the three globs
+                            # above to cover ALL of scripts/ in the framework
+                            # repo, not just lib/. Card incident (commit
+                            # 5513824) touched scripts/lib/budget.py specifically,
+                            # but scripts/ also holds dept lifecycle + deploy
+                            # tooling (activate-dept.sh, migrate-dept.sh,
+                            # retire-dept.sh, revendor-all-depts.sh,
+                            # dispatch_directives.py, the install-*.sh cron
+                            # installers, ...) that is just as capable of
+                            # silently degrading the fleet if rewritten
+                            # unreviewed. Kept the three narrower globs above
+                            # (now redundant, left for the historical f3213b7/
+                            # #55 attribution) rather than removing them — only
+                            # ADDING protection here, per #961 scope. No actor
+                            # policy in deploy/policies/ has own_repo (or a
+                            # write rule) targeting bubble-ops-loop itself, so
+                            # this repo is never a legitimate runtime_write_own
+                            # target — broadening to all of scripts/** does not
+                            # block any observed automated workflow (verified by
+                            # grep across deploy/policies/*.yaml and
+                            # .github/workflows/ — no push/commit step touches
+                            # scripts/ in CI). Flagged for reviewer anyway since
+                            # it is a broader lock than the literal #961 gap.
     ".github/**",          # CI workflows (a bad edit here can mask regressions)
     "token-broker/**",     # the push chokepoint's own source
     "git-guard/**",        # the guard's own source
@@ -136,15 +159,24 @@ def _is_structural(path: str) -> bool:
     return any(_glob_match(path, g) for g in STRUCTURAL_PATH_GLOBS)
 
 
-def _is_settings_pr_eligible(path: str) -> bool:
+def _is_settings_pr_eligible(path: str, repo_name: str | None = None) -> bool:
     """True if `path` may be the target of a settings_pr (#913).
 
-    = structural (mission files, always PR-only, never runtime_write_own)
+    = structural for the target repo (shared mission globs in every repo,
+      PLUS the framework-only globs — scripts/lib/**, .github/**,
+      token-broker/**, git-guard/** — when `repo_name` is bubble-ops-loop;
+      see is_structural_for_repo()), always PR-only, never runtime_write_own
       OR in SETTINGS_PR_EXTRA_GLOBS (currently just tests/** — PR-eligible
       WITHOUT being locked out of runtime_write_own; see the comment above
       SETTINGS_PR_EXTRA_GLOBS for why this is a separate list).
+
+    #961 (2026-09-03): repo-aware so a framework-only structural path (e.g.
+    scripts/lib/budget.py in bubble-ops-loop) is still ELIGIBLE for the PR
+    route even though enforce()'s runtime_write_own branch now denies it
+    outright (see is_structural_for_repo() call below) — otherwise a
+    framework-lib change would have NO push path at all.
     """
-    return _is_structural(path) or any(
+    return is_structural_for_repo(path, repo_name) or any(
         _glob_match(path, g) for g in SETTINGS_PR_EXTRA_GLOBS
     )
 
@@ -267,7 +299,18 @@ class Policy:
             elif not allowed_paths:
                 reasons.append(f"no write rules declared for repo {repo!r}")
             for p in paths:
-                if _is_structural(p):
+                # #961 (2026-09-03, board incident: commit 5513824 pushed
+                # scripts/lib/budget.py directly to bubble-ops-loop/main with
+                # no review): MUST be repo-aware here, not just _is_structural().
+                # is_structural_for_repo() ORs in FRAMEWORK_STRUCTURAL_PATH_GLOBS
+                # (scripts/lib/**, .github/**, token-broker/**, git-guard/**)
+                # when `repo` is the framework repo (bubble-ops-loop), while
+                # leaving dept repos' legitimate vendored-lib syncs (the SAME
+                # scripts/lib/** path in bubble-ops-<slug>) untouched — see the
+                # FRAMEWORK_STRUCTURAL_PATH_GLOBS comment above. The function
+                # already existed (added #55/ce90bb2) but was never wired into
+                # this enforcement path — that's the exact gap #961 closes.
+                if is_structural_for_repo(p, repo):
                     reasons.append(
                         f"path {p!r} is structural; use action=settings_pr instead"
                     )
@@ -303,7 +346,7 @@ class Policy:
             if not paths:
                 reasons.append("settings_pr requires at least one path")
             for p in paths:
-                if not _is_settings_pr_eligible(p):
+                if not _is_settings_pr_eligible(p, repo):
                     reasons.append(
                         f"path {p!r} is not structural and not settings-PR-eligible "
                         f"(see SETTINGS_PR_EXTRA_GLOBS); use runtime_write_own instead"
