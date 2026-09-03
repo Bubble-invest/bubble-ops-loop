@@ -16,8 +16,14 @@ overridable hook so the bash harness can run it hermetically:
   BUBBLE_TICKWD_RESTART=0      disable level-2 restarts fleet-wide (default 1)
   BUBBLE_TICKWD_HANG_RESTART=1 restart (instead of alert) on a hung tool call (default 0)
   BUBBLE_TICKWD_STALL_IDLE_SEC / _COOLDOWN_SEC / _MAX_KICKS / _WINDOW_SEC /
-  _BUSY_GRACE_SEC / _HANG_SEC  tunables (see the lib defaults)
+  _MAX_CONSECUTIVE / _BUSY_GRACE_SEC / _HANG_SEC  tunables (see the lib defaults)
   BUBBLE_TICKWD_CHAT_ID        alert recipient (default BUBBLE_OPERATOR_CHAT_ID or Joris)
+  BUBBLE_TICKWD_SESSIONS_DIR   Claude Code's live-session registry (default ~/.claude/sessions)
+  BUBBLE_TICKWD_SOPS_BIN       sops binary for the Mac vault token read (default: PATH lookup)
+
+State-file discipline: every kick is RECORDED BEFORE its side effect. If the
+history file is not writable the pass fails closed (no inject/restart) —
+an unrecorded kick would escape the cooldown + cap on the next pass.
 
 Usage:
   scripts/loop-tick-watchdog.py                # one pass over every discovered dept
@@ -37,6 +43,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -66,6 +73,9 @@ class DeptSpec:
     tmux_bin: str = ""          # (local)
     tmux_session: str = ""      # (local)
     bot_pid_file: str = ""
+    sessions_dir: str = ""      # ~/.claude/sessions (live-session registry; "" = default)
+    vault_file: str = ""        # (local) SOPS vault the wrapper sources TELEGRAM_BOT_TOKEN from
+    age_key_file: str = ""      # (local) SOPS_AGE_KEY_FILE the wrapper exports
 
 
 def log(msg: str) -> None:
@@ -112,8 +122,7 @@ def discover_vps(agents_root: str, projects_root: str, channels_root: str) -> Li
         if _dept_host_from_state(dept_dir) == "local":
             log(f"{slug}: skip — host: local (runs on its own machine)")
             continue
-        cat = _run(["systemctl", "cat", unit], capture=True).stdout or ""
-        resumes = "--continue" in cat
+        resumes = unit_resumes_context(unit)
         out.append(DeptSpec(
             slug=slug, dept_dir=dept_dir,
             session_dir=os.path.join(projects_root, wd.projects_dir_name(dept_dir)),
@@ -123,6 +132,28 @@ def discover_vps(agents_root: str, projects_root: str, channels_root: str) -> Li
             bot_pid_file=os.path.join(channels_root, f"telegram-{slug}", "bot.pid"),
         ))
     return out
+
+
+def unit_resumes_context(unit: str) -> bool:
+    """True iff the unit's EFFECTIVE ExecStart (drop-ins merged, comments
+    excluded) launches claude with ``--continue``. ``systemctl cat`` was a
+    substring search over the whole unit text, which also matched a
+    ``# --continue …`` comment or a superseded drop-in. Verified shape on the
+    VPS: ``{ path=/bin/sh ; argv[]=/bin/sh -c exec /usr/bin/dtach … /usr/bin/claude
+    --model "…" --continue … ; ignore_errors=no ; … }``. Unknown → False
+    (conservative: no level-2 restart)."""
+    res = _run(["systemctl", "show", "-p", "ExecStart", "--value", unit], capture=True)
+    if res.returncode != 0:
+        return False
+    exec_start = (res.stdout or "").strip()
+    return bool(re.search(r"(?<![\w-])--continue(?![\w-])", exec_start))
+
+
+def _wrapper_resumes_context(wrapper_text: str) -> bool:
+    """Mac: ``--continue`` on a NON-comment line of the wrapper (the live
+    wrappers carry a ``# --continue resumes the prior FULL session…`` comment)."""
+    code = "\n".join(l for l in wrapper_text.splitlines() if not l.lstrip().startswith("#"))
+    return bool(re.search(r"(?<![\w-])--continue(?![\w-])", code))
 
 
 def read_plist(path: str) -> dict:
@@ -167,7 +198,8 @@ def read_plist(path: str) -> dict:
 def discover_local(launch_agents_dir: str, projects_root: str, channels_root: str) -> List[DeptSpec]:
     """Mac: every ~/Library/LaunchAgents/com.bubble.ops-loop-<slug>.plist (not
     -backup-), reading WorkingDirectory + the wrapper it runs; the wrapper's
-    TELEGRAM_STATE_DIR / TMUX_BIN / SESSION / --continue are parsed by regex."""
+    TELEGRAM_STATE_DIR / TMUX_BIN / SESSION / VAULT / SOPS_AGE_KEY_FILE /
+    --continue are parsed by regex."""
     out: List[DeptSpec] = []
     if not os.path.isdir(launch_agents_dir):
         return out
@@ -205,8 +237,11 @@ def discover_local(launch_agents_dir: str, projects_root: str, channels_root: st
             slug=slug, dept_dir=dept_dir,
             session_dir=os.path.join(projects_root, wd.projects_dir_name(dept_dir)),
             inject_file=os.path.join(state_dir, "inject"),
-            host="local", resumes_context=("--continue" in wtxt),
+            host="local", resumes_context=_wrapper_resumes_context(wtxt),
+            # The wrapper sources TELEGRAM_BOT_TOKEN from a SOPS vault first and
+            # only falls back to the legacy plaintext .env — mirror both.
             env_file=os.path.join(state_dir, ".env"),
+            vault_file=_grab("VAULT", ""), age_key_file=_grab("SOPS_AGE_KEY_FILE", ""),
             tmux_bin=_grab("TMUX_BIN", "tmux"), tmux_session=_grab("SESSION", f"ops-loop-{slug}"),
             bot_pid_file=os.path.join(state_dir, "bot.pid"),
         ))
@@ -337,19 +372,52 @@ def _touch_external_mark(spec: DeptSpec) -> None:
         pass  # dir may not exist / not ours — the telegram-watchdog will still see its own mark
 
 
+_TOKEN_LINE_RE = re.compile(r'^(?:export\s+)?TELEGRAM_BOT_TOKEN=["\']?([^"\'\s]+)', re.M)
+
+
+def _token_from_text(text: str) -> str:
+    m = _TOKEN_LINE_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _token_from_vault(spec: DeptSpec) -> str:
+    """Mac: decrypt the dept's SOPS vault the same way its wrapper does
+    (``sops --decrypt <vault>`` with the wrapper's SOPS_AGE_KEY_FILE), but
+    in-memory — no temp file. Empty when sops/vault/key are missing."""
+    if not spec.vault_file or not os.path.isfile(spec.vault_file):
+        return ""
+    sops = os.environ.get("BUBBLE_TICKWD_SOPS_BIN") or shutil.which("sops") or next(
+        (p for p in ("/opt/homebrew/bin/sops", "/usr/local/bin/sops",
+                     os.path.expanduser("~/.local/bin/sops")) if os.path.isfile(p)), "")
+    if not sops:
+        return ""
+    env = dict(os.environ)
+    if spec.age_key_file:
+        env["SOPS_AGE_KEY_FILE"] = spec.age_key_file
+    try:
+        res = subprocess.run([sops, "--decrypt", spec.vault_file], capture_output=True, text=True,
+                             timeout=30, check=False, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return _token_from_text(res.stdout) if res.returncode == 0 else ""
+
+
 def _read_token(spec: DeptSpec) -> str:
+    """Resolution order mirrors the runtimes: env → dept env file (VPS
+    ``/run/claude-agent-<slug>/env``; Mac legacy ``.env``) → Mac SOPS vault
+    (the live Mac wrappers have NO ``.env`` — the token lives in the vault,
+    so without this step every Mac alert/kick was log-only)."""
     tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if tok:
         return tok
     try:
         with open(spec.env_file, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                m = re.match(r'^(?:export\s+)?TELEGRAM_BOT_TOKEN=["\']?([^"\'\s]+)', line)
-                if m:
-                    return m.group(1)
+            tok = _token_from_text(fh.read())
     except OSError:
-        pass
-    return ""
+        tok = ""
+    if tok:
+        return tok
+    return _token_from_vault(spec)
 
 
 def notify(spec: DeptSpec, text: str) -> None:
@@ -361,7 +429,8 @@ def notify(spec: DeptSpec, text: str) -> None:
         return
     token = _read_token(spec)
     if not token:
-        log(f"{spec.slug}: no TELEGRAM_BOT_TOKEN resolvable — alert logged only")
+        log(f"{spec.slug}: WARNING no TELEGRAM_BOT_TOKEN resolvable (tried env, {spec.env_file or '<no env file>'}, "
+            f"vault={spec.vault_file or '<none>'}) — alert LOGGED ONLY, nobody was pinged")
         return
     try:
         import urllib.parse
@@ -385,6 +454,7 @@ def build_config(spec: DeptSpec) -> wd.Config:
         cooldown_sec=_env_int("BUBBLE_TICKWD_COOLDOWN_SEC", wd.DEFAULT_COOLDOWN_SEC),
         max_kicks=_env_int("BUBBLE_TICKWD_MAX_KICKS", wd.DEFAULT_MAX_KICKS),
         window_sec=_env_int("BUBBLE_TICKWD_WINDOW_SEC", wd.DEFAULT_WINDOW_SEC),
+        max_consecutive=_env_int("BUBBLE_TICKWD_MAX_CONSECUTIVE", wd.DEFAULT_MAX_CONSECUTIVE),
         # Restart only when it resumes context AND the slug is a dept (never a concierge).
         restart_allowed=restart_enabled and spec.resumes_context and spec.slug not in CONCIERGE_DENYLIST,
         hang_restart=os.environ.get("BUBBLE_TICKWD_HANG_RESTART", "0") == "1",
@@ -392,22 +462,54 @@ def build_config(spec: DeptSpec) -> wd.Config:
     )
 
 
+def _truncate_inject(spec: DeptSpec) -> None:
+    """Empty the dept's inject file right before a restart: the channels
+    plugin drains the file on startup, so a stale watchdog line + the
+    boot-inject line would be two back-to-back ticks."""
+    try:
+        if os.path.isfile(spec.inject_file) and os.path.getsize(spec.inject_file) > 0:
+            with open(spec.inject_file, "w", encoding="utf-8"):
+                pass
+            log(f"{spec.slug}: inject file truncated before restart (avoid a double tick on boot)")
+    except OSError as e:
+        log(f"{spec.slug}: could not truncate inject file before restart: {e}")
+
+
+def _sessions_dir(spec: DeptSpec) -> str:
+    return spec.sessions_dir or os.environ.get("BUBBLE_TICKWD_SESSIONS_DIR") \
+        or os.path.join(os.path.expanduser("~"), ".claude", "sessions")
+
+
 def process_dept(spec: DeptSpec, state_path: str, dry_run: bool, now: float) -> dict:
-    obs = wd.observe_transcript(spec.slug, spec.session_dir, inject_file=spec.inject_file)
+    # Pin the transcript to the LIVE dept session (sessions/<pid>.json) so an
+    # ad-hoc `claude` opened in the dept cwd is never judged as the dept;
+    # newest-by-mtime is only the fallback.
+    pinned = wd.pinned_transcript(spec.session_dir, _sessions_dir(spec), spec.dept_dir,
+                                  tmux_session=spec.tmux_session if spec.host == "local" else "",
+                                  unit=spec.unit if spec.host == "vps" else "")
+    obs = wd.observe_transcript(spec.slug, spec.session_dir, inject_file=spec.inject_file, transcript=pinned)
     history = wd.read_events(state_path)
     cfg = build_config(spec)
     d = wd.decide(obs, history, now, cfg)
     verdict = {"slug": spec.slug, "host": spec.host, "action": d.action, "reason": d.reason,
-               "level": d.level, "err_class": d.err_class, **d.facts}
+               "level": d.level, "err_class": d.err_class, "transcript_pick": obs.transcript_pick, **d.facts}
 
     if not d.is_kick and not d.notify:
         log(f"{spec.slug}: {d.action} — {d.reason}")
+        # Close an open kick/hold episode: one `recovered` marker resets the
+        # hard-stop count. Idempotent; never written in dry-run.
+        if not dry_run and wd.needs_recovery_marker(history, spec.slug, d.action, now):
+            try:
+                wd.append_event(state_path, wd.format_event(spec.slug, wd.RECOVERED, f"observed {d.action} after a kick/hold episode"))
+                verdict["recovered"] = True
+            except OSError as e:
+                log(f"{spec.slug}: could not write recovered marker: {e}")
         return verdict
 
-    # Alerts (no kick): dedupe per cooldown, record, notify.
+    # Alerts (no kick): ONCE per dedupe key (the key embeds the error ts), record, notify.
     if not d.is_kick:
-        if wd.already_alerted(history, spec.slug, d.dedupe_key, now, cfg.cooldown_sec):
-            log(f"{spec.slug}: {d.action} — {d.reason} (already alerted; quiet)")
+        if wd.already_alerted(history, spec.slug, d.dedupe_key, now):
+            log(f"{spec.slug}: {d.action} — {d.reason} (already alerted for this event; quiet)")
             verdict["deduped"] = True
             return verdict
         log(f"{spec.slug}: {d.action} — {d.reason}")
@@ -427,27 +529,47 @@ def process_dept(spec: DeptSpec, state_path: str, dry_run: bool, now: float) -> 
         verdict["dry_run"] = True
         return verdict
 
+    if d.action == wd.KICK_INJECT and not session_alive(spec):
+        # Nothing to inject into. KeepAlive/systemd own process death; we
+        # only record + alert so the gap is visible (no double-launch).
+        reason = "session/poller not alive — inject impossible; supervisor owns process death"
+        log(f"{spec.slug}: {reason}")
+        if not wd.already_alerted(history, spec.slug, f"dead:{obs.error_ts}", now):
+            wd.append_event(state_path, wd.format_event(spec.slug, wd.ALERT_INJECT_FAILED, reason,
+                            err_ts=obs.error_ts, extra={"dedupe_key": f"dead:{obs.error_ts}"}))
+            notify(spec, f"loop-tick-watchdog [{spec.slug}]: stalled on {(obs.error_text or '')[:80]!r} but the session is not alive — check the supervisor")
+        verdict["action"] = wd.ALERT_INJECT_FAILED
+        return verdict
+
+    # RECORD FIRST, then act. If the state file is not writable this raises
+    # and the kick is skipped (fail closed) — an unrecorded kick would escape
+    # the cooldown + rolling cap on the next pass.
+    try:
+        wd.append_event(state_path, wd.format_event(
+            spec.slug, d.action, d.reason, err_ts=obs.error_ts, err_text=obs.error_text or "",
+            level=d.level, extra={"transcript": os.path.basename(obs.transcript or "")}))
+    except OSError as e:
+        log(f"{spec.slug}: state file {state_path} not writable ({e}) — refusing to {d.action} (fail closed)")
+        verdict["action"] = "error-state-unwritable"
+        verdict["reason"] = str(e)
+        return verdict
+
     if d.action == wd.KICK_INJECT:
-        if not session_alive(spec):
-            # Nothing to inject into. KeepAlive/systemd own process death; we
-            # only record + alert so the gap is visible (no double-launch).
-            reason = "session/poller not alive — inject impossible; supervisor owns process death"
-            log(f"{spec.slug}: {reason}")
-            if not wd.already_alerted(history, spec.slug, f"dead:{obs.error_ts}", now, cfg.cooldown_sec):
-                wd.append_event(state_path, wd.format_event(spec.slug, wd.ALERT_INJECT_FAILED, reason,
-                                err_ts=obs.error_ts, extra={"dedupe_key": f"dead:{obs.error_ts}"}))
-                notify(spec, f"loop-tick-watchdog [{spec.slug}]: stalled on {(obs.error_text or '')[:80]!r} but the session is not alive — check the supervisor")
-            verdict["action"] = wd.ALERT_INJECT_FAILED
-            return verdict
         ok = do_inject(spec, wd.rearm_turn(spec.slug, obs.error_text or "", obs.error_ts or now))
         verdict["injected"] = ok
     else:  # KICK_RESTART
+        _truncate_inject(spec)
         ok = do_restart(spec)
         verdict["restarted"] = ok
 
-    wd.append_event(state_path, wd.format_event(
-        spec.slug, d.action, d.reason, err_ts=obs.error_ts, err_text=obs.error_text or "",
-        level=d.level, extra={"ok": ok, "transcript": os.path.basename(obs.transcript or "")}))
+    if not ok:
+        # The recorded kick still counts (conservative); the marker stops the
+        # ladder from reading a failed inject as "session deaf → restart".
+        try:
+            wd.append_event(state_path, wd.format_event(spec.slug, wd.KICK_FAILED, f"{d.action} side effect failed",
+                            err_ts=obs.error_ts, level=d.level))
+        except OSError as e:
+            log(f"{spec.slug}: could not record kick-failed: {e}")
     outcome = "sent" if ok else "FAILED"
     notify(spec, f"loop-tick-watchdog [{spec.slug}]: {d.action} {outcome} — {d.reason}")
     return verdict

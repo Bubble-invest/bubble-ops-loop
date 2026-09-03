@@ -35,12 +35,38 @@ notify) and is host-aware (VPS systemd vs Mac launchd).
   (subagent activity / tool call in flight), an error in a PREVIOUS turn
   followed by later healthy activity.
 * **CRASH-LOOP / NOT-KICKABLE (never made worse):** an AUTH failure ("Not
-  logged in", "Login expired", 401), a usage LIMIT whose reset is still ahead
-  (or unparseable), or a context overflow ("Prompt is too long") — a re-kick
-  cannot fix any of these, so we ALERT ONCE (deduped per cooldown) and do NOT
-  kick. For kickable stalls, a per-dept COOLDOWN (default 30 min) plus a
-  rolling-window GUARDRAIL (default 3 kicks / 6 h) bound a stall that keeps
-  re-erroring: after the cap we stop kicking and escalate to a human.
+  logged in", "Login expired", 401), an explicit usage/QUOTA limit ("hit your
+  weekly limit", "usage limit" — with a reset still ahead or no reset at all),
+  or a context overflow ("Prompt is too long") — a re-kick cannot fix any of
+  these, so we ALERT ONCE PER ERROR EVENT (dedupe key embeds the error
+  timestamp; a 13-hour limit-wait is ONE ping, not 26) and do NOT kick. A
+  BARE ``rate_limit_error`` / HTTP 429 with no parseable reset time is NOT a
+  quota wait — it is the transient throttle of the #724 incident class and
+  goes down the kick path (bounded like every other transient). For kickable
+  stalls, a per-dept COOLDOWN (default 30 min) plus a rolling-window
+  GUARDRAIL (default 3 kicks / 6 h) bound a stall that keeps re-erroring:
+  after the cap we stop kicking and escalate to a human.
+
+## Bounds on a permanently-broken dept (read before widening any tunable)
+
+The guardrail window is ROLLING: 3 kicks / 6 h means a dept that errors on
+EVERY kick would get up to 12 kicks/day for ever. On top of it sits a HARD
+STOP: after ``max_consecutive`` kicks (default 6 = two full windows) with no
+healthy turn observed in between, the dept is parked (``hold-hardstop``,
+alerted once) until either the watchdog observes it healthy again (which
+writes a ``recovered`` marker and resets the count) or a human clears the
+state file. So the worst case is 6 kicks total per broken episode, not 12/day.
+
+## Known limitation (FP-A, undecidable from disk, bounded to one tick)
+
+A human CHAT turn (not a tick) that dies on a transient API error while the
+loop's CronCreate from an EARLIER tick is still armed in-session looks, on
+disk, exactly like a dead tick: the last activity is an error line and THAT
+turn armed nothing. The watchdog injects one re-arm tick; the still-armed
+cron fires later as well → one extra tick. The re-arm turn tells the dept to
+CronList + delete duplicates, and the cooldown/cap bound it to a single
+extra tick per event. We accept this over the alternative (never kicking
+when any cron might be armed), which would re-open the #724 hole.
 
 ## The re-kick ladder (why it cannot double-launch)
 
@@ -76,6 +102,7 @@ DEFAULT_HANG_SEC = 45 * 60            # tool_use with no result for 45 min = han
 DEFAULT_COOLDOWN_SEC = 1800           # ≥30 min between kicks of the same dept
 DEFAULT_MAX_KICKS = 3                 # kicks allowed per rolling window …
 DEFAULT_WINDOW_SEC = 6 * 3600         # … of 6 h; the next one escalates instead
+DEFAULT_MAX_CONSECUTIVE = 6           # hard stop: kicks since the last healthy observation
 DEFAULT_TAIL_BYTES = 1 << 20          # scan the last 1 MiB of the transcript
 
 # ── Actions (the runner switches on these) ───────────────────────────────────
@@ -88,14 +115,21 @@ KICK_INJECT = "kick-inject"           # level 1
 KICK_RESTART = "kick-restart"         # level 2 (inject proved deaf)
 HOLD_COOLDOWN = "hold-cooldown"
 HOLD_GUARDRAIL = "hold-guardrail"     # cap reached → escalate to a human
+HOLD_HARDSTOP = "hold-hardstop"       # too many kicks with no recovery → parked
+HOLD_INJECT_QUEUED = "hold-inject-queued"   # someone's inject line is still queued (fresh)
 ALERT_NONTRANSIENT = "alert-nontransient"   # auth / context — a kick can't fix
 ALERT_LIMIT_WAIT = "alert-limit-wait"       # usage limit, reset still ahead
 ALERT_INJECT_FAILED = "alert-inject-failed" # deaf to inject, restart not allowed
 ALERT_HANG = "alert-hang"             # tool call in flight far too long
 
+# History-only markers written by the runner (never a Decision.action):
+KICK_FAILED = "kick-failed"           # a recorded kick's side effect did not land
+RECOVERED = "recovered"               # dept observed healthy after a kick/hold episode
+
 KICK_ACTIONS = frozenset({KICK_INJECT, KICK_RESTART})
-ALERT_ACTIONS = frozenset({HOLD_GUARDRAIL, ALERT_NONTRANSIENT, ALERT_LIMIT_WAIT,
+ALERT_ACTIONS = frozenset({HOLD_GUARDRAIL, HOLD_HARDSTOP, ALERT_NONTRANSIENT, ALERT_LIMIT_WAIT,
                            ALERT_INJECT_FAILED, ALERT_HANG})
+HEALTHY_ACTIONS = frozenset({OK_IDLE, OK_BUSY, OK_ARMED})   # resets the hard-stop count
 
 # ── Error classification ─────────────────────────────────────────────────────
 CLS_TRANSIENT = "transient"
@@ -112,10 +146,17 @@ _AUTH_RE = re.compile(
     r"\b401\b|oauth access token|authentication credentials|authentication_error",
     re.I,
 )
-_LIMIT_RE = re.compile(
-    r"hit your (?:weekly|monthly|daily|session)?\s*(?:spend\s*)?limit|usage limit|rate_limit_error",
+# An EXPLICIT quota/usage limit — Claude Code's human-readable "You've hit
+# your weekly limit · resets 10pm (UTC)" family. Waiting is the only fix.
+_QUOTA_RE = re.compile(
+    r"hit your (?:weekly|monthly|daily|session)?\s*(?:spend\s*)?limit|usage limit|"
+    r"\b(?:weekly|monthly|daily) limit\b",
     re.I,
 )
+# A BARE rate limit: the raw API 429 ("API Error: 429 {…"rate_limit_error"…}",
+# "rate limit exceeded"). Recoverable in minutes → transient UNLESS the text
+# also carries a parseable reset time (then it is a quota wait after all).
+_RATE_RE = re.compile(r"rate_limit_error|\b429\b|rate[ _-]?limit", re.I)
 _CONTEXT_RE = re.compile(r"prompt is too long|context window|too many tokens", re.I)
 # "resets 10pm (UTC)" / "resets 12am (Europe/Paris)" / "resets 5:10pm (UTC)"
 _RESET_RE = re.compile(
@@ -201,12 +242,23 @@ def classify_api_error(text: str, now_epoch: float) -> Tuple[str, Optional[float
     unexpectedly", unknown) — the class this card exists for. An unknown text
     is deliberately treated as transient: a kick is cheap and bounded by the
     cooldown + guardrail, and the alert carries the text for a human.
+
+    LIMIT is only the EXPLICIT quota family ("hit your weekly limit",
+    "usage limit") or a rate-limit text that carries a parseable reset time.
+    A bare ``rate_limit_error`` / 429 with no reset time is TRANSIENT — that
+    IS the #724 incident class (a throttle that clears in minutes), and
+    treating it as a quota wait would mean never re-kicking it.
     """
     t = text or ""
     if _AUTH_RE.search(t):
         return CLS_AUTH, None
-    if _LIMIT_RE.search(t):
+    if _QUOTA_RE.search(t):
         return CLS_LIMIT, parse_limit_reset_epoch(t, now_epoch)
+    if _RATE_RE.search(t):
+        reset = parse_limit_reset_epoch(t, now_epoch)
+        if reset is not None:
+            return CLS_LIMIT, reset
+        return CLS_TRANSIENT, None
     if _CONTEXT_RE.search(t):
         return CLS_CONTEXT, None
     return CLS_TRANSIENT, None
@@ -230,8 +282,11 @@ class Observation:
     pending_tool_ts: Optional[float] = None
     # Newest subagent transcript mtime under <session>/subagents/.
     subagent_mtime: Optional[float] = None
-    # Inject file (if known) still holds an undrained line.
+    # Inject file (if known) still holds an undrained line (+ its mtime).
     inject_pending: bool = False
+    inject_mtime: Optional[float] = None
+    # How the transcript was chosen: "pinned" (live session file) | "mtime".
+    transcript_pick: str = ""
     parse_errors: int = 0
 
 
@@ -257,6 +312,9 @@ def _read_tail_lines(path: str, tail_bytes: int) -> List[str]:
 
 
 def newest_transcript(session_dir: str) -> Optional[str]:
+    """Fallback pick: newest top-level ``*.jsonl`` by mtime. On a shared Mac an
+    ad-hoc ``claude`` opened in the dept cwd writes here too, so prefer
+    :func:`pinned_transcript` and use this only when no live session pins one."""
     files = glob.glob(os.path.join(session_dir, "*.jsonl"))
     if not files:
         return None
@@ -264,6 +322,87 @@ def newest_transcript(session_dir: str) -> Optional[str]:
         return max(files, key=os.path.getmtime)
     except OSError:
         return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError, ValueError):
+        return False
+    return True
+
+
+def _pid_cgroup(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/cgroup", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.realpath(a).rstrip("/") == os.path.realpath(b).rstrip("/")
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def pinned_transcript(session_dir: str, sessions_dir: str, cwd: str, *,
+                      tmux_session: str = "", unit: str = "",
+                      pid_alive=_pid_alive, cgroup_of=_pid_cgroup) -> Optional[str]:
+    """The transcript of the LIVE dept session, from Claude Code's
+    ``~/.claude/sessions/<pid>.json`` registry (``{pid, sessionId, cwd, tmux,
+    …}`` on both hosts — verified M4 + VPS 2026-09-03). Candidates: alive pid
+    + same cwd as the dept. Tie-break when several sessions share the cwd
+    (the reviewer's case — an ad-hoc ``claude`` opened in the dept dir):
+    Mac → the one whose ``tmux`` target is the dept's tmux session; VPS → the
+    one whose pid sits in the dept's systemd unit cgroup. Among the rest, the
+    most recently updated wins. None when nothing pins (caller falls back to
+    mtime)."""
+    if not sessions_dir or not os.path.isdir(sessions_dir) or not cwd:
+        return None
+    cands = []
+    for f in glob.glob(os.path.join(sessions_dir, "*.json")):
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        sid, pid, scwd = d.get("sessionId"), d.get("pid"), d.get("cwd") or ""
+        if not sid or not isinstance(pid, int) or not _same_dir(scwd, cwd):
+            continue
+        if not pid_alive(pid):
+            continue
+        tx = os.path.join(session_dir, f"{sid}.jsonl")
+        if not os.path.isfile(tx):
+            continue
+        cands.append((d, pid, tx))
+    if not cands:
+        return None
+    if tmux_session:
+        # Mac: the dept ALWAYS runs inside its own tmux session; a candidate
+        # that is not in it is an ad-hoc `claude` — never pin that one.
+        cands = [c for c in cands if str(c[0].get("tmux") or "").startswith(f"{tmux_session}:")]
+    if unit:
+        # VPS: the dept's pid lives in its unit's cgroup. Only filter when
+        # /proc is readable for at least one candidate (skipped on macOS).
+        known = [(c, cgroup_of(c[1])) for c in cands]
+        if any(cg for _, cg in known):
+            cands = [c for c, cg in known if unit in cg]
+    if not cands:
+        return None
+
+    def _stamp(c):
+        d = c[0]
+        return (d.get("updatedAt") or d.get("startedAt") or 0)
+    cands.sort(key=_stamp, reverse=True)
+    return cands[0][2]
 
 
 def newest_subagent_mtime(transcript: str) -> Optional[float]:
@@ -284,8 +423,11 @@ def newest_subagent_mtime(transcript: str) -> Optional[float]:
 
 def observe_transcript(slug: str, session_dir: str, *,
                        tail_bytes: int = DEFAULT_TAIL_BYTES,
-                       inject_file: Optional[str] = None) -> Observation:
-    """Build an Observation from the newest transcript in ``session_dir``.
+                       inject_file: Optional[str] = None,
+                       transcript: Optional[str] = None) -> Observation:
+    """Build an Observation from the dept's transcript in ``session_dir``:
+    ``transcript`` when given (the runner pins it to the live session via
+    :func:`pinned_transcript`), else the newest ``*.jsonl`` by mtime.
 
     Only the tail is parsed (a live transcript is 10s of MB). Bookkeeping
     lines (system/attachment/…) are ignored for "activity". A turn starts at
@@ -294,7 +436,12 @@ def observe_transcript(slug: str, session_dir: str, *,
     to the running turn.
     """
     obs = Observation(slug=slug)
-    tx = newest_transcript(session_dir)
+    if transcript and os.path.isfile(transcript):
+        tx: Optional[str] = transcript
+        obs.transcript_pick = "pinned"
+    else:
+        tx = newest_transcript(session_dir)
+        obs.transcript_pick = "mtime"
     if tx is None:
         return obs
     obs.transcript = tx
@@ -308,6 +455,7 @@ def observe_transcript(slug: str, session_dir: str, *,
     if inject_file:
         try:
             obs.inject_pending = os.path.getsize(inject_file) > 0
+            obs.inject_mtime = os.path.getmtime(inject_file) if obs.inject_pending else None
         except OSError:
             obs.inject_pending = False
 
@@ -412,6 +560,10 @@ def format_event(slug: str, action: str, reason: str, *, err_ts: Optional[float]
 
 
 def append_event(path: str, event: dict) -> None:
+    """Append one history line. RAISES (OSError) when the path is not
+    writable — the runner relies on that to fail CLOSED: a kick is recorded
+    BEFORE its side effect, so an unwritable state file means no kick rather
+    than an unrecorded (uncounted, uncooled) one."""
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -465,6 +617,7 @@ class Config:
     cooldown_sec: int = DEFAULT_COOLDOWN_SEC
     max_kicks: int = DEFAULT_MAX_KICKS
     window_sec: int = DEFAULT_WINDOW_SEC
+    max_consecutive: int = DEFAULT_MAX_CONSECUTIVE   # hard stop (0 = disabled)
     restart_allowed: bool = False     # runtime resumes context + not a concierge
     hang_restart: bool = False        # hang → restart instead of alert (opt-in)
     external_restart_epoch: Optional[float] = None  # e.g. telegram-watchdog's mark
@@ -477,7 +630,7 @@ class Decision:
     level: int = 0
     err_class: Optional[str] = None
     notify: bool = False              # runner should tell a human
-    dedupe_key: str = ""              # alerts with the same key are sent once per cooldown
+    dedupe_key: str = ""              # alerts with the same key are sent ONCE (key embeds the error ts)
     facts: dict = field(default_factory=dict)
 
     @property
@@ -541,12 +694,15 @@ def decide(obs: Observation, history: List[dict], now_epoch: float, cfg: Config)
 
     # Kickable stall. Ladder: inject; if the previous inject for THIS error
     # landed nothing (transcript unchanged, same error line), the session is
-    # deaf → restart (when allowed) else alert.
+    # deaf → restart (when allowed) else alert. A kick whose side effect
+    # FAILED (kick-failed marker after it) proves nothing about deafness.
     prior = _events_for(history, slug, KICK_ACTIONS, now_epoch)
     last_kick = prior[-1][1] if prior else None
+    failed = _events_for(history, slug, {KICK_FAILED}, now_epoch)
+    last_kick_failed = bool(prior and failed and failed[-1][0] >= prior[-1][0])
     same_err_inject = (
         last_kick is not None and last_kick.get("action") == KICK_INJECT
-        and last_kick.get("err_ts") == now_iso(err_ts)
+        and last_kick.get("err_ts") == now_iso(err_ts) and not last_kick_failed
     )
     if same_err_inject:
         if cfg.restart_allowed:
@@ -555,6 +711,18 @@ def decide(obs: Observation, history: List[dict], now_epoch: float, cfg: Config)
         else:
             return Decision(ALERT_INJECT_FAILED, f"inject at {last_kick.get('ts')} was never processed and restart is not allowed for {slug} — human needed",
                             err_class=cls, notify=True, dedupe_key=f"inject-failed:{err_ts}", facts=facts)
+    elif obs.inject_pending:
+        # Never stack a second line behind an undrained one: the plugin drains
+        # the whole file on its next read/startup → two back-to-back ticks.
+        # A fresh line (e.g. loop-backup's inject_live_loop seconds ago) is
+        # simply someone else's kick in flight; a stale one means the poller
+        # is not delivering (same signal as the no-error branch).
+        inj_age = int(now_epoch - obs.inject_mtime) if obs.inject_mtime else None
+        if inj_age is not None and inj_age < cfg.stall_idle_sec:
+            return Decision(HOLD_INJECT_QUEUED, f"an inject line is already queued ({inj_age}s old) — not stacking a second tick",
+                            err_class=cls, facts=facts)
+        return Decision(ALERT_INJECT_FAILED, f"inject file still undrained ({inj_age}s) with the loop stalled — poller not delivering; human needed",
+                        err_class=cls, notify=True, dedupe_key=f"undrained:{err_ts}", facts=facts)
     else:
         d = Decision(KICK_INJECT, f"tick died on a {cls} API error {int(now_epoch - err_ts)}s ago and no wake was armed — injecting a re-arm turn",
                      level=1, err_class=cls, notify=True, facts=facts)
@@ -572,18 +740,52 @@ def _apply_kick_guards(d: Decision, obs: Observation, history: List[dict], now_e
     if last_ts is not None and now_epoch - last_ts < cfg.cooldown_sec:
         return Decision(HOLD_COOLDOWN, f"would {d.action} but last kick/restart was {int(now_epoch - last_ts)}s ago (< {cfg.cooldown_sec}s cooldown)",
                         err_class=d.err_class, facts=d.facts)
+    # Hard stop (see module docstring "Bounds"): the rolling window alone
+    # allows 12 kicks/day for ever on a permanently-broken dept.
+    consecutive = kicks_since_recovery(history, slug, now_epoch)
+    if cfg.max_consecutive and consecutive >= cfg.max_consecutive:
+        return Decision(HOLD_HARDSTOP, f"{consecutive} kicks since the last healthy observation (hard stop {cfg.max_consecutive}) — parked until the dept is seen healthy or the state file is cleared; human needed",
+                        err_class=d.err_class, notify=True, dedupe_key=f"hardstop:{kicks[-1][1].get('ts') if kicks else err_ts}", facts=d.facts)
     in_window = _events_for(history, slug, KICK_ACTIONS, now_epoch, cfg.window_sec)
     if len(in_window) >= cfg.max_kicks:
         return Decision(HOLD_GUARDRAIL, f"{len(in_window)} kicks in the last {cfg.window_sec // 3600}h (cap {cfg.max_kicks}) — stall keeps recurring; NOT kicking again, human needed",
                         err_class=d.err_class, notify=True, dedupe_key=f"guardrail:{err_ts}", facts=d.facts)
     d.facts["kicks_in_window"] = len(in_window)
+    d.facts["kicks_since_recovery"] = consecutive
     return d
 
 
+def kicks_since_recovery(history: List[dict], slug: str, now_epoch: float) -> int:
+    """Number of kicks for ``slug`` after its most recent ``recovered`` marker
+    (all kicks when there is none)."""
+    rec = _events_for(history, slug, {RECOVERED}, now_epoch)
+    since = rec[-1][0] if rec else None
+    return sum(1 for ep, _ in _events_for(history, slug, KICK_ACTIONS, now_epoch)
+               if since is None or ep > since)
+
+
+def needs_recovery_marker(history: List[dict], slug: str, action: str, now_epoch: float) -> bool:
+    """True when the dept is observed HEALTHY and its last recorded history
+    event is a kick / hold (an episode is open) — the runner then appends one
+    ``recovered`` marker, which resets the hard-stop count. Idempotent: a
+    second healthy pass sees ``recovered`` as the last event and writes nothing."""
+    if action not in HEALTHY_ACTIONS:
+        return False
+    evs = _events_for(history, slug, KICK_ACTIONS | ALERT_ACTIONS | {RECOVERED, KICK_FAILED}, now_epoch)
+    if not evs:
+        return False
+    return evs[-1][1].get("action") != RECOVERED
+
+
 def already_alerted(history: List[dict], slug: str, dedupe_key: str, now_epoch: float,
-                    cooldown_sec: int) -> bool:
-    """True when an alert with this dedupe key went out within the cooldown."""
-    for ep, ev in _events_for(history, slug, ALERT_ACTIONS, now_epoch, cooldown_sec):
+                    cooldown_sec: Optional[int] = None) -> bool:
+    """True when an alert with this dedupe key has EVER gone out (the key
+    embeds the underlying error timestamp, so it self-resets when the error
+    line changes). Alerting once per cooldown instead re-pinged every 30 min
+    for the whole of a 13-hour weekly-limit wait (fleet 2026-08-27: ~26
+    pings × 3 depts). ``cooldown_sec`` is accepted for API compatibility and
+    ignored."""
+    for ep, ev in _events_for(history, slug, ALERT_ACTIONS, now_epoch):
         if ev.get("dedupe_key") == dedupe_key:
             return True
     return False

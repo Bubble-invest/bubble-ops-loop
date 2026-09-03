@@ -136,13 +136,29 @@ def cfg(**over):
     return c
 
 
-def run(session_dir, history=(), now=NOW, **over):
-    obs = wd.observe_transcript("x", session_dir)
+def run(session_dir, history=(), now=NOW, inject_file=None, **over):
+    obs = wd.observe_transcript("x", session_dir, inject_file=inject_file)
     return wd.decide(obs, list(history), now, cfg(**over))
 
 
 def kick_event(ts, action=wd.KICK_INJECT, err_ts=None):
     return wd.format_event("x", action, "test", err_ts=err_ts, ts=wd.now_iso(ts), level=1)
+
+
+def marker(ts, action):
+    return wd.format_event("x", action, "test", ts=wd.now_iso(ts))
+
+
+@pytest.fixture
+def inject(tmp_path):
+    """inject(pending: bool, age_sec) → path of an inject file (empty or one line)."""
+    def make(pending=True, age=5):
+        p = tmp_path / "channels" / "telegram-x" / "inject"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("someone else's queued turn\n" if pending else "")
+        os.utime(p, (NOW - age, NOW - age))
+        return str(p)
+    return make
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -182,6 +198,38 @@ class TestStalledGetsKicked:
         d = run(s)
         assert d.action == wd.KICK_INJECT and d.err_class == wd.CLS_LIMIT
         assert "limit_reset_passed" in d.facts
+
+    @pytest.mark.parametrize("err", [
+        # The raw API 429 as Claude Code renders it — the #724 incident class.
+        'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed the rate limit for your organization"}}',
+        "API Error: 429 rate_limit_error",
+        "rate_limit_error",
+        "API Error: 429 Too Many Requests",
+        "Rate limit exceeded, retry shortly",
+    ])
+    def test_bare_429_with_no_reset_time_is_transient_and_kicked(self, session, err):
+        """Review finding A: a bare rate_limit_error used to classify as a
+        usage LIMIT with an unparseable reset → alert-only, never re-kicked.
+        It is a throttle that clears in minutes — kick (bounded like any
+        transient)."""
+        s = session(stalled_tick(NOW - 20 * MIN, err))
+        d = run(s)
+        assert d.action == wd.KICK_INJECT and d.err_class == wd.CLS_TRANSIENT, d
+
+    def test_429_that_carries_a_future_reset_time_is_still_a_limit_wait(self, session):
+        s = session(stalled_tick(NOW - 20 * MIN, "API Error: 429 rate_limit_error · resets 10pm (UTC)"))
+        d = run(s)
+        assert d.action == wd.ALERT_LIMIT_WAIT and d.err_class == wd.CLS_LIMIT and not d.is_kick
+
+    def test_failed_inject_is_retried_as_inject_not_escalated_to_restart(self, session):
+        """A recorded kick whose side effect FAILED (kick-failed marker) proves
+        nothing about deafness — after the cooldown, inject again; no restart."""
+        t_err = NOW - 2 * H + 20
+        s = session(stalled_tick(NOW - 2 * H))
+        hist = [kick_event(NOW - 40 * MIN, wd.KICK_INJECT, err_ts=t_err),
+                wd.format_event("x", wd.KICK_FAILED, "inject dir missing", err_ts=t_err, ts=wd.now_iso(NOW - 40 * MIN + 1))]
+        d = run(s, hist)
+        assert d.action == wd.KICK_INJECT, d
 
     def test_inject_that_landed_nothing_escalates_to_restart(self, session):
         """Level 2: the previous kick was an inject for THIS SAME error line
@@ -350,12 +398,82 @@ class TestCrashLoopNotWorsened:
         d = run(s)
         assert d.action == wd.ALERT_LIMIT_WAIT and not d.is_kick
 
-    def test_alert_dedupe_within_cooldown(self):
-        hist = [wd.format_event("x", wd.ALERT_NONTRANSIENT, "r", ts=wd.now_iso(NOW - 5 * MIN),
-                                extra={"dedupe_key": "auth:1"})]
-        assert wd.already_alerted(hist, "x", "auth:1", NOW, 1800)
-        assert not wd.already_alerted(hist, "x", "auth:2", NOW, 1800)
-        assert not wd.already_alerted(hist, "x", "auth:1", NOW + 2 * H, 1800)
+    def test_alert_dedupe_is_once_per_key_not_per_cooldown(self):
+        """Review finding B: a 13-hour weekly-limit wait re-alerted every
+        cooldown (~26 pings/dept/day on 2026-08-27). The key embeds the error
+        ts, so "once ever per key" is one ping per event and self-resets when
+        the underlying error line changes."""
+        hist = [wd.format_event("x", wd.ALERT_LIMIT_WAIT, "r", ts=wd.now_iso(NOW - 5 * MIN),
+                                extra={"dedupe_key": "limit:1"})]
+        assert wd.already_alerted(hist, "x", "limit:1", NOW)
+        assert wd.already_alerted(hist, "x", "limit:1", NOW + 2 * H)      # past the old cooldown: still quiet
+        assert wd.already_alerted(hist, "x", "limit:1", NOW + 13 * H)     # the whole limit-wait: still quiet
+        assert not wd.already_alerted(hist, "x", "limit:2", NOW)          # a new error event alerts again
+        assert not wd.already_alerted(hist, "y", "limit:1", NOW)          # per slug
+
+    def test_repeated_identical_limit_wait_alerts_exactly_once(self, session):
+        """End-to-end through decide(): the same stalled limit line seen on
+        many passes yields the same dedupe key every time → one alert."""
+        s = session(stalled_tick(NOW - 20 * MIN, "You've hit your weekly limit · resets 10pm (UTC)"))
+        hist = []
+        sent = 0
+        for k in range(20):                                   # a pass every 30 min until 21:30 (reset is 22:00)
+            now = NOW + k * 30 * MIN
+            d = run(s, hist, now=now)
+            assert d.action == wd.ALERT_LIMIT_WAIT
+            if not wd.already_alerted(hist, "x", d.dedupe_key, now):
+                sent += 1
+                hist.append(wd.format_event("x", d.action, d.reason, ts=wd.now_iso(now), extra={"dedupe_key": d.dedupe_key}))
+        assert sent == 1
+
+    def test_hard_stop_after_max_consecutive_kicks_without_recovery(self, session):
+        """Six kicks spread over 12h (never 3 inside one 6h window, so the
+        rolling cap alone would let a 7th through) → parked."""
+        s = session(stalled_tick(NOW - 35 * MIN))
+        hist = [kick_event(NOW - h * H) for h in (11, 10, 9, 8, 7, 6.5)]
+        d = run(s, hist)
+        assert d.action == wd.HOLD_HARDSTOP and d.notify and not d.is_kick, d
+        assert run(s, hist, max_consecutive=0).action == wd.KICK_INJECT   # disabled → window rule only
+
+    def test_recovered_marker_resets_the_hard_stop_count(self, session):
+        s = session(stalled_tick(NOW - 35 * MIN))
+        hist = [kick_event(NOW - h * H) for h in (11, 10, 9)] + [marker(NOW - 8.5 * H, wd.RECOVERED)] \
+            + [kick_event(NOW - h * H) for h in (8, 7, 6.5)]
+        d = run(s, hist)
+        assert d.action == wd.KICK_INJECT and d.facts["kicks_since_recovery"] == 3
+
+    def test_needs_recovery_marker_only_on_healthy_after_open_episode(self):
+        hist = [kick_event(NOW - 2 * H)]
+        assert wd.needs_recovery_marker(hist, "x", wd.OK_IDLE, NOW)
+        assert not wd.needs_recovery_marker(hist, "x", wd.OK_FRESH, NOW)          # error still at the tail
+        assert not wd.needs_recovery_marker([], "x", wd.OK_IDLE, NOW)             # nothing to close
+        hist2 = hist + [marker(NOW - H, wd.RECOVERED)]
+        assert not wd.needs_recovery_marker(hist2, "x", wd.OK_IDLE, NOW)          # idempotent
+        assert wd.needs_recovery_marker(hist2 + [kick_event(NOW - 30 * MIN)], "x", wd.OK_BUSY, NOW)
+
+    # ── Review finding F: never stack a second inject line ──────────────────
+    def test_fresh_queued_inject_line_holds_without_alert(self, session, inject):
+        s = session(stalled_tick(NOW - 20 * MIN))
+        d = run(s, inject_file=inject(pending=True, age=30))
+        assert d.action == wd.HOLD_INJECT_QUEUED and not d.is_kick and not d.notify
+
+    def test_stale_undrained_inject_line_alerts_instead_of_stacking(self, session, inject):
+        s = session(stalled_tick(NOW - 20 * MIN))
+        d = run(s, inject_file=inject(pending=True, age=15 * MIN))
+        assert d.action == wd.ALERT_INJECT_FAILED and d.notify and not d.is_kick
+
+    def test_empty_inject_file_does_not_block_the_kick(self, session, inject):
+        s = session(stalled_tick(NOW - 20 * MIN))
+        assert run(s, inject_file=inject(pending=False)).action == wd.KICK_INJECT
+
+    def test_own_undrained_inject_for_same_error_still_escalates_to_restart(self, session, inject):
+        """Our line from the previous pass still sits in the file → deaf →
+        restart (the runner truncates the file first so boot cannot double-tick)."""
+        t_err = NOW - 2 * H + 20
+        s = session(stalled_tick(NOW - 2 * H))
+        hist = [kick_event(NOW - 40 * MIN, wd.KICK_INJECT, err_ts=t_err)]
+        d = run(s, hist, inject_file=inject(pending=True, age=40 * MIN))
+        assert d.action == wd.KICK_RESTART
 
     def test_hang_is_alert_only_by_default(self, session):
         s = session([prompt(NOW - 2 * H), tool_use(NOW - 50 * MIN, "Bash", "b9")])
@@ -399,9 +517,13 @@ class TestBuildingBlocks:
     def test_classify_precedence(self):
         assert wd.classify_api_error("Please run /login · API Error: 401 OAuth", NOW)[0] == wd.CLS_AUTH
         assert wd.classify_api_error("You've hit your session limit · resets 5pm (UTC)", NOW)[0] == wd.CLS_LIMIT
+        assert wd.classify_api_error("You've hit your monthly spend limit", NOW) == (wd.CLS_LIMIT, None)  # quota, no reset → wait
         assert wd.classify_api_error("Prompt is too long", NOW)[0] == wd.CLS_CONTEXT
         assert wd.classify_api_error("API Error: 529 Overloaded", NOW)[0] == wd.CLS_TRANSIENT
         assert wd.classify_api_error("Server is temporarily limiting requests", NOW)[0] == wd.CLS_TRANSIENT
+        assert wd.classify_api_error("API Error: 429 rate_limit_error", NOW) == (wd.CLS_TRANSIENT, None)
+        assert wd.classify_api_error("429 rate_limit_error · resets 10pm (UTC)", NOW) == (wd.CLS_LIMIT, NOW + 10 * H)
+        assert wd.classify_api_error("Please run /login · 429 rate_limit_error", NOW)[0] == wd.CLS_AUTH
 
     def test_rearm_turn_is_single_line_and_not_a_slash_command(self):
         t = wd.rearm_turn("x", "API Error: 529\nOverloaded\nline3", NOW)
@@ -423,7 +545,75 @@ class TestBuildingBlocks:
         obs = wd.observe_transcript("x", s, tail_bytes=64 * 1024)
         assert obs.error_text and obs.error_text.startswith("API Error: 529")
 
-    def test_newest_transcript_wins(self, session):
+    def test_newest_transcript_wins_without_a_pin(self, session):
         s = session(stalled_tick(NOW - 5 * H), name="old.jsonl")
         session(healthy_tick(NOW - 1 * H), name="new.jsonl")
         assert run(s).action == wd.OK_IDLE
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. Review finding D: pin the transcript to the LIVE dept session
+# ═════════════════════════════════════════════════════════════════════════════
+class TestPinnedTranscript:
+    CWD = "/Users/joris/claude-workspaces/Rick_RnD"
+
+    def _sessions(self, tmp_path, entries):
+        sd = tmp_path / "sessions"
+        sd.mkdir(exist_ok=True)
+        for e in entries:
+            (sd / f"{e['pid']}.json").write_text(json.dumps(e))
+        return str(sd)
+
+    def test_live_session_beats_a_newer_adhoc_transcript(self, session, tmp_path):
+        """The dept (in tmux, stalled, older mtime) vs an ad-hoc `claude` Joris
+        opened in the dept cwd an hour ago (healthy, newest mtime). mtime
+        alone would judge the ad-hoc one → OK_IDLE and miss the stall."""
+        s = session(stalled_tick(NOW - 5 * H), name="dept-sid.jsonl")
+        session(healthy_tick(NOW - 1 * H), name="adhoc-sid.jsonl")
+        sd = self._sessions(tmp_path, [
+            {"pid": 101, "sessionId": "dept-sid", "cwd": self.CWD, "tmux": "ops-loop-rnd:@4.%4", "updatedAt": 1},
+            {"pid": 202, "sessionId": "adhoc-sid", "cwd": self.CWD, "updatedAt": 2},
+        ])
+        tx = wd.pinned_transcript(s, sd, self.CWD, tmux_session="ops-loop-rnd", pid_alive=lambda p: True)
+        assert tx and tx.endswith("dept-sid.jsonl")
+        obs = wd.observe_transcript("x", s, transcript=tx)
+        assert obs.transcript_pick == "pinned"
+        assert wd.decide(obs, [], NOW, cfg()).action == wd.KICK_INJECT
+        # And the mtime fallback really would have got it wrong:
+        assert run(s).action == wd.OK_IDLE
+
+    def test_dead_pid_or_other_cwd_never_pins(self, session, tmp_path):
+        s = session(stalled_tick(NOW - 5 * H), name="dept-sid.jsonl")
+        sd = self._sessions(tmp_path, [
+            {"pid": 101, "sessionId": "dept-sid", "cwd": self.CWD, "tmux": "ops-loop-rnd:@4.%4"},
+            {"pid": 303, "sessionId": "dept-sid", "cwd": "/somewhere/else", "tmux": "ops-loop-rnd:@1.%1"},
+        ])
+        # 101 is the right cwd but dead; 303 is alive but a different cwd → nothing pins.
+        assert wd.pinned_transcript(s, sd, self.CWD, tmux_session="ops-loop-rnd", pid_alive=lambda p: p == 303) is None
+        # Right cwd + alive but NOT in the dept's tmux session (ad-hoc) → nothing pins.
+        assert wd.pinned_transcript(s, sd, self.CWD, tmux_session="ops-loop-main", pid_alive=lambda p: True) is None
+
+    def test_vps_unit_cgroup_tie_break(self, session, tmp_path):
+        s = session(stalled_tick(NOW - 5 * H), name="dept-sid.jsonl")
+        session(healthy_tick(NOW - 1 * H), name="adhoc-sid.jsonl")
+        cwd = "/home/claude/agents/bubble-ops-ben"
+        sd = self._sessions(tmp_path, [
+            {"pid": 11, "sessionId": "dept-sid", "cwd": cwd, "updatedAt": 1},
+            {"pid": 22, "sessionId": "adhoc-sid", "cwd": cwd, "updatedAt": 2},
+        ])
+        cg = {11: "0::/system.slice/ops-loop-ben.service", 22: "0::/user.slice/user-1000.slice/session-3.scope"}
+        tx = wd.pinned_transcript(s, sd, cwd, unit="ops-loop-ben.service",
+                                  pid_alive=lambda p: True, cgroup_of=lambda p: cg.get(p, ""))
+        assert tx and tx.endswith("dept-sid.jsonl")
+        # /proc unreadable everywhere (macOS) → the unit filter is skipped, most recent wins.
+        tx2 = wd.pinned_transcript(s, sd, cwd, unit="ops-loop-ben.service",
+                                   pid_alive=lambda p: True, cgroup_of=lambda p: "")
+        assert tx2 and tx2.endswith("adhoc-sid.jsonl")
+
+    def test_missing_registry_or_transcript_falls_back(self, session, tmp_path):
+        s = session(stalled_tick(NOW - 5 * H), name="dept-sid.jsonl")
+        assert wd.pinned_transcript(s, str(tmp_path / "nope"), self.CWD) is None
+        sd = self._sessions(tmp_path, [{"pid": 101, "sessionId": "gone-sid", "cwd": self.CWD}])
+        assert wd.pinned_transcript(s, sd, self.CWD, pid_alive=lambda p: True) is None
+        obs = wd.observe_transcript("x", s, transcript=None)
+        assert obs.transcript_pick == "mtime" and obs.transcript.endswith("dept-sid.jsonl")
