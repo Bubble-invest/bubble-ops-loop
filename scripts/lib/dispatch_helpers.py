@@ -139,9 +139,10 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
 
 def write_l3_human_deferred(layer3_dir: Path, when: datetime | None = None,
                              *, reason: str = "") -> None:
-    """Stamp Layer 3's `.last-run` for a STRUCTURAL human-supervised defer —
-    distinct from the STEP 0bis transient guard-rail ABORT path, which
-    deliberately does NOT stamp (see `layer_templates.py::_L3`).
+    """Stamp Layer 3's `.last-run` (AND advance its round_counter) for a
+    STRUCTURAL human-supervised defer — distinct from the STEP 0bis transient
+    guard-rail ABORT path, which deliberately does NOT stamp (see
+    `layer_templates.py::_L3`).
 
     THE BUG THIS CLOSES (#1085, Géraldine/accountant, 2026-09-03): since
     board #17 made booking permanently human-supervised for this dept, L3's
@@ -178,19 +179,54 @@ def write_l3_human_deferred(layer3_dir: Path, when: datetime | None = None,
     require a dept.yaml/decision-schema change on every dept that carries
     manual-execution items — out of scope here; this ships without one.)
 
+    THE #965 COMPANION GAP (found 2026-09-03, same day as #1085 — "same class
+    as the L4-silent-kill (#432) but for L1"): the #1085 fix above closes L4's
+    gate (via `l3_fired`) but a STRUCTURAL defer was, until now, mechanically
+    IDENTICAL to `write_last_run` — it stamped ONLY the `.last-run` marker, not
+    `round_counter`. Layer 1's C.0 "cycle complete" re-fire branch (see
+    `decide_dispatch` / `_layer_eligible_from_signals`, layer==1) requires
+    `round_counter[N] - baseline[N] >= fire_after_rounds` for N in (2, 3, 4) —
+    a signal `increment_round_counter` writes, NOT `.last-run`. A structurally
+    -blocked L3 (no autonomous execution capability exists for this decision
+    AT ALL — the exact case this function handles) therefore never advances
+    `round_counter["3"]`, so L1's cycle gate can NEVER be satisfied again for
+    the rest of the day: L1 becomes flatly INELIGIBLE (not merely "eligible
+    with an empty due list", which `select_due_missions`' #757 fallthrough
+    already handles) — so even an unrelated, genuinely-due SECONDARY L1
+    mission (e.g. an hourly news-scan, independent of L3's block) is silently
+    starved. `select_due_missions`'s per-layer walk (`_LAYER_PRIORITY`) can
+    only fall through to layers `_layer_eligible_from_signals` accepts as
+    eligible in the first place — an ineligible layer is skipped outright, so
+    no amount of fallthrough logic there can rescue this; the fix has to be at
+    the signal source. Fix: also call `increment_round_counter(..., layer=3)`
+    here — a STRUCTURAL defer means L3's "round" is exactly as complete as it
+    will ever be today, so it should count for L1's cycle gate exactly like a
+    real completed round does. This mirrors #1085's own reasoning (a
+    structural defer is a legitimate substitute for a real fire, not a
+    different kind of event) and keeps the fix self-contained in
+    dispatch_helpers.py — no `layers/`/PROMPT.md change needed, since every
+    STRUCTURAL-defer call site already goes through this single function.
+
     Call this ONLY from the STRUCTURAL human-supervised-defer branch of the
     L3 prompt (`layer_templates.py::_L3` STEP 0bis) — a transient guard-rail
     abort must keep using the no-stamp path so it retries the same day.
-    Mechanically identical to `write_last_run` (the `_layer_fired_today` /
-    `_mat_layer_fired` signal it feeds only checks marker PRESENCE, not why
-    it was written) — kept as a distinctly named entry point purely for
-    auditability/grep-ability of the two semantically different call sites,
-    and so a future dispatch-level special-case has somewhere to hook.
-    `reason` is accepted for caller-side logging/tests; it is not persisted
-    by this function (the L3 prompt's own `logs.jsonl` entry is the audit
-    trail L4's STEP 0 required-reads already picks up).
+    Mechanically identical to `write_last_run` + `increment_round_counter`
+    together (the `_layer_fired_today` / `_mat_layer_fired` signal fed by
+    `.last-run` only checks marker PRESENCE, not why it was written; the
+    round-counter bump is the #965 addition) — kept as a distinctly named
+    entry point purely for auditability/grep-ability of the two semantically
+    different call sites, and so a future dispatch-level special-case has
+    somewhere to hook. `reason` is accepted for caller-side logging/tests; it
+    is not persisted by this function (the L3 prompt's own `logs.jsonl` entry
+    is the audit trail L4's STEP 0 required-reads already picks up).
     """
     write_last_run(layer3_dir, when=when)
+    # #965: a structural defer is L3's round "as complete as it gets" today —
+    # advance round_counter so L1's cycle gate (which reads round_counter, not
+    # .last-run) isn't permanently stuck behind a decision that will never
+    # execute autonomously. layer3_dir is outputs/<today>/3 — its parent is
+    # the today_dir increment_round_counter expects.
+    increment_round_counter(layer3_dir.parent, layer=3)
 
 
 def layer_output_present(layer_dir: Path) -> bool:
