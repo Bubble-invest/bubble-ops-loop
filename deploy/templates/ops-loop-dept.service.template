@@ -13,8 +13,10 @@
 #   - STEP-7-DEPLOYMENT-RESULTS.md (fixture deployment proof)
 #
 # Critical invariants:
-#   - Use /usr/bin/script for pty allocation (avoid pty wrappers that
-#     break the OAuth/auth flow).
+#   - Use dtach(1) -N for pty allocation (board #1097, 2026-09-03 — supersedes
+#     /usr/bin/script; avoid pty wrappers that break the OAuth/auth flow).
+#     dtach is ALSO attachable (`dtach -a <sock>`, via the fleet terminal
+#     tool), which /usr/bin/script's pty was not.
 #   - Use the interactive claude binary with --dangerously-skip-permissions
 #     plus --channels plugin:telegram@claude-plugins-official.
 #   - Per-dept SOPS env at /etc/bubble/secrets-<slug>.sops.env.
@@ -28,7 +30,8 @@
 #
 # Ban #1 — NO tmux inside this unit (empirical tooling regression).
 #   Rule:        ExecStart must NOT spawn or attach to a tmux session.
-#                Use /usr/bin/script -qfc for pty allocation instead.
+#                Use dtach -N for pty allocation instead (board #1097 —
+#                previously /usr/bin/script -qfc; both are non-tmux ptys).
 #   Root cause:  Claude Code v2.1.139 returns HTTP 404 "issue with the
 #                selected model" on EVERY model for any fresh session
 #                started inside a tmux pty on Linux. Direct ssh shells
@@ -37,8 +40,12 @@
 #                7 model/wrapper combinations all 404 inside tmux).
 #                Also catalogued in docs/ARCHITECTURE.md
 #                §6 "Failure modes catalogue" row #1.
-#   Alternative: /usr/bin/script -qfc (used below in ExecStart) gives
-#                a real pty without triggering the resolver bug.
+#   Alternative: dtach -N <sock> (used below in ExecStart, board #1097) gives
+#                a real, ATTACHABLE pty without triggering the resolver bug
+#                (validated live on all 5 VPS depts 2026-09-03, zero 404s —
+#                dtach != tmux). /usr/bin/script also worked here but was
+#                not attachable; see shared-wiki
+#                shared/systems/fleet-terminal-tool.md.
 #
 # Ban #2 — NO `claude -p` headless mode (product policy + hooks loss).
 #   Rule:        ExecStart must invoke the INTERACTIVE binary (with
@@ -69,6 +76,17 @@ Type=simple
 User=claude
 Group=claude
 WorkingDirectory=/home/claude/agents/${DEPT_SLUG}
+
+# dtach interactive-terminal support (board #1097 — folds in the 2026-09-03
+# live hand-edit so a deploy-to-morty.sh re-render doesn't revert it; see
+# shared-wiki shared/systems/fleet-terminal-tool.md).
+# RuntimeDirectory= makes systemd create /run/ops-loop-${DEPT_SLUG} (owned by
+# User=/Group= above, i.e. `claude`) BEFORE ExecStart runs. This is
+# load-bearing: claude/dtach cannot mkdir a dir under /run itself (root-owned
+# tmpfs), so WITHOUT this the ExecStart below crash-loops — the socket is
+# never created. `fleet`/an operator then attaches with
+# `dtach -a /run/ops-loop-${DEPT_SLUG}/dtach.sock`.
+RuntimeDirectory=ops-loop-${DEPT_SLUG}
 
 # /opt/bubble-token-broker/bin is PREPENDED so git-guard's default broker lookup
 # (`bubble-token-broker`, resolved via PATH) finds the binary — it lives there,
@@ -165,7 +183,17 @@ ExecStartPre=+/usr/local/bin/guard-stale-credentials.sh ${ENV_FILE}
 
 EnvironmentFile=-${ENV_FILE}
 
-# Use script(1) for pty allocation.
+# Use dtach(1) for pty allocation (board #1097 — replaces script(1); see the
+# RuntimeDirectory= comment above for the crash-loop gotcha this depends on).
+# `-N` (capital) is REQUIRED, not `-n`: `-N` keeps dtach in the FOREGROUND
+# so systemd's Type=simple can supervise it as the main PID; `-n` forks and
+# detaches immediately, which would make systemd think the service exited.
+# `fleet`/an operator attaches a real interactive terminal via
+# `dtach -a /run/ops-loop-${DEPT_SLUG}/dtach.sock` (Ctrl-\ to detach, NOT
+# Ctrl-C — that signals the agent). Validated live on all 5 VPS depts
+# 2026-09-03, zero regressions (dtach's pty does not trigger the tmux-404 bug
+# below — dtach != tmux).
+#
 # --model "${CLAUDE_MODEL}" pins the per-dept model at the unit level (belt-and-
 # suspenders after the 2026-05-31 "default"-model 404 outage, where a fresh
 # session resolved to the literal model "default" and 404'd). deploy-to-morty.sh
@@ -174,7 +202,7 @@ EnvironmentFile=-${ENV_FILE}
 # via isolation_scaffold.model_from_dept_yaml). Fleet cost-optimization
 # (2026-06-19): cheap-orchestrator depts pin "sonnet[1m]" and spawn Opus
 # subagents for heavy reasoning; Opus-pinned depts keep "opus[1m]".
-ExecStart=/bin/sh -c '/usr/bin/script -qfc "/usr/bin/claude --model \"${CLAUDE_MODEL}\" --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official" /dev/null'
+ExecStart=/bin/sh -c 'exec /usr/bin/dtach -N /run/ops-loop-${DEPT_SLUG}/dtach.sock /bin/sh -c "/usr/bin/claude --model \"${CLAUDE_MODEL}\" --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"'
 
 # G-3 fix (GAP-10): On EVERY service start (including after Restart=on-failure),
 # send a Telegram message via the dept's own bot to trigger a new /loop turn.
