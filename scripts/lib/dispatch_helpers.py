@@ -561,9 +561,11 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
 # ---------------------------------------------------------------------------
 #
 # Format: {"1": 0, "2": 3, "3": 1, "4": 0} — per-layer integer counter
-# of completed dispatches for THIS UTC day. Path: outputs/<today>/round_counter.json.
-# Reset semantics: file lives under outputs/<today>/, so a new UTC day = new
-# dir = fresh counter (no carry-over).
+# of completed dispatches for THIS Paris-local day (#1083). Path:
+# outputs/<today>/round_counter.json.
+# Reset semantics: file lives under outputs/<today>/, and <today> is the
+# Paris-local date (paris_today), so a new Paris day = new dir = fresh counter
+# (no carry-over).
 # ---------------------------------------------------------------------------
 
 _COUNTER_FILE = "round_counter.json"
@@ -686,6 +688,42 @@ def _to_paris(dt_utc: datetime) -> datetime:
     if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
     return dt_utc.astimezone(_PARIS)
+
+
+def paris_today(now_utc: "datetime | None" = None) -> str:
+    """THE single source of truth for the fleet's `<today>` date string.
+
+    Returns the current **Paris-local** date as `YYYY-MM-DD` (board #1083,
+    part of the #850 fleet-timezone settlement — Joris's call: the fleet's
+    "today" is Europe/Paris, never box-UTC).
+
+    Why this exists / what it fixes (#1083):
+    `build_dispatch_ctx` used to key `<today>` off `now_utc.strftime("%Y-%m-%d")`
+    — the **UTC** date. That single `ctx['today']` is the ONLY date used for
+    BOTH date-keyed gates:
+      - the `outputs/<today>/` output-evidence + idempotence gate (#346/#1080,
+        layer `.last-run` markers, `round_counter.json`), and
+      - the `queues/research/<today>/` dated-pool research gate (#898).
+    Meanwhile every layer TIMER fires on a **Paris** wall-clock (07:00/12:00/
+    16:00/19:00 Europe/Paris) and the live L1 gatherer names its
+    `queues/research/<today>/` dir by whatever "today" it computes. Across the
+    Paris↔UTC offset (~1–2h/day, 23:00–00:00 Paris) the two disagreed: an item
+    written under the Paris date wasn't counted by a gate scanning the UTC date,
+    and an `outputs/<paris-today>/` run wasn't seen by a gate scanning the UTC
+    day — a narrow date-boundary miss.
+
+    Fix: derive `<today>` from Paris-local time HERE, and have BOTH the writer
+    (`ctx['today']`, which the layer PROMPTs must use for every `outputs/<today>/`
+    and `queues/research/<today>/` path) and every reader (both gates, which read
+    the same `ctx['today']`) go through this one function. One clock, one date.
+
+    On a box without the `zoneinfo` tz database `_PARIS` falls back to UTC (see
+    the module-level `_PARIS` init), so this degrades to the pre-#1083 UTC date
+    rather than crashing — same fail-safe as `_to_paris`.
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    return _to_paris(now_utc).strftime("%Y-%m-%d")
 
 
 def _parse_hhmm(s: str) -> _time:
@@ -1106,8 +1144,9 @@ def _record_dispatched_trigger_ids(today_dir: Path, mission_id: str, ids: "set[s
     as NOT-blocking → the re-fire loop would reopen. The pending-guard upstream is
     what keeps this safe; do not call this with already-ledgered ids.
 
-    Cross-UTC-midnight note: the ledger lives under outputs/<today>/, so a new UTC
-    day starts a fresh ledger. An item left UN-archived past midnight would
+    Cross-midnight note: the ledger lives under outputs/<today>/, and <today> is
+    the Paris-local date (#1083), so a new Paris day starts a fresh ledger. An
+    item left UN-archived past Paris midnight would
     re-dispatch on day 2. This is acceptable because decision filenames (the
     trigger ids) are date-unique in practice; if that ever changes, key the ledger
     on a content hash or move it out of the daily dir."""
@@ -1939,7 +1978,13 @@ def build_dispatch_ctx(
     repo = Path(repo_dir)
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
-    today = now_utc.strftime("%Y-%m-%d")
+    # #1083: `<today>` is the **Paris-local** date (the fleet timezone
+    # convention, part of the #850 settlement — Joris's call). `paris_today`
+    # is THE single source of truth: this one string flows into ctx['today']
+    # and is the ONLY date used by BOTH the outputs/<today>/ evidence gate
+    # (#346/#1080) and the queues/research/<today>/ research gate (#898), so
+    # writer and reader can never disagree across the UTC↔Paris day boundary.
+    today = paris_today(now_utc)
     today_dir = repo / "outputs" / today
 
     # Materialize due recurring missions BEFORE scanning queues — newly
@@ -1977,10 +2022,14 @@ def build_dispatch_ctx(
         # Without this the selector fail-opens and the event re-fire-loop guard
         # never engages live (#282).
         "_repo_dir": str(repo),
-        # Deterministic UTC date for THIS tick. The agent MUST use these for
-        # all outputs/<date>/ paths + the heartbeat, instead of hand-typing
-        # the date from context — that froze Maya's loop on 2026-06-02 while
-        # the real date was 2026-06-04 (see docs/FLOWCHART-SPEC.md BUG-DATE).
+        # Deterministic **Paris-local** date for THIS tick (#1083 — the fleet
+        # timezone convention; see paris_today). The agent MUST use THIS value
+        # for all outputs/<date>/ AND queues/research/<date>/ paths + the
+        # heartbeat, instead of hand-typing the date from context (that froze
+        # Maya's loop on 2026-06-02 while the real date was 2026-06-04 — see
+        # docs/FLOWCHART-SPEC.md BUG-DATE) and instead of recomputing it from a
+        # box-UTC clock (that opened the ~1–2h/day offset-window miss #1083
+        # fixes). One clock, one date, writer == reader.
         "today": today,
         "today_dir": str(today_dir),
         # Kind-aware: only kinds PRODUCED into queues/research/ count, so an

@@ -28,6 +28,14 @@ commits. You die after your run."""
 
 _IDEMPOTENCE = """## First mandatory action (STEP 1 — idempotence)
 
+`<today>` is the **Paris-local date** (Europe/Paris, `YYYY-MM-DD`) — the fleet \
+timezone convention (board #1083 / #850). Use the value the main session hands \
+you (`ctx['today']`, from `scripts.lib.dispatch_helpers.paris_today`) for EVERY \
+`outputs/<today>/…` and `queues/research/<today>/…` path. Never recompute it \
+from a box-UTC clock and never hand-type it from memory — the dispatch gate \
+reads the SAME `ctx['today']`, so any other clock reopens the ~1–2h/day \
+date-boundary miss #1083 closed.
+
 Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601 tz-aware):
 
 ```python
