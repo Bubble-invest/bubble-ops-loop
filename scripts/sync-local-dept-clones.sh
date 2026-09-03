@@ -74,6 +74,47 @@
 #      skip-worktree/untracked-collision cases, so an operator scanning the
 #      journal can tell "nothing to see here" from "we ate real work".
 #
+# ── Stranded-branch self-heal (board #1064, 2026-09-03) ─────────────────────
+# The converge-to-origin strategy above still assumed the clone was checked
+# out on a branch with a live upstream (`@{u}`) — it fetched, resolved
+# `@{u}`, then reset --hard to it. If a worker (or manual op) leaves the
+# clone checked out on a STALE FEATURE BRANCH with NO upstream configured
+# (e.g. `git checkout -b worker-953` with no `git push -u`), `@{u}` resolves
+# to nothing and the script used to WARN "no upstream tracking branch
+# configured — skipping" and leave the mirror exactly as-is, EVERY 15-min
+# run, FOREVER — nothing about that failure mode is self-correcting. Real
+# incident: bubble-ops-content stranded on worker-953 for ~8 days while
+# Miranda was producing daily; the cockpit read her as cold/not-wired.
+#
+# Fix: on EVERY sync, resolve origin's canonical (default) branch — via the
+# locally-cached `refs/remotes/origin/HEAD` (set by `git clone`; free, no
+# network), falling back to `git remote set-head origin --auto` then
+# `git remote show origin` for a stale/missing cache — and self-heal to it
+# whenever the clone has no upstream OR is not already on that branch:
+#   git checkout -B <canonical> origin/<canonical>
+#   git branch --set-upstream-to=origin/<canonical> <canonical>
+# This is exactly the manual fix that unstuck the real incident, now run
+# automatically. It is SAFE to `reset`/`checkout -B` straight to origin's
+# branch here because this mirror is READ-ONLY and origin is authoritative —
+# there is no local work on it worth preserving (see file header, top) — but
+# as belt-and-suspenders we still run the SAME quarantine_endangered_state()
+# used by the converge-to-origin path first, so even a stray dirty tracked
+# file or an accidental local commit on the stranded branch is stashed /
+# bundled before we abandon it, never silently dropped.
+#
+# 🔴 FORBIDDEN, and unchanged by this fix: nothing here ever pushes to origin
+# or touches a dept repo's branches ON GITHUB — `checkout`/`reset`/`branch
+# --set-upstream-to` are all 100% local to the clone.
+#
+# Escalation: if the canonical branch can't be resolved at all (origin
+# unreachable / has no HEAD) — the one case self-heal genuinely can't run —
+# we WARN-skip as before, but track a per-dept consecutive-miss counter
+# (${AGENTS_ROOT}/.sync-local-dept-clones-state/<slug>.skips, deliberately
+# OUTSIDE the mirror so the mirror's own `git clean -fd` can never reset it)
+# and, once it reaches ESCALATE_AFTER runs, emit a kanban card via
+# tools/kanban/emit_kanban_item.sh — this is the "never silently skip
+# forever" half of the fix, for the residual case self-heal can't cover.
+#
 # inbox/decisions/* hide-markers (board wiki, 2026-07-12 incident): the cockpit
 # writes an UNTRACKED decision file straight onto the mirror's disk so a
 # resolved gate disappears immediately (list_pending_gates filters on it)
@@ -93,6 +134,16 @@
 set -uo pipefail
 
 AGENTS_ROOT="${BUBBLE_SYNC_AGENTS_ROOT:-/home/claude/agents}"
+
+# ── Stranded-clone self-heal config (board #1064) ───────────────────────────
+# ESCALATE_AFTER: consecutive sync misses on one dept before we stop just
+# WARNing into the journal and push a loud signal a human/agent will actually
+# see (kanban card). Overridable for tests / a tighter operational SLA.
+ESCALATE_AFTER="${BUBBLE_SYNC_ESCALATE_AFTER:-3}"
+# EMIT_KANBAN: the repo's kanban emitter. Fixed VPS-deployed path by default
+# (same convention as scripts/emit_rick_request.sh); overridable so tests can
+# point it at a stub without touching the real board.
+EMIT_KANBAN="${BUBBLE_SYNC_EMIT_KANBAN:-/home/claude/scripts/emit_kanban_item.sh}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -250,6 +301,88 @@ clear_merge_debris() {
     echo "$found"
 }
 
+# resolve_canonical_branch <dir>: echo origin's default branch NAME (e.g.
+# "main"), or "" if it cannot be determined. Read-only — never writes to
+# origin. Tries, in order:
+#   1. the LOCAL cache refs/remotes/origin/HEAD (set by `git clone`, or by a
+#      prior successful resolution below) — pure local lookup, no network.
+#   2. `git remote set-head origin --auto` (a lightweight query against
+#      origin to (re)populate that cache) then re-read it.
+#   3. `git remote show origin`'s "HEAD branch:" line — last-resort parse for
+#      a git/transport quirk that leaves symbolic-ref empty even after
+#      set-head --auto.
+resolve_canonical_branch() {
+    local dir="$1"
+    local ref=""
+    ref="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    ref="${ref#origin/}"
+    if [[ -z "$ref" ]]; then
+        git -C "$dir" remote set-head origin --auto >/dev/null 2>&1 || true
+        ref="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        ref="${ref#origin/}"
+    fi
+    if [[ -z "$ref" ]]; then
+        ref="$(git -C "$dir" remote show origin 2>/dev/null \
+                | sed -n 's/^[[:space:]]*HEAD branch:[[:space:]]*//p' | head -n1)"
+        [[ "$ref" == "(unknown)" ]] && ref=""
+    fi
+    echo "$ref"
+}
+
+# ── Per-dept consecutive-skip tracking (board #1064) ────────────────────────
+# Deliberately stored OUTSIDE any dept mirror: a mirror's own `git clean -fd`
+# (run on every SUCCESSFUL sync) would otherwise silently reset a counter we
+# specifically need to survive across a run where healing did NOT happen.
+SKIP_STATE_DIR="${AGENTS_ROOT}/.sync-local-dept-clones-state"
+
+skip_count_file() { echo "${SKIP_STATE_DIR}/${1}.skips"; }
+
+# bump_skip_count <slug>: increment (creating the state dir as needed) and
+# echo the new consecutive-skip count for this dept.
+bump_skip_count() {
+    local slug="$1" f n
+    f="$(skip_count_file "$slug")"
+    mkdir -p "$SKIP_STATE_DIR" 2>/dev/null || true
+    n=0
+    [[ -f "$f" ]] && n="$(cat "$f" 2>/dev/null || echo 0)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    n=$((n + 1))
+    echo "$n" > "$f" 2>/dev/null || true
+    echo "$n"
+}
+
+# clear_skip_count <slug>: a healthy sync (self-heal or plain success) resets
+# the streak — escalation is for a dept that's STUCK across runs, not a
+# one-off blip.
+clear_skip_count() {
+    rm -f "$(skip_count_file "$1")" 2>/dev/null || true
+}
+
+# escalate_stuck_dept <slug> <dir> <reason> <skip_n>: the "never silently
+# skip forever" half of #1064 — for the one case self-heal genuinely can't
+# run (origin's canonical branch itself can't be resolved), push a loud
+# signal after ESCALATE_AFTER consecutive misses instead of leaving it to a
+# human noticing a stale journal WARN. Best-effort: must never crash the sync
+# (a dead board/kanban emitter degrades to a log line, nothing more).
+escalate_stuck_dept() {
+    local slug="$1" dir="$2" reason="$3" skip_n="$4"
+    log "ESCALATE ${slug}: stuck for ${skip_n} consecutive sync(s) — ${reason}"
+    if [[ -x "$EMIT_KANBAN" ]]; then
+        "$EMIT_KANBAN" \
+            task="sync-local-dept-clones" \
+            title="${slug} mirror stuck ${skip_n}x - ${reason}" \
+            body="scripts/sync-local-dept-clones.sh could not converge ${dir} for ${skip_n} consecutive runs (${reason}). Manual fix: git -C ${dir} checkout -B <canonical> origin/<canonical>; git -C ${dir} branch --set-upstream-to=origin/<canonical> <canonical>; git -C ${dir} reset --hard origin/<canonical>." \
+            type="incident" \
+            priority="high" \
+            owner="rnd" \
+            budget="5" \
+            >/dev/null 2>&1 \
+        || log "WARN ${slug}: escalation emit failed (kanban unreachable) — see the WARN above, fix manually"
+    else
+        log "WARN ${slug}: escalation target ${EMIT_KANBAN} not found/executable — no kanban card emitted, see log only"
+    fi
+}
+
 # ── Destructive-blast-radius containment (r16 review, 2026-07-16) ──────────
 # This script runs reset --hard + clean -fd unattended. Two independent guards:
 #  (a) a NON-DEFAULT agents root requires BUBBLE_SYNC_UNSAFE_ROOT=1 — a mistyped
@@ -365,12 +498,86 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     fi
     rm -f /tmp/.sync-local-fetch-$$
 
-    upstream="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    current_branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo "")"
+    # NOTE: checked via the command's own exit status, not just "is stdout
+    # empty" — on an unborn/empty-origin clone, `rev-parse '@{u}'` can FAIL
+    # (exit 128, no real upstream) while still echoing the literal '@{u}'
+    # token to stdout (a git quirk in its "unresolved revision" message). A
+    # naive `|| true` capture would then treat that literal token AS the
+    # upstream and misdetect this dept as healthy.
+    if upstream="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
+        :
+    else
+        upstream=""
+    fi
+    # Always resolve canonical — cheap in the healthy common case (a local
+    # symbolic-ref lookup, no network) and the only way to catch BOTH stale-
+    # clone shapes: no upstream at all, or an upstream that tracks a branch
+    # other than the dept's actual canonical branch (board #1064).
+    canonical_branch="$(resolve_canonical_branch "$dir")"
+
+    stale_branch=0
     if [[ -z "$upstream" ]]; then
-        log "WARN ${slug}: no upstream tracking branch configured — skipping (mirror left as-is)"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-        restore_hide_markers "$dir" "$stash_dir"
-        continue
+        stale_branch=1
+    elif [[ -n "$canonical_branch" && "$current_branch" != "$canonical_branch" ]]; then
+        stale_branch=1
+    fi
+
+    if [[ "$stale_branch" == "1" ]]; then
+        if [[ -z "$canonical_branch" ]]; then
+            # Can't even determine what to heal TO — never guess at a branch
+            # name. ESCALATE after N consecutive misses instead of warning
+            # into the void forever (the exact #1064 failure mode).
+            skip_n="$(bump_skip_count "$slug")"
+            log "WARN ${slug}: no upstream tracking branch (on '${current_branch:-detached HEAD}') and origin's canonical branch could not be resolved — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
+            [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "no upstream + canonical branch unresolvable" "$skip_n"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            restore_hide_markers "$dir" "$stash_dir"
+            continue
+        fi
+
+        target_ref="origin/${canonical_branch}"
+        target_head="$(git -C "$dir" rev-parse "$target_ref" 2>/dev/null || echo "")"
+        if [[ -z "$target_head" ]]; then
+            skip_n="$(bump_skip_count "$slug")"
+            log "WARN ${slug}: resolved canonical branch '${canonical_branch}' but ${target_ref} doesn't exist locally after fetch — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
+            [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "canonical branch '${canonical_branch}' unreachable" "$skip_n"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            restore_hide_markers "$dir" "$stash_dir"
+            continue
+        fi
+
+        # Best-effort quarantine BEFORE abandoning the stranded branch — same
+        # machinery the converge-to-origin path uses below (git stash for
+        # dirty tracked files, a git bundle for commits reachable only from
+        # the branch we're about to leave). Belt-and-suspenders: the
+        # read-only-mirror assumption (file header, top) says there SHOULDN'T
+        # be any real local work here, but we never bet silent data loss on
+        # an assumption holding 100% of the time.
+        quarantine_endangered_state "$dir" "$target_head" "${dir}/.selfheal-quarantine" "$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+        if git -C "$dir" checkout -q -B "$canonical_branch" "$target_ref" >/tmp/.sync-local-checkout-$$ 2>&1; then
+            git -C "$dir" branch -q --set-upstream-to="$target_ref" "$canonical_branch" 2>/dev/null || true
+            rm -f /tmp/.sync-local-checkout-$$
+            log "${slug}: self-healed stranded clone — was on '${current_branch:-detached HEAD}' (upstream=${upstream:-none}), checked out canonical branch '${canonical_branch}' + set upstream to ${target_ref}"
+            clear_skip_count "$slug"
+            # We're now clean and exactly at target_head (checkout -B just
+            # reset the tree) — don't let the pre-heal tracked-dirt snapshot
+            # (captured above, on the branch we just abandoned) double-fire
+            # the endangered-state DISCARDED warning below for state we
+            # already quarantined+logged under our own, more specific line.
+            tracked_dirt_n=0
+            current_branch="$canonical_branch"
+            upstream="$target_ref"
+        else
+            skip_n="$(bump_skip_count "$slug")"
+            log "WARN ${slug}: self-heal checkout of canonical branch '${canonical_branch}' FAILED — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-checkout-$$ 2>/dev/null) [consecutive misses: ${skip_n}]"
+            rm -f /tmp/.sync-local-checkout-$$
+            [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "self-heal checkout of '${canonical_branch}' failed" "$skip_n"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            restore_hide_markers "$dir" "$stash_dir"
+            continue
+        fi
     fi
     upstream_head="$(git -C "$dir" rev-parse "$upstream" 2>/dev/null || echo "")"
 
