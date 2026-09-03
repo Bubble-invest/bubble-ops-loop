@@ -20,8 +20,21 @@ but the real dir is telegram-socials, so a concat would miss. The plugin's
 file-watcher drains the inject as a normal session turn. (A shell/py hook cannot
 emit boot_rearm's MCP notification, so it uses the inject file — same turn,
 different transport. The turn TEXT is shared with boot_rearm.ts.)
+
+IDEMPOTENCE (#754 durable fix): dedupe on the re-arm SENTINEL, NOT on "is the
+inject non-empty". The original guard skipped whenever ANY content was pending —
+so an unrelated un-drained turn (a cross-agent inject, a not-yet-drained operator
+message) SILENTLY SWALLOWED the re-arm and left the loop dormant, the exact bug
+this card chases. Now: a re-arm already queued -> skip (never stack two); anything
+else pending -> still append (on its own line).
+
+OBSERVABILITY: on every fire/skip it writes ONE line to
+<channel_dir>/rearm-on-compact.log so a REAL /compact leaves greppable proof the
+hook ran — the acceptance blocker this card was stuck on ("no clear auto-fire
+evidence"). Best-effort; a logging failure never changes the exit code.
 """
 from __future__ import annotations
+import datetime
 import glob
 import json
 import os
@@ -58,9 +71,34 @@ REARM_TURN = (
 # startup is covered by boot_rearm.ts (poller start); clear/fork are not loop resumptions.
 REARM_SOURCES = {"compact", "resume"}
 
+# Stable sentinel that identifies an ALREADY-QUEUED re-arm turn (this hook's own,
+# or boot_rearm.ts's, or a manual telegram-inject re-arm using the same wording).
+# Idempotence dedupes on THIS phrase — NOT on "is the inject non-empty" — so an
+# unrelated pending turn (a cross-agent inject, an operator message not yet
+# drained) can never SILENTLY SWALLOW the re-arm (#754: the dormant-after-compact
+# failure mode). The phrase is a load-bearing prefix of REARM_TURN and of
+# boot_rearm.ts's content; both carry "re-arm your /loop, SELF-PACED".
+REARM_SENTINEL = "re-arm your /loop, SELF-PACED"
+
+
+def _audit(channel_dir: str, decision: str, source: str) -> None:
+    """Best-effort, single-line audit trail so a REAL /compact leaves greppable
+    evidence the hook ran (the #754 acceptance blocker: 'no clear auto-fire
+    evidence'). Written next to the inject file. NEVER raises — a SessionStart
+    hook must always exit 0, so any logging failure is swallowed."""
+    try:
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        line = f"{ts}\tsource={source}\tdecision={decision}\n"
+        with open(os.path.join(channel_dir, "rearm-on-compact.log"), "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
 
 def main() -> int:
     # Hard safety gate FIRST — never fire without the opt-in env.
+    # (A human interactive /compact never sets this, so it stays a pure no-op with
+    # zero side effects — not even an audit line.)
     if os.environ.get("OPS_LOOP_BOOT_REARM") != "1":
         return 0
 
@@ -73,7 +111,8 @@ def main() -> int:
     # so `.get()` never raises — the hook MUST always exit 0 (#754 reviewer).
     if not isinstance(payload, dict):
         return 0
-    if payload.get("source") not in REARM_SOURCES:
+    source = payload.get("source")
+    if source not in REARM_SOURCES:
         return 0
 
     home = os.environ.get("HOME")
@@ -86,13 +125,28 @@ def main() -> int:
     if len(matches) != 1:
         return 0  # zero (not wired) or ambiguous (never guess among many)
     inject = matches[0]
+    channel_dir = os.path.dirname(inject)
 
-    # Idempotence: don't stack a re-arm on top of an un-drained turn.
+    # Deliver the re-arm. Idempotence dedupes on the re-arm SENTINEL, not on
+    # "inject is non-empty": if a re-arm is ALREADY queued we skip (never stack
+    # two), but an UNRELATED pending turn must NOT suppress the re-arm — the
+    # earlier "getsize>0 -> skip" guard silently dropped the re-arm whenever any
+    # message happened to be un-drained at compact time, leaving the loop dormant.
     try:
-        if os.path.getsize(inject) > 0:
+        try:
+            with open(inject, "r", encoding="utf-8") as f:
+                pending = f.read()
+        except FileNotFoundError:
+            pending = ""
+        if REARM_SENTINEL in pending:
+            _audit(channel_dir, "skip:already-queued", source)
             return 0
+        # Separate our turn from any unrelated pending content with a newline so
+        # the two never merge into one malformed line.
+        prefix = "" if (pending == "" or pending.endswith("\n")) else "\n"
         with open(inject, "a", encoding="utf-8") as f:
-            f.write(REARM_TURN + "\n")
+            f.write(prefix + REARM_TURN + "\n")
+        _audit(channel_dir, "fired", source)
     except Exception:
         return 0  # any I/O failure must not break session start
 
