@@ -46,14 +46,27 @@ nowant() { if grep -q "$2" "$3" 2>/dev/null; then echo "  FAIL: $1 (unexpected '
 exists() { if [[ -f "$2" ]]; then echo "  PASS: $1"; PASS=$((PASS+1)); else echo "  FAIL: $1 (no file $2)"; FAIL=$((FAIL+1)); fi; }
 absent() { if [[ -f "$2" ]]; then echo "  FAIL: $1 (file still present $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $1"; PASS=$((PASS+1)); fi; }
 
-# valid_plist <file>: plutil -lint if available, else a basic XML/key sanity.
+# valid_plist <file>: the rendered plist must be well-formed XML AND a valid plist.
+# Two independent checks, because they catch DIFFERENT failures (board #1101):
+#   - plistlib.load() (Python stdlib) is a strict XML parser. It is FATAL on a
+#     plist that embeds "--" inside an XML comment (e.g. a "--channels" flag in a
+#     doc comment) — exactly the class of bug #1101 fixed. This is the assertion
+#     the card asks for; it is the one that actually trips on the malformed plist.
+#   - plutil -lint (if present) is TOLERANT of that same "--" and passes anyway,
+#     so it is kept only as a supplementary structural check, never the gate.
 valid_plist() {
     local f="$1"
+    # Strict XML/plist parse via Python stdlib — the #1101 gate.
+    python3 - "$f" <<'PY' || return 1
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    plistlib.load(fh)
+PY
+    # Supplementary structural lint (tolerant of the #1101 bug — informational).
     if command -v plutil >/dev/null 2>&1; then
-        plutil -lint "$f" >/dev/null 2>&1
-    else
-        grep -q "<plist" "$f" && grep -q "</plist>" "$f" && grep -q "<key>Label</key>" "$f"
+        plutil -lint "$f" >/dev/null 2>&1 || return 1
     fi
+    return 0
 }
 
 WORK="$(mktemp -d /tmp/local-loop-plist.XXXXXX)"

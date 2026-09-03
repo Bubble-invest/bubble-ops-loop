@@ -238,7 +238,7 @@ render_loop_plist() {
     <key>Label</key>
     <string>${label}</string>
 
-    <!-- The wrapper launches a PERSISTENT interactive \`claude --channels\`
+    <!-- The wrapper launches a PERSISTENT interactive \`claude\` Telegram-channels
          session inside tmux (Mac twin of the VPS systemd dept unit). The dept's
          CLAUDE.md /loop protocol + its own armed /loop cron drive the STEP A-F
          tick; STEP A safe_pull lands approvals committed while the Mac slept;
