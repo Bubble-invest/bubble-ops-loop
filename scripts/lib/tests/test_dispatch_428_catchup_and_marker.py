@@ -34,6 +34,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     select_due_missions,
     _due_scheduled_catchup_layer,
     read_last_run,
+    read_last_materialized,
     write_last_run,
 )
 
@@ -126,7 +127,9 @@ def test_dedicated_prompt_mission_not_prestamped(tmp_path: Path):
 def test_shim_resolved_mission_is_still_stamped(tmp_path: Path):
     """A producer WITHOUT a dedicated PROMPT.md (shim-resolved) MUST still be
     stamped by the materializer — its only per-mission idempotence source
-    (anti fire-spin #261/#277)."""
+    (anti fire-spin #261/#277). #870: the materializer's proxy stamp now
+    lands on `.last-materialized`, never `.last-run` — that filename is
+    reserved for a mission's OWN real executor (see _mission_handled_marker)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _make_dept_yaml(repo, [
@@ -144,9 +147,14 @@ def test_shim_resolved_mission_is_still_stamped(tmp_path: Path):
 
     materialize_due_missions_for_tick(repo, today_dir, _FRI)
 
-    marker = read_last_run(today_dir / "missions" / "content_daily_rotation")
+    assert read_last_run(today_dir / "missions" / "content_daily_rotation") is None, (
+        "build_dispatch_ctx/materialize_due_missions_for_tick must NEVER write "
+        ".last-run for a mission it did not actually run (#870)"
+    )
+    marker = read_last_materialized(today_dir / "missions" / "content_daily_rotation")
     assert marker is not None, (
-        "shim-resolved mission MUST keep its materializer stamp (anti fire-spin)"
+        "shim-resolved mission MUST keep its materializer proxy stamp "
+        "(anti fire-spin), now on .last-materialized (#870)"
     )
 
 
@@ -180,7 +188,9 @@ def test_dedicated_prompt_gate_mission_not_prestamped(tmp_path: Path):
 
 def test_shim_gate_mission_still_stamped(tmp_path: Path):
     """A gate mission WITHOUT a dedicated prompt is still stamped (suppressed
-    stub path keeps anti fire-spin for shim missions)."""
+    stub path keeps anti fire-spin for shim missions). #870: on
+    `.last-materialized`, not `.last-run` — no gate card was ever actually
+    authored, so `.last-run` (real completion) must stay untouched."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _make_dept_yaml(repo, [
@@ -197,9 +207,14 @@ def test_shim_gate_mission_still_stamped(tmp_path: Path):
 
     materialize_due_missions_for_tick(repo, today_dir, _FRI)
 
-    marker = read_last_run(today_dir / "missions" / "signal_gate")
+    assert read_last_run(today_dir / "missions" / "signal_gate") is None, (
+        "a suppressed bare-gate-stub tick must never write .last-run — "
+        "nothing was actually authored (#870)"
+    )
+    marker = read_last_materialized(today_dir / "missions" / "signal_gate")
     assert marker is not None, (
-        "shim gate mission must keep its stamp (no dedicated PROMPT.md)"
+        "shim gate mission must keep its materialization proxy stamp "
+        "(no dedicated PROMPT.md) — now on .last-materialized (#870)"
     )
 
 

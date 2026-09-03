@@ -53,6 +53,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     decide_dispatch,
     select_due_missions,
     read_last_run,
+    read_last_materialized,
 )
 
 # Friday 2026-07-03, 08:00 Paris (CEST, UTC+2) = 06:00 UTC — past L1's 07:00
@@ -160,7 +161,11 @@ def test_default_materialize_true_still_dispatches_on_first_due_tick(tmp_path):
     # The per-mission marker IS stamped this tick (anti-fire-spin, #261/#277) —
     # materialize=True still writes it, same-tick-excluded so it doesn't
     # cannibalize the tick it became due on (unchanged from #428/#432).
-    marker = read_last_run(repo / "outputs" / _TODAY / "missions" / "data_update")
+    # #870: the stamp lands on .last-materialized (data_update is
+    # shim-resolved, no dedicated PROMPT.md) — build_dispatch_ctx must never
+    # write .last-run for a mission it did not actually run.
+    assert read_last_run(repo / "outputs" / _TODAY / "missions" / "data_update") is None
+    marker = read_last_materialized(repo / "outputs" / _TODAY / "missions" / "data_update")
     assert marker == _NOW1
 
 

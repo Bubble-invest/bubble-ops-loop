@@ -56,6 +56,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     decide_dispatch,
     materialize_due_missions_for_tick,
     read_last_run,
+    read_last_materialized,
     write_last_run,
 )
 
@@ -289,7 +290,9 @@ def test_daily_prestamp_not_stamped_when_layer_not_highest_eligible(tmp_path: Pa
 def test_daily_prestamp_still_stamped_when_layer_is_highest_eligible(tmp_path: Path):
     """Positive / no-fire-spin case: when the daily shim mission's layer IS
     the highest-eligible layer this tick, it DOES get stamped (idempotence
-    preserved — otherwise it would re-materialize / re-dispatch every tick)."""
+    preserved — otherwise it would re-materialize / re-dispatch every tick).
+    #870: the stamp lands on `.last-materialized` (an attempt/decision-time
+    proxy), never on `.last-run` (reserved for the mission's own real run)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _make_dept_yaml(repo, [
@@ -311,10 +314,15 @@ def test_daily_prestamp_still_stamped_when_layer_is_highest_eligible(tmp_path: P
 
     materialize_due_missions_for_tick(repo, today_dir, _DAY)
 
-    marker = read_last_run(today_dir / "missions" / "synthesizing_content_feedback")
+    assert read_last_run(today_dir / "missions" / "synthesizing_content_feedback") is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    marker = read_last_materialized(today_dir / "missions" / "synthesizing_content_feedback")
     assert marker is not None, (
         "when the mission's layer IS the highest-eligible layer this tick, it "
-        "is actually being dispatched -> it MUST be stamped (anti fire-spin)"
+        "is actually being dispatched -> it MUST be stamped (anti fire-spin), "
+        "now on .last-materialized (#870)"
     )
 
 

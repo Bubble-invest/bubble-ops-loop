@@ -791,8 +791,13 @@ def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
     _write_dept_yaml(repo, [m])
 
     today = MORNING.strftime("%Y-%m-%d")
-    marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
-    assert not marker.exists(), "precondition: no per-mission marker before tick 1"
+    mission_dir = repo / "outputs" / today / "missions" / "market_wrapup"
+    real_marker = mission_dir / ".last-run"
+    # #870: the materializer's own anti-fire-spin proxy stamp lands on
+    # .last-materialized — .last-run is reserved for a real executor.
+    materialized_marker = mission_dir / ".last-materialized"
+    assert not real_marker.exists(), "precondition: no per-mission marker before tick 1"
+    assert not materialized_marker.exists(), "precondition: no per-mission marker before tick 1"
 
     # ── TICK 1 ── (08:00 Paris) — mission is due, must be selected.
     ctx1 = _full_ctx(repo, MORNING)
@@ -802,9 +807,16 @@ def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
         "TICK 1: a due creates:[] report-mission MUST be selected for dispatch"
     )
 
-    # FIX 2: the materializer stamped the per-mission marker (no <N> path) this tick.
-    assert marker.exists(), (
-        "FIX 2: materializer must stamp outputs/<today>/missions/<id>/.last-run "
+    # FIX 2: the materializer stamped the per-mission marker (no <N> path) this
+    # tick — on .last-materialized, NEVER .last-run (#870: nothing has
+    # actually run for a creates:[] shim mission).
+    assert not real_marker.exists(), (
+        "#870: materialize_due_missions_for_tick must never write .last-run "
+        "for a mission it did not actually run"
+    )
+    assert materialized_marker.exists(), (
+        "FIX 2: materializer must stamp "
+        "outputs/<today>/missions/<id>/.last-materialized "
         "even for a creates:[] mission, so it cannot fire-spin"
     )
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
@@ -930,8 +942,13 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     for n in (1, 2, 3):
         write_last_run(repo / "outputs" / today / str(n), AFTER_L4)
 
-    per_mission_marker = repo / "outputs" / today / "missions" / "market_wrapup" / ".last-run"
-    assert not per_mission_marker.exists(), "precondition: no per-mission marker before tick 1"
+    mission_dir = repo / "outputs" / today / "missions" / "market_wrapup"
+    real_marker = mission_dir / ".last-run"
+    # #870: the materializer's own anti-fire-spin proxy stamp lands on
+    # .last-materialized — .last-run is reserved for a real executor.
+    materialized_marker = mission_dir / ".last-materialized"
+    assert not real_marker.exists(), "precondition: no per-mission marker before tick 1"
+    assert not materialized_marker.exists(), "precondition: no per-mission marker before tick 1"
 
     # ── TICK 1 ── (19:30 Paris) — L4 eligible, mission must be selected.
     ctx1 = _full_ctx(repo, AFTER_L4)
@@ -942,11 +959,16 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     assert "market_wrapup" in [x["id"] for x in due1], (
         "TICK 1: the due L4 creates:[] mission MUST be selected for dispatch"
     )
-    # FIX #277: materializer NOW stamps the per-mission marker for L4 missions.
-    assert per_mission_marker.exists(), (
+    # FIX #277: materializer NOW stamps the per-mission marker for L4 missions
+    # — on .last-materialized, NEVER .last-run (#870).
+    assert not real_marker.exists(), (
+        "#870: materialize_due_missions_for_tick must never write .last-run "
+        "for a mission it did not actually run"
+    )
+    assert materialized_marker.exists(), (
         "FIX #277: materialize_due_missions_for_tick must stamp "
-        "outputs/<today>/missions/<id>/.last-run for L4 missions too, "
-        "providing per-mission idempotence"
+        "outputs/<today>/missions/<id>/.last-materialized for L4 missions "
+        "too, providing per-mission idempotence"
     )
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
     # decision time, not by a real completed run — it is not yet proof
@@ -1090,9 +1112,13 @@ def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
     for n in (1, 2, 3):
         write_last_run(repo / "outputs" / today / str(n), MORNING)
 
-    per_mission_marker = (repo / "outputs" / today / "missions"
-                          / "market_wrapup" / ".last-run")
-    assert not per_mission_marker.exists(), "precondition: no marker before tick 1"
+    mission_dir = repo / "outputs" / today / "missions" / "market_wrapup"
+    real_marker = mission_dir / ".last-run"
+    # #870: the materializer's own anti-fire-spin proxy stamp lands on
+    # .last-materialized — .last-run is reserved for a real executor.
+    materialized_marker = mission_dir / ".last-materialized"
+    assert not real_marker.exists(), "precondition: no marker before tick 1"
+    assert not materialized_marker.exists(), "precondition: no marker before tick 1"
 
     # ── TICK 1 ── market_wrapup is due; materializer stamps the per-mission marker.
     ctx1 = _full_ctx(repo, AT_22_31_UTC)
@@ -1100,8 +1126,13 @@ def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
     assert "market_wrapup" in [m["id"] for m in due1], (
         "market_wrapup must be selected at 22:31 Paris (time 22:30 reached, never fired)"
     )
-    assert per_mission_marker.exists(), (
-        "materializer must stamp per-mission marker for market_wrapup on tick 1"
+    assert not real_marker.exists(), (
+        "#870: materialize_due_missions_for_tick must never write .last-run "
+        "for a mission it did not actually run"
+    )
+    assert materialized_marker.exists(), (
+        "materializer must stamp per-mission .last-materialized for "
+        "market_wrapup on tick 1"
     )
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
     # decision time, not by a real completed run. Simulate the dispatched

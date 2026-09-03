@@ -311,9 +311,14 @@ def _output_piece(mission: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def mission_status(root: Path, mission: Dict[str, Any]) -> str:
     """PR-B fix (item 8): has this mission run in the last 7 days?
-    Reads outputs/<date>/missions/<id>/.last-run across the most recent
-    output dates on disk (verified real shape: outputs/<date>/missions/
-    <id>/.last-run in the real content repo). Returns one of:
+    Checks whether outputs/<date>/missions/<id>/ exists as output-evidence
+    (dir present and non-empty) across the most recent output dates on disk
+    (verified real shape: outputs/<date>/missions/<id>/ in the real content
+    repo). Non-emptiness is the union handled-marker signal: the dir holds
+    .last-materialized (the materialization proxy, #870) OR .last-run (real
+    completion) — tested here simply as "any file present", so the honest
+    .last-run/.last-materialized split (#870) leaves this signal unchanged.
+    Returns one of:
     'événementiel' (cadence: event — no fixed schedule to be "on time"
     against, checked first so an event mission is never mislabeled
     dormant just because nothing happened to trigger it this week),

@@ -51,6 +51,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     decide_dispatch,
     select_due_missions,
     read_last_run,
+    read_last_materialized,
 )
 
 # Accountant-shaped dept: two L1 producers → queues/research/, one L2 gate
@@ -107,8 +108,16 @@ def _make_repo(tmp_path: Path) -> Path:
 
 
 def _l2_marker(repo: Path, now: datetime):
+    """#870: daily_categorisation_reconciliation is shim-resolved (no
+    dedicated PROMPT.md), so its fire-spin guard stamp lands on
+    .last-materialized, never .last-run (nothing has actually categorised
+    anything — see _mission_handled_marker)."""
     today_dir = repo / "outputs" / now.strftime("%Y-%m-%d")
-    return read_last_run(today_dir / "missions" / _L2_ID)
+    assert read_last_run(today_dir / "missions" / _L2_ID) is None, (
+        "materialize_due_missions_for_tick must never write .last-run for a "
+        "mission it did not actually run (#870)"
+    )
+    return read_last_materialized(today_dir / "missions" / _L2_ID)
 
 
 def test_afternoon_tick_dispatches_l2_categorisation(tmp_path: Path):

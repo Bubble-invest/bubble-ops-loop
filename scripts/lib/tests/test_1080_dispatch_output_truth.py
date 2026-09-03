@@ -61,6 +61,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     _layer_output_evidence_ok,
+    _mission_handled_marker,
     _mission_last_fired,
     _mission_last_fired_with_shim_fallback,
     build_dispatch_ctx,
@@ -307,10 +308,18 @@ def test_integration_shim_mission_survives_died_mid_dispatch_session(tmp_path: P
         "tick 1: data_update must be selected (never fired, time reached)"
     )
     today_dir = repo / "outputs" / _TODAY
-    marker = read_last_run(today_dir / "missions" / "data_update")
+    # #870 composition: the materializer stamps its SEPARATE .last-materialized
+    # proxy at decision time (never .last-run — that stays reserved for a real
+    # executor), so the decision-time side effect (the root cause) is proven via
+    # the union handled-marker read, not read_last_run directly.
+    marker = _mission_handled_marker(today_dir, "data_update")
     assert marker is not None, (
         "precondition: the materializer must have stamped the per-mission "
         "marker as a decision-time side effect (this IS the root cause)"
+    )
+    assert read_last_run(today_dir / "missions" / "data_update") is None, (
+        "#870 guarantee: build_dispatch_ctx must NOT write a literal .last-run "
+        "as a side effect — the decision-time stamp is .last-materialized only"
     )
     # Nothing besides the marker exists anywhere under outputs/<today>/1/ —
     # the dispatched session died before STEP 3 (or was never truly spawned).

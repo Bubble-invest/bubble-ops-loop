@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     materialize_due_missions_for_tick,
     read_last_run,
+    read_last_materialized,
 )
 
 # L2-eligible anchor (Paris CEST = UTC+2; 12:30 Paris = 10:30 UTC) — matches
@@ -121,7 +122,11 @@ def test_list_shaped_queue_yaml_does_not_crash_the_tick(tmp_path: Path):
     # sitting alongside it in the same queue dir.
     assert len(created) == 1
     assert created[0]["mission_id"] == "content_daily_rotation"
-    assert read_last_run(today_dir / "missions" / "content_daily_rotation") is not None
+    # #870: materialize_due_missions_for_tick never writes .last-run for a
+    # mission it did not actually run — its anti-fire-spin proxy stamp lands
+    # on .last-materialized (content_daily_rotation is shim-resolved).
+    assert read_last_run(today_dir / "missions" / "content_daily_rotation") is None
+    assert read_last_materialized(today_dir / "missions" / "content_daily_rotation") is not None
 
     # The poison item itself is left untouched — skipped, never repaired or
     # deleted (that's a separate concern from this fix).
