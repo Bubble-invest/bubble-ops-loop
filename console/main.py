@@ -12,7 +12,9 @@ See deploy/README.md for the Tailscale exposure recipe.
 """
 from __future__ import annotations
 
+import hmac
 import logging
+import re
 from typing import Awaitable, Callable
 from urllib.parse import quote
 
@@ -32,8 +34,53 @@ from console.services import sessions
 
 _log = logging.getLogger("console.main")
 
+# ---- uvicorn access-log token redaction (#1073 review finding 1) ---------
+# `GET /login/link?t=<token>` and the `?token=<bearer>` bootstrap both land
+# their query string, single-use secret and all, in uvicorn's access log
+# (journal, on the VPS: `journalctl -u bubble-ops-console`). Redact the
+# `t=`/`token=` value in-place on the log record before it's formatted so the
+# secret never reaches disk. This does NOT stop prefetch-consumption of the
+# link itself (a proxy/browser that GETs the URL ahead of the user still
+# burns the token) — that residual caveat is bounded instead by shortening
+# the token TTL (see `sessions.create_login_token`).
+_TOKEN_QS_RE = re.compile(r"(?i)([?&](?:t|token)=)[^&\s]+")
+
+
+class _RedactTokenAccessFilter(logging.Filter):
+    """logging.Filter for `uvicorn.access`: redact `t=`/`token=` query values.
+
+    Uvicorn's `AccessFormatter` reads the full request path (with query
+    string) out of `record.args[2]` and formats it lazily, so mutating
+    `record.args` here — before any formatter runs — is sufficient and doesn't
+    require reaching into uvicorn's formatting internals.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            redacted = _TOKEN_QS_RE.sub(r"\1<redacted>", args[2])
+            if redacted != args[2]:
+                new_args = list(args)
+                new_args[2] = redacted
+                record.args = tuple(new_args)
+        return True
+
+
+def _install_access_log_redaction() -> None:
+    """Idempotently attach `_RedactTokenAccessFilter` to `uvicorn.access`.
+
+    Safe to call from every `create_app()` — tests tear down and rebuild the
+    app repeatedly, but the stdlib `uvicorn.access` logger persists across
+    those rebuilds, so a plain unconditional `addFilter` would pile up
+    duplicate filter instances.
+    """
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _RedactTokenAccessFilter) for f in access_logger.filters):
+        access_logger.addFilter(_RedactTokenAccessFilter())
+
 
 def create_app() -> FastAPI:
+    _install_access_log_redaction()
     app = FastAPI(
         title="bubble-ops-console",
         version="0.1.0-ux3",
@@ -144,7 +191,7 @@ def create_app() -> FastAPI:
         #    is rejected outright (no fall-through to cookies).
         header = request.headers.get("authorization", "")
         if header.lower().startswith("bearer "):
-            if token and header.split(" ", 1)[1].strip() == token:
+            if token and hmac.compare_digest(header.split(" ", 1)[1].strip(), token):
                 request.state.user = "bearer"
                 return await call_next(request)
             return JSONResponse({"detail": "Invalid bearer token"}, status_code=401)
@@ -161,7 +208,7 @@ def create_app() -> FastAPI:
 
         # 3. ?token= bootstrap → mint a session, set the opaque cookie, clean URL.
         qp_token = request.query_params.get("token")
-        if qp_token and token and qp_token.strip() == token:
+        if qp_token and token and hmac.compare_digest(qp_token.strip(), token):
             new_sid = sessions.create_session("bearer-bootstrap")
             qp = {k: v for k, v in request.query_params.items() if k != "token"}
             qs = "&".join(f"{k}={v}" for k, v in qp.items())
@@ -172,7 +219,7 @@ def create_app() -> FastAPI:
 
         # 4. Legacy raw-bearer cookie (back-compat during cutover).
         legacy = request.cookies.get(LEGACY_COOKIE)
-        if legacy and token and legacy == token:
+        if legacy and token and hmac.compare_digest(legacy, token):
             request.state.user = "bearer"
             return await call_next(request)
 

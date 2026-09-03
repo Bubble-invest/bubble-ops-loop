@@ -88,7 +88,18 @@ def login_link(request: Request):
     """Passwordless one-time login (board #997). The operator opens a link
     `/login/link?t=<token>` (sent privately over Telegram); a valid, unused,
     unexpired token mints a session as its user and drops the token. Lets Rick
-    enroll Joris/Jade with nothing to type — works on Mac and iPhone alike."""
+    enroll Joris/Jade with nothing to type — works on Mac and iPhone alike.
+
+    Residual caveat (#1073 review finding 1): this MUST stay a plain GET —
+    Telegram links have to be click-openable, no JS/POST round-trip — which
+    means a link-preview bot or prefetching proxy that GETs the URL ahead of
+    the human still burns the single-use token (`consume_login_token` is
+    atomic, so at most one opener wins; the human just loses the race). Not
+    fixable without breaking "click to log in"; mitigated by (a) redacting
+    the token out of the access log so it isn't a *second* leak vector and
+    (b) a short 15min TTL so a lost race is cheap to recover from (mint a new
+    link) rather than a standing exposure.
+    """
     user = sessions.consume_login_token(request.query_params.get("t", ""))
     if user is None:
         return request.app.state.templates.TemplateResponse(

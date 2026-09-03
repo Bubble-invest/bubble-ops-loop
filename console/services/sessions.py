@@ -62,6 +62,15 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(dk, expected)
 
 
+# A real-cost dummy hash, computed once at import time at the same
+# `_DEFAULT_ITERATIONS` as a genuine credential. Used by `verify_login` to
+# equalize the unknown-username timing against a real (wrong-password) check
+# — a hardcoded/degenerate dummy (e.g. 1 iteration) would run ~600,000x
+# faster than a real verify and give the timing oracle right back (#1073
+# review finding 3).
+_DUMMY_VERIFY_HASH = hash_password(secrets.token_hex(16))
+
+
 def _load_users() -> Dict[str, str]:
     """Parse ``CONSOLE_LOGIN_USERS`` (JSON) into ``{username: hash}``.
 
@@ -93,8 +102,10 @@ def verify_login(username: str, password: str) -> bool:
         encoded = users.get(username)
         if not encoded:
             # Run a dummy verify so a bad username costs ~the same as a bad
-            # password (blunt timing oracle for username enumeration).
-            verify_password(password, "pbkdf2_sha256$1$AA==$AA==")
+            # password (blunt timing oracle for username enumeration). Must
+            # use the real-cost dummy hash — a low-iteration one defeats the
+            # whole point (#1073 review finding 3).
+            verify_password(password, _DUMMY_VERIFY_HASH)
             return False
         return verify_password(password, encoded)
     shared = settings.LOGIN_PASSWORD_HASH
@@ -203,8 +214,14 @@ def purge_expired() -> int:
 # ---- one-time passwordless login links -------------------------------
 
 
-def create_login_token(username: str, ttl_seconds: int = 86400) -> str:
-    """Mint a single-use login token for `username`, valid for `ttl_seconds`."""
+def create_login_token(username: str, ttl_seconds: int = 900) -> str:
+    """Mint a single-use login token for `username`, valid for `ttl_seconds`.
+
+    Default shortened from 24h to 15min (#1073 review finding 1): the token
+    rides a plain clickable GET (`/login/link?t=<token>`) so it can still leak
+    via prefetch/proxy/journal despite `main.py`'s access-log redaction — a
+    short TTL bounds that residual exposure window.
+    """
     token = secrets.token_urlsafe(32)
     now = time.time()
     with _connect() as conn:
@@ -218,19 +235,30 @@ def create_login_token(username: str, ttl_seconds: int = 86400) -> str:
 
 def consume_login_token(token: str) -> Optional[str]:
     """Return the token's username and mark it used, or None if the token is
-    unknown, already used, or expired. Single-use + constant-ish behavior."""
+    unknown, already used, or expired.
+
+    Atomic claim (#1073 review finding 2): the original SELECT-then-UPDATE was
+    a TOCTOU race — two concurrent opens of the same link (e.g. a prefetching
+    proxy racing the real click) could both pass the SELECT before either
+    UPDATE landed, so both would be treated as valid. A single conditional
+    UPDATE makes the claim atomic under SQLite's own write-locking: only the
+    caller whose UPDATE actually flips a row (`rowcount == 1`) wins the token;
+    every other concurrent caller gets None.
+    """
     if not token:
         return None
     now = time.time()
     with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE login_tokens SET used_at=?"
+            " WHERE token=? AND used_at IS NULL AND expires_at > ?",
+            (now, token, now),
+        )
+        if cur.rowcount != 1:
+            return None
         row = conn.execute(
-            "SELECT username, expires_at, used_at FROM login_tokens WHERE token=?",
-            (token,),
+            "SELECT username FROM login_tokens WHERE token=?", (token,),
         ).fetchone()
-        if row is None:
-            return None
-        username, expires_at, used_at = row
-        if used_at is not None or now > expires_at:
-            return None
-        conn.execute("UPDATE login_tokens SET used_at=? WHERE token=?", (now, token))
-    return str(username)
+    if row is None:
+        return None
+    return str(row[0])
