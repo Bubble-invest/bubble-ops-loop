@@ -77,6 +77,14 @@
 #       WARN-skipped every run (never silently) and, after
 #       BUBBLE_SYNC_ESCALATE_AFTER consecutive misses, a kanban card is
 #       emitted via the (stubbed) emitter — never skipped into silence.
+#   T19 board #1064 review round — a clone stranded on a no-upstream feature
+#       branch (T16's shape) that ALSO carries an UNTRACKED file (never
+#       `git add`-ed — the realistic shape of stray work left on a throwaway
+#       branch) must have that file quarantined via `git stash
+#       --include-untracked` BEFORE the branch is abandoned, NOT silently
+#       wiped by the unconditional `git clean -fd` on that path.
+#       `tracked_dirt_count()` alone would miss it (it counts only tracked
+#       dirt), so the quarantine trigger must also look at untracked dirt.
 # =============================================================================
 set -uo pipefail
 
@@ -1062,6 +1070,69 @@ emit_call_count="$(grep -c . "$EMIT_CALLS" 2>/dev/null || echo 0)"
 chk_eq "T18h the (stubbed) kanban emitter was invoked exactly once (only at the threshold)" "1" "$emit_call_count"
 want "T18i the kanban emit call names the dept + task" "task=sync-local-dept-clones" "$EMIT_CALLS"
 want "T18j the kanban emit call is a real incident title naming the dept" "noheadorigin" "$EMIT_CALLS"
+
+# -----------------------------------------------------------------------------
+# T19: board #1064 review round — stranded no-upstream branch (T16's shape)
+#      that ALSO carries an UNTRACKED file (never `git add`-ed). The
+#      unconditional `git clean -fd` on the branch-abandon path must NOT
+#      silently wipe it: the quarantine (git stash --include-untracked) must
+#      fire even though NO tracked file is dirty, so the file is recoverable
+#      afterward via `git stash list` / `stash show -u`, not gone with no
+#      trace.
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS13="$WORK/agents-real13"; rm -rf "$REALGIT_AGENTS13"; mkdir -p "$REALGIT_AGENTS13"
+ORIGIN13="$WORK/origin-stranded13.git"
+WORKTREE13="$WORK/seed-stranded13"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN13"
+"${real_git_env[@]}" git clone -q "$ORIGIN13" "$WORKTREE13" 2>/dev/null
+mkdir -p "$WORKTREE13/onboarding"
+printf 'v: 1\n' > "$WORKTREE13/framework.txt"
+printf 'slug: stranded13\nstatus: Live\nhost: local\n' > "$WORKTREE13/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE13" add -A
+"${real_git_env[@]}" git -C "$WORKTREE13" commit -qm "seed13"
+"${real_git_env[@]}" git -C "$WORKTREE13" push -q origin HEAD:main
+MIRROR13="$REALGIT_AGENTS13/bubble-ops-stranded13"
+"${real_git_env[@]}" git clone -q "$ORIGIN13" "$MIRROR13"
+
+# origin advances main AFTER the mirror strands (same shape as T16).
+printf 'v: 2\n' > "$WORKTREE13/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE13" commit -qam "advance13"
+"${real_git_env[@]}" git -C "$WORKTREE13" push -q origin HEAD:main
+origin_head13="$("${real_git_env[@]}" git -C "$WORKTREE13" rev-parse HEAD)"
+
+# Strand the mirror on a NEW local branch, no upstream, no push — then drop an
+# UNTRACKED file on it. Never `git add`-ed: the realistic shape of "work
+# someone left on a stray branch" (a note, a scratch export, etc).
+"${real_git_env[@]}" git -C "$MIRROR13" checkout -q -b worker-stray13
+printf 'do not lose this — real notes\n' > "$MIRROR13/important_notes.txt"
+untracked_before13="$("${real_git_env[@]}" git -C "$MIRROR13" status --porcelain 2>/dev/null | grep -c '^?? important_notes.txt')"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS13" >"$WORK/run-real13.log" 2>&1
+rc13=$?
+after_branch13="$("${real_git_env[@]}" git -C "$MIRROR13" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+after_head13="$("${real_git_env[@]}" git -C "$MIRROR13" rev-parse HEAD)"
+
+chk_eq "T19 precondition: important_notes.txt is untracked (never git add-ed) before the run" "1" "$untracked_before13"
+chk "T19a real-git run exits 0" 0 "$rc13"
+chk_eq "T19b stranded mirror still self-healed onto canonical branch 'main'" "main" "$after_branch13"
+chk_eq "T19c stranded mirror still converged to origin's advanced HEAD" "$origin_head13" "$after_head13"
+
+# The core assertion: the untracked file must be QUARANTINED (recoverable via
+# git stash), NOT silently gone with nothing to recover it from. Pre-fix,
+# quarantine_endangered_state() only stashes when tracked_dirt_count() > 0,
+# so an untracked-only dirty tree never triggers the stash at all and
+# `git clean -fd` wipes the file with no trace — this must fail on that code.
+stash_list13="$("${real_git_env[@]}" git -C "$MIRROR13" stash list 2>/dev/null)"
+if [[ -n "$stash_list13" ]]; then
+  stash_has_file13="$("${real_git_env[@]}" git -C "$MIRROR13" stash show -p -u stash@{0} 2>/dev/null | grep -c 'important_notes.txt')"
+else
+  stash_has_file13=0
+fi
+if [[ -n "$stash_list13" && "${stash_has_file13:-0}" -gt 0 ]]; then
+  echo "  PASS: T19d untracked file on the abandoned branch was quarantined via git stash (recoverable, not silently wiped)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T19d untracked file was NOT quarantined — no stash entry contains it (silently wiped by git clean -fd)"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"

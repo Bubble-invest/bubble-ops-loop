@@ -98,9 +98,14 @@
 # branch here because this mirror is READ-ONLY and origin is authoritative —
 # there is no local work on it worth preserving (see file header, top) — but
 # as belt-and-suspenders we still run the SAME quarantine_endangered_state()
-# used by the converge-to-origin path first, so even a stray dirty tracked
-# file or an accidental local commit on the stranded branch is stashed /
-# bundled before we abandon it, never silently dropped.
+# used by the converge-to-origin path first, so even a stray dirty file
+# (tracked OR untracked — review round: an untracked file is quarantined
+# too, see any_dirt_count()) or an accidental local commit on the stranded
+# branch is stashed/bundled before we abandon it, never silently dropped.
+# This matters more here than on the converge-to-origin path: abandoning a
+# whole branch (this path) is a strictly riskier operation than converging an
+# already-canonical branch, so the net has to be complete, not best-effort
+# on tracked dirt alone.
 #
 # 🔴 FORBIDDEN, and unchanged by this fix: nothing here ever pushes to origin
 # or touches a dept repo's branches ON GITHUB — `checkout`/`reset`/`branch
@@ -192,10 +197,25 @@ preserve_hide_markers() {
 # lines that are NOT untracked ("??"). Untracked collisions (T7) are a benign,
 # already-handled case (origin's tracked version just wins at that path); a
 # dirty TRACKED file is a local edit that would otherwise be silently
-# clobbered by `reset --hard` with no distinguishing signal.
+# clobbered by `reset --hard` with no distinguishing signal. Used ONLY for the
+# endangered-state DISCARDED accounting/log (tracked edits + local-only
+# commits) — NOT for the quarantine trigger itself, see any_dirt_count below.
 tracked_dirt_count() {
     local dir="$1"
     git -C "$dir" status --porcelain 2>/dev/null | grep -vc '^?? ' || true
+}
+
+# any_dirt_count <dir>: count of ALL `git status --porcelain` lines — tracked
+# edits AND untracked paths alike. Review-round fix (board #1064): the
+# quarantine trigger in quarantine_endangered_state() must NOT gate on
+# tracked_dirt_count() alone, or a working tree whose ONLY dirt is an
+# untracked file (never `git add`-ed — the realistic shape of stray work left
+# on an abandoned branch) never triggers the stash at all, and a subsequent
+# `git clean -fd` (branch-abandon path) wipes it with nothing quarantined —
+# silent data loss, not just benign drift.
+any_dirt_count() {
+    local dir="$1"
+    git -C "$dir" status --porcelain 2>/dev/null | grep -c '.' || true
 }
 
 # local_only_commit_shas <dir> <upstream_head>: short SHAs (oldest-first) of
@@ -209,13 +229,16 @@ local_only_commit_shas() {
 }
 
 # quarantine_endangered_state <dir> <upstream_head> <quarantine_root> <ts>:
-# best-effort safety net for the two cases that reset --hard would otherwise
-# silently destroy — NEVER blocks convergence (always returns 0, caller
-# ignores failures beyond a WARN). Stashes dirty tracked work; bundles
-# local-only commits so a human can recover them post-hoc.
+# best-effort safety net for the cases that reset --hard / git clean -fd
+# would otherwise silently destroy — NEVER blocks convergence (always
+# returns 0, caller ignores failures beyond a WARN). Stashes ALL dirty work
+# (tracked edits AND untracked paths, via --include-untracked — gated on
+# any_dirt_count, not tracked_dirt_count, so untracked-only dirt is not
+# missed, board #1064 review round); bundles local-only commits so a human
+# can recover either post-hoc.
 quarantine_endangered_state() {
     local dir="$1" upstream_head="$2" qroot="$3" ts="$4"
-    if [[ "$(tracked_dirt_count "$dir")" -gt 0 ]]; then
+    if [[ "$(any_dirt_count "$dir")" -gt 0 ]]; then
         git -C "$dir" stash push --include-untracked -m "selfheal-quarantine-${ts}" \
             >/dev/null 2>&1 || log "WARN $(basename "$dir"): quarantine stash FAILED — uncommitted changes could not be saved before reset"
     fi
@@ -549,11 +572,15 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
 
         # Best-effort quarantine BEFORE abandoning the stranded branch — same
         # machinery the converge-to-origin path uses below (git stash for
-        # dirty tracked files, a git bundle for commits reachable only from
-        # the branch we're about to leave). Belt-and-suspenders: the
-        # read-only-mirror assumption (file header, top) says there SHOULDN'T
-        # be any real local work here, but we never bet silent data loss on
-        # an assumption holding 100% of the time.
+        # dirty files — tracked OR untracked, see any_dirt_count() — a git
+        # bundle for commits reachable only from the branch we're about to
+        # leave). Belt-and-suspenders: the read-only-mirror assumption (file
+        # header, top) says there SHOULDN'T be any real local work here, but
+        # we never bet silent data loss on an assumption holding 100% of the
+        # time — and the untracked case matters here specifically: the
+        # unconditional `git clean -fd` a few lines below (via the shared
+        # reset/clean flow) would otherwise wipe an untracked file with no
+        # quarantine and no WARN.
         quarantine_endangered_state "$dir" "$target_head" "${dir}/.selfheal-quarantine" "$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
         if git -C "$dir" checkout -q -B "$canonical_branch" "$target_ref" >/tmp/.sync-local-checkout-$$ 2>&1; then
