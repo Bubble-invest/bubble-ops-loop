@@ -203,6 +203,200 @@ def test_access_log_redaction_installed_on_create_app(app):
     assert len(matching) == 1
 
 
+# ---- app/root-logger token redaction (#1086 hardening #1) ------------
+# `_RedactTokenAccessFilter` above only ever sees `uvicorn.access`'s fixed
+# 5-arg record shape. `_RedactTokenLogFilter` is the generic companion for
+# any OTHER logger (a traceback, or an app-level `logger.warning(...)` that
+# happens to include `request.url`) — see its docstring in console/main.py.
+
+def _fake_plain_record(msg, args=None):
+    return logging.LogRecord(
+        name="console.some_service", level=logging.WARNING, pathname=__file__,
+        lineno=1, msg=msg, args=args, exc_info=None,
+    )
+
+
+def test_app_log_filter_redacts_fstring_message():
+    """No separate %-args — the token is already baked into the message
+    string, e.g. `_log.warning(f"unhandled error for {request.url}")`."""
+    f = console_main._RedactTokenLogFilter()
+    record = _fake_plain_record(
+        "unhandled error for /login/link?t=SUPERSECRETTOKEN"
+    )
+    assert f.filter(record) is True
+    assert "SUPERSECRETTOKEN" not in record.msg
+    assert "<redacted>" in record.msg
+
+
+def test_app_log_filter_redacts_percent_style_args():
+    f = console_main._RedactTokenLogFilter()
+    record = _fake_plain_record(
+        "failed for %s", args=("/kanban?token=abc123&next=/home",)
+    )
+    assert f.filter(record) is True
+    assert "abc123" not in record.args[0]
+    assert "<redacted>" in record.args[0]
+    assert "next=/home" in record.args[0]  # only the token param is touched
+
+
+def test_app_log_filter_leaves_untokened_alone():
+    f = console_main._RedactTokenLogFilter()
+    record = _fake_plain_record(
+        "plain message, nothing to see for %s", args=("/kanban?status=open",)
+    )
+    assert f.filter(record) is True
+    assert record.msg == "plain message, nothing to see for %s"
+    assert record.args[0] == "/kanban?status=open"
+
+
+def test_app_log_redaction_installed_on_create_app(app):
+    """Companion to `test_access_log_redaction_installed_on_create_app`: the
+    generic app-logger filter must land on the root logger, this module's own
+    `_log`, and `logging.lastResort` — see `_install_app_log_redaction`'s
+    docstring in console/main.py for why all three matter (a `Logger`'s own
+    `.filters` are only consulted for records it *originates*, and most
+    app-level loggers here have no handler anywhere in their ancestry, so
+    they fall through to `lastResort`).
+    """
+    import sys
+    live_main = sys.modules["console.main"]
+    targets = [logging.getLogger(), live_main._log]
+    if logging.lastResort is not None:
+        targets.append(logging.lastResort)
+    for target in targets:
+        matching = [f for f in target.filters
+                    if isinstance(f, live_main._RedactTokenLogFilter)]
+        assert len(matching) == 1, f"{target!r} has {len(matching)} matching filters"
+
+
+# ---- pinned-uvicorn (0.47.0) access-log smoke test (#1086 hardening #2) -
+# The unit tests above fabricate the LogRecord by hand, encoding OUR
+# assumption about uvicorn's access-log record shape (`record.args[2]` is
+# the full request path+query — see `_RedactTokenAccessFilter`'s docstring).
+# That assumption is exactly the kind of thing a uvicorn version bump could
+# silently break (reordering args, moving the query string into
+# `record.__dict__` instead, changing the message format string, ...)
+# WITHOUT any test above going red — they'd keep passing against a shape
+# uvicorn no longer produces. This test instead drives the REAL, PINNED
+# uvicorn end-to-end: a live server on a real socket, exercising uvicorn's
+# own `access_logger.info(...)` call inside
+# `uvicorn.protocols.http.h11_impl` — not a hand-built LogRecord.
+try:
+    import uvicorn as _uvicorn_probe
+except ImportError:  # pragma: no cover
+    _uvicorn_probe = None
+
+# Keep in lockstep with the `uvicorn==` pin in console/requirements.txt.
+_PINNED_UVICORN_VERSION = "0.47.0"
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def live_uvicorn_server(tmp_path, monkeypatch):
+    """Boot the real app under the real, pinned uvicorn on a real socket —
+    TestClient never goes through uvicorn's HTTP protocol implementation at
+    all (httpx calls the ASGI app directly), so it can't exercise the
+    `uvicorn.access` code path this test needs to prove."""
+    if _uvicorn_probe is None:
+        pytest.skip("uvicorn not installed")
+
+    import socket
+    import sys
+    import threading
+    import time
+
+    monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "irrelevant-for-health-noauth")
+    monkeypatch.setenv("READ_FROM_DISK", str(tmp_path))
+
+    for mod in list(sys.modules):
+        if mod == "console" or mod.startswith("console."):
+            del sys.modules[mod]
+    from console.main import create_app  # noqa: WPS433
+    live_app = create_app()
+
+    port = _free_port()
+    config = _uvicorn_probe.Config(live_app, host="127.0.0.1", port=port,
+                                    log_level="info")
+    server = _uvicorn_probe.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.05)
+    else:
+        pytest.fail("live_uvicorn_server did not start in time")
+
+    yield f"http://127.0.0.1:{port}"
+
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+def test_pinned_uvicorn_access_log_end_to_end_redaction(live_uvicorn_server):
+    """Fails red if a uvicorn upgrade changes the access-log record
+    shape/format string in a way that would let `?t=`/`?token=` reach the
+    journal again without any other test noticing.
+    """
+    assert _uvicorn_probe.__version__ == _PINNED_UVICORN_VERSION, (
+        f"installed uvicorn is {_uvicorn_probe.__version__}, pinned is "
+        f"{_PINNED_UVICORN_VERSION} (console/requirements.txt) — the two "
+        "have drifted apart. Re-verify _RedactTokenAccessFilter against the "
+        "new version's record.args shape, then update BOTH the pin and this "
+        "constant together."
+    )
+
+    import io
+    import time
+    import urllib.request
+
+    from uvicorn.logging import AccessFormatter
+
+    access_logger = logging.getLogger("uvicorn.access")
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(AccessFormatter(use_colors=False))
+    # Attached AFTER the server thread has started: uvicorn's own
+    # `Config.configure_logging()` (dictConfig) runs at server startup and
+    # replaces `uvicorn.access`'s HANDLERS (though not its filters — see
+    # `_install_access_log_redaction`'s docstring) — a handler attached
+    # before that point would be wiped.
+    access_logger.addHandler(handler)
+    access_logger.setLevel(logging.INFO)
+    try:
+        secret = "SUPERSECRETTOKEN_e2e_12345"  # pragma: allowlist secret
+        with urllib.request.urlopen(
+            f"{live_uvicorn_server}/health-noauth?token={secret}", timeout=5
+        ) as resp:
+            assert resp.status == 200
+
+        # The access-log line is written synchronously while sending the
+        # response, but give the background server thread a brief grace
+        # window against scheduling jitter.
+        deadline = time.time() + 2
+        output = ""
+        while time.time() < deadline:
+            output = buf.getvalue()
+            if "/health-noauth" in output:
+                break
+            time.sleep(0.05)
+
+        assert "/health-noauth" in output, f"no access-log line captured: {output!r}"
+        assert secret not in output
+        assert "token=<redacted>" in output
+    finally:
+        access_logger.removeHandler(handler)
+
+
 def test_session_absolute_cap(monkeypatch, tmp_session_db):
     # idle window huge, absolute cap already exceeded → still expires
     monkeypatch.setattr(settings, "SESSION_IDLE_SECONDS", 10_000)
