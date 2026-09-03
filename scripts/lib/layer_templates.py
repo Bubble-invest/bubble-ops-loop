@@ -168,7 +168,23 @@ The main session saw **one** validated decision in `inbox/decisions/` (STEP C.3 
 Before writing your `.last-run`, check the applicable guard-rails \
 (`../policies/gates.yaml`: kill-switch, quiet-hours, quotas, action-policy). \
 If a guard-rail blocks → ABORT, log the reason, the decision stays in \
-`inbox/decisions/` for later.
+`inbox/decisions/` for later — **this is for a TRANSIENT block** (one that \
+may lift before midnight): do NOT stamp `.last-run`, so a later tick today \
+retries once it clears.
+
+**Exception — STRUCTURAL human-supervised execution** (check `../dept.yaml` \
+/ `../MANDATE.md` for this dept's execution mode, e.g. a board decision \
+making a given decision kind permanently human-executed, like manual \
+broker booking): if there is no autonomous way to execute this decision \
+TODAY OR ANY DAY (not "not yet" — "not by me, ever"), retrying later today \
+changes nothing. In that case: log the defer clearly (e.g. \
+`"DEFERRED-to-human-supervised"`), leave the item in `inbox/decisions/` for \
+a human to execute/archive, AND still write your `.last-run` via \
+`scripts.lib.dispatch_helpers.write_l3_human_deferred(Path("outputs/<today>/{n}"))` \
+instead of the plain `write_last_run` above — you DID your job for today \
+(confirmed nothing here is autonomously executable), and Layer 4's evening \
+debrief must not be blocked forever waiting on an execution that will never \
+happen on its own.
 
 ## Required reads at start (STEP 0)
 
