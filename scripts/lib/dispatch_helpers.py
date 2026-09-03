@@ -1956,6 +1956,18 @@ def build_dispatch_ctx(
     if materialize:
         materialize_due_missions_for_tick(repo, today_dir, now_utc,
                                           fire_after_rounds=fire_after_rounds)
+        # #1076: startup/per-tick gate-directory reconcile. Archive any gate
+        # card whose decision is ALREADY resolved (in .processed/ or
+        # .abandoned/) so `queues/gates/` shows only genuinely-open gates and
+        # Jade's review surface stays honest. This is a MUTATING sweep, so it
+        # runs ONLY in the materialize branch — a read-only gate/probe caller
+        # (materialize=False, e.g. loop-backup.sh's FORCE_LAYER check) must
+        # never move files as a side effect (the #454 invariant). Best-effort:
+        # never let a reconcile hiccup abort the dispatch decision.
+        try:
+            reconcile_gate_dir(repo)
+        except Exception:
+            pass
 
     return {
         "now_utc": now_utc,
@@ -4405,3 +4417,137 @@ def validate_gate_card(path) -> "tuple[bool, str]":
     if not doc.get("id") or not doc.get("kind"):
         return False, "gate card is missing required keys `id` and/or `kind`"
     return True, "ok"
+
+
+# ── Gate-directory hygiene (#1076) ───────────────────────────────────────────
+# The lifecycle: L2 hand-authors a gate card at `queues/gates/<id>.yaml`; the
+# cockpit approve/reject click writes the operator's decision to
+# `inbox/decisions/<id>.yaml` (github_reader.write_gate_decision — the decision
+# file is named by the SAME id as the gate card); L3 executes the decision and
+# archives it to `inbox/decisions/.processed/` (published) or `.abandoned/`
+# (abandoned). Until #1076 nothing archived the corresponding GATE CARD, so
+# resolved cards accumulated in `queues/gates/` (37 cards, 1 genuinely open) and
+# drowned the open ones — Jade cannot review a 37-card queue.
+#
+# The durable fix has three parts, all here so they share one definition of the
+# id↔outcome mapping:
+#   1. archive_gate_card()   — called inline by the L3 publish/abandon step,
+#      right after it moves the decision (see layer_templates.py L3 template).
+#   2. reconcile_gate_dir()  — a startup/per-tick sweep (wired into
+#      build_dispatch_ctx's mutating branch) that catches any gate card whose
+#      decision is ALREADY resolved — cards resolved before this fix, or by a
+#      path that bypassed step 1. This is the real safety net: even if the L3
+#      agent forgets step 1, the next tick reconciles.
+#   3. count_open_gates()    — the single source of truth for the open-gate
+#      count (root `*.yaml` minus `.done/**`), for a dispatch preflight assert.
+
+_GATE_OUTCOMES = ("published", "abandoned")
+
+
+def _gate_card_ids(path: "Path") -> "set[str]":
+    """The id(s) a gate card at `path` may be keyed by: its filename stem plus
+    any explicit top-level `id`. The decision file is named by the gate id, which
+    is normally the filename stem, but a card MAY carry a differing top-level
+    `id` (github_reader.list_pending_gates uses `doc.get("id", p.stem)`), so we
+    match on both to reconcile robustly. Never raises — an unparseable card
+    still matches by its stem."""
+    ids = {path.stem}
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(doc, dict) and doc.get("id"):
+            ids.add(str(doc["id"]))
+    except Exception:
+        pass
+    return ids
+
+
+def archive_gate_card(repo_dir: "Path | str", gate_id: str,
+                      outcome: str) -> "Path | None":
+    """Move `queues/gates/<gate_id>.yaml` → `queues/gates/.done/<outcome>/`
+    where `outcome` is "published" or "abandoned" (#1076).
+
+    Atomic (os.replace within the same filesystem — a reader never sees the card
+    in two places or half-moved) and idempotent: a no-op returning None when the
+    source is absent (already archived, or never existed). Returns the
+    destination Path on a real move.
+
+    Call this from the L3 publish-execution ledger step AND the abandon step,
+    right after moving the decision to `.processed/`/`.abandoned/`, so the gate
+    card is archived in the same logical transaction.
+    """
+    import os
+    if outcome not in _GATE_OUTCOMES:
+        raise ValueError(
+            f"outcome must be one of {_GATE_OUTCOMES!r}, got {outcome!r}")
+    # Refuse ids that could escape the gates dir (defence-in-depth — ids come
+    # from filenames/decision stems, but never trust them for a path join).
+    if (not gate_id or "/" in gate_id or "\\" in gate_id
+            or ".." in Path(gate_id).parts):
+        return None
+    repo = Path(repo_dir)
+    src = repo / "queues" / "gates" / f"{gate_id}.yaml"
+    if not src.is_file():
+        return None  # idempotent: already archived / absent
+    dest_dir = repo / "queues" / "gates" / ".done" / outcome
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    os.replace(src, dest)  # atomic within the same filesystem
+    return dest
+
+
+def reconcile_gate_dir(repo_dir: "Path | str") -> "list[Path]":
+    """Startup/per-tick reconcile (#1076): archive any OPEN gate card whose
+    decision has already been resolved.
+
+    For each `queues/gates/<id>.yaml` (root, non-dotfile), if a decision file for
+    that id exists in `inbox/decisions/.processed/` → archive to
+    `.done/published/`; else if in `inbox/decisions/.abandoned/` → archive to
+    `.done/abandoned/`. `.processed/` wins if (pathologically) both exist.
+
+    Catches gate cards resolved before archive_gate_card existed, or by any path
+    that bypassed it. Idempotent — cards already under `.done/` are never
+    revisited (the glob is root-only and skips dot-entries). Returns the list of
+    destination Paths moved this call (empty when nothing needed reconciling).
+    """
+    repo = Path(repo_dir)
+    gates_dir = repo / "queues" / "gates"
+    if not gates_dir.is_dir():
+        return []
+    processed = repo / "inbox" / "decisions" / ".processed"
+    abandoned = repo / "inbox" / "decisions" / ".abandoned"
+    moved: "list[Path]" = []
+    for card in sorted(gates_dir.glob("*.yaml")):
+        if card.name.startswith(".") or not card.is_file():
+            continue
+        ids = _gate_card_ids(card)
+        outcome: "str | None" = None
+        if any((processed / f"{i}.yaml").is_file() for i in ids):
+            outcome = "published"
+        elif any((abandoned / f"{i}.yaml").is_file() for i in ids):
+            outcome = "abandoned"
+        if outcome is None:
+            continue
+        # Archive by the actual FILENAME stem (that is the real card on disk),
+        # not by whichever id matched the decision.
+        dest = archive_gate_card(repo, card.stem, outcome)
+        if dest is not None:
+            moved.append(dest)
+    return moved
+
+
+def count_open_gates(repo_dir: "Path | str") -> int:
+    """Number of genuinely-OPEN gate cards (#1076): `queues/gates/*.yaml` (root
+    only, regular non-dotfile files) MINUS everything under `.done/**`.
+
+    The glob is non-recursive, so `.done/` (and any other dot-subdir like a
+    legacy `.processed/`) is already excluded — this is the single source of
+    truth for the human review-surface count, so a dispatch preflight can assert
+    the queue reflects only cards that still need a decision.
+    """
+    gates_dir = Path(repo_dir) / "queues" / "gates"
+    if not gates_dir.is_dir():
+        return 0
+    return sum(
+        1 for p in gates_dir.glob("*.yaml")
+        if not p.name.startswith(".") and p.is_file()
+    )

@@ -201,7 +201,15 @@ Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.li
 {l3_work}
 
 After successful execution: move the item to `inbox/decisions/.processed/` \
-(so a future tick does not re-process it) and log in `logs.jsonl`. In case \
+(so a future tick does not re-process it) and log in `logs.jsonl`. **Then \
+archive the corresponding gate card** so `queues/gates/` shows only genuinely- \
+open gates (#1076): \
+`python3 -c "from scripts.lib.dispatch_helpers import archive_gate_card; \
+archive_gate_card('.', '<id>', 'published')"` — the `<id>` is the same as the \
+decision filename. If you instead **abandon** the decision (move it to \
+`inbox/decisions/.abandoned/`), archive with `'abandoned'` in place of \
+`'published'`. Both are atomic + idempotent (no-op if already archived), and a \
+per-tick reconcile is the safety net if you forget — but do it inline. In case \
 of failure after retries: leave the item + add `<id>.error` with the reason, \
 the main session escalates to {{OPERATOR}}.
 
