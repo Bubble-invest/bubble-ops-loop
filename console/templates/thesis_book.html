@@ -372,6 +372,18 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
 .pf-tab{font:inherit;font-size:13px;font-weight:600;letter-spacing:.02em;cursor:pointer;background:transparent;border:1px solid transparent;color:var(--text-muted);padding:7px 15px;border-radius:9px;}
 .pf-tab[aria-selected="true"]{background:var(--bg-raised);border-color:var(--border);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.05);}
 .pf-pane[hidden]{display:none;}
+/* board #1116: review_html/maps_html are agent-authored, self-contained
+   HTML artifacts from a producer this repo does not own (Ben's L1 tool).
+   Isolated in a sandboxed iframe (see the pane markup below) rather than
+   inlined+sanitized, since we can't fully enumerate/allowlist that
+   producer's HTML vocabulary (its own <style> blocks, ids, etc. — a strict
+   nh3 allowlist risks silently breaking legitimate formatting, and any
+   future producer change could reintroduce a gap). The iframe itself
+   can't autosize to content height without allow-scripts (which would
+   defeat the sandbox), so it gets a generous fixed height and scrolls its
+   own content — an accepted UX trade-off for the security property.
+   Same origin-isolation intent as .pf-pane, kept separate for clarity. */
+.pf-embed{display:block;width:100%;height:82vh;border:0;background:var(--bg);}
 </style>
 
 <div class="pf-tabbar" role="tablist">
@@ -469,8 +481,21 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
   <div class="footer-meta" id="footerMeta"></div>
 </footer>
 </div><!-- /pane-thesis -->
-<div id="pane-review" class="pf-pane" hidden>{{ review_html | safe }}</div>
-{% if maps_html %}<div id="pane-maps" class="pf-pane" hidden>{{ maps_html | safe }}</div>{% endif %}
+{# board #1116 (stored-XSS): review_html/maps_html are agent-authored HTML
+   from a producer this repo does not own (Ben's L1 tool) — the operator
+   origin is one same-origin POST away (gate approvals, dept comments), so
+   this can never be inlined raw. Isolated in a `sandbox=""` iframe (NO
+   allow-scripts, NO allow-same-origin, NO allow-forms, NO allow-top-
+   navigation — the empty sandbox attribute applies every restriction) via
+   `srcdoc`, which the browser gives an opaque ("null") origin with zero
+   script execution: even a malicious payload in review_html/maps_html
+   cannot run JS, read/write cockpit cookies, or submit a form to any
+   cockpit endpoint. `srcdoc` is intentionally NOT marked `| safe` — Jinja's
+   default HTML-ATTRIBUTE escaping (&, <, >, ", ') is exactly what a
+   srcdoc="..." attribute value needs; the browser un-escapes it back to
+   the literal HTML string before using it as the iframe document. #}
+<div id="pane-review" class="pf-pane" hidden><iframe class="pf-embed" sandbox="" srcdoc="{{ review_html }}"></iframe></div>
+{% if maps_html %}<div id="pane-maps" class="pf-pane" hidden><iframe class="pf-embed" sandbox="" srcdoc="{{ maps_html }}"></iframe></div>{% endif %}
 
 <script>
 (function(){
