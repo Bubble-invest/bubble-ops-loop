@@ -89,6 +89,21 @@ sync_repo_reset(){ # $1=dir  — hard-reset to origin/main (infra: no local work
   if [[ "$ahead" != "0" ]]; then log "WARN $d is $ahead AHEAD — has local commits; reset would lose them. SKIPPING."; return 2; fi
   if [[ "$behind" == "0" ]]; then log "$d already current"; return 0; fi
   if [[ "$DRY_RUN" == "1" ]]; then log "[dry-run] would reset $d ($behind behind)"; return 0; fi
+  # #1122: this repo isn't SUPPOSED to carry local edits, but "not supposed
+  # to" is not a guarantee — a human mid-edit on the VPS infra checkout when
+  # the 2h cron fires must never lose it. Same never-silently-discard pattern
+  # as sync_dept_ff below: stash (recoverable) before the hard reset instead
+  # of resetting straight over a dirty tree.
+  if [[ -n "$(g "$d" status --porcelain 2>/dev/null)" ]]; then
+    local infra_stash_msg
+    infra_stash_msg="bubble-deploy-infra-autostash-$(date -u +%Y%m%dT%H%M%SZ)"
+    if g "$d" stash push -u -m "$infra_stash_msg" >/dev/null 2>&1; then
+      log "WARN $d: dirty tree (unexpected for infra) — stashed as '$infra_stash_msg' before reset — RECOVERABLE via git stash pop"
+    else
+      log "FAIL $d: dirty tree but stash failed — refusing reset --hard (would discard uncommitted work); needs human"
+      return 1
+    fi
+  fi
   if g "$d" reset --hard origin/main >/dev/null; then
     log "$d reset to origin/main ($behind applied)"
     return 0
@@ -180,6 +195,31 @@ sync_dept_ff(){ # $1=slug — stop loop, ff, restart (avoids the live-loop race)
       if ! health_check_dept "$slug" "$d" "$unit"; then
         log "$slug: health check failed post-deploy — rolling back to pre-ff SHA $pre_sha"
         systemctl stop "$unit" 2>/dev/null || true
+        # #1122: the stash restored above (line ~166) is now just plain
+        # uncommitted edits on the ff'd HEAD — it is NOT tracked by any
+        # stash entry anymore. A bare `reset --hard $pre_sha` here would
+        # silently wipe that work with nothing left to recover it from
+        # (the exact regression: PR #265 taught this function to
+        # stash-not-discard on the FF path, but the ROLLBACK path re-earned
+        # the same bug 20 lines later). Re-stash any current dirtiness
+        # before the rollback reset so it survives, recoverable via
+        # `git stash pop` — never auto-popped back here, since popping
+        # onto the OLD pre_sha tree (a different base than it was stashed
+        # from) risks a spurious conflict; leaving it stashed for manual
+        # reconciliation is the same safe posture this function already
+        # uses for a conflicted post-ff pop above.
+        if [[ -n "$(g "$d" status --porcelain 2>/dev/null)" ]]; then
+          local rb_stash_msg
+          rb_stash_msg="bubble-deploy-rollback-autostash-$(date -u +%Y%m%dT%H%M%SZ)"
+          if g "$d" stash push -u -m "$rb_stash_msg" >/dev/null 2>&1; then
+            log "$slug: dirty tree before rollback reset — re-stashed as '$rb_stash_msg' — RECOVERABLE via git stash pop"
+          else
+            log "FAIL $slug: dirty tree before rollback reset but re-stash FAILED — refusing reset --hard $pre_sha (would discard uncommitted work); needs human"
+            [[ "$was_active" == "active" ]] && systemctl start "$unit" 2>/dev/null || true
+            FAILED=1
+            return 1
+          fi
+        fi
         if g "$d" reset --hard "$pre_sha" >/dev/null 2>&1; then
           systemctl start "$unit"
           sleep 2
