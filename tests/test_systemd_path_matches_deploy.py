@@ -23,10 +23,16 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.lib.scaffold import render_systemd_unit  # noqa: E402
+
 TEMPLATE = PROJECT_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
 DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy-to-morty.sh"
 
@@ -69,6 +75,17 @@ def test_legacy_default_working_directory_unchanged():
     assert f"WorkingDirectory={LEGACY_CANONICAL_REPO_PATH}" in combined
     assert f"test -d {LEGACY_CANONICAL_REPO_PATH}" in combined
     assert f"git clone https://github.com/vdk888/bubble-ops-eliot {LEGACY_CANONICAL_REPO_PATH}" in combined
+
+
+def test_onboarding_scaffold_renders_all_os_user_placeholders_to_legacy_defaults():
+    """The bootstrap scaffold is a second template consumer.  New departments
+    stay on the legacy user until an explicit per-user deploy migration."""
+    rendered = render_systemd_unit("eliot")
+    assert "User=claude" in rendered
+    assert "Group=claude" in rendered
+    assert f"WorkingDirectory={LEGACY_CANONICAL_REPO_PATH}" in rendered
+    for placeholder in ("${OS_USER}", "${OS_GROUP}", "${WORKDIR}"):
+        assert placeholder not in rendered
 
 
 def test_per_user_working_directory_moves_to_srv_agents():
