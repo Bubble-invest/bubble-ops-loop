@@ -48,10 +48,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     build_dispatch_ctx,
+    commit_dispatch,
     decide_dispatch,
     select_due_missions,
     read_last_run,
     read_last_materialized,
+    read_dispatch_ledger,
 )
 
 # Accountant-shaped dept: two L1 producers → queues/research/, one L2 gate
@@ -117,7 +119,8 @@ def _l2_marker(repo: Path, now: datetime):
         "materialize_due_missions_for_tick must never write .last-run for a "
         "mission it did not actually run (#870)"
     )
-    return read_last_materialized(today_dir / "missions" / _L2_ID)
+    entry = read_dispatch_ledger(today_dir).get(_L2_ID) or {}
+    return entry.get("completed_at")
 
 
 def test_afternoon_tick_dispatches_l2_categorisation(tmp_path: Path):
@@ -144,7 +147,10 @@ def test_afternoon_tick_dispatches_l2_categorisation(tmp_path: Path):
         "premature morning stamp vetoed it (the 3-week read-but-uncategorised "
         f"bug). select_due_missions returned {due!r}"
     )
-    # It IS stamped now (fire-spin guard active once the window is open).
+    mission = next(m for m in _MISSIONS if m["id"] == _L2_ID)
+    commit_dispatch(repo, mission, dispatched_at=_AFTERNOON,
+                    completed_at=_AFTERNOON, artifacts=[])
+    # It IS committed after return (fire-spin guard active).
     assert _l2_marker(repo, _AFTERNOON) is not None
 
 
@@ -155,6 +161,9 @@ def test_no_refire_same_day(tmp_path: Path):
     build_dispatch_ctx(repo, now_utc=_MORNING, materialize=True)
     ctx_pm = build_dispatch_ctx(repo, now_utc=_AFTERNOON, materialize=True)
     assert _L2_ID in [m["id"] for m in select_due_missions(ctx_pm, _MISSIONS)]
+    mission = next(m for m in _MISSIONS if m["id"] == _L2_ID)
+    commit_dispatch(repo, mission, dispatched_at=_AFTERNOON,
+                    completed_at=_AFTERNOON, artifacts=[])
 
     ctx_later = build_dispatch_ctx(repo, now_utc=_LATER, materialize=True)
     later = [m["id"] for m in select_due_missions(ctx_later, _MISSIONS)]

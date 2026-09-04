@@ -47,16 +47,12 @@ _GATHER = {
 
 # --- Half 1: the scaffold contract ------------------------------------------
 
-def test_scaffolded_prompt_stamps_the_marker_the_dispatcher_reads():
-    """render_mission_prompt_md must instruct the subagent to stamp
-    `outputs/<today>/missions/<id>/.last-run` via write_last_run — the exact
-    path dispatch_helpers._mission_handled_marker reads."""
+def test_scaffolded_prompt_leaves_completion_to_the_runtime_commit():
+    """Workers must not write dispatch state before returning (#1117)."""
     text = render_mission_prompt_md(_GATHER, slug="content", display_name="Miranda")
-    assert "write_last_run" in text
-    assert ".last-run" in text
-    # The exact stamp call, on the per-mission dir the dispatcher reads —
-    # NOT a layer dir and NOT a bespoke sentinel.
-    assert 'write_last_run(Path("outputs/<today>/missions/gather_internal_work"))' in text
+    assert "commit_dispatch" in text
+    assert "Do **not** write `.last-run`" in text
+    assert "write_last_run" not in text
 
 
 def test_dedicated_prompt_means_materializer_defers_to_the_mission(tmp_path: Path):

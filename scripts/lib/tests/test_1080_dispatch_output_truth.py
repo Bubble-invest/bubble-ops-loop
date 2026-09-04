@@ -65,6 +65,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     _mission_last_fired,
     _mission_last_fired_with_shim_fallback,
     build_dispatch_ctx,
+    commit_dispatch,
     layer_output_present,
     materialize_due_missions_for_tick,
     read_last_run,
@@ -313,10 +314,7 @@ def test_integration_shim_mission_survives_died_mid_dispatch_session(tmp_path: P
     # executor), so the decision-time side effect (the root cause) is proven via
     # the union handled-marker read, not read_last_run directly.
     marker = _mission_handled_marker(today_dir, "data_update")
-    assert marker is not None, (
-        "precondition: the materializer must have stamped the per-mission "
-        "marker as a decision-time side effect (this IS the root cause)"
-    )
+    assert marker is None, "#1117: an unreturned dispatch has no completion record"
     assert read_last_run(today_dir / "missions" / "data_update") is None, (
         "#870 guarantee: build_dispatch_ctx must NOT write a literal .last-run "
         "as a side effect — the decision-time stamp is .last-materialized only"
@@ -363,6 +361,13 @@ def test_integration_shim_mission_excluded_once_real_output_appears(tmp_path: Pa
     today_dir = repo / "outputs" / _TODAY
     (today_dir / "1").mkdir(parents=True, exist_ok=True)
     (today_dir / "1" / "situation_brief.md").write_text("ok")
+    commit_dispatch(
+        repo,
+        data_update,
+        dispatched_at=tick1,
+        completed_at=tick1 + timedelta(minutes=1),
+        artifacts=[today_dir / "1" / "situation_brief.md"],
+    )
 
     tick2 = _DAY + timedelta(hours=2)
     ctx2 = build_dispatch_ctx(repo, now_utc=tick2)

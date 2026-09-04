@@ -23,9 +23,10 @@ for your item.
 4. Your queue item (path passed in the task description).
 5. The vault: the existing thesis note for this ticker/theme (`data/vault/positions/<TICKER>.md`).
 
-## First mandatory action (STEP 1 — idempotence)
+## Dispatch completion ownership (#1117)
 
-Write **immediately** `outputs/<today>/2/.last-run` before any other work.
+Write real artifacts only. Do not write `.last-run`, `.last-materialized`, or
+`dispatch.json`; the parent runtime commits completion after return + validation.
 
 ## Your work (STEP 2 — two waves)
 

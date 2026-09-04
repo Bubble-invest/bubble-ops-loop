@@ -27,7 +27,11 @@ Reference: scripts/lib/scaffold.py::CLAUDE_MD_OPERATING_TEMPLATE STEP C.
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import re
+import tempfile
+from contextlib import contextmanager
 
 from dataclasses import dataclass
 
@@ -35,6 +39,8 @@ import yaml
 from datetime import datetime, time as _time, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+import fcntl
 
 try:
     from zoneinfo import ZoneInfo
@@ -201,11 +207,298 @@ def write_last_materialized(layer_dir: Path, when: "datetime | None" = None) -> 
     (layer_dir / ".last-materialized").write_text(when.isoformat(), encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Per-tick dispatch ledger (#1117)
+# ---------------------------------------------------------------------------
+
+_DISPATCH_FIELDS = (
+    "materialized_at",
+    "dispatched_at",
+    "completed_at",
+    "artifacts",
+)
+
+
+def read_dispatch_ledger(today_dir: "Path | str") -> "dict[str, dict[str, Any]]":
+    """Read ``outputs/<today>/dispatch.json`` without ever raising.
+
+    The ledger is the authoritative read model for new dispatches.  A damaged
+    or half-written file fails open as an empty ledger so the safe failure mode
+    is a retry, never silent starvation.  Legacy marker readers remain as a
+    transition fallback in ``_mission_handled_marker``.
+    """
+    path = Path(today_dir) / "dispatch.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(mid): entry
+        for mid, entry in raw.items()
+        if isinstance(mid, str) and isinstance(entry, dict)
+    }
+
+
+def _ledger_completion(today_dir: Path, mission_id: str) -> "datetime | None":
+    entry = read_dispatch_ledger(today_dir).get(mission_id) or {}
+    value = entry.get("completed_at")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _parse_iso(value)
+    except (ValueError, TypeError):
+        return None
+
+
+@contextmanager
+def _dispatch_ledger_lock(today_dir: Path) -> "Iterable[None]":
+    """Serialize commits without placing a lock artifact in runtime outputs."""
+    lock_root = Path(tempfile.gettempdir()) / "bubble-dispatch-locks"
+    lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(today_dir.resolve()).encode("utf-8")).hexdigest()
+    lock_path = lock_root / f"{digest}.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_dispatch_ledger(today_dir: Path, ledger: "dict[str, dict[str, Any]]") -> None:
+    """Atomically replace the one authoritative dispatch ledger."""
+    today_dir.mkdir(parents=True, exist_ok=True)
+    target = today_dir / "dispatch.json"
+    fd, tmp_name = tempfile.mkstemp(prefix=".dispatch-", suffix=".tmp", dir=today_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            json.dump(ledger, tmp, indent=2, sort_keys=True, ensure_ascii=False)
+            tmp.write("\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, target)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _normalise_dispatch_artifacts(
+    repo: Path, artifacts: "Iterable[Path | str] | None"
+) -> "list[str]":
+    """Return existing, repo-relative artifact paths in deterministic order."""
+    result: set[str] = set()
+    repo_resolved = repo.resolve()
+    for raw in artifacts or []:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = repo / path
+        try:
+            resolved = path.resolve(strict=True)
+            rel = resolved.relative_to(repo_resolved)
+        except (OSError, ValueError):
+            continue
+        result.add(rel.as_posix())
+    return sorted(result)
+
+
+def _materialize_committed_outputs(repo: Path, mission: dict, when: datetime) -> "list[Path]":
+    """Create only legacy queue hand-off stubs after a mission returned.
+
+    This preserves the old materialization contract while moving it out of
+    DECIDE.  Gate stubs (#302) and dedicated-prompt stubs (#442) remain
+    suppressed.  Real mission-authored cards win via mission-id dedup.
+    """
+    output_queue = str(mission.get("output_queue") or "")
+    mission_id = str(mission.get("id") or "")
+    if not output_queue or not mission_id:
+        return []
+    if output_queue.rstrip("/") == "queues/gates":
+        return []
+    if _mission_authors_own_marker(repo, mission):
+        return []
+
+    creates = list(mission.get("creates") or [])
+    if not creates:
+        return []
+    allowed: set[str] = set()
+    dept_path = repo / "dept.yaml"
+    try:
+        dept = yaml.safe_load(dept_path.read_text(encoding="utf-8")) or {}
+        if isinstance(dept, dict):
+            for declared in dept.get("recurring_missions") or []:
+                if isinstance(declared, dict):
+                    allowed.update(str(k) for k in (declared.get("input_kinds") or []))
+    except Exception:
+        pass
+    if allowed:
+        creates = [kind for kind in creates if str(kind) in allowed]
+
+    queue_dir = repo / output_queue
+    created: list[Path] = []
+    for kind_raw in creates:
+        kind = str(kind_raw)
+        duplicate = False
+        if queue_dir.is_dir():
+            for candidate in queue_dir.glob("*.yaml"):
+                if not candidate.is_file() or candidate.name.startswith("."):
+                    continue
+                try:
+                    data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get("mission_id") == mission_id:
+                    duplicate = True
+                    break
+        if duplicate:
+            continue
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        item_id = f"{kind}-{mission_id}-{when.strftime('%Y%m%d-%H%M%S')}"
+        path = queue_dir / f"{item_id}.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "id": item_id,
+                    "mission_id": mission_id,
+                    "kind": kind,
+                    "created_at": when.isoformat(),
+                    "created_by": "commit_dispatch",
+                },
+                allow_unicode=True,
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+        created.append(path)
+    return created
+
+
+def commit_dispatch(
+    repo_dir: "Path | str",
+    mission: dict,
+    *,
+    dispatched_at: datetime,
+    completed_at: "datetime | None" = None,
+    artifacts: "Iterable[Path | str] | None" = None,
+    dispatched_trigger_ids: "Iterable[str] | None" = None,
+    materialize_outputs: bool = True,
+) -> bool:
+    """Commit one mission only *after* its executor returned.
+
+    DECIDE retains no on-disk state.  The runtime keeps ``dispatched_at`` in
+    memory, waits for the worker to return, validates its output, then calls
+    this function.  The single ``dispatch.json`` update records the lifecycle
+    timestamps and evidence.  Returning ``False`` means an earlier completion
+    already won, making duplicate/replayed commits idempotent.
+
+    For ``cadence: event`` missions, ``dispatched_trigger_ids`` is the exact
+    trigger identity handed to the worker by the dispatch step.  It must never
+    be reconstructed by scanning the live input queue here: another approved
+    trigger may have arrived (or remained pending) while this worker ran.  An
+    omitted/empty set deliberately records no trigger evidence, failing open
+    to a retry instead of silently starving unhandled work.
+
+    An uncommitted crash is deliberately still due on the watchdog re-kick;
+    the fleet tick lock prevents concurrent workers, while completion—not a
+    wall-clock equality trick—is what closes the mission.
+    """
+    repo = Path(repo_dir)
+    mission_id = str(mission.get("id") or "")
+    if not mission_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", mission_id):
+        raise ValueError("commit_dispatch requires a safe mission id")
+    if dispatched_at.tzinfo is None:
+        raise ValueError("dispatched_at must be timezone-aware")
+    if completed_at is None:
+        completed_at = datetime.now(timezone.utc)
+    if completed_at.tzinfo is None:
+        raise ValueError("completed_at must be timezone-aware")
+    if completed_at < dispatched_at:
+        raise ValueError("completed_at cannot precede dispatched_at")
+
+    today_dir = repo / "outputs" / paris_today(dispatched_at)
+    with _dispatch_ledger_lock(today_dir):
+        ledger = read_dispatch_ledger(today_dir)
+        existing = ledger.get(mission_id) or {}
+        try:
+            layer = int(mission.get("layer"))
+        except (TypeError, ValueError):
+            layer = 0
+        event_evidence: set[str] = set()
+        if mission.get("cadence") == "event":
+            if isinstance(dispatched_trigger_ids, (str, bytes)):
+                raise TypeError(
+                    "dispatched_trigger_ids must be an iterable of ids, not a string"
+                )
+            for raw_id in dispatched_trigger_ids or []:
+                trigger_id = str(raw_id).strip()
+                if trigger_id:
+                    event_evidence.add(f"trigger:{trigger_id}")
+        existing_artifacts = {
+            value for value in (existing.get("artifacts") or [])
+            if isinstance(value, str)
+        }
+        layer_prefix = f"outputs/{today_dir.name}/{layer}/"
+        existing_has_required_output = any(
+            value.startswith(layer_prefix)
+            and (repo / value).exists()
+            and not Path(value).name.startswith(".")
+            for value in existing_artifacts
+        )
+        already_completed = _ledger_completion(today_dir, mission_id) is not None
+        if already_completed and (
+            (layer not in (1, 4) or existing_has_required_output)
+            and (
+                mission.get("cadence") != "event"
+                or not (event_evidence - existing_artifacts)
+            )
+        ):
+            return False
+
+        materialized = (
+            _materialize_committed_outputs(repo, mission, completed_at)
+            if materialize_outputs
+            else []
+        )
+        evidence = _normalise_dispatch_artifacts(
+            repo, list(artifacts or []) + materialized
+        )
+        evidence = sorted(existing_artifacts | set(evidence) | event_evidence)
+
+        ledger[mission_id] = {
+            "materialized_at": (
+                existing.get("materialized_at") or dispatched_at.isoformat()
+            ),
+            "dispatched_at": dispatched_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "artifacts": evidence,
+        }
+        _write_dispatch_ledger(today_dir, ledger)
+        # Round/cycle state is part of COMMIT as well.  Keeping this in the
+        # parent prevents a worker that dies after writing its counter but
+        # before returning from satisfying a downstream layer gate (#1117).
+        # The ledger lock also serialises concurrent same-layer completions,
+        # so the existing read/modify/write counter helper cannot lose an
+        # increment during fan-out.
+        output_truth_satisfied = (
+            layer not in (1, 4)
+            or layer_output_present(today_dir / str(layer))
+        )
+        if layer in (1, 2, 3, 4) and output_truth_satisfied:
+            increment_round_counter(today_dir, layer=layer)
+            if layer == 1:
+                write_l1_baseline(today_dir)
+    return True
+
+
 def _mission_handled_marker(today_dir: Path, mid: str) -> "datetime | None":
-    """The per-mission "has this been handled today" timestamp for `mid`,
-    combining the TRUE completion marker (`.last-run`) with the
-    materialization-attempt marker (`.last-materialized`) — see the
-    `.last-materialized` module comment above (#870).
+    """The per-mission completion timestamp for ``mid``.
+
+    ``dispatch.json[mission].completed_at`` is authoritative for the #1117
+    runtime.  During rollout, old ``.last-run`` / ``.last-materialized``
+    markers remain readable so a mixed fleet does not re-fire completed work.
 
     `.last-run` is checked first (and returned alone when present) because
     it is the authoritative "really ran" signal for missions with a real
@@ -219,6 +512,9 @@ def _mission_handled_marker(today_dir: Path, mid: str) -> "datetime | None":
     `build_dispatch_ctx` / `materialize_due_missions_for_tick` never write a
     file literally named `.last-run` for a mission that has not actually run.
     """
+    committed = _ledger_completion(today_dir, mid)
+    if committed is not None:
+        return committed
     mdir = today_dir / "missions" / mid
     real = read_last_run(mdir)
     if real is not None:
@@ -309,13 +605,30 @@ def write_l3_human_deferred(layer3_dir: Path, when: datetime | None = None,
     is not persisted by this function (the L3 prompt's own `logs.jsonl` entry
     is the audit trail L4's STEP 0 required-reads already picks up).
     """
-    write_last_run(layer3_dir, when=when)
+    if when is None:
+        when = datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        raise ValueError("write_l3_human_deferred requires a tz-aware datetime")
+    today_dir = layer3_dir.parent
+    synthetic_id = "__ad_hoc_l3_human_defer__"
+    with _dispatch_ledger_lock(today_dir):
+        ledger = read_dispatch_ledger(today_dir)
+        if _ledger_completion(today_dir, synthetic_id) is None:
+            ledger[synthetic_id] = {
+                "materialized_at": when.isoformat(),
+                "dispatched_at": when.isoformat(),
+                "completed_at": when.isoformat(),
+                "artifacts": ([f"defer:{reason}"] if reason else ["defer:human-supervised"]),
+            }
+            _write_dispatch_ledger(today_dir, ledger)
+            # Keep the companion #965 cycle signal at the same serialized
+            # post-return boundary as the synthetic completion.
+            increment_round_counter(layer3_dir.parent, layer=3)
     # #965: a structural defer is L3's round "as complete as it gets" today —
     # advance round_counter so L1's cycle gate (which reads round_counter, not
     # .last-run) isn't permanently stuck behind a decision that will never
     # execute autonomously. layer3_dir is outputs/<today>/3 — its parent is
     # the today_dir increment_round_counter expects.
-    increment_round_counter(layer3_dir.parent, layer=3)
 
 
 def layer_output_present(layer_dir: Path) -> bool:
@@ -596,7 +909,8 @@ def read_round_counter(today_dir: Path) -> dict[str, int]:
 def increment_round_counter(today_dir: Path, *, layer: int) -> int:
     """Increment the counter for `layer` and persist. Returns the new value.
 
-    This is the documented LAST action of any layer dispatch.
+    New runtimes call this from ``commit_dispatch`` after the worker returns;
+    direct callers remain supported for mixed-version rollout and tests.
     """
     today_dir.mkdir(parents=True, exist_ok=True)
     counts = read_round_counter(today_dir)
@@ -1058,14 +1372,13 @@ def materialize_due_missions(missions: Iterable[dict], *,
 # is always True for event, so the per-mission .last-run marker cannot encode
 # "which trigger did we already act on" — it either re-fires every tick (R2 fail)
 # or blocks a 2nd same-day item (R3 fail). The fix keys idempotence on the trigger
-# item's id: each dispatched id gets a marker under
-#   outputs/<today>/missions/<id>/dispatched-items/<trigger_id>
-# An event mission is "due" only while at least one present trigger id is NOT yet
-# ledgered. The ledger is written by the materializer at dispatch time (crash-safe:
-# it does not depend on the subagent archiving the item) and only READ by
-# select_due_missions (keeping the selector non-mutating). Daily-scoped under
-# outputs/<today>/ like .last-run; trigger ids (gate filenames) are date-stamped
-# and unique, so cross-midnight re-dispatch is not a practical concern.
+# item's id. New runtimes store each successfully handled id as
+# ``trigger:<id>`` evidence in ``outputs/<today>/dispatch.json`` at COMMIT;
+# the older ``missions/<id>/dispatched-items/<trigger_id>`` marker directory is
+# retained as a rollout read fallback. An event mission is due only while at
+# least one present trigger id is not ledgered. Selection stays read-only, and
+# the exact DECIDE-time id is threaded through the worker instead of inferred
+# from whatever else happens to be in the queue later at COMMIT.
 
 
 def _event_trigger_dir(repo_dir: Path, mission: dict) -> Path:
@@ -1088,20 +1401,28 @@ def _present_trigger_ids(repo_dir: Path, mission: dict) -> "set[str]":
 
 
 def _dispatched_trigger_ids(today_dir: Path, mission_id: str, *, before: datetime) -> "set[str]":
-    """Ids dispatched for this event mission on a PRIOR tick (marker ts < before).
+    """Ids completed in dispatch.json or dispatched via a legacy prior marker.
 
-    Each ledger marker stores the dispatch tick's ISO timestamp. Mirroring the
-    `_mission_last_fired` same-tick rule: a marker stamped THIS tick (ts ==
-    before) does NOT count as already-dispatched — otherwise the materializer,
-    which records ids at the top of build_dispatch_ctx, would hide a brand-new
-    item from select_due_missions in the very same tick (the item would never be
-    dispatched at all). A prior-tick marker (ts < before) DOES block re-dispatch
-    — that's what closes the per-tick re-fire loop.
+    The authoritative #1117 ledger is written only after worker validation, so
+    its trigger evidence blocks immediately. Legacy marker timestamps retain
+    their old same-tick rule: only ``ts < before`` blocks, because those markers
+    were written during DECIDE before the worker actually ran.
     """
+    # #1117 authoritative path: trigger identities are completion evidence in
+    # the mission's one dispatch-ledger entry.  An uncompleted dispatch records
+    # nothing and is therefore safely retryable by a watchdog re-kick.
+    out: set[str] = set()
+    entry = read_dispatch_ledger(today_dir).get(mission_id) or {}
+    if _ledger_completion(Path(today_dir), mission_id) is not None:
+        for artifact in entry.get("artifacts") or []:
+            if isinstance(artifact, str) and artifact.startswith("trigger:"):
+                out.add(artifact.removeprefix("trigger:"))
+
+    # Transition fallback: consume the old per-trigger marker directory until
+    # every deployed department has moved to dispatch.json.
     led = Path(today_dir) / "missions" / mission_id / "dispatched-items"
     if not led.is_dir():
-        return set()
-    out: set[str] = set()
+        return out
     for p in led.iterdir():
         if not p.is_file():
             continue
@@ -1130,6 +1451,87 @@ def _event_pending_trigger_ids(repo_dir: Path, today_dir: Path, mission: dict,
     return _present_trigger_ids(repo_dir, mission) - _dispatched_trigger_ids(
         today_dir, mid, before=now_utc
     )
+
+
+def event_trigger_ids_for_dispatch(
+    ctx: "dict[str, Any]", mission: dict, *, limit: int = 1,
+) -> "list[str]":
+    """Choose the pending event trigger ids to hand to one mission worker.
+
+    The result is a deterministic DECIDE-time snapshot.  The runtime retains
+    these ids while the worker runs and passes the same ids to
+    :func:`commit_dispatch` only after that worker returns successfully.  The
+    default of one mirrors the L3 contract (one approved decision per worker)
+    and prevents a worker that archives only one of several concurrent trades
+    from claiming all of them as handled.
+
+    This helper is read-only.  Missing dispatch context fails open as an empty
+    selection; callers should not commit an event mission without an id.
+    """
+    if mission.get("cadence") != "event":
+        return []
+    if limit < 1:
+        raise ValueError("event trigger dispatch limit must be positive")
+    repo_dir = ctx.get("_repo_dir")
+    today_dir = ctx.get("today_dir")
+    now_utc = ctx.get("now_utc")
+    if not repo_dir or not today_dir or not isinstance(now_utc, datetime):
+        return []
+    return sorted(
+        _event_pending_trigger_ids(
+            Path(repo_dir), Path(today_dir), mission, now_utc=now_utc
+        )
+    )[:limit]
+
+
+_ARCHIVED_EVENT_TIME_FIELDS = (
+    "processed_at",
+    "executed_at",
+    "archived_at",
+    "completed_at",
+    "updated_at",
+    "created_at",
+)
+
+
+def _event_archive_evidence_today(
+    repo_dir: Path, mission: dict, *, now_utc: datetime,
+) -> bool:
+    """Whether L3 archived an event trigger on this Paris-local day.
+
+    A successful L3 worker moves its decision into ``.processed/`` before the
+    parent records ``dispatch.json``.  If the parent crashes in that narrow
+    window, the archive is still real execution evidence and must satisfy
+    L4's "L3 fired today" prerequisite while another decision remains queued.
+
+    We require a timestamp in the archived item and scope it to the current
+    Paris day.  Merely finding any historical file in ``.processed/`` would
+    make L3 look fired forever.  ``created_at`` is the final compatibility
+    fallback for existing decision cards that do not add a processing field;
+    decision ids/cards are date-unique in the fleet.
+    """
+    processed_dir = _event_trigger_dir(repo_dir, mission) / ".processed"
+    if not processed_dir.is_dir():
+        return False
+    today = _to_paris(now_utc).date()
+    for item in processed_dir.glob("*.yaml"):
+        if not item.is_file() or item.name.startswith("."):
+            continue
+        try:
+            data = yaml.safe_load(item.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for field in _ARCHIVED_EVENT_TIME_FIELDS:
+            raw = data.get(field)
+            try:
+                timestamp = raw if isinstance(raw, datetime) else _parse_iso(str(raw))
+            except (TypeError, ValueError):
+                continue
+            if _to_paris(timestamp).date() == today:
+                return True
+    return False
 
 
 def _record_dispatched_trigger_ids(today_dir: Path, mission_id: str, ids: "set[str]",
@@ -1613,17 +2015,10 @@ _LAYER_MIN_TIME = {
 def _layer_fired_today(ctx: "dict[str, Any]", layer: int) -> bool:
     """True if layer N has fired at least once today.
 
-    Uses the per-layer .last-run marker first (set the instant a layer starts),
-    falling back to round_counter (incremented when a layer completes a round),
-    falling back to FIX #432 (DEFECT A): any per-mission .last-run marker for
-    a mission belonging to this layer stamped today (`layer_N_mission_fired_today`
-    in ctx, populated by build_dispatch_ctx via _any_mission_fired_today_for_layer).
-    This third fallback covers layers that ran ENTIRELY via the per-mission
-    dispatch path (#261), which never writes the layer-level marker — without
-    it, a layer that plainly ran is reported as not-fired all day, e.g. the L4
-    debrief gate (`l1_fired AND ...`) never opens. ADDITIVE only: does not
-    change behaviour when the layer-marker or round_counter paths already
-    report True.
+    The #1117 ledger-derived mission signal is authoritative for the new
+    runtime.  Legacy per-layer ``.last-run`` and ``round_counter`` signals stay
+    readable during a mixed-version rollout, preserving #432 without asking
+    old and new agents to switch atomically.
     """
     last = ctx.get(f"layer_{layer}_last_run_today")
     if last is not None:
@@ -1826,7 +2221,10 @@ def _any_mission_fired_today_for_layer(
 ) -> bool:
     """True if ANY recurring mission belonging to `layer` has a per-mission
     `.last-run` marker stamped today (`outputs/<today>/missions/<id>/.last-run`)
-    from a PRIOR tick (strictly before `now_utc`, when given).
+    from a PRIOR tick (strictly before `now_utc`, when given).  For Layer 3
+    event missions, a same-day item in the input queue's ``.processed/``
+    archive is also completion evidence.  That closes the crash window where
+    the worker archived a trade but the parent died before ledger COMMIT.
 
     FIX #432 (DEFECT A): after the per-mission dispatch migration (#261), a
     layer can run ENTIRELY via its per-mission path — e.g. content's
@@ -1896,16 +2294,27 @@ def _any_mission_fired_today_for_layer(
         mid = m.get("id", "")
         if not mid:
             continue
+        if (
+            layer == 3
+            and m.get("cadence") == "event"
+            and now_utc is not None
+            and _event_archive_evidence_today(Path(repo_dir), m, now_utc=now_utc)
+        ):
+            return True
         # #870: union .last-run (real completion) with .last-materialized
         # (the materializer's own anti-fire-spin proxy for a shim-resolved
         # mission — see _mission_handled_marker) so this fallback signal is
         # unchanged in behaviour, even though the materializer no longer
         # writes a file literally named .last-run for a mission that has not
         # actually run.
-        stamped = _mission_handled_marker(today_dir, mid)
+        committed = _ledger_completion(today_dir, mid)
+        stamped = committed or _mission_handled_marker(today_dir, mid)
         if stamped is None:
             continue
-        if now_utc is not None and stamped >= now_utc:
+        # Equality was only a compatibility shim for decision-time legacy
+        # markers.  A ledger completion is real even when a new ctx is built
+        # within the same second (#1117 root cause).
+        if committed is None and now_utc is not None and stamped >= now_utc:
             continue
         return True
     return False
@@ -1916,7 +2325,7 @@ def build_dispatch_ctx(
     *,
     now_utc: "datetime | None" = None,
     fire_after_rounds: int = 1,
-    materialize: bool = True,
+    materialize: bool = False,
 ) -> "dict[str, Any]":
     """Build the ctx dict that `decide_dispatch` consumes, by SCANNING the
     repo's queues + today's runtime markers.
@@ -1928,9 +2337,8 @@ def build_dispatch_ctx(
     never fired and work piled up in the queues.
 
     Queue conventions (dept template):
-      - dept.yaml::recurring_missions[] -> materialized into queue items
-        by materialize_due_missions_for_tick() BEFORE the queue scan below.
-        Uses mission_id dedup so the same mission is never double-queued.
+      - dept.yaml::recurring_missions[] -> scanned as candidate work; queue
+        hand-offs are materialized by commit_dispatch after successful return.
       - queues/research/*.yaml         -> has_research_items (Layer 2)
       - queues/inbox/decisions/*.yaml  -> has_inbox_decisions (Layer 3)
       - outputs/<today>/4/.last-run    -> layer_4_last_run_today (L4 idempotence)
@@ -1946,23 +2354,11 @@ def build_dispatch_ctx(
     session ebb03972) and had to override to "heartbeat" by hand every tick. Both
     keys are now scanned from disk so the daily floor and the cycle gate work.
 
-    `materialize` (#454 FIX): when True (the default — used by the REAL
-    dispatch decision, e.g. scaffold.py's documented
-    `ctx = build_dispatch_ctx('.')` call in the live /loop), the usual
-    `materialize_due_missions_for_tick()` side effect runs first, exactly as
-    before (#428/#432 behaviour unchanged), followed by `reconcile_gate_dir`
-    (#1076) and — after `ctx` is built — `maybe_defer_ad_hoc_l3` (#1085,
-    idempotent per Paris-day): a dept whose L3 work is entirely ad-hoc
-    `inbox/decisions/` items with NO recurring L3 mission would otherwise
-    never get its `.last-run` marker stamped by anything, permanently
-    starving L4. Set `materialize=False` for any caller that only needs
-    READ-ONLY ctx signals — e.g. a pre-flight eligibility GATE CHECK
-    (loop-backup.sh's FORCE_LAYER "is this layer due yet" probe) that decides
-    whether to wake the live session but does NOT itself dispatch.
-    `build_dispatch_ctx` is a context BUILDER; only the mission's real run
-    (or this structural-defer path) may write `.last-run` (the #428/#375
-    invariant) — a read-only gate check must not stamp any marker as a side
-    effect.
+    #1117: this function is unconditionally READ-ONLY.  ``materialize`` is
+    retained as a deprecated, ignored keyword so mixed-version callers do not
+    crash during rollout.  Queue hand-offs and completion are written only by
+    ``commit_dispatch`` after the mission executor returns.  This removes the
+    wall-clock-equality distinction between "about to run" and "already ran".
 
     THE #454 BUG (found live on Ben, 2026-07-01/02): `loop-backup.sh`'s
     FORCE_LAYER gate calls `build_dispatch_ctx(...)` purely to read
@@ -1992,37 +2388,6 @@ def build_dispatch_ctx(
     # writer and reader can never disagree across the UTC↔Paris day boundary.
     today = paris_today(now_utc)
     today_dir = repo / "outputs" / today
-
-    # Materialize due recurring missions BEFORE scanning queues — newly
-    # created items become visible to the queue scanners below and can
-    # trigger the appropriate layer this same tick. Pass fire_after_rounds
-    # so the materializer's event-ledger gate uses the same L1 cycle threshold
-    # as decide_dispatch (was hardcoded to 1 in a8ed933; now threaded through).
-    #
-    # #454 FIX: this `if materialize:` branch (extended by #1076's
-    # reconcile_gate_dir and #1085's maybe_defer_ad_hoc_l3 below, plus the
-    # second `if materialize:` block near the end of this function) holds
-    # EVERY mutating step in build_dispatch_ctx (it writes queue items,
-    # per-mission .last-run markers, archives resolved gates, and may stamp
-    # Layer 3's structural-defer marker). Skip it entirely when
-    # materialize=False (read-only gate/probe callers) so build_dispatch_ctx
-    # never stamps a run-marker as a side effect of a call that isn't the real
-    # dispatch decision — see the #454 docstring section above.
-    if materialize:
-        materialize_due_missions_for_tick(repo, today_dir, now_utc,
-                                          fire_after_rounds=fire_after_rounds)
-        # #1076: startup/per-tick gate-directory reconcile. Archive any gate
-        # card whose decision is ALREADY resolved (in .processed/ or
-        # .abandoned/) so `queues/gates/` shows only genuinely-open gates and
-        # Jade's review surface stays honest. This is a MUTATING sweep, so it
-        # runs ONLY in the materialize branch — a read-only gate/probe caller
-        # (materialize=False, e.g. loop-backup.sh's FORCE_LAYER check) must
-        # never move files as a side effect (the #454 invariant). Best-effort:
-        # never let a reconcile hiccup abort the dispatch decision.
-        try:
-            reconcile_gate_dir(repo)
-        except Exception:
-            pass
 
     ctx: "dict[str, Any]" = {
         "now_utc": now_utc,
@@ -2096,43 +2461,6 @@ def build_dispatch_ctx(
             repo, since=read_last_mgmt_scan(repo)
         ),
     }
-
-    if materialize:
-        # #1085 CODE-LEVEL FIX (not template-only): call the missing
-        # write_l3_human_deferred caller HERE, in the real dispatch path, not
-        # only in scaffold.py's documented STEP C prose. The template call is
-        # LLM-emitted — an already-onboarded dept's live CLAUDE.md was baked
-        # at onboarding time and does NOT get the new line just by re-
-        # vendoring dispatch_helpers.py (soft-guard class, #861). Wiring it
-        # here means EVERY caller of build_dispatch_ctx(materialize=True) —
-        # i.e. every live /loop tick, for every dept, past or future, the
-        # instant its vendored dispatch_helpers.py is refreshed — gets the
-        # fix automatically, with no CLAUDE.md edit required.
-        #
-        # Gated behind `if materialize` (mirrors #1076's `reconcile_gate_dir`
-        # placement immediately above): this is a MUTATING call (it may write
-        # outputs/<today>/3/.last-run + bump round_counter[3]), so it must
-        # never run on a `materialize=False` read-only probe call (the #454
-        # invariant a gate/eligibility check must not stamp a marker as a
-        # side effect — e.g. loop-backup.sh's FORCE_LAYER pre-wake check).
-        # `maybe_defer_ad_hoc_l3` itself is additionally idempotent per
-        # Paris-day (#302/#965 fire-spin guard) and narrowly scoped to the
-        # structural no-recurring-L3-mission case (see its docstring) — this
-        # call site only needs to supply `ctx` and `missions`; every actual
-        # decision is made inside the helper.
-        try:
-            dept_yaml_path = repo / "dept.yaml"
-            _dept: "dict[str, Any]" = {}
-            if dept_yaml_path.is_file():
-                _loaded = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
-                if isinstance(_loaded, dict):
-                    _dept = _loaded
-            _missions = _dept.get("recurring_missions") or []
-            maybe_defer_ad_hoc_l3(ctx, _missions)
-        except Exception:
-            # Best-effort, exactly like the reconcile_gate_dir call above —
-            # a hiccup here must never abort the dispatch decision itself.
-            pass
 
     return ctx
 
@@ -2603,7 +2931,9 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     if not mid:
         return None
 
-    marker = _mission_handled_marker(Path(today_dir_str), mid)
+    today_dir = Path(today_dir_str)
+    committed = _ledger_completion(today_dir, mid)
+    marker = committed or _mission_handled_marker(today_dir, mid)
     if marker is None:
         return None
 
@@ -2612,7 +2942,7 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     # Treat it as "not yet fired" so select_due_missions still returns it now;
     # next tick the marker will be < now_utc and correctly veto a re-dispatch.
     now_utc = ctx.get("now_utc")
-    if now_utc is not None and marker == now_utc:
+    if committed is None and now_utc is not None and marker == now_utc:
         return None
 
     # #1080: a genuine prior-tick marker still isn't "fired" for L1/L4 unless
@@ -2859,7 +3189,8 @@ def _due_missions_for_layer(
         # not yet in the per-item dispatched ledger. This closes the per-tick
         # re-fire loop (a still-pending-but-already-dispatched item does not
         # re-select) while still firing for a NEW item (different id). Reads only;
-        # the materializer writes the ledger. repo_dir comes from ctx['_repo_dir']
+        # commit_dispatch writes the exact worker-bound id. repo_dir comes from
+        # ctx['_repo_dir']
         # (build_dispatch_ctx injects it); if absent we fail-open to preserve the
         # old behaviour rather than silently starve.
         if m.get("cadence") == "event":
@@ -3197,6 +3528,8 @@ def maybe_defer_ad_hoc_l3(
 
     today_dir = ctx.get("today_dir")
     if not today_dir:
+        return False
+    if _ledger_completion(Path(today_dir), "__ad_hoc_l3_human_defer__") is not None:
         return False
 
     write_l3_human_deferred(

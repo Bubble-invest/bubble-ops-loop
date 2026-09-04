@@ -151,12 +151,12 @@ def test_count_open_gates_missing_dir(tmp_path):
     assert count_open_gates(tmp_path) == 0
 
 
-# ── build_dispatch_ctx integration: reconcile runs on a real tick ────────────
-def test_build_dispatch_ctx_reconciles_on_materialize(tmp_path):
+# ── reconciliation is explicit; DECIDE never mutates ─────────────────────────
+def test_reconcile_gate_dir_is_explicit(tmp_path):
     _gate(tmp_path, "ctx-resolved")
     _decision(tmp_path, "ctx-resolved", "processed")
     _gate(tmp_path, "ctx-open")  # genuinely open, must survive
-    build_dispatch_ctx(tmp_path)  # materialize=True (default) → reconcile fires
+    reconcile_gate_dir(tmp_path)
     assert not (tmp_path / "queues" / "gates" / "ctx-resolved.yaml").exists()
     assert (tmp_path / "queues" / "gates" / ".done" / "published" / "ctx-resolved.yaml").is_file()
     assert (tmp_path / "queues" / "gates" / "ctx-open.yaml").is_file()

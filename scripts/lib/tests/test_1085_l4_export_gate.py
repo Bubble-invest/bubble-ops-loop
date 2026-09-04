@@ -149,13 +149,12 @@ def test_l4_fires_normally_once_l3_actually_executes(tmp_path: Path):
     assert decide_dispatch(ctx) == "layer_4"
 
 
-def test_write_l3_human_deferred_writes_same_marker_as_write_last_run(tmp_path: Path):
-    """`write_l3_human_deferred` must be mechanically equivalent to
-    `write_last_run` for the `.last-run` file itself — it is a semantically
-    distinct call site (audit/grep-ability), not a different storage format."""
-    from scripts.lib.dispatch_helpers import read_last_run
+def test_write_l3_human_deferred_commits_to_dispatch_ledger(tmp_path: Path):
+    """A structural defer is a terminal ledger outcome, not a marker."""
+    from scripts.lib.dispatch_helpers import read_dispatch_ledger, read_last_run
 
     layer3_dir = tmp_path / "outputs" / _TODAY / "3"
     write_l3_human_deferred(layer3_dir, when=_NOW)
-    assert (layer3_dir / ".last-run").is_file()
-    assert read_last_run(layer3_dir) == _NOW
+    assert read_last_run(layer3_dir) is None
+    entry = read_dispatch_ledger(layer3_dir.parent)["__ad_hoc_l3_human_defer__"]
+    assert entry["completed_at"] == _NOW.isoformat()

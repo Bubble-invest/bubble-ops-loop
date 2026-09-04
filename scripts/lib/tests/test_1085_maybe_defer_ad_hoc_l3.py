@@ -65,6 +65,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     decide_dispatch,
     select_due_missions,
     maybe_defer_ad_hoc_l3,
+    read_dispatch_ledger,
     read_last_run,
     read_round_counter,
     write_last_run,
@@ -167,10 +168,8 @@ def test_maybe_defer_ad_hoc_l3_unblocks_l4(tmp_path: Path):
     wrote = maybe_defer_ad_hoc_l3(ctx, _NO_L3_MISSIONS, phase=phase)
     assert wrote is True, "must stamp on the genuinely-starved ad-hoc case"
 
-    assert read_last_run(repo / "outputs" / _TODAY / "3") == _NOW, (
-        "must write the SAME .last-run marker write_l3_human_deferred writes "
-        "(the marker family #870/#1080 already understand)"
-    )
+    ledger = read_dispatch_ledger(repo / "outputs" / _TODAY)
+    assert ledger["__ad_hoc_l3_human_defer__"]["completed_at"] == _NOW.isoformat()
     assert read_round_counter(repo / "outputs" / _TODAY).get("3") == 1, (
         "#965: a structural defer must also advance round_counter[3], or "
         "L1's cycle gate can never be satisfied again today"
@@ -182,7 +181,7 @@ def test_maybe_defer_ad_hoc_l3_unblocks_l4(tmp_path: Path):
     # The marker is already on disk, so build_dispatch_ctx's own internal
     # maybe_defer_ad_hoc_l3 call is a no-op here (guard 3) — no double-stamp.
     ctx2 = build_dispatch_ctx(repo, now_utc=_NOW)
-    assert ctx2["layer_3_last_run_today"] == _NOW
+    assert ctx2["round_counter"]["3"] == 1
     assert decide_dispatch(ctx2) == "layer_4", (
         "L4 (daily_risk_audit / management-export.yaml) must become eligible "
         "once L3 is marked handled-today — this is the #1094 symptom (no "
@@ -210,8 +209,10 @@ def test_maybe_defer_ad_hoc_l3_is_idempotent_no_fire_spin(tmp_path: Path):
 
     wrote1 = maybe_defer_ad_hoc_l3(ctx1, _NO_L3_MISSIONS, phase=phase1)
     assert wrote1 is True
-    stamped_at = read_last_run(repo / "outputs" / _TODAY / "3")
-    assert stamped_at == _NOW
+    stamped_at = read_dispatch_ledger(repo / "outputs" / _TODAY)[
+        "__ad_hoc_l3_human_defer__"
+    ]["completed_at"]
+    assert stamped_at == _NOW.isoformat()
     assert read_round_counter(repo / "outputs" / _TODAY).get("3") == 1
 
     # Tick 2, same Paris day, later in the day: decide_dispatch still resolves
@@ -227,7 +228,9 @@ def test_maybe_defer_ad_hoc_l3_is_idempotent_no_fire_spin(tmp_path: Path):
     assert wrote2 is False, "must be a no-op — L3 already handled today (#302/#965 fire-spin guard)"
 
     # Nothing was touched a second time.
-    assert read_last_run(repo / "outputs" / _TODAY / "3") == stamped_at
+    assert read_dispatch_ledger(repo / "outputs" / _TODAY)[
+        "__ad_hoc_l3_human_defer__"
+    ]["completed_at"] == stamped_at
     assert read_round_counter(repo / "outputs" / _TODAY).get("3") == 1, (
         "round_counter[3] must NOT be incremented a second time this day"
     )
@@ -282,34 +285,19 @@ def test_maybe_defer_ad_hoc_l3_noop_when_phase_is_not_layer_3(tmp_path: Path):
     assert read_last_run(repo / "outputs" / _TODAY / "3") is None
 
 
-def test_build_dispatch_ctx_materialize_true_stamps_l3_and_unblocks_l4(tmp_path: Path):
-    """THE CODE-LEVEL WIRING (not template-only): `build_dispatch_ctx(...,
-    materialize=True)` — what EVERY live /loop tick calls, for every dept —
-    must call `maybe_defer_ad_hoc_l3` itself. This is what makes the fix
-    reach an already-onboarded dept (e.g. Géraldine/accountant) the instant
-    its vendored `dispatch_helpers.py` is refreshed: her live CLAUDE.md was
-    baked at onboarding time and will NOT contain a call to the new helper
-    (the scaffold.py template update only affects future-onboarded depts),
-    so the caller MUST live in code, not only in the LLM-emitted /loop
-    prose (same soft-guard class as #861)."""
+def test_build_dispatch_ctx_is_pure_before_explicit_l3_defer(tmp_path: Path):
+    """#1117: even the former materialize path cannot commit during DECIDE."""
     repo = _mk_repo(tmp_path, _NO_L3_MISSIONS)
     _drop_approved_decision(repo, "hold-boursorama-1")
     write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)
 
     assert read_last_run(repo / "outputs" / _TODAY / "3") is None, "precondition"
 
-    # A single build_dispatch_ctx(materialize=True) call — exactly what
-    # `ctx = build_dispatch_ctx('.')` at the top of every dept's STEP C does
-    # every tick — must be enough, with NO manual maybe_defer_ad_hoc_l3 call
-    # and no CLAUDE.md edit.
     ctx = build_dispatch_ctx(repo, now_utc=_NOW)
-    assert decide_dispatch(ctx) == "layer_3", "sanity: this tick's phase, computed BEFORE the internal stamp"
-
-    assert read_last_run(repo / "outputs" / _TODAY / "3") == _NOW, (
-        "build_dispatch_ctx(materialize=True) must itself have called "
-        "maybe_defer_ad_hoc_l3 and stamped L3 handled-today — no separate "
-        "call, no CLAUDE.md line required"
-    )
+    phase = decide_dispatch(ctx)
+    assert phase == "layer_3"
+    assert read_dispatch_ledger(repo / "outputs" / _TODAY) == {}
+    assert maybe_defer_ad_hoc_l3(ctx, _NO_L3_MISSIONS, phase=phase)
     assert read_round_counter(repo / "outputs" / _TODAY).get("3") == 1
 
     # A FRESH tick now sees L3 as fired and L4 becomes eligible — the actual

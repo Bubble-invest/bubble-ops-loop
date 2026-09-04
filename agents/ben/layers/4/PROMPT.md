@@ -33,13 +33,10 @@ whose slot hasn't opened yet. See `scripts/lib/dispatch_helpers.py::
 select_due_missions` for the canonical per-mission selection logic
 (card #277 / #518).
 
-## First mandatory action (STEP 1 — idempotence)
+## Dispatch completion ownership (#1117)
 
-Write **immediately** `outputs/<today>/4/.last-run` — BEFORE any work, so a later
-tick the same day does not re-launch `risk_control`. (This is the legacy
-layer-shim marker path — the dispatch code's shim-aware fallback treats it as
-this mission's own marker per the timing rule above; it is NOT interpreted as
-covering a different, later-scheduled Layer-4 mission.)
+Write real artifacts only. Do not write `.last-run`, `.last-materialized`, or
+`dispatch.json`; the parent runtime commits completion after return + validation.
 
 ## Required reads at start (STEP 0) — exhaustive
 

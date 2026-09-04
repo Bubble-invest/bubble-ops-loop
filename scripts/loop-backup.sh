@@ -734,7 +734,10 @@ Run Layer ${FORCE_LAYER} NOW, per your CLAUDE.md operating protocol step 3:
 git pull; read layers/${FORCE_LAYER}/PROMPT.md; spawn the Layer ${FORCE_LAYER}
 subagent(s); VERIFY their output; validate; commit+push. Do NOT run
 decide_dispatch and do NOT run any other layer — this tick is Layer
-${FORCE_LAYER} specifically. Execute EXACTLY ONE tick, then:
+${FORCE_LAYER} specifically. DECIDE/probes are read-only: never pre-stamp
+.last-run or .last-materialized. AFTER each subagent returns and validates,
+call scripts.lib.dispatch_helpers.commit_dispatch for its mission, with the
+remembered dispatch-start time and real artifact paths. Execute EXACTLY ONE tick, then:
   1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 — treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet but more may come, else run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).
   2. Write heartbeat to outputs/<today>/heartbeat.log.
   3. Then STOP.
@@ -754,7 +757,9 @@ PROMPT
 You are running as a BACKUP tick because your persistent /loop appears
 to have stopped. Execute EXACTLY ONE dispatch tick per your CLAUDE.md
 operating protocol — git pull, decide_dispatch, spawn the chosen layer
-subagent (if any), validate its output, commit+push. Then STOP. Do
+subagent (if any), validate its output, call commit_dispatch for each mission
+ONLY AFTER its worker returns, then commit+push. Never pre-stamp a dispatch
+marker during DECIDE. Then STOP. Do
 NOT start a /loop. Do NOT run more than one tick.
 
 Do NOT send your own Telegram message — the backup wrapper relays your
@@ -786,9 +791,8 @@ TICK_PROMPT="$GENERIC_TICK_PROMPT"
 # of the generic "read layers/<N>/PROMPT.md" instruction — so a late floor
 # tick can dispatch a SPECIFIC still-pending mission (e.g. market_wrapup)
 # without re-running a mission that already fired earlier today (e.g.
-# risk_control), both on the same layer. Idempotence is the mission's OWN
-# job (its prompt's STEP 1 stamps outs/<today>/missions/<id>/.last-run,
-# exactly like the live-loop mission-centric path — see resolve_mission_prompt).
+# risk_control), both on the same layer. Completion is the parent runtime's
+# job: it writes the one dispatch.json ledger only after the worker returns.
 build_mission_tick_prompt() {
     local layer="$1" mission_id="$2" prompt_path="$3"
     cat <<PROMPT
@@ -797,16 +801,20 @@ cron units that guarantee each OODA layer fires at least once a day even if
 your persistent /loop is down or parked).
 
 MISSION-GRANULAR floor tick (card #518): this Layer ${layer} has MORE THAN
-ONE recurring mission in dept.yaml. Per-mission idempotence markers
-(outputs/<today>/missions/<id>/.last-run) show mission \`${mission_id}\` is
+ONE recurring mission in dept.yaml. The per-tick completion ledger
+(outputs/<today>/dispatch.json) shows mission \`${mission_id}\` is
 still due — run ONLY that mission now, per ${prompt_path}. Do NOT run any
 other Layer ${layer} mission this tick (a sibling mission that already fired
 today must stay untouched; a sibling not yet due is not yours to run either
 — the next floor tick, or the live loop, will pick it up on its own schedule).
 
 Run mission \`${mission_id}\` NOW: git pull; read ${prompt_path}; spawn its
-subagent; VERIFY the output; validate; commit+push. Do NOT run
-decide_dispatch. Execute EXACTLY ONE tick, then:
+subagent; VERIFY the output; validate; then call
+scripts.lib.dispatch_helpers.commit_dispatch for mission \`${mission_id}\`
+with the remembered dispatch-start time and verified artifact paths. This
+COMMIT happens only after the subagent returns; never write .last-run or
+.last-materialized during DECIDE. Then commit+push. Do NOT run decide_dispatch.
+Execute EXACTLY ONE tick, then:
   1. If no /loop wake is armed: arm ONE self-paced next wake via CronCreate (run CronList first and dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 — treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer/mission if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet but more may come, else run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).
   2. Write heartbeat to outputs/<today>/heartbeat.log.
   3. Then STOP.
@@ -1188,14 +1196,7 @@ from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx, _LAYER_MIN_TIME, _to_paris, _layer_fired_today,
 )
 workdir, layer, offset_h = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
-# #454 FIX: this is a READ-ONLY eligibility probe (decides whether to wake
-# the live session) — it must NOT materialize/pre-stamp mission markers as a
-# side effect. materialize=True (the old default) pre-stamped shim-resolved
-# missions' (e.g. Ben's data_update) per-mission .last-run here, ~9s before
-# inject_live_loop woke the real session; the real session's own
-# build_dispatch_ctx call then saw that stamp as a PRIOR-tick marker and
-# silently vetoed the real dispatch (l1_fired=True -> heartbeat). See
-# board #454 and the docstring on build_dispatch_ctx's `materialize` kwarg.
+# #1117/#454: every build_dispatch_ctx call is a READ-ONLY eligibility probe.
 ctx = build_dispatch_ctx(workdir, now_utc=datetime.now(timezone.utc), materialize=False)
 now_paris = _to_paris(ctx["now_utc"])
 # min-time + backup offset, as a Paris-local datetime today
@@ -1255,11 +1256,11 @@ PYEOF2
         select_forced_layer_missions "$slug" "$workdir"
         if [[ "$_MISSIONS_DEFINED_ON_LAYER" == "1" && "${#MISSION_IDS[@]}" == "0" ]]; then
             # dept.yaml declares mission(s) on this layer but NONE are due —
-            # every mission already has a fresh per-mission marker today.
+            # every mission already has a fresh dispatch-ledger completion today.
             # Do NOT fall back to the generic "run Layer N" prompt (that
             # would re-run an already-fired mission); just skip cleanly.
-            log "$slug: skip — all Layer $FORCE_LAYER missions already fired today (per-mission markers present)"
-            emit_event "$slug" "skip" "all L$FORCE_LAYER missions already fired today (per-mission)" "$age"
+            log "$slug: skip — all Layer $FORCE_LAYER missions already completed in dispatch.json today"
+            emit_event "$slug" "skip" "all L$FORCE_LAYER missions already completed today" "$age"
             continue
         fi
     fi

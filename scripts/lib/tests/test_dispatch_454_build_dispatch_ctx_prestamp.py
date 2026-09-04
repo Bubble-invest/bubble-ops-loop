@@ -50,6 +50,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     build_dispatch_ctx,
+    commit_dispatch,
     decide_dispatch,
     select_due_missions,
     read_last_run,
@@ -148,37 +149,27 @@ def test_readonly_ctx_build_writes_no_marker_at_all(tmp_path):
 #    #428/#432 fire-spin protections).
 # ---------------------------------------------------------------------------
 
-def test_default_materialize_true_still_dispatches_on_first_due_tick(tmp_path):
+def test_default_readonly_build_still_dispatches_on_first_due_tick(tmp_path):
     repo = _make_repo(tmp_path)
     missions = _missions(repo)
 
-    ctx = build_dispatch_ctx(repo, now_utc=_NOW1)  # materialize defaults True
+    ctx = build_dispatch_ctx(repo, now_utc=_NOW1)
     phase = decide_dispatch(ctx)
     due = select_due_missions(ctx, missions)
 
     assert phase == "layer_1"
     assert [m["id"] for m in due] == ["data_update"]
-    # The per-mission marker IS stamped this tick (anti-fire-spin, #261/#277) —
-    # materialize=True still writes it, same-tick-excluded so it doesn't
-    # cannibalize the tick it became due on (unchanged from #428/#432).
-    # #870: the stamp lands on .last-materialized (data_update is
-    # shim-resolved, no dedicated PROMPT.md) — build_dispatch_ctx must never
-    # write .last-run for a mission it did not actually run.
     assert read_last_run(repo / "outputs" / _TODAY / "missions" / "data_update") is None
     marker = read_last_materialized(repo / "outputs" / _TODAY / "missions" / "data_update")
-    assert marker == _NOW1
+    assert marker is None
 
 
-def test_default_materialize_true_second_tick_same_process_still_vetoes_as_before(tmp_path):
-    """Two materialize=True calls (the OLD/default behaviour) 9s apart still
-    reproduce the veto — this is expected: the fix is that the GATE CHECK
-    caller must opt into materialize=False, not that materialize=True stops
-    being idempotent. This test pins the pre-existing (correct, by-design)
-    idempotence semantics so the fix doesn't accidentally weaken them."""
+def test_post_return_commit_vetoes_second_tick(tmp_path):
+    """A genuine completion, not DECIDE, closes the mission."""
     repo = _make_repo(tmp_path)
     missions = _missions(repo)
 
-    build_dispatch_ctx(repo, now_utc=_NOW1)  # materialize=True: stamps for real
+    build_dispatch_ctx(repo, now_utc=_NOW1)
     # #1080 output-truth: the marker above proves a DECISION was made, not
     # that the mission's real output exists yet — simulate the dispatched
     # session having genuinely completed by the second tick (this test is
@@ -187,6 +178,10 @@ def test_default_materialize_true_second_tick_same_process_still_vetoes_as_befor
     today_dir = repo / "outputs" / _NOW1.strftime("%Y-%m-%d")
     (today_dir / "1").mkdir(parents=True, exist_ok=True)
     (today_dir / "1" / "situation_brief.md").write_text("ok")
+    commit_dispatch(
+        repo, missions[0], dispatched_at=_NOW1, completed_at=_NOW1,
+        artifacts=[today_dir / "1" / "situation_brief.md"],
+    )
     now2 = _NOW1 + timedelta(seconds=9)
     ctx2 = build_dispatch_ctx(repo, now_utc=now2)
     due2 = select_due_missions(ctx2, missions)

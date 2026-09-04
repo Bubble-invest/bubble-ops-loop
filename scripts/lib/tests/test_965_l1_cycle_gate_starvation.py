@@ -54,7 +54,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402
     build_dispatch_ctx,
+    commit_dispatch,
     decide_dispatch,
+    event_trigger_ids_for_dispatch,
     select_due_missions,
     write_last_run,
     write_l3_human_deferred,
@@ -62,6 +64,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     write_l1_baseline,
     read_round_counter,
     read_last_run,
+    read_dispatch_ledger,
 )
 
 _TODAY = "2026-09-03"
@@ -137,17 +140,14 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     """Drive a realistic sequence of ticks through ONE UTC day (2026-09-03,
     a Thursday — so `weekly_review` never fires) and return the FINAL
     evening ctx + due list. Mirrors how the live /loop actually operates:
-    each tick calls `build_dispatch_ctx` (which auto-materializes recurring
+    each tick calls `build_dispatch_ctx` (which scans recurring
     missions) then `select_due_missions`; a mission's OWN layer-completion
-    steps (`increment_round_counter` +, for L1, `write_l1_baseline`) are
-    simulated here exactly as that layer's own PROMPT.md would perform them
-    — dispatch_helpers.py never calls `increment_round_counter` on its own
-    (only the LAYER's own successful run does, per SKILL.md)."""
+    state is advanced by `commit_dispatch` only after a successful return."""
     # Tick 0 — 07:00 Paris: L1's morning floor fires (data_update + news_scan).
     now0 = datetime(2026, 9, 3, 5, 0, tzinfo=timezone.utc)
     ctx0 = build_dispatch_ctx(repo, now_utc=now0)
     ctx0["_repo_dir"] = str(repo)
-    select_due_missions(ctx0, missions)
+    due0 = select_due_missions(ctx0, missions)
     write_last_run(today_dir / "1", when=now0)
     # #1080 output-truth: a layer marker alone is no longer sufficient
     # evidence of a genuine L1 fire (L1 is output-evidence-gated) — write the
@@ -155,8 +155,11 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     # produces.
     (today_dir / "1").mkdir(parents=True, exist_ok=True)
     (today_dir / "1" / "situation_brief.md").write_text("ok")
-    increment_round_counter(today_dir, layer=1)
-    write_l1_baseline(today_dir)
+    for mission in due0:
+        commit_dispatch(
+            repo, mission, dispatched_at=now0, completed_at=now0,
+            artifacts=[today_dir / "1" / "situation_brief.md"],
+        )
 
     # An approved decision arrives that can NEVER execute autonomously
     # (board-#17-shaped human-supervised booking).
@@ -167,9 +170,18 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     now1 = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
     ctx1 = build_dispatch_ctx(repo, now_utc=now1)
     ctx1["_repo_dir"] = str(repo)
-    select_due_missions(ctx1, missions)
-    write_l3_human_deferred(today_dir / "3", when=now1,
-                             reason="board #17 — booking is human-supervised")
+    due1 = select_due_missions(ctx1, missions)
+    for mission in due1:
+        trigger_ids = event_trigger_ids_for_dispatch(ctx1, mission)
+        commit_dispatch(
+            repo,
+            mission,
+            dispatched_at=now1,
+            completed_at=now1,
+            artifacts=[],
+            dispatched_trigger_ids=trigger_ids,
+            materialize_outputs=False,
+        )
 
     # Tick 2 — 12:00 Paris: L2's research consumer genuinely fires and
     # completes (consumes the item data_update produced at tick 0).
@@ -178,8 +190,9 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     ctx2["_repo_dir"] = str(repo)
     due2 = select_due_missions(ctx2, missions)
     if "research" in [m["id"] for m in due2]:
-        write_last_run(today_dir / "missions" / "research", when=now2)
-        increment_round_counter(today_dir, layer=2)
+        research = next(m for m in due2 if m["id"] == "research")
+        commit_dispatch(repo, research, dispatched_at=now2, completed_at=now2,
+                        artifacts=[], materialize_outputs=False)
         for f in (repo / "queues" / "research").glob("*.yaml"):
             f.unlink()
 
@@ -190,7 +203,6 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     ctx3["_repo_dir"] = str(repo)
     due3 = select_due_missions(ctx3, missions)
     if "risk_control" in [m["id"] for m in due3]:
-        write_last_run(today_dir / "missions" / "risk_control", when=now3)
         # #1080 output-truth: L4 is output-evidence-gated too — write the real
         # STEP-3 artifact alongside the marker, or a later tick would (per the
         # new invariant, correctly) treat risk_control as died-mid-dispatch
@@ -198,7 +210,9 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
         # exact starvation this test isolates.
         (today_dir / "4").mkdir(parents=True, exist_ok=True)
         (today_dir / "4" / "risk-brief.md").write_text("ok")
-        increment_round_counter(today_dir, layer=4)
+        risk = next(m for m in due3 if m["id"] == "risk_control")
+        commit_dispatch(repo, risk, dispatched_at=now3, completed_at=now3,
+                        artifacts=[today_dir / "4" / "risk-brief.md"])
 
     # Tick 4 — 19:30 Paris: the tick under test.
     now4 = datetime(2026, 9, 3, 17, 30, tzinfo=timezone.utc)
@@ -233,8 +247,8 @@ def test_hourly_l1_mission_starved_by_structurally_blocked_l3(tmp_path: Path):
         "layer_3 by has_inbox_decisions — the fix does not touch decide_dispatch"
     )
     assert read_round_counter(today_dir).get("3") == 1, (
-        "precondition: the fix must have advanced round_counter['3'] when "
-        "write_l3_human_deferred ran"
+        "precondition: COMMIT must advance round_counter['3'] for the "
+        "validated structural-defer return"
     )
 
     assert "news_scan" in ids, (
@@ -338,6 +352,8 @@ def test_write_l3_human_deferred_advances_round_counter_directly(tmp_path: Path)
     when = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
     write_l3_human_deferred(layer3_dir, when=when)
 
-    assert (layer3_dir / ".last-run").is_file()
-    assert read_last_run(layer3_dir) == when
+    assert read_last_run(layer3_dir) is None
+    assert read_dispatch_ledger(layer3_dir.parent)[
+        "__ad_hoc_l3_human_defer__"
+    ]["completed_at"] == when.isoformat()
     assert read_round_counter(layer3_dir.parent) == {"3": 1}

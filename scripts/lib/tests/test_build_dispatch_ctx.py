@@ -17,7 +17,9 @@ import json
 
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx,
+    commit_dispatch,
     decide_dispatch,
+    select_due_missions,
     increment_round_counter,
     write_l1_baseline,
     write_last_run,
@@ -438,8 +440,8 @@ def _mk_mission(mission_id: str, layer: int = 1, **kwargs) -> dict:
 MORNING_AFTER_FLOOR = datetime(2026, 6, 16, 6, 30, tzinfo=timezone.utc)
 
 
-def test_materialize_daily_mission_creates_queue_item(tmp_path: Path):
-    """A daily mission whose time has passed today creates a queue item."""
+def test_commit_daily_mission_creates_queue_item(tmp_path: Path):
+    """A returned daily mission materializes its queue hand-off on COMMIT."""
     repo = _mk_repo(tmp_path)
     _mk_dept_yaml(repo, [
         _mk_mission("morning_sync", time="07:00"),
@@ -457,6 +459,10 @@ def test_materialize_daily_mission_creates_queue_item(tmp_path: Path):
 
     # No existing queue items for this mission.
     ctx = build_dispatch_ctx(repo, now_utc=MORNING_AFTER_FLOOR)
+    mission = yaml.safe_load((repo / "dept.yaml").read_text())["recurring_missions"][0]
+    assert select_due_missions(ctx, [mission]) == [mission]
+    commit_dispatch(repo, mission, dispatched_at=MORNING_AFTER_FLOOR,
+                    completed_at=MORNING_AFTER_FLOOR, artifacts=[])
 
     # A queue item should have been created
     research_dir = repo / "queues" / "research"
@@ -470,7 +476,7 @@ def test_materialize_daily_mission_creates_queue_item(tmp_path: Path):
     item_data = yaml.safe_load(items[0].read_text(encoding="utf-8"))
     assert item_data["mission_id"] == "morning_sync"
     assert item_data["kind"] == "test_task"
-    assert item_data["created_by"] == "materialize_due_missions"
+    assert item_data["created_by"] == "commit_dispatch"
 
 
 def test_materialize_idempotent(tmp_path: Path):

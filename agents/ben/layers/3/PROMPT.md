@@ -56,9 +56,12 @@ Record the command's literal output in the order's
 2. Your inbox item (the approved decision) + its linked `decisions` row in `fund.sqlite`.
 3. The `broker-adapter` skill — fenced.
 
-## First mandatory action (STEP 1 — idempotence)
+## Dispatch completion ownership (#1117)
 
-Write **immediately** `outputs/<today>/3/.last-run` before any other work.
+Write real artifacts only. Do not write `.last-run`, `.last-materialized`, or
+`dispatch.json`; the parent runtime commits completion after return + validation.
+Process only the exact trigger id the parent handed you, and return that id with
+your artifacts so COMMIT cannot claim unrelated pending decisions.
 
 ## Your work (STEP 2 — plan → validate → execute)
 
