@@ -309,6 +309,7 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 ```python
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx, commit_dispatch, decide_dispatch,
+    event_trigger_ids_for_dispatch,
     select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
     resolve_mission_prompt,
 )
@@ -325,9 +326,13 @@ maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit fo
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: remember dispatched_at=ctx['now_utc'], spawn the
-# worker, validate its artifacts, then call commit_dispatch('.', mission,
-# dispatched_at=dispatched_at, artifacts=artifact_paths) AFTER it returns.
+# For each mission in `due`: remember dispatched_at=ctx['now_utc']. For an
+# event mission, choose `trigger_ids = event_trigger_ids_for_dispatch(ctx,
+# mission)` and hand that exact item to the worker (one trigger by default).
+# After the worker returns and validates, call commit_dispatch('.', mission,
+# dispatched_at=dispatched_at, artifacts=artifact_paths,
+# dispatched_trigger_ids=trigger_ids) with those same ids. Never rescan the
+# queue at COMMIT: other pending triggers belong to later workers/ticks.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the date
@@ -518,6 +523,7 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 ```python
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx, commit_dispatch, decide_dispatch,
+    event_trigger_ids_for_dispatch,
     select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
     resolve_mission_prompt,
 )
@@ -534,9 +540,13 @@ maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit fo
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: remember dispatched_at=ctx['now_utc'], spawn the
-# worker, validate its artifacts, then call commit_dispatch('.', mission,
-# dispatched_at=dispatched_at, artifacts=artifact_paths) AFTER it returns.
+# For each mission in `due`: remember dispatched_at=ctx['now_utc']. For an
+# event mission, choose `trigger_ids = event_trigger_ids_for_dispatch(ctx,
+# mission)` and hand that exact item to the worker (one trigger by default).
+# After the worker returns and validates, call commit_dispatch('.', mission,
+# dispatched_at=dispatched_at, artifacts=artifact_paths,
+# dispatched_trigger_ids=trigger_ids) with those same ids. Never rescan the
+# queue at COMMIT: other pending triggers belong to later workers/ticks.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the
@@ -880,6 +890,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 3. If `due` is NON-empty — spawn + verify each subagent (one per mission in `due`; drive off `due`, NOT `decide_dispatch` — a secondary L4 mission can be in `due` while decide_dispatch=heartbeat):
    - For each mission: `resolve_mission_prompt('.', mission)` → `missions/<id>/PROMPT.md`
      if it exists, else `layers/<N>/PROMPT.md` (legacy shim — zero regression for existing depts).
+   - For an event mission, retain `event_trigger_ids_for_dispatch(ctx, mission)` and hand that exact (one by default) queue item to the worker.
    - Call the **Agent tool** with that prompt as the task description, plus
      the specific context (queue item / time window / due mission).
    - **Parallel fan-out**: spawn one Agent per mission in the same tick (Anthropic
@@ -897,10 +908,9 @@ each Moment task to a stateless subagent via Agent. The subagents
       where `expected_artifacts` is defined by `layers/<N>/PROMPT.md`. Returns
       `(ok, missing, malformed)`.
 
-   c. **If `ok == True`**: call `commit_dispatch('.', mission,
-      dispatched_at=ctx['now_utc'], artifacts=expected_artifact_paths)` **now, after
-      the worker returned**. This atomically records `materialized_at`,
-      `dispatched_at`, `completed_at`, and `artifacts` in the one dispatch ledger.
+   c. **If `ok == True`**: call `commit_dispatch('.', mission, dispatched_at=ctx['now_utc'], artifacts=expected_artifact_paths,
+      dispatched_trigger_ids=trigger_ids)` **after return** (`trigger_ids=[]` for non-events; never rescan here).
+      This atomically records `materialized_at`, `dispatched_at`, `completed_at`, and `artifacts` in the one dispatch ledger.
       It also advances the round counter/L1 baseline at that post-return boundary.
       Then note in the heartbeat (`subagent N OK`) and move to step 4.
 

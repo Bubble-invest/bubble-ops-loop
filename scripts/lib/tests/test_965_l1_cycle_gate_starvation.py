@@ -56,6 +56,7 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     build_dispatch_ctx,
     commit_dispatch,
     decide_dispatch,
+    event_trigger_ids_for_dispatch,
     select_due_missions,
     write_last_run,
     write_l3_human_deferred,
@@ -171,12 +172,14 @@ def _run_full_ooda_day(repo: Path, missions: list[dict], today_dir: Path) -> dic
     ctx1["_repo_dir"] = str(repo)
     due1 = select_due_missions(ctx1, missions)
     for mission in due1:
+        trigger_ids = event_trigger_ids_for_dispatch(ctx1, mission)
         commit_dispatch(
             repo,
             mission,
             dispatched_at=now1,
             completed_at=now1,
             artifacts=[],
+            dispatched_trigger_ids=trigger_ids,
             materialize_outputs=False,
         )
 

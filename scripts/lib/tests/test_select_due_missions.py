@@ -40,6 +40,7 @@ from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx,
     commit_dispatch,
     decide_dispatch,
+    event_trigger_ids_for_dispatch,
     is_mission_due,
     resolve_mission_prompt,
     select_due_missions,
@@ -132,8 +133,16 @@ def _commit(repo: Path, mission: dict, when: datetime) -> None:
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("completed\n", encoding="utf-8")
         artifacts.append(artifact)
-    commit_dispatch(repo, mission, dispatched_at=when, completed_at=when,
-                    artifacts=artifacts)
+    ctx = build_dispatch_ctx(repo, now_utc=when)
+    dispatched_trigger_ids = event_trigger_ids_for_dispatch(ctx, mission)
+    commit_dispatch(
+        repo,
+        mission,
+        dispatched_at=when,
+        completed_at=when,
+        artifacts=artifacts,
+        dispatched_trigger_ids=dispatched_trigger_ids,
+    )
 
 
 def _mk_daily(mid: str, layer: int = 1, *, time: str = "07:00",

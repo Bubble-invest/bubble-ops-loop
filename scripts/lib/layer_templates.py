@@ -40,6 +40,9 @@ Do not write `.last-run`, `.last-materialized`, or `dispatch.json`. The main
 session owns dispatch state and calls `commit_dispatch` only after this worker
 returns and its artifacts validate. Write real work artifacts only; a crash
 before return intentionally leaves the mission due for the watchdog re-kick.
+For an event mission, process only the exact trigger id the main session hands
+you and return that id with your artifacts; unrelated pending items remain for
+later workers/ticks.
 """
 
 _ROUND_COUNTER = """## Return contract

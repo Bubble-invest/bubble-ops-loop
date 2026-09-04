@@ -383,6 +383,7 @@ def commit_dispatch(
     dispatched_at: datetime,
     completed_at: "datetime | None" = None,
     artifacts: "Iterable[Path | str] | None" = None,
+    dispatched_trigger_ids: "Iterable[str] | None" = None,
     materialize_outputs: bool = True,
 ) -> bool:
     """Commit one mission only *after* its executor returned.
@@ -392,6 +393,13 @@ def commit_dispatch(
     this function.  The single ``dispatch.json`` update records the lifecycle
     timestamps and evidence.  Returning ``False`` means an earlier completion
     already won, making duplicate/replayed commits idempotent.
+
+    For ``cadence: event`` missions, ``dispatched_trigger_ids`` is the exact
+    trigger identity handed to the worker by the dispatch step.  It must never
+    be reconstructed by scanning the live input queue here: another approved
+    trigger may have arrived (or remained pending) while this worker ran.  An
+    omitted/empty set deliberately records no trigger evidence, failing open
+    to a retry instead of silently starving unhandled work.
 
     An uncommitted crash is deliberately still due on the watchdog re-kick;
     the fleet tick lock prevents concurrent workers, while completion—not a
@@ -418,14 +426,16 @@ def commit_dispatch(
             layer = int(mission.get("layer"))
         except (TypeError, ValueError):
             layer = 0
-        event_evidence = (
-            {
-                f"trigger:{trigger_id}"
-                for trigger_id in _present_trigger_ids(repo, mission)
-            }
-            if mission.get("cadence") == "event"
-            else set()
-        )
+        event_evidence: set[str] = set()
+        if mission.get("cadence") == "event":
+            if isinstance(dispatched_trigger_ids, (str, bytes)):
+                raise TypeError(
+                    "dispatched_trigger_ids must be an iterable of ids, not a string"
+                )
+            for raw_id in dispatched_trigger_ids or []:
+                trigger_id = str(raw_id).strip()
+                if trigger_id:
+                    event_evidence.add(f"trigger:{trigger_id}")
         existing_artifacts = {
             value for value in (existing.get("artifacts") or [])
             if isinstance(value, str)
@@ -1362,14 +1372,13 @@ def materialize_due_missions(missions: Iterable[dict], *,
 # is always True for event, so the per-mission .last-run marker cannot encode
 # "which trigger did we already act on" — it either re-fires every tick (R2 fail)
 # or blocks a 2nd same-day item (R3 fail). The fix keys idempotence on the trigger
-# item's id: each dispatched id gets a marker under
-#   outputs/<today>/missions/<id>/dispatched-items/<trigger_id>
-# An event mission is "due" only while at least one present trigger id is NOT yet
-# ledgered. The ledger is written by the materializer at dispatch time (crash-safe:
-# it does not depend on the subagent archiving the item) and only READ by
-# select_due_missions (keeping the selector non-mutating). Daily-scoped under
-# outputs/<today>/ like .last-run; trigger ids (gate filenames) are date-stamped
-# and unique, so cross-midnight re-dispatch is not a practical concern.
+# item's id. New runtimes store each successfully handled id as
+# ``trigger:<id>`` evidence in ``outputs/<today>/dispatch.json`` at COMMIT;
+# the older ``missions/<id>/dispatched-items/<trigger_id>`` marker directory is
+# retained as a rollout read fallback. An event mission is due only while at
+# least one present trigger id is not ledgered. Selection stays read-only, and
+# the exact DECIDE-time id is threaded through the worker instead of inferred
+# from whatever else happens to be in the queue later at COMMIT.
 
 
 def _event_trigger_dir(repo_dir: Path, mission: dict) -> Path:
@@ -1392,15 +1401,12 @@ def _present_trigger_ids(repo_dir: Path, mission: dict) -> "set[str]":
 
 
 def _dispatched_trigger_ids(today_dir: Path, mission_id: str, *, before: datetime) -> "set[str]":
-    """Ids dispatched for this event mission on a PRIOR tick (marker ts < before).
+    """Ids completed in dispatch.json or dispatched via a legacy prior marker.
 
-    Each ledger marker stores the dispatch tick's ISO timestamp. Mirroring the
-    `_mission_last_fired` same-tick rule: a marker stamped THIS tick (ts ==
-    before) does NOT count as already-dispatched — otherwise the materializer,
-    which records ids at the top of build_dispatch_ctx, would hide a brand-new
-    item from select_due_missions in the very same tick (the item would never be
-    dispatched at all). A prior-tick marker (ts < before) DOES block re-dispatch
-    — that's what closes the per-tick re-fire loop.
+    The authoritative #1117 ledger is written only after worker validation, so
+    its trigger evidence blocks immediately. Legacy marker timestamps retain
+    their old same-tick rule: only ``ts < before`` blocks, because those markers
+    were written during DECIDE before the worker actually ran.
     """
     # #1117 authoritative path: trigger identities are completion evidence in
     # the mission's one dispatch-ledger entry.  An uncompleted dispatch records
@@ -1445,6 +1451,87 @@ def _event_pending_trigger_ids(repo_dir: Path, today_dir: Path, mission: dict,
     return _present_trigger_ids(repo_dir, mission) - _dispatched_trigger_ids(
         today_dir, mid, before=now_utc
     )
+
+
+def event_trigger_ids_for_dispatch(
+    ctx: "dict[str, Any]", mission: dict, *, limit: int = 1,
+) -> "list[str]":
+    """Choose the pending event trigger ids to hand to one mission worker.
+
+    The result is a deterministic DECIDE-time snapshot.  The runtime retains
+    these ids while the worker runs and passes the same ids to
+    :func:`commit_dispatch` only after that worker returns successfully.  The
+    default of one mirrors the L3 contract (one approved decision per worker)
+    and prevents a worker that archives only one of several concurrent trades
+    from claiming all of them as handled.
+
+    This helper is read-only.  Missing dispatch context fails open as an empty
+    selection; callers should not commit an event mission without an id.
+    """
+    if mission.get("cadence") != "event":
+        return []
+    if limit < 1:
+        raise ValueError("event trigger dispatch limit must be positive")
+    repo_dir = ctx.get("_repo_dir")
+    today_dir = ctx.get("today_dir")
+    now_utc = ctx.get("now_utc")
+    if not repo_dir or not today_dir or not isinstance(now_utc, datetime):
+        return []
+    return sorted(
+        _event_pending_trigger_ids(
+            Path(repo_dir), Path(today_dir), mission, now_utc=now_utc
+        )
+    )[:limit]
+
+
+_ARCHIVED_EVENT_TIME_FIELDS = (
+    "processed_at",
+    "executed_at",
+    "archived_at",
+    "completed_at",
+    "updated_at",
+    "created_at",
+)
+
+
+def _event_archive_evidence_today(
+    repo_dir: Path, mission: dict, *, now_utc: datetime,
+) -> bool:
+    """Whether L3 archived an event trigger on this Paris-local day.
+
+    A successful L3 worker moves its decision into ``.processed/`` before the
+    parent records ``dispatch.json``.  If the parent crashes in that narrow
+    window, the archive is still real execution evidence and must satisfy
+    L4's "L3 fired today" prerequisite while another decision remains queued.
+
+    We require a timestamp in the archived item and scope it to the current
+    Paris day.  Merely finding any historical file in ``.processed/`` would
+    make L3 look fired forever.  ``created_at`` is the final compatibility
+    fallback for existing decision cards that do not add a processing field;
+    decision ids/cards are date-unique in the fleet.
+    """
+    processed_dir = _event_trigger_dir(repo_dir, mission) / ".processed"
+    if not processed_dir.is_dir():
+        return False
+    today = _to_paris(now_utc).date()
+    for item in processed_dir.glob("*.yaml"):
+        if not item.is_file() or item.name.startswith("."):
+            continue
+        try:
+            data = yaml.safe_load(item.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for field in _ARCHIVED_EVENT_TIME_FIELDS:
+            raw = data.get(field)
+            try:
+                timestamp = raw if isinstance(raw, datetime) else _parse_iso(str(raw))
+            except (TypeError, ValueError):
+                continue
+            if _to_paris(timestamp).date() == today:
+                return True
+    return False
 
 
 def _record_dispatched_trigger_ids(today_dir: Path, mission_id: str, ids: "set[str]",
@@ -2134,7 +2221,10 @@ def _any_mission_fired_today_for_layer(
 ) -> bool:
     """True if ANY recurring mission belonging to `layer` has a per-mission
     `.last-run` marker stamped today (`outputs/<today>/missions/<id>/.last-run`)
-    from a PRIOR tick (strictly before `now_utc`, when given).
+    from a PRIOR tick (strictly before `now_utc`, when given).  For Layer 3
+    event missions, a same-day item in the input queue's ``.processed/``
+    archive is also completion evidence.  That closes the crash window where
+    the worker archived a trade but the parent died before ledger COMMIT.
 
     FIX #432 (DEFECT A): after the per-mission dispatch migration (#261), a
     layer can run ENTIRELY via its per-mission path — e.g. content's
@@ -2204,6 +2294,13 @@ def _any_mission_fired_today_for_layer(
         mid = m.get("id", "")
         if not mid:
             continue
+        if (
+            layer == 3
+            and m.get("cadence") == "event"
+            and now_utc is not None
+            and _event_archive_evidence_today(Path(repo_dir), m, now_utc=now_utc)
+        ):
+            return True
         # #870: union .last-run (real completion) with .last-materialized
         # (the materializer's own anti-fire-spin proxy for a shim-resolved
         # mission — see _mission_handled_marker) so this fallback signal is
@@ -3092,7 +3189,8 @@ def _due_missions_for_layer(
         # not yet in the per-item dispatched ledger. This closes the per-tick
         # re-fire loop (a still-pending-but-already-dispatched item does not
         # re-select) while still firing for a NEW item (different id). Reads only;
-        # the materializer writes the ledger. repo_dir comes from ctx['_repo_dir']
+        # commit_dispatch writes the exact worker-bound id. repo_dir comes from
+        # ctx['_repo_dir']
         # (build_dispatch_ctx injects it); if absent we fail-open to preserve the
         # old behaviour rather than silently starve.
         if m.get("cadence") == "event":

@@ -60,6 +60,8 @@ Record the command's literal output in the order's
 
 Write real artifacts only. Do not write `.last-run`, `.last-materialized`, or
 `dispatch.json`; the parent runtime commits completion after return + validation.
+Process only the exact trigger id the parent handed you, and return that id with
+your artifacts so COMMIT cannot claim unrelated pending decisions.
 
 ## Your work (STEP 2 — plan → validate → execute)
 

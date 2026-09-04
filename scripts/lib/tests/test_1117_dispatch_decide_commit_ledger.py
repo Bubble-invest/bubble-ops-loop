@@ -16,9 +16,11 @@ from scripts.lib.dispatch_helpers import (  # noqa: E402
     build_dispatch_ctx,
     commit_dispatch,
     decide_dispatch,
+    event_trigger_ids_for_dispatch,
     read_dispatch_ledger,
     select_due_missions,
     select_due_missions_for_forced_layer,
+    write_last_run,
 )
 
 
@@ -177,3 +179,100 @@ def test_bare_gate_stub_remains_suppressed_on_commit(tmp_path: Path):
     assert not (repo / "queues" / "gates").exists()
     raw = json.loads((repo / "outputs" / TODAY / "dispatch.json").read_text())
     assert raw["data_update"]["completed_at"].endswith("+00:00")
+
+
+def _event_mission() -> dict:
+    return {
+        "id": "execution",
+        "layer": 3,
+        "cadence": "event",
+        "input_queue": "inbox/decisions",
+        "output_queue": "queues/trades/",
+        "creates": [],
+    }
+
+
+def _write_decision(repo: Path, decision_id: str, when: datetime) -> Path:
+    path = repo / "inbox" / "decisions" / f"{decision_id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "id": decision_id,
+                "kind": "trade",
+                "status": "approved",
+                "created_at": when.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _archive_processed(decision: Path, when: datetime) -> None:
+    data = yaml.safe_load(decision.read_text(encoding="utf-8"))
+    data["executed_at"] = when.isoformat()
+    decision.write_text(yaml.safe_dump(data), encoding="utf-8")
+    processed = decision.parent / ".processed" / decision.name
+    processed.parent.mkdir(parents=True, exist_ok=True)
+    decision.replace(processed)
+
+
+def test_event_commit_records_only_trigger_dispatched_this_round(tmp_path: Path):
+    """Two pending trades: processing A must not silently starve trade B."""
+    when = datetime(2026, 9, 4, 14, 30, tzinfo=timezone.utc)  # 16:30 Paris
+    mission = _event_mission()
+    repo, missions = _repo(tmp_path, mission)
+    trade_a = _write_decision(repo, "trade-A", when)
+    _write_decision(repo, "trade-B", when)
+
+    ctx = build_dispatch_ctx(repo, now_utc=when)
+    assert [m["id"] for m in select_due_missions(ctx, missions)] == ["execution"]
+
+    # DECIDE hands exactly one stable trigger identity to this worker.  The
+    # worker processes and archives only that item while trade-B stays queued.
+    dispatched_ids = event_trigger_ids_for_dispatch(ctx, mission)
+    assert dispatched_ids == ["trade-A"]
+    _archive_processed(trade_a, when + timedelta(seconds=10))
+    assert commit_dispatch(
+        repo,
+        mission,
+        dispatched_at=when,
+        completed_at=when + timedelta(seconds=20),
+        dispatched_trigger_ids=dispatched_ids,
+        materialize_outputs=False,
+    )
+
+    ledger = read_dispatch_ledger(repo / "outputs" / TODAY)
+    trigger_evidence = {
+        item for item in ledger["execution"]["artifacts"]
+        if item.startswith("trigger:")
+    }
+    assert trigger_evidence == {"trigger:trade-A"}
+
+    # The exact starvation regression: trade-B was never claimed by A's
+    # commit, so the event mission remains due on the next tick.
+    next_tick = when + timedelta(minutes=5)
+    assert _due(repo, missions, next_tick) == ["execution"]
+
+
+def test_l4_sees_processed_l3_item_when_parent_crashes_before_commit(tmp_path: Path):
+    """An archived trade is L3-fired evidence even without dispatch.json."""
+    when = datetime(2026, 9, 4, 20, 0, tzinfo=timezone.utc)  # 22:00 Paris
+    mission = _event_mission()
+    repo, _ = _repo(tmp_path, mission)
+    write_last_run(repo / "outputs" / TODAY / "1", when=when)
+    trade_a = _write_decision(repo, "trade-A", when)
+    _write_decision(repo, "trade-B", when)
+
+    before = build_dispatch_ctx(repo, now_utc=when)
+    assert decide_dispatch(before) == "layer_3"
+
+    # The worker executed+archived A, then the parent died before COMMIT.
+    _archive_processed(trade_a, when + timedelta(seconds=10))
+    assert read_dispatch_ledger(repo / "outputs" / TODAY) == {}
+
+    after = build_dispatch_ctx(repo, now_utc=when + timedelta(minutes=1))
+    assert after["has_inbox_decisions"] is True  # trade-B is still real work
+    assert after["layer_3_mission_fired_today"] is True
+    assert decide_dispatch(after) == "layer_4"
