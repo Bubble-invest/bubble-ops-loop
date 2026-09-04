@@ -3045,6 +3045,122 @@ def select_due_missions_for_forced_layer(
     return due
 
 
+def maybe_defer_ad_hoc_l3(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+    *,
+    phase: "str | None" = None,
+) -> bool:
+    """Stamp Layer 3 "handled today" (via `write_l3_human_deferred`) when
+    `decide_dispatch` resolved to `"layer_3"` this tick but the dept has NO
+    recurring L3 mission at all — the ad-hoc-inbox-decision case (#1085).
+
+    THE GAP THIS CLOSES: `write_l3_human_deferred` (#335/#965) is the correct
+    primitive for "L3 looked, and structurally there is nothing it can do
+    today" — but until now nothing CALLED it on the path where L3 never even
+    gets a subagent. A dept whose booking decisions are ad-hoc
+    `inbox/decisions/` items with NO recurring L3 mission in
+    `dept.yaml::recurring_missions` (Géraldine/accountant — human-supervised
+    booking) hits exactly this: `decide_dispatch` resolves C.3 ("layer_3",
+    because `has_inbox_decisions=True`), but `select_due_missions` walks
+    layer 3's own due-list, finds it empty (there is no layer-3 mission to
+    BE due), and falls through — the /loop heartbeats, no L3 subagent is
+    ever spawned, so the STEP 0bis structural-defer branch
+    (`layer_templates.py::_L3`) — the only other caller of
+    `write_l3_human_deferred` — never runs either. L3's `.last-run` marker is
+    then never stamped, `l3_fired` stays False forever, and L4's C.1
+    prerequisite `(l3_fired or not has_decisions)` can never be satisfied
+    (`has_inbox_decisions` stays True forever too — nothing ever archives an
+    ad-hoc manual-booking item out of `inbox/decisions/`). Result: L4
+    (`management-export.yaml` + `risk-brief.md`) never fires — no export
+    since 2026-08-27 (#1094).
+
+    CALL THIS from the /loop's STEP C, immediately after `select_due_missions`
+    (same tick, same `ctx`) — see `scaffold.py`'s documented dispatch
+    snippet. It is a no-op (returns False, writes nothing) on every tick
+    except the exact starved one, so it is safe to call unconditionally
+    every tick regardless of what `select_due_missions` returned.
+
+    GUARDS (all must hold before anything is written):
+
+    1. `phase == "layer_3"` — `decide_dispatch(ctx)` (computed here if not
+       passed in) must have actually resolved to Layer 3 THIS tick. A dept
+       with no inbox decisions at all never reaches this branch — it is not
+       "structurally deferred", there is simply nothing to defer.
+
+    2. NO recurring L3 mission exists for this dept at all
+       (no `m` in `missions` has `int(m.get("layer", 0)) == 3`). This is the
+       narrow, STRUCTURAL signal #1085 asked for — deliberately NOT "layer
+       3's due-list happens to be empty THIS tick", which a dept WITH a real
+       recurring L3 mission (e.g. Ben's `execution`) can hit transiently
+       (its own cadence/time-of-day gate not yet reached even though C.3 is
+       already eligible from L1's 07:00 floor). Stamping in that case would
+       be WRONG — it would silently cancel a mission that is genuinely still
+       pending later today. Only a dept with ZERO layer-3 missions declared
+       can never have "real work still to come" on layer 3, so only that
+       case is safe to treat as permanently, structurally empty for the rest
+       of the day.
+
+    3. Idempotent per Paris-day — fire-spin guard (#302/#965): if L3 has
+       already fired today by ANY means (`_layer_fired_today(ctx, 3)` — real
+       `.last-run`, `round_counter`, or a per-mission marker), this is a
+       no-op. This is what keeps a second (third, ...) tick the same day
+       from re-stamping `.last-run` / re-incrementing `round_counter` for as
+       long as `has_inbox_decisions` stays True (which, for the ad-hoc case,
+       is forever) — exactly the re-fire loop #302/#965 guard against. The
+       very stamp this function writes on tick 1 is what makes
+       `_layer_fired_today(ctx, 3)` True from tick 2 onward.
+
+    COMPOSITION:
+      - #870 (`.last-materialized` vs `.last-run`): `_layer_fired_today`
+        checks the REAL `.last-run` (via `layer_3_last_run_today`, populated
+        from `read_last_run`), never the materializer's `.last-materialized`
+        proxy — so this cannot be fooled by a proxy stamp, and
+        `write_l3_human_deferred` writes the same real `.last-run` marker a
+        genuine L3 completion would, so downstream L4/#870 code paths cannot
+        tell the difference (by design — that is the whole point of the
+        primitive).
+      - #1080 (output-evidence gate): `_layer_output_evidence_ok` gates only
+        L1/L4 — Layer 3 carries no such requirement, so a `.last-run`-only
+        stamp (no `outputs/<today>/3/` artifact) is exactly as valid for L3
+        as `write_l3_human_deferred`'s existing STEP 0bis caller already
+        relies on.
+
+    Returns True iff it wrote the defer marker this call (for caller-side
+    logging/telemetry), False otherwise (no-op — nothing to defer, a real L3
+    mission may still be pending, or already handled today).
+    """
+    if phase is None:
+        phase = decide_dispatch(ctx)
+    if phase != "layer_3":
+        return False
+
+    if any(int(m.get("layer", 0)) == 3 for m in (missions or [])):
+        # A real recurring L3 mission exists for this dept — its own
+        # due-list being empty THIS tick is not the ad-hoc-inbox-decision
+        # case; leave it alone so it can still fire later today.
+        return False
+
+    if _layer_fired_today(ctx, 3):
+        # #302/#965 fire-spin guard: already handled today (a real run OR a
+        # prior call to this function today) — never re-stamp same-day.
+        return False
+
+    today_dir = ctx.get("today_dir")
+    if not today_dir:
+        return False
+
+    write_l3_human_deferred(
+        Path(today_dir) / "3",
+        when=ctx.get("now_utc"),
+        reason=(
+            "ad-hoc inbox decision(s), no recurring L3 mission for this "
+            "dept (#1085 empty-due-set defer)"
+        ),
+    )
+    return True
+
+
 def resolve_mission_prompt(repo_dir: "Path | str", mission: dict) -> Path:
     """Return the Path to the PROMPT.md for a given mission.
 
