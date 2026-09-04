@@ -63,6 +63,32 @@ _git_authed() {
   git "$@"
 }
 
+# Count every dirty path, including untracked files.  This intentionally
+# mirrors scripts/sync-local-dept-clones.sh's any_dirt_count guard: checking
+# only tracked changes misses scratch files and leaves reset/clean-style syncs
+# one refactor away from silent data loss.
+any_dirt_count() {
+  local dir="$1"
+  git -C "$dir" status --porcelain 2>/dev/null | grep -c '.' || true
+}
+
+# Quarantine all worktree dirt before reset --hard.  A failed stash is a hard
+# stop for this repo: freshness can wait; an operator's hand-patch cannot be
+# reconstructed after an unattended reset.
+quarantine_endangered_state() {
+  local dir="$1" slug="$2" dirt_n="$3" ts
+  [[ "${dirt_n:-0}" -gt 0 ]] || return 0
+  ts="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  if git -C "$dir" stash push --include-untracked \
+      -m "cache-sync-quarantine-${ts}" \
+      >>"${LOG_DIR}/git-${slug}.err" 2>&1; then
+    log "WARN: ${slug} had ${dirt_n} dirty path(s); quarantined in git stash before reset --hard"
+    return 0
+  fi
+  log "ERROR: ${slug} has ${dirt_n} dirty path(s) and quarantine FAILED; refusing reset --hard: $(tail -n1 "${LOG_DIR}/git-${slug}.err" 2>/dev/null)"
+  return 1
+}
+
 log "bubble-cache-sync START"
 log "cache_dir=${CACHE_DIR} repos=(${REPOS[*]})"
 
@@ -113,9 +139,24 @@ for REPO in "${REPOS[@]}"; do
         2>/dev/null
       if _git_authed "${_AUTH_B64}" -C "${REPO_DIR}" fetch --depth 1 origin main \
           2>"${LOG_DIR}/git-${SLUG}.err"; then
-        git -C "${REPO_DIR}" reset --hard origin/main 2>>"${LOG_DIR}/git-${SLUG}.err"
-        log "OK: ${REPO} updated (fetch+reset)"
-        rm -f "${LOG_DIR}/git-${SLUG}.err"
+        dirt_n="$(any_dirt_count "${REPO_DIR}")"
+        if ! quarantine_endangered_state "${REPO_DIR}" "${SLUG}" "${dirt_n}"; then
+          EXIT_CODE=1
+          unset dirt_n
+          unset _AUTH_B64
+          unset _TOKEN
+          continue
+        fi
+        unset dirt_n
+        if git -C "${REPO_DIR}" reset --hard origin/main \
+            2>>"${LOG_DIR}/git-${SLUG}.err"; then
+          log "OK: ${REPO} updated (fetch+reset)"
+          rm -f "${LOG_DIR}/git-${SLUG}.err"
+        else
+          log "ERROR: git reset --hard failed for ${REPO}"
+          log "ERROR: $(cat "${LOG_DIR}/git-${SLUG}.err" 2>/dev/null | head -3)"
+          EXIT_CODE=1
+        fi
       else
         log "ERROR: git fetch failed for ${REPO}"
         log "ERROR: $(cat "${LOG_DIR}/git-${SLUG}.err" 2>/dev/null | head -3)"

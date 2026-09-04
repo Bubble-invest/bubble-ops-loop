@@ -26,11 +26,12 @@ Reference: scripts/lib/scaffold.py::CLAUDE_MD_OPERATING_TEMPLATE STEP C.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import tempfile
+import warnings
 from contextlib import contextmanager
 
 from dataclasses import dataclass
@@ -73,6 +74,46 @@ _WEEKDAY_NAMES = {
 # `_mission_last_fired_with_shim_fallback`'s output-evidence gate — see its
 # docstring.
 _LAYERS_WITH_OUTPUT_EVIDENCE = frozenset({1, 4})
+
+
+def _atomic_write_text(path: Path, body: str) -> None:
+    """Replace ``path`` atomically with text written in the same directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(body)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _warn_torn_marker(path: Path, exc: Exception) -> None:
+    warnings.warn(
+        f"WARN: ignoring malformed or unreadable marker {path}: {exc}",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _read_iso_marker(path: Path) -> datetime | None:
+    """Read an ISO marker; malformed/torn content is absent, never fatal."""
+    try:
+        body = path.read_text(encoding="utf-8").strip()
+        if not body:
+            return None
+        return _parse_iso(body)
+    except (OSError, ValueError, TypeError) as exc:
+        _warn_torn_marker(path, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +160,7 @@ def read_last_run(layer_dir: Path) -> datetime | None:
     f = layer_dir / ".last-run"
     if not f.exists():
         return None
-    body = f.read_text(encoding="utf-8").strip()
-    if not body:
-        return None
-    return _parse_iso(body)
+    return _read_iso_marker(f)
 
 
 def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
@@ -139,8 +177,7 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
         when = datetime.now(timezone.utc)
     if when.tzinfo is None:
         raise ValueError("write_last_run requires a tz-aware datetime")
-    layer_dir.mkdir(parents=True, exist_ok=True)
-    (layer_dir / ".last-run").write_text(when.isoformat(), encoding="utf-8")
+    _atomic_write_text(layer_dir / ".last-run", when.isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +221,7 @@ def read_last_materialized(layer_dir: Path) -> "datetime | None":
     f = layer_dir / ".last-materialized"
     if not f.exists():
         return None
-    body = f.read_text(encoding="utf-8").strip()
-    if not body:
-        return None
-    return _parse_iso(body)
+    return _read_iso_marker(f)
 
 
 def write_last_materialized(layer_dir: Path, when: "datetime | None" = None) -> None:
@@ -203,8 +237,7 @@ def write_last_materialized(layer_dir: Path, when: "datetime | None" = None) -> 
         when = datetime.now(timezone.utc)
     if when.tzinfo is None:
         raise ValueError("write_last_materialized requires a tz-aware datetime")
-    layer_dir.mkdir(parents=True, exist_ok=True)
-    (layer_dir / ".last-materialized").write_text(when.isoformat(), encoding="utf-8")
+    _atomic_write_text(layer_dir / ".last-materialized", when.isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -719,13 +752,7 @@ def read_last_mgmt_scan(repo_dir: "Path | str") -> "datetime | None":
     f = Path(repo_dir) / "queues" / "management" / _MGMT_SCAN_MARKER
     if not f.exists():
         return None
-    body = f.read_text(encoding="utf-8").strip()
-    if not body:
-        return None
-    try:
-        return _parse_iso(body)
-    except ValueError:
-        return None
+    return _read_iso_marker(f)
 
 
 def write_last_mgmt_scan(repo_dir: "Path | str", when: "datetime | None" = None) -> None:
@@ -739,9 +766,8 @@ def write_last_mgmt_scan(repo_dir: "Path | str", when: "datetime | None" = None)
         when = datetime.now(timezone.utc)
     if when.tzinfo is None:
         raise ValueError("write_last_mgmt_scan requires a tz-aware datetime")
-    mgmt_dir = Path(repo_dir) / "queues" / "management"
-    mgmt_dir.mkdir(parents=True, exist_ok=True)
-    (mgmt_dir / _MGMT_SCAN_MARKER).write_text(when.isoformat(), encoding="utf-8")
+    marker = Path(repo_dir) / "queues" / "management" / _MGMT_SCAN_MARKER
+    _atomic_write_text(marker, when.isoformat())
 
 
 def _load_consumed_ids(mgmt_dir: "Path") -> "set[str]":
@@ -894,7 +920,12 @@ def read_round_counter(today_dir: Path) -> dict[str, int]:
         return {}
     try:
         raw = json.loads(f.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.warn(
+            f"WARN: ignoring malformed or unreadable round counter {f}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return {}
     # Coerce to {str: int} defensively.
     out: dict[str, int] = {}
@@ -912,13 +943,10 @@ def increment_round_counter(today_dir: Path, *, layer: int) -> int:
     New runtimes call this from ``commit_dispatch`` after the worker returns;
     direct callers remain supported for mixed-version rollout and tests.
     """
-    today_dir.mkdir(parents=True, exist_ok=True)
     counts = read_round_counter(today_dir)
     key = str(int(layer))
     counts[key] = counts.get(key, 0) + 1
-    (today_dir / _COUNTER_FILE).write_text(
-        json.dumps(counts, sort_keys=True), encoding="utf-8"
-    )
+    _atomic_write_text(today_dir / _COUNTER_FILE, json.dumps(counts, sort_keys=True))
     return counts[key]
 
 
@@ -957,11 +985,8 @@ def write_l1_baseline(today_dir: Path, counts: dict[str, int] | None = None) -> 
     `counts` is omitted, the current round_counter on disk is snapshotted.
     Returns the snapshot written.
     """
-    today_dir.mkdir(parents=True, exist_ok=True)
     snap = read_round_counter(today_dir) if counts is None else dict(counts)
-    (today_dir / _L1_BASELINE_FILE).write_text(
-        json.dumps(snap, sort_keys=True), encoding="utf-8"
-    )
+    _atomic_write_text(today_dir / _L1_BASELINE_FILE, json.dumps(snap, sort_keys=True))
     return snap
 
 
@@ -1426,15 +1451,19 @@ def _dispatched_trigger_ids(today_dir: Path, mission_id: str, *, before: datetim
     for p in led.iterdir():
         if not p.is_file():
             continue
-        body = p.read_text(encoding="utf-8").strip()
+        try:
+            body = p.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            _warn_torn_marker(p, exc)
+            continue
         if not body:
             # legacy/empty marker — treat as prior (blocking), safest default
             out.add(p.name)
             continue
         try:
             ts = _parse_iso(body)
-        except ValueError:
-            out.add(p.name)
+        except (ValueError, TypeError) as exc:
+            _warn_torn_marker(p, exc)
             continue
         if ts < before:
             out.add(p.name)
