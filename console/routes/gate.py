@@ -16,13 +16,25 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from console.services import dept_registry, github_reader
+from console.services import dept_registry, gate_rbac, github_reader
 from console.services.humanize import GATE_CHANNELS, gate_channel, humanize_kind
 from console.services.markdown_render import render_markdown_safe
 
 router = APIRouter()
 
 ALLOWED_ACTIONS = {"approve", "reject", "modify", "defer", "choose"}
+
+
+def _require_gate_permission(request: Request, slug: str) -> str:
+    """Return the acting principal or reject this gate mutation.
+
+    Keep the response deliberately generic: an unauthorized caller must not be
+    able to use this endpoint to enumerate departments or gate ids.
+    """
+    actor = getattr(request.state, "user", None)
+    if not gate_rbac.may_decide(actor, slug):
+        raise HTTPException(403, "Not authorized to decide gates for this department")
+    return actor
 
 
 def _attach_thesis_rendered(gate: dict) -> dict:
@@ -289,6 +301,7 @@ def gate_decide(
 ):
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(400, f"Invalid action: {action}")
+    actor = _require_gate_permission(request, slug)
     if dept_registry.get_department(slug) is None:
         raise HTTPException(404, f"Unknown dept: {slug}")
     gate = github_reader.load_gate(slug, gate_id)
@@ -298,7 +311,7 @@ def gate_decide(
     # audit, board #997). `request.state.user` is set by the auth middleware:
     # a login username (e.g. "joris"/"jade"), or "bearer" for API/legacy access
     # (normalised to "operator" here).
-    actor = getattr(request.state, "user", None) or "operator"
+    actor = actor or "operator"
     if actor.startswith("bearer"):
         actor = "operator"
     decision = {
@@ -354,6 +367,7 @@ def gate_undo(slug: str, gate_id: str, request: Request):
 
     host=local depts: out of scope (decision committed to GitHub, not on disk here).
     """
+    _require_gate_permission(request, slug)
     if dept_registry.get_department(slug) is None:
         raise HTTPException(404, f"Unknown dept: {slug}")
 

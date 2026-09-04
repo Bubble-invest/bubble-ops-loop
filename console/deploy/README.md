@@ -6,12 +6,15 @@ Single-binary FastAPI app. Notion v5 lines 1006-1020.
 
 ```bash
 cd ~/claude-workspaces/Rick_RnD/projects/bubble-ops-loop
-export CONSOLE_BEARER_TOKEN="$(openssl rand -hex 24)"          # generate once
+export CONSOLE_BEARER_TOKEN="$(openssl rand -hex 24)"          # API clients only
+export CONSOLE_GATE_RBAC='{"rick":["*"]}'                    # gate write grants
 export READ_FROM_DISK="/Users/{{OPERATOR_USER}}/bubble-ops-depts"          # parent dir of bubble-ops-* clones
 python3 -m uvicorn console.main:app --host 127.0.0.1 --port 8642
 ```
 
-Then open `http://127.0.0.1:8642/` and pass `Authorization: Bearer $CONSOLE_BEARER_TOKEN` (or use a browser extension like `ModHeader`; or curl).
+Then open `http://127.0.0.1:8642/login` and sign in with a user from
+`CONSOLE_LOGIN_USERS`. The legacy `?token=<bearer>` browser bootstrap is no
+longer accepted. `Authorization: Bearer` remains available to API/CI callers.
 
 The console reads any subdir matching `bubble-ops-*` under `READ_FROM_DISK`. Each subdir must follow the on-disk shape from Notion v5 lines 751-762 (`dept.yaml`(.draft), `onboarding/STATE.yaml`, `queues/gates/*.yaml`, etc.).
 
@@ -29,7 +32,9 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CONSOLE_BEARER_TOKEN` | (empty -> 503) | Required; the single shared bearer the operator uses |
+| `CONSOLE_BEARER_TOKEN` | (empty) | Optional API/CI bearer; query-string bearer bootstrap is disabled |
+| `CONSOLE_LOGIN_USERS` | (empty) | JSON map of login usernames to password hashes |
+| `CONSOLE_GATE_RBAC` | (empty -> deny gate writes) | JSON map of principal to allowed dept slugs; use `"bearer"` for the API bearer and `"*"` as an explicit all-dept grant |
 | `READ_FROM_DISK` | (empty -> github mode) | Parent dir of `bubble-ops-<slug>` repos. v1 ships disk-mode only |
 | `BUBBLE_OPS_GITHUB_ORG` | `Bubble-invest` | GitHub org hosting `bubble-ops-<slug>` repos (host=local decision PUTs) |
 | `GH_CACHE_TTL` | `60` | Seconds to cache `gh api` responses |

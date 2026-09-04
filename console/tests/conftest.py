@@ -238,6 +238,10 @@ def app(monkeypatch, fixture_root: Path):
     read from local fixtures rather than calling `gh`/SSH.
     """
     monkeypatch.setenv("CONSOLE_BEARER_TOKEN", TEST_BEARER)
+    # Existing route fixtures use the API bearer.  Gate mutations are
+    # fail-closed, so grant that explicit test principal access to fixture
+    # departments; dedicated RBAC tests exercise narrower user grants.
+    monkeypatch.setenv("CONSOLE_GATE_RBAC", '{"bearer":["*"]}')
     monkeypatch.setenv("READ_FROM_DISK", str(fixture_root))
 
     # Force a fresh import so env vars are picked up.

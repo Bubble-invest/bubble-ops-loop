@@ -54,6 +54,7 @@ def _build_app_with_gates(tmp_path: Path, monkeypatch, gates: list[dict]) -> Tes
         )
 
     monkeypatch.setenv("CONSOLE_BEARER_TOKEN", "test-token-xyz")
+    monkeypatch.setenv("CONSOLE_GATE_RBAC", '{"bearer":["fixture"]}')
     monkeypatch.setenv("READ_FROM_DISK", str(root))
     import sys
     for mod in list(sys.modules):

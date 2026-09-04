@@ -42,6 +42,14 @@ BEARER_TOKEN = os.environ.get("CONSOLE_BEARER_TOKEN", "")
 LOGIN_USERS_JSON = os.environ.get("CONSOLE_LOGIN_USERS", "")
 LOGIN_PASSWORD_HASH = os.environ.get("CONSOLE_LOGIN_PASSWORD_HASH", "")
 
+# Authorization for gate mutations, separate from login/authentication.
+# Map an authenticated username to the exact department slugs whose gates that
+# person may decide/undo.  ``["*"]`` is the explicit all-department grant.
+# Header-bearer API clients use the special principal ``"bearer"`` and receive
+# no implicit privileges.  Missing/malformed configuration fails closed.
+#   CONSOLE_GATE_RBAC='{"rick":["*"],"jade":["content","miranda"]}'
+GATE_RBAC_JSON = os.environ.get("CONSOLE_GATE_RBAC", "")
+
 # Opaque session store (SQLite). The browser cookie carries this session's
 # random id, never the bearer.
 SESSION_COOKIE = "console_session"
