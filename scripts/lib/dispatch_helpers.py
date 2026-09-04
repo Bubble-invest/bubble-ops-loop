@@ -1950,13 +1950,19 @@ def build_dispatch_ctx(
     dispatch decision, e.g. scaffold.py's documented
     `ctx = build_dispatch_ctx('.')` call in the live /loop), the usual
     `materialize_due_missions_for_tick()` side effect runs first, exactly as
-    before (#428/#432 behaviour unchanged). Set `materialize=False` for any
-    caller that only needs READ-ONLY ctx signals — e.g. a pre-flight
-    eligibility GATE CHECK (loop-backup.sh's FORCE_LAYER "is this layer due
-    yet" probe) that decides whether to wake the live session but does NOT
-    itself dispatch. `build_dispatch_ctx` is a context BUILDER; only the
-    mission's real run may write its `.last-run` marker (the #428/#375
-    invariant) — a read-only gate check must not stamp it as a side effect.
+    before (#428/#432 behaviour unchanged), followed by `reconcile_gate_dir`
+    (#1076) and — after `ctx` is built — `maybe_defer_ad_hoc_l3` (#1085,
+    idempotent per Paris-day): a dept whose L3 work is entirely ad-hoc
+    `inbox/decisions/` items with NO recurring L3 mission would otherwise
+    never get its `.last-run` marker stamped by anything, permanently
+    starving L4. Set `materialize=False` for any caller that only needs
+    READ-ONLY ctx signals — e.g. a pre-flight eligibility GATE CHECK
+    (loop-backup.sh's FORCE_LAYER "is this layer due yet" probe) that decides
+    whether to wake the live session but does NOT itself dispatch.
+    `build_dispatch_ctx` is a context BUILDER; only the mission's real run
+    (or this structural-defer path) may write `.last-run` (the #428/#375
+    invariant) — a read-only gate check must not stamp any marker as a side
+    effect.
 
     THE #454 BUG (found live on Ben, 2026-07-01/02): `loop-backup.sh`'s
     FORCE_LAYER gate calls `build_dispatch_ctx(...)` purely to read
@@ -1993,9 +1999,13 @@ def build_dispatch_ctx(
     # so the materializer's event-ledger gate uses the same L1 cycle threshold
     # as decide_dispatch (was hardcoded to 1 in a8ed933; now threaded through).
     #
-    # #454 FIX: this is the ONLY mutating step in build_dispatch_ctx (it
-    # writes queue items + per-mission .last-run markers). Skip it entirely
-    # when materialize=False (read-only gate/probe callers) so build_dispatch_ctx
+    # #454 FIX: this `if materialize:` branch (extended by #1076's
+    # reconcile_gate_dir and #1085's maybe_defer_ad_hoc_l3 below, plus the
+    # second `if materialize:` block near the end of this function) holds
+    # EVERY mutating step in build_dispatch_ctx (it writes queue items,
+    # per-mission .last-run markers, archives resolved gates, and may stamp
+    # Layer 3's structural-defer marker). Skip it entirely when
+    # materialize=False (read-only gate/probe callers) so build_dispatch_ctx
     # never stamps a run-marker as a side effect of a call that isn't the real
     # dispatch decision — see the #454 docstring section above.
     if materialize:
@@ -2014,7 +2024,7 @@ def build_dispatch_ctx(
         except Exception:
             pass
 
-    return {
+    ctx: "dict[str, Any]" = {
         "now_utc": now_utc,
         # Repo root, so consumer/event checks (_mission_input_ready, the #282
         # event dispatched-id ledger read in select_due_missions) can resolve
@@ -2086,6 +2096,45 @@ def build_dispatch_ctx(
             repo, since=read_last_mgmt_scan(repo)
         ),
     }
+
+    if materialize:
+        # #1085 CODE-LEVEL FIX (not template-only): call the missing
+        # write_l3_human_deferred caller HERE, in the real dispatch path, not
+        # only in scaffold.py's documented STEP C prose. The template call is
+        # LLM-emitted — an already-onboarded dept's live CLAUDE.md was baked
+        # at onboarding time and does NOT get the new line just by re-
+        # vendoring dispatch_helpers.py (soft-guard class, #861). Wiring it
+        # here means EVERY caller of build_dispatch_ctx(materialize=True) —
+        # i.e. every live /loop tick, for every dept, past or future, the
+        # instant its vendored dispatch_helpers.py is refreshed — gets the
+        # fix automatically, with no CLAUDE.md edit required.
+        #
+        # Gated behind `if materialize` (mirrors #1076's `reconcile_gate_dir`
+        # placement immediately above): this is a MUTATING call (it may write
+        # outputs/<today>/3/.last-run + bump round_counter[3]), so it must
+        # never run on a `materialize=False` read-only probe call (the #454
+        # invariant a gate/eligibility check must not stamp a marker as a
+        # side effect — e.g. loop-backup.sh's FORCE_LAYER pre-wake check).
+        # `maybe_defer_ad_hoc_l3` itself is additionally idempotent per
+        # Paris-day (#302/#965 fire-spin guard) and narrowly scoped to the
+        # structural no-recurring-L3-mission case (see its docstring) — this
+        # call site only needs to supply `ctx` and `missions`; every actual
+        # decision is made inside the helper.
+        try:
+            dept_yaml_path = repo / "dept.yaml"
+            _dept: "dict[str, Any]" = {}
+            if dept_yaml_path.is_file():
+                _loaded = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
+                if isinstance(_loaded, dict):
+                    _dept = _loaded
+            _missions = _dept.get("recurring_missions") or []
+            maybe_defer_ad_hoc_l3(ctx, _missions)
+        except Exception:
+            # Best-effort, exactly like the reconcile_gate_dir call above —
+            # a hiccup here must never abort the dispatch decision itself.
+            pass
+
+    return ctx
 
 
 def decide_dispatch(ctx: dict[str, Any]) -> str:
@@ -3043,6 +3092,122 @@ def select_due_missions_for_forced_layer(
 
     due.sort(key=lambda m: m.get("id", ""))
     return due
+
+
+def maybe_defer_ad_hoc_l3(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+    *,
+    phase: "str | None" = None,
+) -> bool:
+    """Stamp Layer 3 "handled today" (via `write_l3_human_deferred`) when
+    `decide_dispatch` resolved to `"layer_3"` this tick but the dept has NO
+    recurring L3 mission at all — the ad-hoc-inbox-decision case (#1085).
+
+    THE GAP THIS CLOSES: `write_l3_human_deferred` (#335/#965) is the correct
+    primitive for "L3 looked, and structurally there is nothing it can do
+    today" — but until now nothing CALLED it on the path where L3 never even
+    gets a subagent. A dept whose booking decisions are ad-hoc
+    `inbox/decisions/` items with NO recurring L3 mission in
+    `dept.yaml::recurring_missions` (Géraldine/accountant — human-supervised
+    booking) hits exactly this: `decide_dispatch` resolves C.3 ("layer_3",
+    because `has_inbox_decisions=True`), but `select_due_missions` walks
+    layer 3's own due-list, finds it empty (there is no layer-3 mission to
+    BE due), and falls through — the /loop heartbeats, no L3 subagent is
+    ever spawned, so the STEP 0bis structural-defer branch
+    (`layer_templates.py::_L3`) — the only other caller of
+    `write_l3_human_deferred` — never runs either. L3's `.last-run` marker is
+    then never stamped, `l3_fired` stays False forever, and L4's C.1
+    prerequisite `(l3_fired or not has_decisions)` can never be satisfied
+    (`has_inbox_decisions` stays True forever too — nothing ever archives an
+    ad-hoc manual-booking item out of `inbox/decisions/`). Result: L4
+    (`management-export.yaml` + `risk-brief.md`) never fires — no export
+    since 2026-08-27 (#1094).
+
+    CALL THIS from the /loop's STEP C, immediately after `select_due_missions`
+    (same tick, same `ctx`) — see `scaffold.py`'s documented dispatch
+    snippet. It is a no-op (returns False, writes nothing) on every tick
+    except the exact starved one, so it is safe to call unconditionally
+    every tick regardless of what `select_due_missions` returned.
+
+    GUARDS (all must hold before anything is written):
+
+    1. `phase == "layer_3"` — `decide_dispatch(ctx)` (computed here if not
+       passed in) must have actually resolved to Layer 3 THIS tick. A dept
+       with no inbox decisions at all never reaches this branch — it is not
+       "structurally deferred", there is simply nothing to defer.
+
+    2. NO recurring L3 mission exists for this dept at all
+       (no `m` in `missions` has `int(m.get("layer", 0)) == 3`). This is the
+       narrow, STRUCTURAL signal #1085 asked for — deliberately NOT "layer
+       3's due-list happens to be empty THIS tick", which a dept WITH a real
+       recurring L3 mission (e.g. Ben's `execution`) can hit transiently
+       (its own cadence/time-of-day gate not yet reached even though C.3 is
+       already eligible from L1's 07:00 floor). Stamping in that case would
+       be WRONG — it would silently cancel a mission that is genuinely still
+       pending later today. Only a dept with ZERO layer-3 missions declared
+       can never have "real work still to come" on layer 3, so only that
+       case is safe to treat as permanently, structurally empty for the rest
+       of the day.
+
+    3. Idempotent per Paris-day — fire-spin guard (#302/#965): if L3 has
+       already fired today by ANY means (`_layer_fired_today(ctx, 3)` — real
+       `.last-run`, `round_counter`, or a per-mission marker), this is a
+       no-op. This is what keeps a second (third, ...) tick the same day
+       from re-stamping `.last-run` / re-incrementing `round_counter` for as
+       long as `has_inbox_decisions` stays True (which, for the ad-hoc case,
+       is forever) — exactly the re-fire loop #302/#965 guard against. The
+       very stamp this function writes on tick 1 is what makes
+       `_layer_fired_today(ctx, 3)` True from tick 2 onward.
+
+    COMPOSITION:
+      - #870 (`.last-materialized` vs `.last-run`): `_layer_fired_today`
+        checks the REAL `.last-run` (via `layer_3_last_run_today`, populated
+        from `read_last_run`), never the materializer's `.last-materialized`
+        proxy — so this cannot be fooled by a proxy stamp, and
+        `write_l3_human_deferred` writes the same real `.last-run` marker a
+        genuine L3 completion would, so downstream L4/#870 code paths cannot
+        tell the difference (by design — that is the whole point of the
+        primitive).
+      - #1080 (output-evidence gate): `_layer_output_evidence_ok` gates only
+        L1/L4 — Layer 3 carries no such requirement, so a `.last-run`-only
+        stamp (no `outputs/<today>/3/` artifact) is exactly as valid for L3
+        as `write_l3_human_deferred`'s existing STEP 0bis caller already
+        relies on.
+
+    Returns True iff it wrote the defer marker this call (for caller-side
+    logging/telemetry), False otherwise (no-op — nothing to defer, a real L3
+    mission may still be pending, or already handled today).
+    """
+    if phase is None:
+        phase = decide_dispatch(ctx)
+    if phase != "layer_3":
+        return False
+
+    if any(int(m.get("layer", 0)) == 3 for m in (missions or [])):
+        # A real recurring L3 mission exists for this dept — its own
+        # due-list being empty THIS tick is not the ad-hoc-inbox-decision
+        # case; leave it alone so it can still fire later today.
+        return False
+
+    if _layer_fired_today(ctx, 3):
+        # #302/#965 fire-spin guard: already handled today (a real run OR a
+        # prior call to this function today) — never re-stamp same-day.
+        return False
+
+    today_dir = ctx.get("today_dir")
+    if not today_dir:
+        return False
+
+    write_l3_human_deferred(
+        Path(today_dir) / "3",
+        when=ctx.get("now_utc"),
+        reason=(
+            "ad-hoc inbox decision(s), no recurring L3 mission for this "
+            "dept (#1085 empty-due-set defer)"
+        ),
+    )
+    return True
 
 
 def resolve_mission_prompt(repo_dir: "Path | str", mission: dict) -> Path:
