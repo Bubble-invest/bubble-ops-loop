@@ -1118,6 +1118,7 @@ if [[ "${BUBBLE_DISPATCH_DIRECTIVES:-1}" == "1" ]]; then
         python3 "$_dispatcher" \
             --agents-root "$AGENTS_ROOT" \
             --manager "${BUBBLE_DISPATCH_MANAGER:-tony}" \
+            --lock-dir "$LOCK_DIR" \
             ${DRY_RUN:+--dry-run} 2>&1 | while IFS= read -r _l; do log "$_l"; done || true
     fi
 fi

@@ -34,14 +34,19 @@ def world(tmp_path, monkeypatch):
     tony = _make_repo(root, "tony")
     maya = _make_repo(root, "maya")
     (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    # board #1123: dispatch() now takes the child's ops-loop-<slug>.tick.lock
+    # (default /run/lock, not writable/present off the real VPS) — point it
+    # at a throwaway dir, same convention as tests/test_loop_backup.sh's
+    # BUBBLE_BACKUP_LOCK_DIR override.
+    monkeypatch.setenv("BUBBLE_BACKUP_LOCK_DIR", str(tmp_path / "lock"))
     # Stub the push so no network/token is needed: just clear the worktree state.
     pushes = []
 
-    def fake_push(repo_dir, repo_name, message, dry_run):
+    def fake_push(repo_dir, repo_name, message, dry_run, paths=None):
         pushes.append((repo_name, message))
         if dry_run:
             return True, "[dry-run]"
-        _git(repo_dir, "add", "-A")
+        _git(repo_dir, "add", "--", *(paths or []))
         r = dd._run(["git", "-C", str(repo_dir), "commit", "-m", message])
         return True, "pushed(stub)"
 
