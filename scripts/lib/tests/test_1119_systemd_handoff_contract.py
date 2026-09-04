@@ -16,7 +16,8 @@ def test_ops_loop_has_no_agent_unit_renderer_or_legacy_template():
 def test_deploy_wrapper_consumes_platform_renderer_and_verifies():
     source = (ROOT / "scripts/deploy-to-morty.sh").read_text(encoding="utf-8")
     assert "scripts/render-agent-units.py" in source
-    assert '--output-dir "$stage" --verify' in source
+    assert '--output-dir "$stage"' in source
+    assert "--verify" in source
     assert "bubble-agent@${SLUG}.service" in source
     assert "systemd-analyze verify ${service}" in source
 

@@ -8,10 +8,10 @@ Responsibilities:
   1. Persist DEPT_TELEGRAM_BOT_TOKEN into a per-dept SOPS env file at
      /etc/bubble/secrets-<slug>.sops.env (encrypted to the same two age
      recipients as /etc/bubble/secrets.sops.env).
-  2. Render deploy/templates/ops-loop-dept.service.template by substituting
-     ${DEPT_SLUG}, ${TELEGRAM_STATE_DIR}, ${ENV_FILE} → install at
-     /etc/systemd/system/ops-loop-<slug>.service.
-  3. systemctl daemon-reload + enable + start ops-loop-<slug>.service.
+  2. Delegate rendering to bubble-vps-platform's canonical
+     bubble-agent@.service renderer and install its per-instance drop-in.
+  3. Stop + disable any legacy ops-loop-<slug>.service, then enable + start
+     bubble-agent@<slug>.service.
   4. Best-effort: install the bubble-ops-bot GitHub App on the new repo
      via the GitHub API. Falls back to a UI message if it fails.
 
@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import logging
+import tempfile
 from pathlib import Path
 from typing import Callable, Dict, Optional, Any, List
 
@@ -34,13 +35,18 @@ logger = logging.getLogger(__name__)
 
 # ─── Paths / constants ────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-SYSTEMD_TEMPLATE_PATH: Path = (
-    _PROJECT_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
+PLATFORM_ROOT = Path(
+    os.environ.get("BUBBLE_VPS_PLATFORM_ROOT", _PROJECT_ROOT.parent / "bubble-vps-platform")
+)
+TENANT_YAML_PATH = Path(
+    os.environ.get(
+        "BUBBLE_TENANT_YAML",
+        "/srv/bubble-vps-data/tenants/bubble-internal/tenant.yaml",
+    )
 )
 GLOBAL_SOPS_ENV_PATH = Path("/etc/bubble/secrets.sops.env")
 AGE_KEY_FILE = Path("/etc/age/key.txt")
 AGENTS_PARENT = Path("/home/claude/agents")
-TELEGRAM_STATE_PARENT = Path("/home/claude/.claude/channels")
 
 # Two age recipients on the existing /etc/bubble/secrets.sops.env
 # (extracted from the file's metadata block — these are public keys, safe
@@ -66,7 +72,7 @@ def create_per_dept_sops_env(slug: str, telegram_bot_token: str) -> None:
     """Write /etc/bubble/secrets-<slug>.sops.env (SOPS+age dotenv) holding
     just DEPT_TELEGRAM_BOT_TOKEN. The systemd unit reads this file at
     boot, renames DEPT_TELEGRAM_BOT_TOKEN to TELEGRAM_BOT_TOKEN, and
-    drops the env into /run/claude-agent-<slug>/env."""
+    drops the env into /run/bubble-agent-<slug>/env."""
     out_path = Path(f"/etc/bubble/secrets-{slug}.sops.env")
     plain = f"DEPT_TELEGRAM_BOT_TOKEN={telegram_bot_token}\n"
 
@@ -97,70 +103,101 @@ shred -uz "$TMP"
         )
 
 
-# ─── Step 2 — render + install systemd unit ───────────────────────────────
-def render_systemd_unit(slug: str) -> str:
-    """Read the template at SYSTEMD_TEMPLATE_PATH and substitute placeholders."""
-    template = SYSTEMD_TEMPLATE_PATH.read_text(encoding="utf-8")
-    telegram_state_dir = str(TELEGRAM_STATE_PARENT / f"telegram-{slug}")
-    env_file = f"/run/claude-agent-{slug}/env"
-    workdir = f"/home/claude/agents/{slug}"
-    # DEPT_SLUG_UPPER = slug upper-cased with '-'→'_' — MUST match the CLI path
-    # (deploy-to-morty.sh: `tr '[:lower:]-' '[:upper:]_'`) so the env var name
-    # GITHUB_APP_INSTALLATION_ID_<UPPER> the broker reads is identical whether a
-    # dept is launched from the cockpit (this renderer) or the CLI. Without it
-    # ${DEPT_SLUG_UPPER} survived rendering and a cockpit-launched dept shipped a
-    # malformed env name (test_eclosure_launcher_v2 placeholder failures).
-    slug_upper = slug.upper().replace("-", "_")
-    # CLAUDE_MODEL — the model pin written into the ExecStart line. Read from
-    # env at render time (deploy-to-morty.sh exports it; cockpit falls back to
-    # the fleet-wide default). Matching deploy-to-morty.sh line 69: canonical
-    # fleet default is "opus[1m]" (1 M-context Opus).
-    claude_model = os.environ.get("CLAUDE_MODEL", "opus[1m]")
-    rendered = (
-        template
-        .replace("${DEPT_SLUG_UPPER}", slug_upper)
-        .replace("${DEPT_SLUG}", slug)
-        .replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
-        .replace("${ENV_FILE}", env_file)
-        .replace("${OS_USER}", "claude")
-        .replace("${OS_GROUP}", "claude")
-        .replace("${WORKDIR}", workdir)
-        .replace("${CLAUDE_MODEL}", claude_model)
-    )
-    return rendered
-
-
-def install_systemd_unit(slug: str) -> None:
-    """Render the unit and install at /etc/systemd/system/ops-loop-<slug>.service."""
-    unit_text = render_systemd_unit(slug)
-    unit_path = f"/etc/systemd/system/ops-loop-{slug}.service"
+# ─── Step 2 — render + install canonical systemd unit ─────────────────────
+def _render_systemd_bundle(slug: str, output_dir: Path) -> tuple[Path, Path, Path]:
+    """Delegate all unit generation to bubble-vps-platform (#1119)."""
+    renderer = PLATFORM_ROOT / "scripts" / "render-agent-units.py"
+    dept_yaml = AGENTS_PARENT / slug / "dept.yaml"
     cmd = [
-        "sudo", "bash", "-c",
-        f"""
-set -e
-cat > {unit_path} <<'EOF_UNIT'
-{unit_text}EOF_UNIT
-chown root:root {unit_path}
-chmod 0644 {unit_path}
-systemctl daemon-reload
-"""
+        str(renderer),
+        "--tenant", str(TENANT_YAML_PATH),
+        "--dept", str(dept_yaml),
+        "--output-dir", str(output_dir),
+        "--verify",
     ]
+    model = os.environ.get("CLAUDE_MODEL")
+    if model:
+        cmd.extend(["--model", model])
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
-            f"install_systemd_unit({slug}) failed: {result.stderr or result.stdout}"
+            f"canonical agent-unit render failed for {slug}: "
+            f"{result.stderr or result.stdout}"
         )
+    service = f"bubble-agent@{slug}.service"
+    return (
+        output_dir / "bubble-agent@.service",
+        output_dir / "bubble-agent-prepare",
+        output_dir / f"{service}.d" / f"{slug}.conf",
+    )
+
+
+def install_systemd_unit(slug: str) -> None:
+    """Render and install the canonical template, helper, and instance drop-in."""
+    service = f"bubble-agent@{slug}.service"
+    with tempfile.TemporaryDirectory(prefix="bubble-agent-eclosure-") as stage:
+        unit, helper, dropin = _render_systemd_bundle(slug, Path(stage))
+        commands = (
+            ["sudo", "install", "-m", "0644", str(unit), "/etc/systemd/system/bubble-agent@.service"],
+            ["sudo", "install", "-m", "0755", str(helper), "/usr/local/libexec/bubble-agent-prepare"],
+            ["sudo", "install", "-d", "-m", "0755", f"/etc/systemd/system/{service}.d"],
+            ["sudo", "install", "-m", "0644", str(dropin), f"/etc/systemd/system/{service}.d/{slug}.conf"],
+            ["sudo", "systemd-analyze", "verify", service],
+        )
+        for cmd in commands:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"install_systemd_unit({slug}) failed: "
+                    f"{result.stderr or result.stdout}"
+                )
 
 
 # ─── Step 3 — start the service ────────────────────────────────────────────
 def systemctl_enable_and_start(slug: str) -> None:
-    """Enable + start ops-loop-<slug>.service. Fails loudly if the service
-    isn't active after the start command."""
-    cmd = ["sudo", "systemctl", "enable", "--now", f"ops-loop-{slug}.service"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    """Atomically cut over from the legacy poller to the canonical instance."""
+    legacy = f"ops-loop-{slug}.service"
+    service = f"bubble-agent@{slug}.service"
+    reload_result = subprocess.run(
+        ["sudo", "systemctl", "daemon-reload"],
+        capture_output=True, text=True, check=False,
+    )
+    if reload_result.returncode != 0:
+        raise RuntimeError(
+            f"systemctl daemon-reload failed: {reload_result.stderr or reload_result.stdout}"
+        )
+    # A freshly scaffolded dept may have no legacy unit, while a repeated
+    # cutover may find it already inactive/disabled. `systemctl cat` cleanly
+    # distinguishes those idempotent cases; if the unit exists, stop/disable
+    # failures are fatal so we never start a second Telegram poller.
+    legacy_exists = subprocess.run(
+        ["sudo", "systemctl", "cat", legacy],
+        capture_output=True, text=True, check=False,
+    ).returncode == 0
+    if legacy_exists:
+        for action in ("stop", "disable"):
+            cutover = subprocess.run(
+                ["sudo", "systemctl", action, legacy],
+                capture_output=True, text=True, check=False,
+            )
+            if cutover.returncode != 0:
+                raise RuntimeError(
+                    f"systemctl {action} {legacy}: "
+                    f"{cutover.stderr or cutover.stdout}"
+                )
+    still_active = subprocess.run(
+        ["sudo", "systemctl", "is-active", "--quiet", legacy],
+        capture_output=True, text=True, check=False,
+    )
+    if still_active.returncode == 0:
+        raise RuntimeError(f"refusing double-poller start: {legacy} is still active")
+    result = subprocess.run(
+        ["sudo", "systemctl", "enable", "--now", service],
+        capture_output=True, text=True, check=False,
+    )
     if result.returncode != 0:
         raise RuntimeError(
-            f"systemctl enable --now ops-loop-{slug}: {result.stderr or result.stdout}"
+            f"systemctl enable --now {service}: {result.stderr or result.stdout}"
         )
 
 

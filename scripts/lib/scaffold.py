@@ -1040,8 +1040,12 @@ scripts/render-agent-units.py --tenant /path/to/tenant.yaml \\
   --dept /path/to/{slug}/dept.yaml --output-dir ./rendered --verify
 ```
 
-Only the platform renderer owns `bubble-agent@.service` and its Environment-only
-instance drop-in. Review the rendered files before any deployment.
+Only the platform renderer owns `bubble-agent@.service` and its per-instance
+drop-in. The drop-in renders User=/Group=/WorkingDirectory= from dept.yaml;
+when unset, the #1120-compatible defaults are claude/claude and
+`/home/claude/agents/{slug}`. Use deploy-to-morty.sh --os-user=agent-{slug}
+for an explicit migration to `/srv/agents/{slug}`. Review the rendered files
+before deployment.
 """
 
 

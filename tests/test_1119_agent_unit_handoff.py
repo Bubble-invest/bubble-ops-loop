@@ -19,11 +19,24 @@ def test_legacy_unit_generator_is_removed():
 def test_transport_wrapper_calls_the_one_platform_renderer():
     script = (ROOT / "scripts/deploy-to-morty.sh").read_text(encoding="utf-8")
     assert "scripts/render-agent-units.py" in script
-    assert '--output-dir "$stage" --verify' in script
-    assert "sed -" not in script
+    assert '"$RENDERER" "${renderer_args[@]}"' in script
+    assert '--output-dir "$stage"' in script
+    assert "--verify" in script
+    assert "s|${DEPT_SLUG}" not in script
     assert '.replace("${DEPT_SLUG}"' not in script
     assert "bubble-agent@${SLUG}.service" in script
-    assert "ops-loop-${SLUG}.service" not in script
+    assert 'legacy_service="ops-loop-${SLUG}.service"' in script
+
+
+def test_transport_preserves_os_user_controls_and_orders_legacy_cutover():
+    script = (ROOT / "scripts/deploy-to-morty.sh").read_text(encoding="utf-8")
+    for option in ("--os-user", "--os-group", "--workdir"):
+        assert option in script
+    stop = 'systemctl stop ${legacy_service}'
+    disable = 'systemctl disable ${legacy_service}'
+    start = 'systemctl enable --now ${service}'
+    assert script.index(stop) < script.index(disable) < script.index(start)
+    assert "claude-agent-morty.service" not in script
 
 
 def test_runtime_control_paths_use_canonical_instance_name():

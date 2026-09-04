@@ -28,20 +28,20 @@ rebuilt or a new tenant box is provisioned.
 
 ## /loop boot re-arm (step 8) — env for existing depts
 
-NEW depts inherit the boot-rearm env automatically: it is baked into
-`bubble-vps-platform/systemd/bubble-agent@.service`
+NEW depts inherit the boot-rearm env automatically: it is rendered into the
+canonical `bubble-agent@<slug>.service.d/<slug>.conf` drop-in by
+`bubble-vps-platform/scripts/render-agent-units.py`
 (`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`),
-substituted per-dept at scaffold/deploy time
-(`scripts/deploy-to-vps.sh`, `console/services/eclosure_launcher.py`).
+consumed by `scripts/deploy-to-morty.sh` and
+`console/services/eclosure_launcher.py`.
 
 EXISTING live depts (tony, maya, cgp, claudette, …) were provisioned before
 this env existed, so their installed units lack it. Two ways to add it (Rick
 applies to live units; this installer never touches live units):
 
-- **Re-render + reinstall the unit** (preferred, keeps the unit in sync with
-  the template): `scripts/deploy-to-vps.sh --slug=<dept>` re-renders from the
-  template (now including the env) and reinstalls the unit, then
-  `daemon-reload` + restart.
+- **Re-render + reinstall the canonical unit** (preferred):
+  `scripts/deploy-to-morty.sh --slug=<dept> --tenant-yaml=<path>` renders the
+  platform template + instance drop-in, then performs the ordered cutover.
 - **systemd drop-in** (surgical, no full re-render):
 
       sudo systemctl edit ops-loop-<dept>.service
