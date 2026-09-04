@@ -24,9 +24,29 @@ with NO recurring L3 mission in `dept.yaml::recurring_missions` hits:
 looked, and structurally there is nothing it can do today" — see
 `test_1085_l4_export_gate.py` for decide_dispatch's C.1 behaviour once it
 HAS been called. This file tests the missing piece: `maybe_defer_ad_hoc_l3`,
-the caller that stamps it automatically on this exact starved path, wired
-into the /loop's STEP C right after `select_due_missions` (see
-`scripts/lib/scaffold.py`).
+the caller that stamps it automatically on this exact starved path.
+
+WIRED IN TWO PLACES (code-level fix, not template-only — see the PR
+discussion on #1085): (1) `build_dispatch_ctx`'s `materialize=True` branch in
+`dispatch_helpers.py` — this is what makes the fix reach every dept
+automatically the instant its vendored `dispatch_helpers.py` is refreshed,
+with NO CLAUDE.md edit needed (an already-onboarded dept's live protocol
+text was baked at onboarding time and does not pick up a template-only
+change); and (2) the /loop's documented STEP C prose right after
+`select_due_missions` in `scripts/lib/scaffold.py` (belt-and-suspenders +
+visibility for future depts).
+
+Most tests below build `ctx` with `build_dispatch_ctx(..., materialize=False)`
+and then call `maybe_defer_ad_hoc_l3` directly — this isolates the FUNCTION's
+own decision logic from `build_dispatch_ctx`'s new automatic call, so a test
+doesn't end up invoking the defer twice in one "tick" (once inside
+`build_dispatch_ctx`, once manually) and miscounting `round_counter`. The
+`materialize=True` INTEGRATION behaviour (the code-level wiring itself, and
+the #454 read-only-probe invariant that `materialize=False` must never
+stamp) is covered explicitly by
+`test_build_dispatch_ctx_materialize_true_stamps_l3_and_unblocks_l4` and
+`test_build_dispatch_ctx_materialize_false_does_not_stamp` at the bottom of
+this file.
 """
 from __future__ import annotations
 
@@ -106,7 +126,11 @@ def test_reproduces_the_deadlock_before_the_fix(tmp_path: Path):
     _drop_approved_decision(repo, "hold-boursorama-1")
     write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)  # L1 already ran
 
-    ctx = build_dispatch_ctx(repo, now_utc=_NOW)
+    # materialize=False: a pure read of decide_dispatch/select_due_missions'
+    # own selection logic, undisturbed by build_dispatch_ctx's own
+    # maybe_defer_ad_hoc_l3 call (which only runs in the materialize=True
+    # branch) — this is what "before the fix" looked like structurally.
+    ctx = build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
     assert ctx["has_inbox_decisions"] is True
     phase = decide_dispatch(ctx)
     assert phase == "layer_3", "C.3 must resolve while an approved decision is pending"
@@ -132,7 +156,10 @@ def test_maybe_defer_ad_hoc_l3_unblocks_l4(tmp_path: Path):
     _drop_approved_decision(repo, "hold-boursorama-1")
     write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)
 
-    ctx = build_dispatch_ctx(repo, now_utc=_NOW)
+    # Isolated unit-test of the function: materialize=False so
+    # build_dispatch_ctx itself does not ALSO call maybe_defer_ad_hoc_l3
+    # (that integration path is covered separately below).
+    ctx = build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
     phase = decide_dispatch(ctx)
     due = select_due_missions(ctx, _NO_L3_MISSIONS)
     assert phase == "layer_3" and due == []
@@ -149,9 +176,11 @@ def test_maybe_defer_ad_hoc_l3_unblocks_l4(tmp_path: Path):
         "L1's cycle gate can never be satisfied again today"
     )
 
-    # Rebuild ctx from disk (a fresh tick) — L4 must now be eligible: L1
-    # fired, no research backlog (vacuously satisfied), L3 now fired (via
-    # the defer), L4 not yet run.
+    # Rebuild ctx from disk (a fresh tick, real materialize=True path this
+    # time) — L4 must now be eligible: L1 fired, no research backlog
+    # (vacuously satisfied), L3 now fired (via the defer), L4 not yet run.
+    # The marker is already on disk, so build_dispatch_ctx's own internal
+    # maybe_defer_ad_hoc_l3 call is a no-op here (guard 3) — no double-stamp.
     ctx2 = build_dispatch_ctx(repo, now_utc=_NOW)
     assert ctx2["layer_3_last_run_today"] == _NOW
     assert decide_dispatch(ctx2) == "layer_4", (
@@ -172,7 +201,9 @@ def test_maybe_defer_ad_hoc_l3_is_idempotent_no_fire_spin(tmp_path: Path):
     _drop_research_item(repo, "unrelated-research-item")  # keeps L4 gated (l2 not fired)
     write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)
 
-    ctx1 = build_dispatch_ctx(repo, now_utc=_NOW)
+    # Isolated unit-test of the function's own idempotence, decoupled from
+    # build_dispatch_ctx's automatic call (materialize=False on both ticks).
+    ctx1 = build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
     phase1 = decide_dispatch(ctx1)
     assert phase1 == "layer_3"
     assert ctx1["has_research_items"] is True
@@ -188,7 +219,7 @@ def test_maybe_defer_ad_hoc_l3_is_idempotent_no_fire_spin(tmp_path: Path):
     # archived — and the research backlog still blocks L4's C.1 regardless
     # of L3's status).
     later = _NOW.replace(hour=21, minute=30)
-    ctx2 = build_dispatch_ctx(repo, now_utc=later)
+    ctx2 = build_dispatch_ctx(repo, now_utc=later, materialize=False)
     phase2 = decide_dispatch(ctx2)
     assert phase2 == "layer_3", "L3 keeps shadowing while has_decisions stays True (no not-l3_fired gate in C.3)"
 
@@ -248,4 +279,66 @@ def test_maybe_defer_ad_hoc_l3_noop_when_phase_is_not_layer_3(tmp_path: Path):
 
     wrote = maybe_defer_ad_hoc_l3(ctx, _NO_L3_MISSIONS, phase=phase)
     assert wrote is False
+    assert read_last_run(repo / "outputs" / _TODAY / "3") is None
+
+
+def test_build_dispatch_ctx_materialize_true_stamps_l3_and_unblocks_l4(tmp_path: Path):
+    """THE CODE-LEVEL WIRING (not template-only): `build_dispatch_ctx(...,
+    materialize=True)` — what EVERY live /loop tick calls, for every dept —
+    must call `maybe_defer_ad_hoc_l3` itself. This is what makes the fix
+    reach an already-onboarded dept (e.g. Géraldine/accountant) the instant
+    its vendored `dispatch_helpers.py` is refreshed: her live CLAUDE.md was
+    baked at onboarding time and will NOT contain a call to the new helper
+    (the scaffold.py template update only affects future-onboarded depts),
+    so the caller MUST live in code, not only in the LLM-emitted /loop
+    prose (same soft-guard class as #861)."""
+    repo = _mk_repo(tmp_path, _NO_L3_MISSIONS)
+    _drop_approved_decision(repo, "hold-boursorama-1")
+    write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)
+
+    assert read_last_run(repo / "outputs" / _TODAY / "3") is None, "precondition"
+
+    # A single build_dispatch_ctx(materialize=True) call — exactly what
+    # `ctx = build_dispatch_ctx('.')` at the top of every dept's STEP C does
+    # every tick — must be enough, with NO manual maybe_defer_ad_hoc_l3 call
+    # and no CLAUDE.md edit.
+    ctx = build_dispatch_ctx(repo, now_utc=_NOW)
+    assert decide_dispatch(ctx) == "layer_3", "sanity: this tick's phase, computed BEFORE the internal stamp"
+
+    assert read_last_run(repo / "outputs" / _TODAY / "3") == _NOW, (
+        "build_dispatch_ctx(materialize=True) must itself have called "
+        "maybe_defer_ad_hoc_l3 and stamped L3 handled-today — no separate "
+        "call, no CLAUDE.md line required"
+    )
+    assert read_round_counter(repo / "outputs" / _TODAY).get("3") == 1
+
+    # A FRESH tick now sees L3 as fired and L4 becomes eligible — the actual
+    # #1094 symptom (no management-export.yaml) this closes.
+    ctx2 = build_dispatch_ctx(repo, now_utc=_NOW)
+    assert decide_dispatch(ctx2) == "layer_4"
+
+
+def test_build_dispatch_ctx_materialize_false_does_not_stamp(tmp_path: Path):
+    """#454 READ-ONLY-PROBE INVARIANT (the same one `reconcile_gate_dir`
+    already respects, right above this call site): a `materialize=False`
+    caller — e.g. `loop-backup.sh`'s FORCE_LAYER pre-wake eligibility probe —
+    must NEVER stamp a marker as a side effect of just checking state. The
+    new `maybe_defer_ad_hoc_l3` call sits in the SAME `if materialize:`
+    branch, so a probe call must leave L3's `.last-run` untouched."""
+    repo = _mk_repo(tmp_path, _NO_L3_MISSIONS)
+    _drop_approved_decision(repo, "hold-boursorama-1")
+    write_last_run(repo / "outputs" / _TODAY / "1", when=_NOW)
+
+    ctx = build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
+    assert decide_dispatch(ctx) == "layer_3"
+
+    assert read_last_run(repo / "outputs" / _TODAY / "3") is None, (
+        "a materialize=False probe must NEVER write outputs/<today>/3/.last-run "
+        "(or bump round_counter) as a side effect — #454"
+    )
+    assert read_round_counter(repo / "outputs" / _TODAY).get("3", 0) == 0
+
+    # Calling the probe repeatedly changes nothing either.
+    build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
+    build_dispatch_ctx(repo, now_utc=_NOW, materialize=False)
     assert read_last_run(repo / "outputs" / _TODAY / "3") is None

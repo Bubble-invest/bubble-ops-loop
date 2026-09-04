@@ -1950,13 +1950,19 @@ def build_dispatch_ctx(
     dispatch decision, e.g. scaffold.py's documented
     `ctx = build_dispatch_ctx('.')` call in the live /loop), the usual
     `materialize_due_missions_for_tick()` side effect runs first, exactly as
-    before (#428/#432 behaviour unchanged). Set `materialize=False` for any
-    caller that only needs READ-ONLY ctx signals — e.g. a pre-flight
-    eligibility GATE CHECK (loop-backup.sh's FORCE_LAYER "is this layer due
-    yet" probe) that decides whether to wake the live session but does NOT
-    itself dispatch. `build_dispatch_ctx` is a context BUILDER; only the
-    mission's real run may write its `.last-run` marker (the #428/#375
-    invariant) — a read-only gate check must not stamp it as a side effect.
+    before (#428/#432 behaviour unchanged), followed by `reconcile_gate_dir`
+    (#1076) and — after `ctx` is built — `maybe_defer_ad_hoc_l3` (#1085,
+    idempotent per Paris-day): a dept whose L3 work is entirely ad-hoc
+    `inbox/decisions/` items with NO recurring L3 mission would otherwise
+    never get its `.last-run` marker stamped by anything, permanently
+    starving L4. Set `materialize=False` for any caller that only needs
+    READ-ONLY ctx signals — e.g. a pre-flight eligibility GATE CHECK
+    (loop-backup.sh's FORCE_LAYER "is this layer due yet" probe) that decides
+    whether to wake the live session but does NOT itself dispatch.
+    `build_dispatch_ctx` is a context BUILDER; only the mission's real run
+    (or this structural-defer path) may write `.last-run` (the #428/#375
+    invariant) — a read-only gate check must not stamp any marker as a side
+    effect.
 
     THE #454 BUG (found live on Ben, 2026-07-01/02): `loop-backup.sh`'s
     FORCE_LAYER gate calls `build_dispatch_ctx(...)` purely to read
@@ -1993,9 +1999,13 @@ def build_dispatch_ctx(
     # so the materializer's event-ledger gate uses the same L1 cycle threshold
     # as decide_dispatch (was hardcoded to 1 in a8ed933; now threaded through).
     #
-    # #454 FIX: this is the ONLY mutating step in build_dispatch_ctx (it
-    # writes queue items + per-mission .last-run markers). Skip it entirely
-    # when materialize=False (read-only gate/probe callers) so build_dispatch_ctx
+    # #454 FIX: this `if materialize:` branch (extended by #1076's
+    # reconcile_gate_dir and #1085's maybe_defer_ad_hoc_l3 below, plus the
+    # second `if materialize:` block near the end of this function) holds
+    # EVERY mutating step in build_dispatch_ctx (it writes queue items,
+    # per-mission .last-run markers, archives resolved gates, and may stamp
+    # Layer 3's structural-defer marker). Skip it entirely when
+    # materialize=False (read-only gate/probe callers) so build_dispatch_ctx
     # never stamps a run-marker as a side effect of a call that isn't the real
     # dispatch decision — see the #454 docstring section above.
     if materialize:
@@ -2014,7 +2024,7 @@ def build_dispatch_ctx(
         except Exception:
             pass
 
-    return {
+    ctx: "dict[str, Any]" = {
         "now_utc": now_utc,
         # Repo root, so consumer/event checks (_mission_input_ready, the #282
         # event dispatched-id ledger read in select_due_missions) can resolve
@@ -2086,6 +2096,45 @@ def build_dispatch_ctx(
             repo, since=read_last_mgmt_scan(repo)
         ),
     }
+
+    if materialize:
+        # #1085 CODE-LEVEL FIX (not template-only): call the missing
+        # write_l3_human_deferred caller HERE, in the real dispatch path, not
+        # only in scaffold.py's documented STEP C prose. The template call is
+        # LLM-emitted — an already-onboarded dept's live CLAUDE.md was baked
+        # at onboarding time and does NOT get the new line just by re-
+        # vendoring dispatch_helpers.py (soft-guard class, #861). Wiring it
+        # here means EVERY caller of build_dispatch_ctx(materialize=True) —
+        # i.e. every live /loop tick, for every dept, past or future, the
+        # instant its vendored dispatch_helpers.py is refreshed — gets the
+        # fix automatically, with no CLAUDE.md edit required.
+        #
+        # Gated behind `if materialize` (mirrors #1076's `reconcile_gate_dir`
+        # placement immediately above): this is a MUTATING call (it may write
+        # outputs/<today>/3/.last-run + bump round_counter[3]), so it must
+        # never run on a `materialize=False` read-only probe call (the #454
+        # invariant a gate/eligibility check must not stamp a marker as a
+        # side effect — e.g. loop-backup.sh's FORCE_LAYER pre-wake check).
+        # `maybe_defer_ad_hoc_l3` itself is additionally idempotent per
+        # Paris-day (#302/#965 fire-spin guard) and narrowly scoped to the
+        # structural no-recurring-L3-mission case (see its docstring) — this
+        # call site only needs to supply `ctx` and `missions`; every actual
+        # decision is made inside the helper.
+        try:
+            dept_yaml_path = repo / "dept.yaml"
+            _dept: "dict[str, Any]" = {}
+            if dept_yaml_path.is_file():
+                _loaded = yaml.safe_load(dept_yaml_path.read_text(encoding="utf-8")) or {}
+                if isinstance(_loaded, dict):
+                    _dept = _loaded
+            _missions = _dept.get("recurring_missions") or []
+            maybe_defer_ad_hoc_l3(ctx, _missions)
+        except Exception:
+            # Best-effort, exactly like the reconcile_gate_dir call above —
+            # a hiccup here must never abort the dispatch decision itself.
+            pass
+
+    return ctx
 
 
 def decide_dispatch(ctx: dict[str, Any]) -> str:
