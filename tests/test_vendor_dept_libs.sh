@@ -188,6 +188,69 @@ out7="$("$SCRIPT_UNDER_TEST" "$DEPT7" 2>&1)"      # second run (idempotent)
 chk_contains "T7 second run reports 0 files refreshed" "0 file(s) refreshed" "$out7"
 
 # =============================================================================
+# T8 (board #1115): /opt/bubble-ops-loop (root-owned checkout) candidate
+#     present in resolution order, checked ahead of the legacy /home/claude
+#     fallback. We can't create /opt on most CI/dev boxes without root, so
+#     (like T3's VPS-fallback check) this is source inspection plus a live
+#     sub-test IF /opt/bubble-ops-loop happens to already exist.
+# =============================================================================
+echo "== T8: root-owned /opt/bubble-ops-loop candidate (board #1115) =="
+if grep -q "/opt/bubble-ops-loop" "$SCRIPT_UNDER_TEST"; then
+  echo "  PASS: T8 /opt/bubble-ops-loop candidate present in script"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T8 /opt/bubble-ops-loop not found in script"; FAIL=$((FAIL+1))
+fi
+# Ordering: the /opt candidate must appear BEFORE the /home/claude fallback
+# in source (best-effort proxy for "checked first" — the real guarantee is
+# the runtime resolution below when both exist).
+_opt_idx="$(grep -n '"/opt/bubble-ops-loop"' "$SCRIPT_UNDER_TEST" | head -1 | cut -d: -f1)"
+_vps_idx="$(grep -n '"/home/claude/bubble-ops-loop"' "$SCRIPT_UNDER_TEST" | head -1 | cut -d: -f1)"
+if [[ -n "$_opt_idx" && -n "$_vps_idx" && "$_opt_idx" -lt "$_vps_idx" ]]; then
+  echo "  PASS: T8 /opt candidate appears before /home/claude fallback in source"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T8 /opt candidate does not precede /home/claude fallback (opt@$_opt_idx vps@$_vps_idx)"; FAIL=$((FAIL+1))
+fi
+if [[ -d "/opt/bubble-ops-loop" ]]; then
+  DEPT8="$FIX/opt-priority-dept"; mkdir -p "$DEPT8/scripts/lib"
+  git -C "$DEPT8" init -q 2>/dev/null
+  git -C "$DEPT8" config user.email "fixture@test"
+  git -C "$DEPT8" config user.name "fixture"
+  echo "# stale" > "$DEPT8/scripts/lib/dispatch_helpers.py"
+  git -C "$DEPT8" add -A && git -C "$DEPT8" commit -q -m "init"
+  out8="$(unset BUBBLE_FRAMEWORK_ROOT; "$SCRIPT_UNDER_TEST" "$DEPT8" 2>&1)"
+  rc8=$?; chk "T8 /opt path resolves (live machine)" 0 "$rc8"
+else
+  echo "  SKIP T8 live /opt/bubble-ops-loop check (not present on this host)"
+fi
+
+# =============================================================================
+# T9 (board #1115): a symlink at DEST must be REFUSED, never written through.
+# =============================================================================
+echo "== T9: symlink DEST is refused, not written through =="
+PARENT9="$FIX/parent9"
+FW9="$PARENT9/bubble-ops-loop"; make_framework "$FW9"
+DEPT9="$PARENT9/bubble-ops-miranda"; make_dept "$DEPT9"
+# Replace the dept's dispatch_helpers.py with a symlink pointing at a
+# canary file OUTSIDE the dept tree — if the script ever writes through it
+# (instead of refusing), the canary's content changes.
+CANARY="$FIX/canary.txt"
+echo "canary — must never change" > "$CANARY"
+rm -f "$DEPT9/scripts/lib/dispatch_helpers.py"
+ln -s "$CANARY" "$DEPT9/scripts/lib/dispatch_helpers.py"
+out9="$(unset BUBBLE_FRAMEWORK_ROOT; "$SCRIPT_UNDER_TEST" "$DEPT9" 2>&1)"
+rc9=$?
+chk "T9 exits 0 (fail-open, not a hard failure)" 0 "$rc9"
+chk_contains "T9 logs a refusal, not a silent write-through" "refusing" "$out9"
+CANARY_AFTER="$(cat "$CANARY")"
+chk_eq "T9 canary file untouched (symlink target NOT written through)" \
+  "canary — must never change" "$CANARY_AFTER"
+if [[ -L "$DEPT9/scripts/lib/dispatch_helpers.py" ]]; then
+  echo "  PASS: T9 dest is left as a symlink (refused, not replaced)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T9 dest symlink was removed/replaced"; FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

@@ -26,10 +26,22 @@ DEPT="${1:-}"
 # Mac host:local agents like Miranda on Jade's machine).
 # Resolution order:
 #   1. $BUBBLE_FRAMEWORK_ROOT if set (explicit override, highest priority).
-#   2. Sibling of the dept dir: $(dirname <dept-dir>)/bubble-ops-loop
+#   2. /opt/bubble-ops-loop — board #1115: a ROOT-OWNED checkout (managed by
+#      bubble-vps-platform's tasks/access/framework_checkout.py, cloned
+#      directly from GitHub via a dedicated read-only deploy key,
+#      independent of the claude-writable checkout below). This script is
+#      invoked from ExecStartPre=+ (i.e. it runs AS ROOT) — reading the
+#      framework source from a directory `claude` cannot write to closes
+#      the "root executes claude-controlled code" gap for THIS script.
+#      Checked ahead of the legacy candidates below so a box that HAS
+#      completed the #1115 cutover automatically prefers it, with zero
+#      further changes needed once /opt/bubble-ops-loop exists.
+#   3. Sibling of the dept dir: $(dirname <dept-dir>)/bubble-ops-loop
 #      — the Mac host:local layout where the dept workspace sits next to
 #      bubble-ops-loop in the same parent directory.
-#   3. /home/claude/bubble-ops-loop — the canonical VPS path (original default).
+#   4. /home/claude/bubble-ops-loop — the canonical VPS path (original
+#      default; claude-owned — see board #1115, kept as the fallback for
+#      boxes that haven't staged the #1115 cutover yet).
 # The first candidate that actually exists on disk wins.
 # If none resolve, FRAMEWORK stays empty and the existing fail-open guard below
 # catches it (logs WARN and exits 0).
@@ -37,12 +49,15 @@ if [[ -n "${BUBBLE_FRAMEWORK_ROOT:-}" ]]; then
   FRAMEWORK="$BUBBLE_FRAMEWORK_ROOT"
 else
   FRAMEWORK=""
-  # candidate 2: sibling of dept dir (Mac host:local layout)
-  if [[ -n "$DEPT" ]]; then
+  # candidate 2: root-owned checkout (board #1115)
+  _root_owned="/opt/bubble-ops-loop"
+  [[ -d "$_root_owned" ]] && FRAMEWORK="$_root_owned"
+  # candidate 3: sibling of dept dir (Mac host:local layout)
+  if [[ -z "$FRAMEWORK" && -n "$DEPT" ]]; then
     _sibling="$(dirname "$DEPT")/bubble-ops-loop"
     [[ -d "$_sibling" ]] && FRAMEWORK="$_sibling"
   fi
-  # candidate 3: VPS path
+  # candidate 4: VPS path
   if [[ -z "$FRAMEWORK" ]]; then
     _vps="/home/claude/bubble-ops-loop"
     [[ -d "$_vps" ]] && FRAMEWORK="$_vps"
@@ -74,8 +89,21 @@ for pair in "${MAP[@]}"; do
   # only copy if the dest dir exists (don't create new surfaces a dept doesn't use)
   dst_dir="$(dirname "$dst")"
   [[ -d "$dst_dir" ]] || { log "skip $2 — dept has no $dst_dir/"; continue; }
+  # board #1115: refuse a symlink DEST outright rather than writing through
+  # it. Plain `cp` (without --remove-destination) opens+truncates whatever
+  # an existing dest symlink points to — this script runs as ROOT
+  # (ExecStartPre=+), so a dept dir with a dst path replaced by a symlink
+  # (e.g. by a compromised claude session with write access to the dept
+  # tree) could otherwise redirect a root-run write to an arbitrary
+  # root-writable path on the NEXT service restart.
+  if [[ -L "$dst" ]]; then
+    log "WARN: refusing $2 — dest is a symlink, not a regular file (fail-open, not copied)"
+    continue
+  fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
-    if cp -f "$src" "$dst" 2>/dev/null; then
+    # -T: dst is always a normal file target (never "copy into directory").
+    # --no-dereference: never follow a symlink SRC either (defense in depth).
+    if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
       chown claude:claude "$dst" 2>/dev/null || true
       log "re-vendored $2 (was stale/missing)"
       vendored=$((vendored+1))
@@ -102,8 +130,13 @@ for pair in "${KANBAN_MAP[@]}"; do
   src="$FRAMEWORK/$1"; dst="$DEPT/$2"
   [[ -f "$src" ]] || { log "skip $1 — not in framework"; continue; }
   mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+  # board #1115: same symlink-dest refusal as the MAP loop above.
+  if [[ -L "$dst" ]]; then
+    log "WARN: refusing kanban $2 — dest is a symlink, not a regular file (fail-open, not copied)"
+    continue
+  fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
-    if cp -f "$src" "$dst" 2>/dev/null; then
+    if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
       chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
       chown claude:claude "$dst" 2>/dev/null || true
       log "re-vendored kanban $2 (was stale/missing)"
