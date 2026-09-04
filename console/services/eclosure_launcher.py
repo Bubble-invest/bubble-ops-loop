@@ -103,6 +103,7 @@ def render_systemd_unit(slug: str) -> str:
     template = SYSTEMD_TEMPLATE_PATH.read_text(encoding="utf-8")
     telegram_state_dir = str(TELEGRAM_STATE_PARENT / f"telegram-{slug}")
     env_file = f"/run/claude-agent-{slug}/env"
+    workdir = f"/home/claude/agents/{slug}"
     # DEPT_SLUG_UPPER = slug upper-cased with '-'→'_' — MUST match the CLI path
     # (deploy-to-morty.sh: `tr '[:lower:]-' '[:upper:]_'`) so the env var name
     # GITHUB_APP_INSTALLATION_ID_<UPPER> the broker reads is identical whether a
@@ -121,6 +122,9 @@ def render_systemd_unit(slug: str) -> str:
         .replace("${DEPT_SLUG}", slug)
         .replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
         .replace("${ENV_FILE}", env_file)
+        .replace("${OS_USER}", "claude")
+        .replace("${OS_GROUP}", "claude")
+        .replace("${WORKDIR}", workdir)
         .replace("${CLAUDE_MODEL}", claude_model)
     )
     return rendered
