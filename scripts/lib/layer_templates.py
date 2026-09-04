@@ -26,7 +26,7 @@ _COMMON_HEADER = """You are a **stateless** subagent spawned by the main session
 communicate only via the files you write to disk and the \
 commits. You die after your run."""
 
-_IDEMPOTENCE = """## First mandatory action (STEP 1 — idempotence)
+_IDEMPOTENCE = """## Dispatch completion ownership (#1117)
 
 `<today>` is the **Paris-local date** (Europe/Paris, `YYYY-MM-DD`) — the fleet \
 timezone convention (board #1083 / #850). Use the value the main session hands \
@@ -36,20 +36,18 @@ from a box-UTC clock and never hand-type it from memory — the dispatch gate \
 reads the SAME `ctx['today']`, so any other clock reopens the ~1–2h/day \
 date-boundary miss #1083 closed.
 
-Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601 tz-aware):
-
-```python
-from scripts.lib.dispatch_helpers import write_last_run
-from pathlib import Path
-write_last_run(Path("outputs/<today>/{n}"))
-```
+Do not write `.last-run`, `.last-materialized`, or `dispatch.json`. The main
+session owns dispatch state and calls `commit_dispatch` only after this worker
+returns and its artifacts validate. Write real work artifacts only; a crash
+before return intentionally leaves the mission due for the watchdog re-kick.
 """
 
-_ROUND_COUNTER = """## Last mandatory action (STEP — round counter)
+_ROUND_COUNTER = """## Return contract
 
-Increment `outputs/<today>/round_counter.json[{n}] += 1` then commit+push \
-via `bubble-git-guard push --action runtime_write_own` (unless an artifact \
-already pushed)."""
+Return the real artifact paths to the main session. Do not advance
+`round_counter.json`; the parent does that inside `commit_dispatch` only after
+your return validates. Commit+push artifacts via `bubble-git-guard push
+--action runtime_write_own` unless an artifact already pushed."""
 
 
 _L1 = """# Moment 1 — The morning (Layer 1 — data update)
@@ -103,9 +101,7 @@ write_last_mgmt_scan(Path("."))  # writes queues/management/.last-mgmt-scan
 Never block the tick on a directive read failure — log `[context-skip directives]` \
 and proceed. Proceed immediately to STEP 1.
 
-## First mandatory action (STEP 1 — idempotence)
-
-Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+""" + _IDEMPOTENCE + """
 
 ## Your work (STEP 2 — update + briefing)
 
@@ -141,9 +137,7 @@ are several, the main session spawns several subagents in parallel.
 3. Your queue item (path passed in the task description)
 4. {l2_sources}
 
-## First mandatory action (STEP 1 — idempotence)
-
-Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+""" + _IDEMPOTENCE + """
 
 ## Your work (STEP 2 — process the item → produce its artifact)
 
@@ -173,12 +167,12 @@ The main session saw **one** validated decision in `inbox/decisions/` (STEP C.3 
 
 ## Mandatory pre-flight (STEP 0bis — guard-rails)
 
-Before writing your `.last-run`, check the applicable guard-rails \
+Before doing any external action, check the applicable guard-rails \
 (`../policies/gates.yaml`: kill-switch, quiet-hours, quotas, action-policy). \
 If a guard-rail blocks → ABORT, log the reason, the decision stays in \
 `inbox/decisions/` for later — **this is for a TRANSIENT block** (one that \
-may lift before midnight): do NOT stamp `.last-run`, so a later tick today \
-retries once it clears.
+may lift before midnight): return a blocked result with no completion commit, \
+so a later tick today retries once it clears.
 
 **Exception — STRUCTURAL human-supervised execution** (check `../dept.yaml` \
 / `../MANDATE.md` for this dept's execution mode, e.g. a board decision \
@@ -187,9 +181,8 @@ broker booking): if there is no autonomous way to execute this decision \
 TODAY OR ANY DAY (not "not yet" — "not by me, ever"), retrying later today \
 changes nothing. In that case: log the defer clearly (e.g. \
 `"DEFERRED-to-human-supervised"`), leave the item in `inbox/decisions/` for \
-a human to execute/archive, AND still write your `.last-run` via \
-`scripts.lib.dispatch_helpers.write_l3_human_deferred(Path("outputs/<today>/{n}"))` \
-instead of the plain `write_last_run` above — you DID your job for today \
+a human to execute/archive, and return `DEFERRED-to-human-supervised` with the \
+log artifact — the main session commits that terminal outcome after return. You DID your job for today \
 (confirmed nothing here is autonomously executable), and Layer 4's evening \
 debrief must not be blocked forever waiting on an execution that will never \
 happen on its own.
@@ -200,9 +193,7 @@ happen on its own.
 2. Your inbox item (the validated decision to execute)
 3. {l3_sources}
 
-## First mandatory action (STEP 1 — idempotence)
-
-Write **immediately** `outputs/<today>/{n}/.last-run` (ISO-8601) via `scripts.lib.dispatch_helpers.write_last_run(Path("outputs/<today>/{n}"))`.
+""" + _IDEMPOTENCE + """
 
 ## Your work (STEP 2 — execute the decision)
 

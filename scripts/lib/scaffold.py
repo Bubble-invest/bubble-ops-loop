@@ -308,23 +308,26 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 
 ```python
 from scripts.lib.dispatch_helpers import (
-    build_dispatch_ctx, decide_dispatch,
-    select_due_missions, maybe_defer_ad_hoc_l3, resolve_mission_prompt,
+    build_dispatch_ctx, commit_dispatch, decide_dispatch,
+    select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
+    resolve_mission_prompt,
 )
 import yaml
+reconcile_gate_dir('.')             # explicit PREPARE maintenance; not DECIDE
 ctx     = build_dispatch_ctx('.')
 phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
 dept    = yaml.safe_load(open('dept.yaml').read())
 missions = dept.get('recurring_missions') or []
-due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
-maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # #1085: no-op unless phase=="layer_3"
+due     = select_due_missions(ctx, missions)  # pure read: no marker or queue writes
+maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit for #1085
                                                     # AND this dept has no recurring L3
                                                     # mission at all (ad-hoc inbox decisions
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
-# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
+# For each mission in `due`: remember dispatched_at=ctx['now_utc'], spawn the
+# worker, validate its artifacts, then call commit_dispatch('.', mission,
+# dispatched_at=dispatched_at, artifacts=artifact_paths) AFTER it returns.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the date
@@ -332,7 +335,7 @@ from memory. `decide_dispatch` encodes the full min-time priority tree (Layer 4 
 19:00 Paris once L1+L2+L3 fired > research queue > inbox decisions > daily L1 >
 heartbeat) and is the SINGLE SOURCE of truth for *when* each phase fires.
 Layer 4 is eligible in the ~22:00 UTC dispatch window once L1+L2+L3 are done;
-idempotence is **per-mission** (`outputs/<today>/missions/<id>/.last-run`), NOT a
+idempotence is **per-mission** (`outputs/<today>/dispatch.json`), NOT a
 once-per-day layer cap — so MULTIPLE Layer-4 missions at different fire-times
 (e.g. a risk debrief at 21:00 + a wrap-up at 22:30) each run once on their own
 cadence. (The old shared `outputs/<today>/4/.last-run` layer-cap was removed — it
@@ -514,23 +517,26 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 
 ```python
 from scripts.lib.dispatch_helpers import (
-    build_dispatch_ctx, decide_dispatch,
-    select_due_missions, maybe_defer_ad_hoc_l3, resolve_mission_prompt,
+    build_dispatch_ctx, commit_dispatch, decide_dispatch,
+    select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
+    resolve_mission_prompt,
 )
 import yaml
+reconcile_gate_dir('.')             # explicit PREPARE maintenance; not DECIDE
 ctx     = build_dispatch_ctx('.')
 phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
 dept    = yaml.safe_load(open('dept.yaml').read())
 missions = dept.get('recurring_missions') or []
-due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
-maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # #1085: no-op unless phase=="layer_3"
+due     = select_due_missions(ctx, missions)  # pure read: no marker or queue writes
+maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit for #1085
                                                     # AND this dept has no recurring L3
                                                     # mission at all (ad-hoc inbox decisions
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
-# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
+# For each mission in `due`: remember dispatched_at=ctx['now_utc'], spawn the
+# worker, validate its artifacts, then call commit_dispatch('.', mission,
+# dispatched_at=dispatched_at, artifacts=artifact_paths) AFTER it returns.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the
@@ -542,7 +548,7 @@ whose L3 work is ad-hoc `inbox/decisions/` items with NO recurring L3 mission wo
 otherwise never stamp L3 "handled today", permanently starving L4. `resolve_mission_prompt`
 returns `missions/<id>/PROMPT.md` when it exists, else falls back to `layers/<N>/PROMPT.md`
 (zero-regression shim for existing depts). L4 idempotence is **per-mission**
-(`outputs/<today>/missions/<id>/.last-run`), so multiple L4 missions at different
+(`outputs/<today>/dispatch.json`), so multiple L4 missions at different
 fire-times each run once — there is NO once-per-day L4 layer cap.
 
 **Fan-out rule:** missions with a dedicated `missions/<id>/PROMPT.md` each get
@@ -867,8 +873,8 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 1. **Tick-lock, FIRST** (board #861): `scripts/tick-lock.sh acquire {slug}` — holds the SAME lock the floor's backup fallback checks before it falls back to a competing headless `claude -p` tick, so a tick of mine that runs long (any subagent over ~4 min) never races a duplicate backup run on the same due-set. Never blocks — a failed acquire just runs this tick without the extra guard. Then sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
 
-2. **Mission-centric dispatch** (never a placeholder dict — queues must be scanned):
-   `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])` → `maybe_defer_ad_hoc_l3(ctx, dept['recurring_missions'], phase=phase)` (#1085 — no-op unless starved-ad-hoc; call every tick).
+2. **PREPARE, then mission-centric DECIDE (read-only)** (never a placeholder dict — queues must be scanned):
+   `reconcile_gate_dir('.')` (#1076 PREPARE) → `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])` → `maybe_defer_ad_hoc_l3(ctx, dept['recurring_missions'], phase=phase)` (#1085 terminal defer).
    `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
 3. If `due` is NON-empty — spawn + verify each subagent (one per mission in `due`; drive off `due`, NOT `decide_dispatch` — a secondary L4 mission can be in `due` while decide_dispatch=heartbeat):
@@ -878,12 +884,8 @@ each Moment task to a stateless subagent via Agent. The subagents
      the specific context (queue item / time window / due mission).
    - **Parallel fan-out**: spawn one Agent per mission in the same tick (Anthropic
      supports it). Multiple missions on the same phase run concurrently.
-   - WORK OUTPUTS go under the layer dir `outputs/<today>/<N>/` (with `<N>`); LAST
-     action is `round_counter.json[<N>] += 1`. The per-mission idempotence MARKER is a
-     DIFFERENT path WITHOUT `<N>`: as its FIRST action the subagent stamps
-     `outputs/<today>/missions/<id>/.last-run` (this is what `select_due_missions`
-     reads to skip an already-run mission — a layered `<N>/missions/<id>` path is never
-     found → re-selected every tick = fire-spin).
+   - WORK OUTPUTS go under `outputs/<today>/<N>/`. Workers never stamp dispatch
+     state; the main session owns it through post-validation `commit_dispatch`.
 
    **After each subagent returns** (I am responsible for verifying
    its work — an employee does not validate their own output):
@@ -895,7 +897,12 @@ each Moment task to a stateless subagent via Agent. The subagents
       where `expected_artifacts` is defined by `layers/<N>/PROMPT.md`. Returns
       `(ok, missing, malformed)`.
 
-   c. **If `ok == True`**: note in the heartbeat (`subagent N OK`), move to step 4.
+   c. **If `ok == True`**: call `commit_dispatch('.', mission,
+      dispatched_at=ctx['now_utc'], artifacts=expected_artifact_paths)` **now, after
+      the worker returned**. This atomically records `materialized_at`,
+      `dispatched_at`, `completed_at`, and `artifacts` in the one dispatch ledger.
+      It also advances the round counter/L1 baseline at that post-return boundary.
+      Then note in the heartbeat (`subagent N OK`) and move to step 4.
 
    d. **If `ok == False`**: re-spawn the subagent via Agent tool with an incremented
       `retry_count` + the `missing/malformed` detail. `should_retry(retry_count, max=3)`
@@ -931,7 +938,7 @@ each Moment task to a stateless subagent via Agent. The subagents
    step is ever skipped — a missed release can never wedge my own ticking.
 
 **Available Python helpers** (`scripts/lib/dispatch_helpers.py`):
-`build_dispatch_ctx`, `decide_dispatch`, `select_due_missions`, `maybe_defer_ad_hoc_l3`, `resolve_mission_prompt`,
+`build_dispatch_ctx`, `commit_dispatch`, `read_dispatch_ledger`, `decide_dispatch`, `select_due_missions`, `maybe_defer_ad_hoc_l3`, `resolve_mission_prompt`,
 `read_last_run`, `write_last_run`, `read_round_counter`,
 `increment_round_counter`, `layer_1_gate_satisfied`, `is_mission_due`,
 `materialize_due_missions`, `validate_layer_output`, `should_retry`,

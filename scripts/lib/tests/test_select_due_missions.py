@@ -38,6 +38,7 @@ import pytest
 
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx,
+    commit_dispatch,
     decide_dispatch,
     is_mission_due,
     resolve_mission_prompt,
@@ -120,6 +121,19 @@ def _stamp_mission_lastrun(repo: Path, mid: str, when: datetime) -> None:
     """Write per-mission .last-run to simulate mission already fired today."""
     today = when.strftime("%Y-%m-%d")
     write_last_run(repo / "outputs" / today / "missions" / mid, when)
+
+
+def _commit(repo: Path, mission: dict, when: datetime) -> None:
+    """Simulate a worker return under the #1117 runtime contract."""
+    artifacts: list[Path] = []
+    layer = int(mission.get("layer", 0))
+    if layer in (1, 4):
+        artifact = repo / "outputs" / when.strftime("%Y-%m-%d") / str(layer) / "summary.md"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("completed\n", encoding="utf-8")
+        artifacts.append(artifact)
+    commit_dispatch(repo, mission, dispatched_at=when, completed_at=when,
+                    artifacts=artifacts)
 
 
 def _mk_daily(mid: str, layer: int = 1, *, time: str = "07:00",
@@ -806,6 +820,7 @@ def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
     assert "market_wrapup" in ids1, (
         "TICK 1: a due creates:[] report-mission MUST be selected for dispatch"
     )
+    _commit(repo, m, MORNING)
 
     # FIX 2: the materializer stamped the per-mission marker (no <N> path) this
     # tick — on .last-materialized, NEVER .last-run (#870: nothing has
@@ -814,11 +829,7 @@ def test_fire_spin_guard_creates_empty_mission_full_pipeline(tmp_path: Path):
         "#870: materialize_due_missions_for_tick must never write .last-run "
         "for a mission it did not actually run"
     )
-    assert materialized_marker.exists(), (
-        "FIX 2: materializer must stamp "
-        "outputs/<today>/missions/<id>/.last-materialized "
-        "even for a creates:[] mission, so it cannot fire-spin"
-    )
+    assert not materialized_marker.exists(), "#1117: DECIDE/COMMIT no longer writes legacy markers"
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
     # decision time — corroborate the dispatched session's genuine completion
     # with real STEP-3 output, or tick 2 would (correctly, under the new
@@ -959,17 +970,14 @@ def test_fire_spin_guard_l4_creates_empty_mission_layer_cap(tmp_path: Path):
     assert "market_wrapup" in [x["id"] for x in due1], (
         "TICK 1: the due L4 creates:[] mission MUST be selected for dispatch"
     )
+    _commit(repo, m, AFTER_L4)
     # FIX #277: materializer NOW stamps the per-mission marker for L4 missions
     # — on .last-materialized, NEVER .last-run (#870).
     assert not real_marker.exists(), (
         "#870: materialize_due_missions_for_tick must never write .last-run "
         "for a mission it did not actually run"
     )
-    assert materialized_marker.exists(), (
-        "FIX #277: materialize_due_missions_for_tick must stamp "
-        "outputs/<today>/missions/<id>/.last-materialized for L4 missions "
-        "too, providing per-mission idempotence"
-    )
+    assert not materialized_marker.exists(), "#1117: completion lives in dispatch.json"
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
     # decision time, not by a real completed run — it is not yet proof
     # market_wrapup produced anything. Simulate the dispatched subagent
@@ -1126,14 +1134,12 @@ def test_market_wrapup_fires_once_then_excluded(tmp_path: Path):
     assert "market_wrapup" in [m["id"] for m in due1], (
         "market_wrapup must be selected at 22:31 Paris (time 22:30 reached, never fired)"
     )
+    _commit(repo, market_wrapup, AT_22_31_UTC)
     assert not real_marker.exists(), (
         "#870: materialize_due_missions_for_tick must never write .last-run "
         "for a mission it did not actually run"
     )
-    assert materialized_marker.exists(), (
-        "materializer must stamp per-mission .last-materialized for "
-        "market_wrapup on tick 1"
-    )
+    assert not materialized_marker.exists(), "#1117: completion lives in dispatch.json"
     # #1080 output-truth: the marker above was stamped by the MATERIALIZER at
     # decision time, not by a real completed run. Simulate the dispatched
     # subagent actually completing before tick 2, or the (correct) new
@@ -1483,6 +1489,7 @@ def test_event_loop_closure_same_item_not_redispatched_next_tick(tmp_path: Path)
     ctx1 = _full_ctx(repo, AFTER_L3)
     due1 = [m["id"] for m in select_due_missions(ctx1, [pub])]
     assert "publish_execution" in due1, "tick 1 must dispatch the new approved item"
+    _commit(repo, pub, AFTER_L3)
 
     # TICK 2 — 30 min later, item still in inbox/decisions (subagent didn't archive).
     tick2 = AFTER_L3 + timedelta(minutes=30)
@@ -1504,7 +1511,8 @@ def test_event_second_item_redispatches_after_first_ledgered(tmp_path: Path):
     _write_decision(repo, "approved-001", AFTER_L3)
 
     # Tick 1 dispatches item 1.
-    _full_ctx(repo, AFTER_L3)  # materializer ledgers approved-001
+    _full_ctx(repo, AFTER_L3)
+    _commit(repo, pub, AFTER_L3)
     # Tick 2: item 1 archived OUT, item 2 arrives (different id).
     (repo / "inbox" / "decisions" / "approved-001.yaml").unlink()
     tick2 = AFTER_L3 + timedelta(minutes=30)
@@ -1514,6 +1522,7 @@ def test_event_second_item_redispatches_after_first_ledgered(tmp_path: Path):
     assert "publish_execution" in due2, (
         "a 2nd approved item (new id) must dispatch — R3, no clock veto"
     )
+    _commit(repo, pub, tick2)
 
     # Tick 3: item 2 still present, must NOT re-dispatch (loop closed for it too).
     tick3 = tick2 + timedelta(minutes=30)
@@ -1534,6 +1543,7 @@ def test_event_crash_resilience_ledger_blocks_redispatch(tmp_path: Path):
 
     # Tick 1: dispatched + ledgered. (Simulate subagent crash: item NOT archived.)
     _full_ctx(repo, AFTER_L3)
+    _commit(repo, pub, AFTER_L3)
     # Confirm the ledger marker exists for the id.
     from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
     later = AFTER_L3 + timedelta(minutes=30)
@@ -1569,6 +1579,7 @@ def test_event_ledger_engages_without_manual_repo_dir_injection(tmp_path: Path):
     ctx1 = build_dispatch_ctx(repo, now_utc=AFTER_L3)  # NO manual _repo_dir
     assert ctx1.get("_repo_dir"), "build_dispatch_ctx MUST set _repo_dir for prod ledger reads"
     assert "publish_execution" in [m["id"] for m in select_due_missions(ctx1, [pub])]
+    _commit(repo, pub, AFTER_L3)
 
     ctx2 = build_dispatch_ctx(repo, now_utc=AFTER_L3 + timedelta(minutes=30))
     assert "publish_execution" not in [m["id"] for m in select_due_missions(ctx2, [pub])], (
@@ -1703,6 +1714,7 @@ def test_375_approval_dispatched_once_window_opens(tmp_path: Path):
         "MUST be dispatched when L3's window opens — the trigger id must NOT have "
         "been pre-emptively ledgered by the overnight materializer."
     )
+    _commit(repo, pub, AFTER_L3)
 
     # ── TICK 3 (17:00 Paris) — item still in inbox (subagent not archived yet).
     # The ledger now has the id from tick 2; must NOT re-dispatch.
@@ -1833,6 +1845,7 @@ def test_375_window_07_16_approval_dispatched_and_ledgered(tmp_path: Path):
         "10:00 Paris — L3 is eligible (time>=07:00 AND has_decisions=True). "
         "The first-attempt fix (_time_reached(layer_3)=False at 10:00) broke this."
     )
+    _commit(repo, pub, AT_10_00_UTC)
 
     # Assertion 2: ledger IS stamped at 10:00.
     from scripts.lib.dispatch_helpers import _dispatched_trigger_ids
@@ -1879,7 +1892,8 @@ def test_375_window_in_window_refire_dedup(tmp_path: Path):
     today = AT_10_00_UTC.strftime("%Y-%m-%d")
 
     # Tick 1 (10:00 Paris): dispatch + stamp.
-    build_dispatch_ctx(repo, now_utc=AT_10_00_UTC)  # materializer runs, stamps ledger
+    build_dispatch_ctx(repo, now_utc=AT_10_00_UTC)
+    _commit(repo, pub, AT_10_00_UTC)
 
     # Tick 2 (10:30 Paris): item still in inbox (subagent not yet archived).
     ctx2 = build_dispatch_ctx(repo, now_utc=AT_10_30_UTC)
@@ -1910,6 +1924,7 @@ def test_375_new_different_id_rearms_after_first_ledgered(tmp_path: Path):
 
     # Tick 1 (10:00): dispatch + stamp for 'approved-morning'.
     build_dispatch_ctx(repo, now_utc=AT_10_00_UTC)
+    _commit(repo, pub, AT_10_00_UTC)
 
     # Simulate subagent archived 'approved-morning'; 'approved-afternoon' arrives.
     (repo / "inbox" / "decisions" / "approved-morning.yaml").unlink()
@@ -1924,6 +1939,7 @@ def test_375_new_different_id_rearms_after_first_ledgered(tmp_path: Path):
         "arriving after the first is ledgered MUST trigger dispatch — "
         "the ledger only blocks already-dispatched ids, not new ones."
     )
+    _commit(repo, pub, AT_10_30_UTC)
 
     # Tick 3 (11:00): 'approved-afternoon' still present (not archived yet), must NOT re-fire.
     AT_11_00_UTC = datetime(2026, 6, 23, 9, 0, tzinfo=timezone.utc)  # 11:00 Paris
@@ -2097,6 +2113,7 @@ def test_375_l4_coexists_l3_event_not_prematurely_ledgered(tmp_path: Path):
         "If the materializer stamped it at tick 1 (bug), the ledger would "
         "have ts<now from tick 1 and the trigger would be silently lost."
     )
+    _commit(repo, pub, next_day_1000)
 
     # ── TICK 3 (10:30 Paris next day): after dispatch at tick 2, must not re-fire. ──
     next_day_1030 = datetime(2026, 6, 24, 8, 30, tzinfo=timezone.utc)  # 10:30 Paris 2026-06-24

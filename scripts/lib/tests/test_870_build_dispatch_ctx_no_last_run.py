@@ -116,9 +116,8 @@ def test_build_dispatch_ctx_never_writes_last_run_for_unrun_mission(tmp_path: Pa
         if f.is_file() and not f.name.startswith(".")
     ), "no bare gate stub should ever be created for draft_batch (#302, unaffected by #870)"
     first_materialized = read_last_materialized(mission_dir)
-    assert first_materialized is not None, (
-        "the materializer's own anti-fire-spin proxy stamp must still exist, "
-        "just on .last-materialized instead of .last-run (#870)"
+    assert first_materialized is None, (
+        "#1117: DECIDE writes neither completion nor materialization markers"
     )
 
     # A second build_dispatch_ctx call, later the same tick-day, with STILL no
@@ -131,8 +130,7 @@ def test_build_dispatch_ctx_never_writes_last_run_for_unrun_mission(tmp_path: Pa
         "#870: a second build_dispatch_ctx call must still never write "
         ".last-run for draft_batch"
     )
-    # Idempotent: the materialization marker is not being churned every call
-    # (no need for it to be re-stamped once already materialized today).
+    # Still pure: a second decision cannot create or churn a marker.
     assert read_last_materialized(mission_dir) == first_materialized
 
 
