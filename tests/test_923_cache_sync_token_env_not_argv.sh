@@ -104,6 +104,10 @@ SEED_DIR="$WORK/seed"
   "$REAL_GIT" commit -qm init
   "$REAL_GIT" push -q origin HEAD:main
 )
+# Match GitHub's repo shape: cloning without an explicit --branch must land on
+# main, not an unborn branch (a freshly-created local bare repo defaults HEAD
+# to master even after only refs/heads/main is pushed).
+"$REAL_GIT" --git-dir="$BARE_REPO" symbolic-ref HEAD refs/heads/main
 
 # Patch the script: redirect hardcoded prod paths + the github.com URL to
 # the fixtures above. Only path/URL constants change — the auth LOGIC
@@ -125,8 +129,23 @@ OUT1="$(bash "$PATCHED" 2>&1)"; RC1=$?
 [[ -d "$WORK/cache/bubble-ops-fixture/.git" ]] && ok "run 1 populated the cache dir (clone happened)" || bad "run 1 did not create $WORK/cache/bubble-ops-fixture/.git"
 
 # Run 2: REPO_DIR now exists -> FETCH+RESET branch.
+# Leave both tracked and untracked local work in the cache first.  The #1124
+# guard must quarantine both before reset --hard instead of silently replacing
+# the tracked patch (and future clean-like changes must not eat the scratch).
+echo "local tracked hand-patch" > "$WORK/cache/bubble-ops-fixture/README.md"
+echo "local untracked scratch" > "$WORK/cache/bubble-ops-fixture/scratch.txt"
 OUT2="$(bash "$PATCHED" 2>&1)"; RC2=$?
 [[ "$RC2" == "0" ]] && ok "run 2 (fetch+reset) exits 0" || bad "run 2 (fetch+reset) exited $RC2:\n$OUT2"
+echo "$OUT2" | grep -q 'WARN: fixture had 2 dirty path(s); quarantined' \
+  && ok "run 2 emits a loud quarantine warning before reset" \
+  || bad "run 2 did not report quarantining both dirty paths"
+STASH_PATCH="$($REAL_GIT -C "$WORK/cache/bubble-ops-fixture" stash show -p -u stash@{0} 2>/dev/null || true)"
+echo "$STASH_PATCH" | grep -q 'local tracked hand-patch' \
+  && ok "tracked hand-patch is recoverable from stash" \
+  || bad "tracked hand-patch is absent from quarantine stash"
+echo "$STASH_PATCH" | grep -q 'local untracked scratch' \
+  && ok "untracked scratch file is recoverable from stash" \
+  || bad "untracked scratch file is absent from quarantine stash"
 
 # ── C. assert on the captured argv log ───────────────────────────────────────
 echo "C. captured git argv never contains the token"

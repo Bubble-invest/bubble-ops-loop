@@ -69,6 +69,55 @@ log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*
 [[ -n "$DEPT" && -d "$DEPT" ]] || { log "WARN: dept dir '$DEPT' missing — skip (fail-open)"; exit 0; }
 [[ -d "$FRAMEWORK" ]] || { log "WARN: framework '$FRAMEWORK' missing — skip (fail-open)"; exit 0; }
 
+# Keep the exact bytes last installed by this script under .git, away from the
+# dept worktree and its `git add`/clean flows.  That gives the next run a
+# three-way comparison: canonical source vs current destination vs the prior
+# vendored baseline.  A destination that matches neither is a hand-patch (or
+# otherwise unexpected local edit) and must be made recoverable before refresh.
+GIT_DIR="$(git -C "$DEPT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+VENDOR_STATE_DIR="${GIT_DIR:+${GIT_DIR}/vendor-dept-libs}"
+
+record_last_vendored() {
+  local dst="$1" rel="$2" last
+  [[ -n "$VENDOR_STATE_DIR" ]] || {
+    log "WARN: cannot record last-vendored copy for $rel — dept is not a git worktree"
+    return 0
+  }
+  last="$VENDOR_STATE_DIR/$rel"
+  mkdir -p "$(dirname "$last")" 2>/dev/null || {
+    log "WARN: cannot create last-vendored state dir for $rel"
+    return 0
+  }
+  cp -f "$dst" "$last" 2>/dev/null || \
+    log "WARN: cannot record last-vendored copy for $rel"
+}
+
+protect_hand_patch() {
+  local src="$1" dst="$2" rel="$3" last backup ts
+  [[ -e "$dst" || -L "$dst" ]] || return 0
+  cmp -s "$dst" "$src" 2>/dev/null && return 0
+  last="${VENDOR_STATE_DIR:+${VENDOR_STATE_DIR}/$rel}"
+  # Safe stale copy: it still equals exactly what our prior successful run
+  # installed.  No backup/no warning is needed for a routine source upgrade.
+  if [[ -n "$last" && -f "$last" ]] && cmp -s "$dst" "$last" 2>/dev/null; then
+    return 0
+  fi
+  # The caller already established dst != src.  If it also differs from the
+  # last-vendored bytes (or no baseline exists yet), preserve it before cp -f.
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="${dst}.pre-vendor-${ts}"
+  if [[ -e "$backup" ]]; then
+    backup="${backup}-$$"
+  fi
+  if cp -p "$dst" "$backup" 2>/dev/null; then
+    chown claude:claude "$backup" 2>/dev/null || true
+    log "WARN: $rel differs from canonical and last-vendored copy — backed up hand-patch to $backup"
+    return 0
+  fi
+  log "WARN: $rel differs from canonical and last-vendored copy, but backup to $backup FAILED — preserving destination (not overwritten)"
+  return 1
+}
+
 # Canonical shared libs: "src-relative-to-framework  dest-relative-to-dept".
 # Only files the dept actually uses; a dept missing the dest dir is skipped.
 MAP=(
@@ -101,15 +150,20 @@ for pair in "${MAP[@]}"; do
     continue
   fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
+    protect_hand_patch "$src" "$dst" "$2" || continue
     # -T: dst is always a normal file target (never "copy into directory").
     # --no-dereference: never follow a symlink SRC either (defense in depth).
     if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
       chown claude:claude "$dst" 2>/dev/null || true
+      record_last_vendored "$dst" "$2"
       log "re-vendored $2 (was stale/missing)"
       vendored=$((vendored+1))
     else
       log "WARN: could not copy $2 (fail-open)"
     fi
+  else
+    # Bootstrap/repair the baseline even when no refresh was necessary.
+    record_last_vendored "$dst" "$2"
   fi
 done
 
@@ -136,14 +190,18 @@ for pair in "${KANBAN_MAP[@]}"; do
     continue
   fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
+    protect_hand_patch "$src" "$dst" "$2" || continue
     if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
       chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
       chown claude:claude "$dst" 2>/dev/null || true
+      record_last_vendored "$dst" "$2"
       log "re-vendored kanban $2 (was stale/missing)"
       vendored=$((vendored+1))
     else
       log "WARN: could not copy $2 (fail-open)"
     fi
+  else
+    record_last_vendored "$dst" "$2"
   fi
 done
 

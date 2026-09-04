@@ -18,6 +18,10 @@
 #   T5  missing dept dir → exits 0 (fail-open), nothing copied.
 #   T6  end-to-end copy: stale lib in dept is refreshed from framework.
 #   T7  idempotency: second run makes no new copies (cmp -s matches → skip).
+#   T8  root-owned /opt framework checkout takes priority.
+#   T9  symlink destinations are refused without touching their targets.
+#   T10 a destination changed since the last vendor run is backed up + warned;
+#       an ordinary canonical-source upgrade is not misclassified.
 # =============================================================================
 set -uo pipefail
 
@@ -248,6 +252,46 @@ if [[ -L "$DEPT9/scripts/lib/dispatch_helpers.py" ]]; then
   echo "  PASS: T9 dest is left as a symlink (refused, not replaced)"; PASS=$((PASS+1))
 else
   echo "  FAIL: T9 dest symlink was removed/replaced"; FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
+# T10: three-way hand-patch detection and recoverable pre-vendor backup
+# =============================================================================
+echo "== T10: hand-patch is backed up, ordinary stale copy is not =="
+PARENT10="$FIX/parent10"
+FW10="$PARENT10/bubble-ops-loop"; make_framework "$FW10"
+DEPT10="$PARENT10/bubble-ops-miranda"; make_dept "$DEPT10"
+unset BUBBLE_FRAMEWORK_ROOT
+"$SCRIPT_UNDER_TEST" "$DEPT10" >/dev/null 2>&1  # establish last-vendored v1
+rm -f "$DEPT10"/scripts/lib/dispatch_helpers.py.pre-vendor-*
+
+# Both ends move: framework v2, plus a distinct hand-patch in the dept.
+echo "# canonical dispatch_helpers v2" > "$FW10/scripts/lib/dispatch_helpers.py"
+echo "# local hand-patch — preserve me" > "$DEPT10/scripts/lib/dispatch_helpers.py"
+out10="$($SCRIPT_UNDER_TEST "$DEPT10" 2>&1)"
+GOT10="$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
+chk_eq "T10a destination receives canonical v2" "# canonical dispatch_helpers v2" "$GOT10"
+chk_contains "T10b hand-patch refresh emits WARN" "WARN: scripts/lib/dispatch_helpers.py differs" "$out10"
+backup10="$(find "$DEPT10/scripts/lib" -maxdepth 1 -type f -name 'dispatch_helpers.py.pre-vendor-*' -print -quit)"
+if [[ -n "$backup10" ]]; then
+  chk_eq "T10c pre-vendor backup contains the hand-patch" \
+    "# local hand-patch — preserve me" "$(cat "$backup10")"
+else
+  echo "  FAIL: T10c no pre-vendor backup was created"; FAIL=$((FAIL+1))
+fi
+
+# Only canonical moves now; dst still equals the recorded v2 baseline.  This
+# is ordinary staleness, not a local patch, so no second backup/no WARN.
+rm -f "$DEPT10"/scripts/lib/dispatch_helpers.py.pre-vendor-*
+echo "# canonical dispatch_helpers v3" > "$FW10/scripts/lib/dispatch_helpers.py"
+out10b="$($SCRIPT_UNDER_TEST "$DEPT10" 2>&1)"
+GOT10B="$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
+chk_eq "T10d ordinary source upgrade receives canonical v3" \
+  "# canonical dispatch_helpers v3" "$GOT10B"
+if find "$DEPT10/scripts/lib" -maxdepth 1 -type f -name 'dispatch_helpers.py.pre-vendor-*' | grep -q .; then
+  echo "  FAIL: T10e ordinary source upgrade created a hand-patch backup"; FAIL=$((FAIL+1))
+else
+  echo "  PASS: T10e ordinary source upgrade creates no backup/no false alarm"; PASS=$((PASS+1))
 fi
 
 # =============================================================================
