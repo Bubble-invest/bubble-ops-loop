@@ -16,6 +16,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -47,19 +48,67 @@ _TOOL_DETAIL_KEYS = {
 }
 
 
+# board #1116 (cockpit audit): _tool_detail renders raw Bash.command /
+# WebFetch.url (etc.) from an agent's OWN transcript to every cockpit
+# viewer, unredacted. An agent routinely types things like
+# `export TELEGRAM_BOT_TOKEN=8350575119:AA...` or
+# `curl -H "Authorization: Bearer sk-ant-oat01-..."` into a Bash tool call —
+# those land verbatim in the JSONL transcript and, pre-fix, verbatim in the
+# cockpit's session feed. Scrub before this ever reaches a template.
+#
+# Order matters: the credential-SHAPE patterns run FIRST and are individually
+# greedy enough to consume the whole token (`\S+`/a fixed charset), so a
+# later, broader keyword pattern never gets a chance to match only the FIRST
+# word of a multi-word value (e.g. "Bearer") and leave the real secret right
+# after it exposed.
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)\bBearer\s+\S+"),
+    re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]{10,}"),
+    re.compile(r"sk-or-v1-[A-Za-z0-9]{10,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{10,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"AGE-SECRET-KEY-1[A-Z0-9]{20,}"),
+    re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),  # telegram bot token shape
+    # Generic keyword=value / "keyword: value" / "keyword value" (catches
+    # anything the shape patterns above missed, e.g. PASSWORD=..., a raw
+    # API_KEY=..., a --token ... CLI flag). Deliberately NOT \b-anchored on
+    # the keyword's LEFT side: word chars include `_`, so `\btoken\b` would
+    # NOT match "TOKEN" inside "TELEGRAM_BOT_TOKEN=..." (no boundary between
+    # `_` and `T`) — the exact compound-env-var-name shape this is FOR.
+    re.compile(r"(?i)(token|secret|key|password|authorization)[=: ]+\S+"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact anything secret-shaped in `text`. Fail-open to the ORIGINAL
+    text on any regex error (never raise into a transcript render), but
+    every pattern above is a fixed literal/charset regex with no catastrophic-
+    backtracking shape, so this is defense-in-depth, not an expected path."""
+    if not text:
+        return text
+    try:
+        out = text
+        for pat in _SECRET_PATTERNS:
+            out = pat.sub("[redacted]", out)
+        return out
+    except re.error:
+        return text
+
+
 def _tool_detail(name: str, inp) -> str:
     if not isinstance(inp, dict):
         return ""
     for key in _TOOL_DETAIL_KEYS.get(name, ()):
         v = inp.get(key)
         if v:
-            s = str(v).strip().replace("\n", " ")
+            s = _scrub_secrets(str(v).strip().replace("\n", " "))
             if key.endswith("path") and "/" in s:
                 s = s.rsplit("/", 1)[-1]
             return s[:120]
     for v in inp.values():
         if isinstance(v, str) and v.strip():
-            return v.strip().replace("\n", " ")[:120]
+            return _scrub_secrets(v.strip().replace("\n", " "))[:120]
     return ""
 
 

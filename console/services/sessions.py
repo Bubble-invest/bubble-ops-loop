@@ -145,6 +145,17 @@ def _connect() -> sqlite3.Connection:
         " expires_at REAL NOT NULL,"
         " used_at REAL)"
     )
+    # Login-failure throttle (board #1116 — cockpit audit): per-(username,
+    # client-IP) failure counter backing an exponential backoff, so a
+    # compromised/scripted client can't grind unlimited full-cost (600k-iter
+    # pbkdf2) attempts against /login. See record_login_failure /
+    # login_retry_after_seconds / clear_login_failures below.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures ("
+        " key TEXT PRIMARY KEY,"
+        " fail_count INTEGER NOT NULL,"
+        " last_fail_at REAL NOT NULL)"
+    )
     return conn
 
 
@@ -208,6 +219,10 @@ def purge_expired() -> int:
     with _connect() as conn:
         cur = conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
         conn.execute("DELETE FROM login_tokens WHERE expires_at < ?", (now,))
+        conn.execute(
+            "DELETE FROM login_failures WHERE last_fail_at < ?",
+            (now - _FAILURE_RETENTION_SECONDS,),
+        )
         return cur.rowcount or 0
 
 
@@ -262,3 +277,87 @@ def consume_login_token(token: str) -> Optional[str]:
     if row is None:
         return None
     return str(row[0])
+
+
+# ---- login-failure throttle (board #1116 — cockpit audit) -------------
+#
+# console/routes/auth.py's login_submit calls login_retry_after_seconds()
+# BEFORE verify_login() and skips the verify entirely when throttled — this
+# both stops rewarding a flood with more full-cost (600k-iter pbkdf2, ~the
+# most CPU-expensive single line in the whole app) verify attempts, and
+# avoids reintroducing a timing side channel (a throttled request must be
+# just as fast as the 1073-hardened "unknown user" dummy-verify path).
+#
+# Backoff shape: the first _THROTTLE_THRESHOLD fails cost nothing (a typo'd
+# password shouldn't lock anyone out); each fail AFTER that doubles the wait,
+# capped at _THROTTLE_MAX_SECONDS. Keyed by (username, client_ip) — NOT
+# username alone (so one bad actor's flood against "joris" from one IP
+# doesn't lock Joris out from his own devices) and NOT ip alone (so a shared
+# egress IP, e.g. a corporate NAT, can't throttle an unrelated username).
+
+_THROTTLE_THRESHOLD = 5           # this many fails are "free"
+_THROTTLE_BASE_SECONDS = 1.0      # backoff after fail #(_THROTTLE_THRESHOLD + 1)
+_THROTTLE_MAX_SECONDS = 300.0     # cap: 5 minutes
+_THROTTLE_MAX_EXPONENT = 20       # 2**20s would already dwarf the cap; belt-and-
+                                  # suspenders against a huge fail_count computing
+                                  # an absurd (if ultimately capped) intermediate.
+_FAILURE_RETENTION_SECONDS = 86400  # stale rows (a day+ since the last fail) are
+                                    # opportunistically pruned by purge_expired()
+
+
+def _throttle_key(username: str, client_ip: str) -> str:
+    # NUL-separated: usernames/IPs can't contain NUL, so this can't collide
+    # across the two fields (unlike a plain f"{a}:{b}" if either ever
+    # legitimately contained ':', e.g. an IPv6 address).
+    return f"{username}\x00{client_ip}"
+
+
+def record_login_failure(username: str, client_ip: str) -> None:
+    """Increment the (username, client_ip) failure counter. Called on every
+    failed /login attempt (wrong password, unknown user, AND a throttled
+    request that skipped verify_login — see login_retry_after_seconds)."""
+    key = _throttle_key(username, client_ip)
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO login_failures (key, fail_count, last_fail_at)"
+            " VALUES (?, 1, ?)"
+            " ON CONFLICT(key) DO UPDATE SET"
+            "   fail_count=fail_count + 1,"
+            "   last_fail_at=excluded.last_fail_at",
+            (key, now),
+        )
+
+
+def clear_login_failures(username: str, client_ip: str) -> None:
+    """Reset the (username, client_ip) failure counter. Called on a
+    SUCCESSFUL login so a genuine owner isn't left throttled by earlier
+    typos."""
+    key = _throttle_key(username, client_ip)
+    with _connect() as conn:
+        conn.execute("DELETE FROM login_failures WHERE key=?", (key,))
+
+
+def login_retry_after_seconds(username: str, client_ip: str) -> float:
+    """>0 (seconds still remaining) iff (username, client_ip) is currently
+    throttled; 0.0 if the attempt should proceed to verify_login normally.
+
+    Fails SAFE (returns 0.0, i.e. not throttled) on any lookup — the login
+    throttle degrading must never turn into a full login LOCKOUT; see
+    record_login_failure's docstring for the "why keyed this way" rationale.
+    """
+    key = _throttle_key(username, client_ip)
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT fail_count, last_fail_at FROM login_failures WHERE key=?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return 0.0
+    fail_count, last_fail_at = row
+    if fail_count <= _THROTTLE_THRESHOLD:
+        return 0.0
+    exponent = min(fail_count - _THROTTLE_THRESHOLD - 1, _THROTTLE_MAX_EXPONENT)
+    backoff = min(_THROTTLE_MAX_SECONDS, _THROTTLE_BASE_SECONDS * (2 ** exponent))
+    remaining = (last_fail_at + backoff) - time.time()
+    return max(0.0, remaining)

@@ -11,6 +11,8 @@ Keychain then syncs to iPhone — the operator's "auto on open, Mac + iPhone" as
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -18,6 +20,20 @@ from console import settings
 from console.services import sessions
 
 router = APIRouter()
+_log = logging.getLogger(__name__)
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP for the login throttle's per-(user, ip) key.
+
+    board #1116: deliberately does NOT trust X-Forwarded-For/X-Real-IP — the
+    console binds directly (Tailscale-only, no reverse proxy in front of it;
+    see settings.BIND_HOST's docstring), so those headers are attacker-
+    settable with nothing to strip them. request.client.host is what the
+    ASGI server itself observed the TCP peer to be — not spoofable from the
+    request body/headers.
+    """
+    return request.client.host if request.client else "unknown"
 
 
 def safe_next(raw: str | None) -> str:
@@ -57,8 +73,37 @@ def login_submit(
     next: str = Form("/"),
 ):
     nxt = safe_next(next)
-    if sessions.verify_login(username.strip(), password):
-        sid = sessions.create_session(username.strip() or "operator")
+    uname = username.strip()
+    ip = _client_ip(request)
+
+    def _reject() -> HTMLResponse:
+        # Generic failure (no username/password distinction, and — board
+        # #1116 — no throttled-vs-wrong-password distinction either: SAME
+        # template, status code, and error message either way, so an
+        # attacker probing the throttle can't use the response to tell
+        # "still guessing" apart from "now being rate-limited".
+        return request.app.state.templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": nxt,
+                "error": "Identifiants invalides.",
+                "login_configured": sessions.login_configured(),
+            },
+            status_code=401,
+        )
+
+    # board #1116: per-(username, client-IP) exponential backoff (5 free
+    # fails, then doubling, capped at 5min — see sessions.py). Checked
+    # BEFORE verify_login so a throttled flood never pays for (or triggers)
+    # another full-cost 600k-iter pbkdf2 verify.
+    if sessions.login_retry_after_seconds(uname, ip) > 0:
+        _log.warning("login throttled user=%s ip=%s", uname, ip)
+        return _reject()
+
+    if sessions.verify_login(uname, password):
+        sessions.clear_login_failures(uname, ip)
+        sid = sessions.create_session(uname or "operator")
         resp = RedirectResponse(nxt, status_code=303)
         resp.set_cookie(
             key=settings.SESSION_COOKIE,
@@ -70,17 +115,10 @@ def login_submit(
             path="/",
         )
         return resp
-    # Generic failure (no username/password distinction — no enumeration hint).
-    return request.app.state.templates.TemplateResponse(
-        "login.html",
-        {
-            "request": request,
-            "next": nxt,
-            "error": "Identifiants invalides.",
-            "login_configured": sessions.login_configured(),
-        },
-        status_code=401,
-    )
+
+    sessions.record_login_failure(uname, ip)
+    _log.warning("login failed user=%s ip=%s", uname, ip)
+    return _reject()
 
 
 @router.get("/login/link")

@@ -16,6 +16,36 @@ from console.services import thesis_book as thesis_book_service
 router = APIRouter()
 
 
+def _json_for_inline_script(data) -> str:
+    """json.dumps(), but safe to splice DIRECTLY (unquoted) into an inline
+    `<script>` block as a JS expression — i.e. `const DATA = ({{ this }});`.
+
+    board #1116 (cockpit audit, stored-XSS): a plain `json.dumps(...)` can
+    legitimately contain a literal `</script>` sequence (e.g. any string
+    VALUE in `data` — a dept name, a theme title — that happens to contain
+    it) or `<!--`, either of which the HTML PARSER (not the JS parser) acts
+    on: the browser's HTML tokenizer ends the `<script>` element the moment
+    it sees `</script`, REGARDLESS of what JS syntax says, letting whatever
+    follows be parsed as ordinary HTML/attacker-controlled markup on the
+    SAME origin as gate-approval/comment POSTs. This is the same class of
+    bug `json.dumps(..., ensure_ascii=True)` does NOT fix (ensure_ascii only
+    escapes non-ASCII codepoints, not `<`/`>`/`&`).
+
+    Fix: escape the 3 characters that matter to an HTML parser inside a
+    script body (`<`, `>`, `&`) as JSON unicode escapes (`\\u003c` etc.) —
+    valid inside a JS string/object literal (json.dumps already produces
+    only double-quoted string values + bare numbers/booleans/null, so this
+    can only ever land INSIDE a quoted string, never break JS syntax) and
+    invisible to the HTML tokenizer.
+    """
+    raw = json.dumps(data, separators=(",", ":"))
+    return (
+        raw.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def _latest_review_html(slug: str) -> str:
     """Ben's line-by-line Portfolio Review, pre-rendered by his L1 tool
     (outputs/<date>/portfolio-review-artifact.html — self-contained, #pr-root
@@ -62,7 +92,7 @@ def thesis_book_page(slug: str, request: Request):
     if d is None:
         raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
     data = thesis_book_service.build_thesis_data(slug)
-    data_json = json.dumps(data, separators=(",", ":"))
+    data_json = _json_for_inline_script(data)
     return request.app.state.templates.TemplateResponse(
         "thesis_book.html",
         {"request": request, "dept": d, "data_json": data_json,
