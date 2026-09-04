@@ -2,7 +2,7 @@
 bubble-ops-console — FastAPI app entry point.
 
 Single binary serving the 7 routes described in Notion v5 lines 1004-1041.
-Auth: bearer token via `Authorization: Bearer <CONSOLE_BEARER_TOKEN>`.
+Auth: per-user login sessions, with bearer headers retained for API clients.
 Default bind: 127.0.0.1:8642 (Tailscale-tunneled by the operator).
 
 Run locally:
@@ -212,11 +212,7 @@ def create_app() -> FastAPI:
     #   1. `Authorization: Bearer <token>`   — API / curl / CI (kept).
     #   2. `console_session` cookie           — the login-page opaque session
     #                                           (sliding; board #997 option C).
-    #   3. `?token=<token>` query param       — first-hit bootstrap: upgraded
-    #                                           to MINT a session + set the
-    #                                           opaque cookie (no longer stores
-    #                                           the raw bearer in a cookie).
-    #   4. legacy `console_token` cookie == bearer — back-compat during cutover
+    #   3. legacy `console_token` cookie == bearer — back-compat during cutover
     #                                           so browsers still holding the
     #                                           old raw-bearer cookie aren't
     #                                           kicked out the moment this ships.
@@ -235,7 +231,15 @@ def create_app() -> FastAPI:
     }
 
     def _needs_login(request: Request) -> Response:
-        nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        # `?token=` used to authenticate and bootstrap a browser session.  It
+        # is now deprecated: ignore it as a credential and, importantly, do
+        # not reflect its secret value into the login `next=` URL.
+        query = request.query_params.multi_items()
+        clean_query = "&".join(
+            f"{quote(k, safe='')}={quote(v, safe='')}"
+            for k, v in query if k.lower() != "token"
+        )
+        nxt = request.url.path + (f"?{clean_query}" if clean_query else "")
         login_url = f"/login?next={quote(nxt, safe='')}"
         if request.headers.get("hx-request", "").lower() == "true":
             return Response(status_code=401, headers={"HX-Redirect": login_url})
@@ -277,18 +281,8 @@ def create_app() -> FastAPI:
                 resp.set_cookie(**_session_cookie(sid))  # slide the browser cookie too
                 return resp
 
-        # 3. ?token= bootstrap → mint a session, set the opaque cookie, clean URL.
-        qp_token = request.query_params.get("token")
-        if qp_token and token and hmac.compare_digest(qp_token.strip(), token):
-            new_sid = sessions.create_session("bearer-bootstrap")
-            qp = {k: v for k, v in request.query_params.items() if k != "token"}
-            qs = "&".join(f"{k}={v}" for k, v in qp.items())
-            clean_url = request.url.path + (f"?{qs}" if qs else "")
-            resp = RedirectResponse(url=clean_url, status_code=303)
-            resp.set_cookie(**_session_cookie(new_sid))
-            return resp
-
-        # 4. Legacy raw-bearer cookie (back-compat during cutover).
+        # 3. Legacy raw-bearer cookie (back-compat during cutover).  Unlike the
+        # removed query bootstrap, this does not put a credential in a URL.
         legacy = request.cookies.get(LEGACY_COOKIE)
         if legacy and token and hmac.compare_digest(legacy, token):
             request.state.user = "bearer"

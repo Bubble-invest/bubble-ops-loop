@@ -2,8 +2,8 @@
 
 Covers: pbkdf2 hashing, per-user vs shared password verification, the SQLite
 session store (create/validate/slide/revoke/expire), and the auth middleware's
-new paths (session cookie, unauth HTML→/login vs API→401, ?token bootstrap
-upgrade, legacy raw-bearer cookie back-compat during cutover).
+new paths (session cookie, unauth HTML→/login vs API→401, deprecated ?token
+rejection, legacy raw-bearer cookie back-compat during cutover).
 
 Session-cookie round-trips use an explicit ``Cookie`` header rather than the
 TestClient jar: the cookie is ``secure=True`` (tailnet is TLS-only) and the test
@@ -490,15 +490,19 @@ def test_logout_revokes_session(login_ctx):
     assert login_ctx.sessions.validate_and_touch(sess) is None   # revoked
 
 
-def test_token_bootstrap_mints_opaque_session(login_ctx):
-    """?token=<bearer> bootstraps a browser: mints a session, sets the opaque
-    cookie (NOT the raw bearer), and strips the token from the URL."""
+def test_token_bootstrap_is_deprecated_and_cannot_authenticate(login_ctx):
+    """A bearer in the query string no longer authenticates the browser."""
     s = login_ctx.settings
-    r = login_ctx.client.get(f"/?token={s.BEARER_TOKEN}", follow_redirects=False)
+    r = login_ctx.client.get(
+        f"/?token={s.BEARER_TOKEN}&view=open",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
     assert r.status_code == 303
-    assert r.headers["location"] == "/"                    # token stripped
-    sess = r.cookies.get(s.SESSION_COOKIE)
-    assert sess and sess != s.BEARER_TOKEN
+    assert r.headers["location"].startswith("/login?next=")
+    assert s.BEARER_TOKEN not in r.headers["location"]
+    assert "view%3Dopen" in r.headers["location"]
+    assert s.SESSION_COOKIE not in r.cookies
 
 
 def test_legacy_bearer_cookie_still_accepted(login_ctx):
