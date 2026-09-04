@@ -331,14 +331,18 @@ def test_operating_loop_section_is_concise():
     assert m, "operating CLAUDE.md must have a /loop protocol section"
     loop_block = m.group(0)
     n_lines = loop_block.count("\n")
-    assert n_lines < 78, (
+    assert n_lines < 85, (
         f"/loop block is {n_lines} lines — {{OPERATOR}} asked for concise + "
         "declarative (msg 3160) AND for main to verify subagent outputs "
         "(msg 3164). The verify protocol legitimately adds ~25 lines, plus "
-        "the on-demand /loop-now trigger doctrine (2026-06-05, {{OPERATOR}}) adds 2. "
-        "Threshold 78 = 71-line STEP A-F baseline + verify + trigger + small "
-        "headroom. If you exceed this, push more logic into "
-        "dispatch_helpers.py and leave the prose declarative."
+        "the on-demand /loop-now trigger doctrine (2026-06-05, {{OPERATOR}}) adds 2, "
+        "plus the tick-lock acquire (step 1) + release (step 7) pair "
+        "(board #861 — the live tick must hold the SAME lock the floor's "
+        "backup fallback checks, so a slow tick never races a duplicate "
+        "headless run) adds ~6. Threshold 85 = 71-line STEP A-F baseline + "
+        "verify + trigger + tick-lock + small headroom. If you exceed this, "
+        "push more logic into dispatch_helpers.py and leave the prose "
+        "declarative."
     )
 
 
@@ -455,4 +459,67 @@ def test_operating_includes_on_demand_loop_trigger():
     # and always confirm afterward
     assert "always send" in out_low or "always summar" in out_low, (
         "after an on-demand tick the dept must always send a Telegram summary"
+    )
+
+
+# ---------------------------------------------------------------------------
+# G. Tick-lock (board #861) — the live tick must hold the SAME lock the
+# floor's backup fallback (loop-backup.sh::run_backup_tick) already flock-
+# checks, so a tick that runs long (>~4min) never races a duplicate headless
+# `claude -p` tick on the same due-set. See scripts/tick-lock.sh.
+# ---------------------------------------------------------------------------
+
+def test_operating_acquires_tick_lock_as_first_step():
+    """STEP 1 of every tick must acquire the tick-lock, by the dept's OWN
+    slug, before anything else (specifically before the sync/dispatch that
+    can run long) — that's the entire fix for board #861."""
+    dy = _make_dept_yaml_ops(slug="maya")
+    out = scaffold.render_claude_md_operating(dy)
+    assert "scripts/tick-lock.sh acquire maya" in out, (
+        "operating CLAUDE.md must instruct the dept to acquire its own "
+        "tick-lock (board #861)"
+    )
+    acquire_idx = out.find("scripts/tick-lock.sh acquire maya")
+    sync_idx = out.find("dispatch_helpers import safe_pull")
+    assert acquire_idx != -1 and sync_idx != -1
+    assert acquire_idx < sync_idx, (
+        "tick-lock acquire must come BEFORE sync/dispatch — a late acquire "
+        "leaves a window where a slow tick can still race the floor"
+    )
+
+
+def test_operating_releases_tick_lock_as_last_step():
+    """The tick-lock release must be the LAST documented step of the tick —
+    after commit/push and the Telegram notify — and must fire even on an
+    idle/heartbeat-only tick (never conditioned on 'a gate was created')."""
+    dy = _make_dept_yaml_ops(slug="maya")
+    out = scaffold.render_claude_md_operating(dy)
+    assert "scripts/tick-lock.sh release maya" in out, (
+        "operating CLAUDE.md must instruct the dept to release its own "
+        "tick-lock (board #861)"
+    )
+    release_idx = out.find("scripts/tick-lock.sh release maya")
+    notify_idx = out.find("bubble-git-guard push")
+    assert release_idx != -1 and notify_idx != -1
+    assert release_idx > notify_idx, (
+        "tick-lock release must come AFTER commit+push — it is the final "
+        "step of the tick, run unconditionally"
+    )
+    low = out.lower()
+    always_idx = low.find("release the tick-lock, always")
+    assert always_idx != -1, (
+        "the release step must be marked ALWAYS — it must run even on a "
+        "silent/idle tick, never gated on 'a gate was created this tick'"
+    )
+
+
+def test_operating_tick_lock_never_blocks_doctrine():
+    """The instructions must be explicit that a failed/timed-out acquire
+    never stops the tick — a concurrency guard that can itself stall a live
+    fund agent is worse than no guard (see card #861's hard requirement)."""
+    out = scaffold.render_claude_md_operating(_make_dept_yaml_ops())
+    low = out.lower()
+    assert "never blocks" in low, (
+        "operating CLAUDE.md must state the tick-lock acquire never blocks "
+        "the tick (fail-safe doctrine, board #861)"
     )

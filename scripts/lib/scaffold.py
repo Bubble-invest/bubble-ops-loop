@@ -451,7 +451,7 @@ I reply **in English**, executive-office voice:
 Once activated (onboarding complete), I run a `/loop` self-paced: I choose my next wake each tick via CronCreate (CronList-dedupe first) — toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done. Never a hardcoded hourly/20-min cron. **The box's clock is UTC, not Paris (board #850)** — I never hand-write a Paris HH:MM as the cron literal (`08:03 Paris` is NOT `3 8 * * *`; that fired a live market order 2h late). I derive the box-UTC cron via `scripts/arm-wake-cron.sh <Paris-HH:MM> [daily|one-shot]` (DST-safe) and CronCreate the expression it prints, sanity-checking with `TZ=Europe/Paris date` at tick start.
 At each tick:
 
-**STEP A** — sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
+**STEP A** — FIRST, `scripts/tick-lock.sh acquire {slug}` (board #861 — holds the same lock the floor's backup fallback checks, so a tick that runs long never races a duplicate headless run; never blocks — a failed acquire just runs the tick without the extra guard). Then sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
 
 **STEP B** — read the state: `dept.yaml`, list the queues.
 
@@ -571,6 +571,10 @@ The message MUST be actionable (not a vague "I created a gate"):
   - if several gates the same tick: a single grouped message (N decisions + the link),
     not one message per gate.
 No gate created this tick = no message (silence).
+
+**STEP G** — ALWAYS, last action of every tick: `scripts/tick-lock.sh release {slug}`
+(board #861). Belt-and-suspenders — the lock also drops the instant this session
+crashes/restarts and self-expires if this step is ever skipped.
 
 ## When I am blocked
 
@@ -861,7 +865,7 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 **At each tick**:
 
-1. sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
+1. **Tick-lock, FIRST** (board #861): `scripts/tick-lock.sh acquire {slug}` — holds the SAME lock the floor's backup fallback checks before it falls back to a competing headless `claude -p` tick, so a tick of mine that runs long (any subagent over ~4 min) never races a duplicate backup run on the same due-set. Never blocks — a failed acquire just runs this tick without the extra guard. Then sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
 
 2. **Mission-centric dispatch** (never a placeholder dict — queues must be scanned):
    `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])` → `maybe_defer_ad_hoc_l3(ctx, dept['recurring_missions'], phase=phase)` (#1085 — no-op unless starved-ad-hoc; call every tick).
@@ -919,6 +923,12 @@ each Moment task to a stateless subagent via Agent. The subagents
    - several gates the same tick → ONE single grouped message (N decisions
      + the link), not one message per gate.
    No gate created = no message.
+
+7. **Release the tick-lock, ALWAYS** (board #861) — last action of every
+   tick, even an idle/heartbeat-only one (step 4): `scripts/tick-lock.sh release {slug}`.
+   Belt-and-suspenders, not a safety requirement: the lock also drops the
+   instant this session crashes/restarts and self-expires on its own if this
+   step is ever skipped — a missed release can never wedge my own ticking.
 
 **Available Python helpers** (`scripts/lib/dispatch_helpers.py`):
 `build_dispatch_ctx`, `decide_dispatch`, `select_due_missions`, `maybe_defer_ad_hoc_l3`, `resolve_mission_prompt`,
