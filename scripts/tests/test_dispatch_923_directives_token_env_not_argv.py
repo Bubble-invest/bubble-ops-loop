@@ -58,7 +58,8 @@ def test_push_repo_token_not_in_argv(tmp_path, monkeypatch):
     monkeypatch.setattr(dd.subprocess, "run", fake_run)
 
     ok, detail = dd._push_repo(repo_dir=tmp_path, repo_name="bubble-ops-maya",
-                                message="test commit", dry_run=False)
+                                message="test commit", dry_run=False,
+                                paths=[str(tmp_path / "outputs/thing.md")])
     assert ok is True, detail
 
     push_calls = [(cmd, kw) for cmd, kw in calls if "push" in cmd]
@@ -112,7 +113,8 @@ def test_push_repo_no_mint_no_push(tmp_path, monkeypatch):
     monkeypatch.setattr(dd.subprocess, "run", fake_run)
 
     ok, detail = dd._push_repo(repo_dir=tmp_path, repo_name="bubble-ops-maya",
-                                message="test commit", dry_run=False)
+                                message="test commit", dry_run=False,
+                                paths=[str(tmp_path / "outputs/thing.md")])
     assert ok is False
     assert "could not mint token" in detail
     assert not any("push" in cmd for cmd, _ in calls)

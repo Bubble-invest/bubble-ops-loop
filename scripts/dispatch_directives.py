@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import fcntl
 import os
 import subprocess
 import sys
@@ -82,6 +83,45 @@ _GH_ORG = "Bubble-invest"
 def _log(msg: str) -> None:
     ts = _now_iso()
     print(f"[{ts}] [dispatch-directives] {msg}", flush=True)
+
+
+# ── board #1123: cross-repo write must respect the child's own tick lock ────
+# This dispatcher runs once per layer-floor tick, BEFORE the per-dept loop
+# (see loop-backup.sh's "CEO directive dispatch" block) — i.e. UNLOCKED
+# against a target dept's live repo, which that dept's OWN live/backup tick
+# independently mutates (safe_pull's `git stash push --include-untracked`
+# runs against the exact same working tree). Taking the SAME
+# `ops-loop-<slug>.tick.lock` the floor's own per-dept tick holds
+# (loop-backup.sh `run_backup_tick`, `LOCK_DIR/ops-loop-<slug>.tick.lock`)
+# for the duration of the child write+push closes that race: either we hold
+# the lock and safe_pull can't run concurrently, or safe_pull holds it and
+# we skip this directive for one tick (idempotent — retried next tick, never
+# lost) rather than write into a tree that can be swept out from under us.
+def _try_lock_dept(lock_dir: Path, slug: str):
+    """Non-blocking acquire of LOCK_DIR/ops-loop-<slug>.tick.lock. Returns an
+    open file handle (release via .close()) on success, or None if another
+    process (the dept's own live loop or backup tick) currently holds it."""
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"ops-loop-{slug}.tick.lock"
+    fh = open(lock_path, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def _verify_committed(repo_dir: Path, rel_path: str) -> bool:
+    """True iff rel_path is actually present in repo_dir's HEAD commit right
+    now. board #1123: `_push_repo` reporting (True, 'nothing to commit') or
+    (True, 'pushed') is NOT proof the delivered file landed — a concurrent
+    stash in the child's own tree (this dispatcher writes unlocked into a
+    tree the child's own safe_pull independently stashes) can make the
+    working tree look clean before our own status/add/commit ever runs, so
+    a real commit is the only thing worth trusting."""
+    r = _run(["git", "-C", str(repo_dir), "show", f"HEAD:{rel_path}"])
+    return r.returncode == 0
 
 
 def _now_iso() -> str:
@@ -122,8 +162,18 @@ def _mint_token(repo_name: str) -> "str | None":
     return None
 
 
-def _push_repo(repo_dir: Path, repo_name: str, message: str, dry_run: bool) -> tuple[bool, str]:
-    """Stage all, commit, push repo_dir's OWN remote via a freshly-minted token.
+def _push_repo(
+    repo_dir: Path, repo_name: str, message: str, dry_run: bool,
+    paths: "list[str] | None" = None,
+) -> tuple[bool, str]:
+    """Stage PATHS (never a blanket `git add -A` — board #1123 [MED #3]: this
+    dispatcher writes into a CHILD dept's live repo, and `add -A` there would
+    re-sweep whatever structural/runtime edits that dept's own live session
+    happens to be mid-writing into the SAME commit, exactly the class of bug
+    `force_commit_and_push` was rewritten to stop doing (2026-06-06,
+    structural-file-swept-into-runtime-commit). Callers always know the
+    exact file(s) they just wrote, so stage only those. Commit, then push
+    repo_dir's OWN remote via a freshly-minted token.
     Returns (ok, detail). Clean tree → (True, 'nothing to commit')."""
     status = _run(["git", "-C", str(repo_dir), "status", "--porcelain"])
     if status.returncode != 0:
@@ -132,7 +182,11 @@ def _push_repo(repo_dir: Path, repo_name: str, message: str, dry_run: bool) -> t
         return True, "nothing to commit"
     if dry_run:
         return True, f"[dry-run] would commit+push {repo_name}: {message!r}"
-    if _run(["git", "-C", str(repo_dir), "add", "-A"]).returncode != 0:
+    if not paths:
+        # Nothing explicit to stage — never fall back to `add -A`. (In
+        # practice both call sites always pass the exact path they wrote.)
+        return True, "nothing to commit"
+    if _run(["git", "-C", str(repo_dir), "add", "--"] + paths).returncode != 0:
         return False, "git add failed"
     commit = _run(["git", "-C", str(repo_dir), "commit", "-m", message])
     if commit.returncode != 0:
@@ -175,7 +229,12 @@ def _load_yaml(p: Path) -> "dict | None":
         return None
 
 
-def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
+def dispatch(
+    agents_root: Path, manager: str, dry_run: bool,
+    lock_dir: "Path | None" = None,
+) -> int:
+    if lock_dir is None:
+        lock_dir = Path(os.environ.get("BUBBLE_BACKUP_LOCK_DIR", "/run/lock"))
     manager_repo = agents_root / f"bubble-ops-{manager}"
     if not (manager_repo / ".git").is_dir():
         _log(f"FATAL: manager repo not a git tree: {manager_repo}")
@@ -194,6 +253,7 @@ def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
     skipped = 0
     failed = 0
     manager_dirty = False
+    manager_dirty_paths: list[str] = []
 
     for draft in drafts:
         d = _load_yaml(draft)
@@ -225,36 +285,66 @@ def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
             continue
 
         # ── DELIVER into child queues/management/ ──────────────────────
-        inbox = child_repo / _INBOX_REL
-        inbox.mkdir(parents=True, exist_ok=True)
-        dest = inbox / f"directive-{did}.yaml"
-
-        # The delivered file is the directive payload, minus dispatcher bookkeeping.
-        payload = {k: v for k, v in d.items() if k not in ("status",)}
-        payload["delivered_at"] = _now_iso()
-        payload.setdefault("from", manager)
-
-        if dest.exists():
-            _log(f"NO-OP {draft.name}: already present in {target} inbox")
-        else:
-            if dry_run:
-                _log(f"[dry-run] would write {dest}")
-            else:
-                dest.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-
-        ok, detail = _push_repo(
-            child_repo, f"bubble-ops-{target}",
-            f"directive: deliver {did} from {manager} ({{OPERATOR}}-approved)", dry_run,
-        )
-        if not ok:
-            _log(f"FAIL deliver {did} -> {target}: {detail}")
-            failed += 1
-            # roll back the just-written file so we retry cleanly next tick
-            if dest.exists() and not dry_run:
-                _run(["git", "-C", str(child_repo), "checkout", "--", str(dest)])
-                if dest.exists():
-                    dest.unlink(missing_ok=True)
+        # board #1123: hold the child's OWN tick lock for the whole
+        # write+push — the same `ops-loop-<target>.tick.lock` its live/backup
+        # tick takes (loop-backup.sh run_backup_tick). If it's held right
+        # now, skip this directive for ONE tick (it's still `approved` in
+        # the outbound queue — idempotent, retried next tick) rather than
+        # write into a tree that dept's own safe_pull can stash out from
+        # under us in the same window.
+        child_lock = _try_lock_dept(lock_dir, target)
+        if child_lock is None:
+            _log(f"SKIP {draft.name}: {target}'s tick lock is held (its own "
+                 f"loop/backup tick is running) — will retry next tick")
+            skipped += 1
             continue
+        try:
+            inbox = child_repo / _INBOX_REL
+            inbox.mkdir(parents=True, exist_ok=True)
+            dest = inbox / f"directive-{did}.yaml"
+
+            # The delivered file is the directive payload, minus dispatcher bookkeeping.
+            payload = {k: v for k, v in d.items() if k not in ("status",)}
+            payload["delivered_at"] = _now_iso()
+            payload.setdefault("from", manager)
+
+            if dest.exists():
+                _log(f"NO-OP {draft.name}: already present in {target} inbox")
+            else:
+                if dry_run:
+                    _log(f"[dry-run] would write {dest}")
+                else:
+                    dest.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+            ok, detail = _push_repo(
+                child_repo, f"bubble-ops-{target}",
+                f"directive: deliver {did} from {manager} ({{OPERATOR}}-approved)", dry_run,
+                paths=[str(dest)],
+            )
+            # board #1123: (True, ...) from _push_repo is NOT proof the file
+            # landed — a concurrent stash in the child's tree can make it
+            # report "nothing to commit" even though our write never made it
+            # into a commit. Only trust `git show HEAD:<path>`.
+            if ok and not dry_run:
+                rel = str(dest.relative_to(child_repo))
+                if not _verify_committed(child_repo, rel):
+                    ok = False
+                    detail = (
+                        f"{detail!r} but git show HEAD:{rel} could not confirm "
+                        f"the file landed (likely raced {target}'s own stash) "
+                        f"— treating as FAILED"
+                    )
+            if not ok:
+                _log(f"FAIL deliver {did} -> {target}: {detail}")
+                failed += 1
+                # roll back the just-written file so we retry cleanly next tick
+                if dest.exists() and not dry_run:
+                    _run(["git", "-C", str(child_repo), "checkout", "--", str(dest)])
+                    if dest.exists():
+                        dest.unlink(missing_ok=True)
+                continue
+        finally:
+            child_lock.close()
 
         _log(f"OK delivered {did} -> {target} ({detail})")
         delivered += 1
@@ -265,12 +355,14 @@ def dispatch(agents_root: Path, manager: str, dry_run: bool) -> int:
             d["dispatched_at"] = _now_iso()
             draft.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
             manager_dirty = True
+            manager_dirty_paths.append(str(draft))
 
     # Push Tony's repo once if any source was marked dispatched.
     if manager_dirty:
         ok, detail = _push_repo(
             manager_repo, f"bubble-ops-{manager}",
             f"directive: mark {delivered} dispatched", dry_run,
+            paths=manager_dirty_paths,
         )
         _log(f"manager status push: {detail}" if ok else f"WARN manager push: {detail}")
 
@@ -283,8 +375,18 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--agents-root", default="/home/claude/agents")
     ap.add_argument("--manager", default="tony")
     ap.add_argument("--dry-run", action="store_true")
+    # board #1123: same lock domain as loop-backup.sh's per-dept tick.lock
+    # (LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}") so this dispatcher's
+    # cross-repo write and a dept's own live/backup tick can never overlap.
+    ap.add_argument(
+        "--lock-dir",
+        default=os.environ.get("BUBBLE_BACKUP_LOCK_DIR", "/run/lock"),
+    )
     args = ap.parse_args(argv)
-    return dispatch(Path(args.agents_root), args.manager, args.dry_run)
+    return dispatch(
+        Path(args.agents_root), args.manager, args.dry_run,
+        lock_dir=Path(args.lock_dir),
+    )
 
 
 if __name__ == "__main__":
