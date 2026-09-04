@@ -71,23 +71,14 @@ def test_smoke_1_claude_md_has_autodriving_instructions(smoke_dept: Path):
     assert "français" in text.lower()
 
 
-def test_smoke_2_systemd_unit_is_well_formed(smoke_dept: Path):
-    """Assertion 2 — the systemd unit has no placeholders + is valid."""
-    unit = smoke_dept / "deploy" / f"ops-loop-{SMOKE_SLUG}.service"
-    assert unit.exists()
-    text = unit.read_text(encoding="utf-8")
-    # No unsubstituted placeholders
-    assert "${DEPT_SLUG}" not in text
-    assert "${TELEGRAM_STATE_DIR}" not in text
-    assert "${ENV_FILE}" not in text
-    # Must have [Unit] / [Service] / [Install] sections
-    assert "[Unit]" in text
-    assert "[Service]" in text
-    assert "[Install]" in text
-    # Per-dept env file path is substituted
-    assert f"/run/claude-agent-{SMOKE_SLUG}/env" in text
-    # Working directory is per-dept
-    assert f"/home/claude/agents/{SMOKE_SLUG}" in text
+def test_smoke_2_systemd_renderer_handoff_is_well_formed(smoke_dept: Path):
+    """Assertion 2 — bootstrap points to the single platform renderer."""
+    handoff = smoke_dept / "deploy" / "AGENT-UNIT.md"
+    assert handoff.exists()
+    text = handoff.read_text(encoding="utf-8")
+    assert "scripts/render-agent-units.py" in text
+    assert f"bubble-agent@{SMOKE_SLUG}.service" in text
+    assert "--verify" in text
 
 
 def test_smoke_3_auto_drive_returns_step1_prompt(smoke_dept: Path):

@@ -1,7 +1,7 @@
 [Unit]
 Description=ops-loop-fixture heartbeat freshness watchdog
 Documentation=https://github.com/vdk888/bubble-ops-loop/blob/main/scripts/loop-watchdog.sh
-After=network-online.target ops-loop-fixture.service
+After=network-online.target bubble-agent@fixture.service
 Wants=network-online.target
 
 [Service]

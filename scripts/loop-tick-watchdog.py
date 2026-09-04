@@ -115,7 +115,7 @@ def discover_vps(agents_root: str, projects_root: str, channels_root: str) -> Li
         if not os.path.isdir(dept_dir):
             continue
         slug = d[len("bubble-ops-"):]
-        unit = f"ops-loop-{slug}.service"
+        unit = f"bubble-agent@{slug}.service"
         if _run(["systemctl", "is-enabled", unit], capture=True).returncode != 0:
             log(f"{slug}: skip — {unit} not enabled (paused/absent)")
             continue
@@ -128,7 +128,7 @@ def discover_vps(agents_root: str, projects_root: str, channels_root: str) -> Li
             session_dir=os.path.join(projects_root, wd.projects_dir_name(dept_dir)),
             inject_file=os.path.join(channels_root, f"telegram-{slug}", "inject"),
             host="vps", resumes_context=resumes,
-            env_file=f"/run/claude-agent-{slug}/env", unit=unit,
+            env_file=f"/run/bubble-agent-{slug}/env", unit=unit,
             bot_pid_file=os.path.join(channels_root, f"telegram-{slug}", "bot.pid"),
         ))
     return out

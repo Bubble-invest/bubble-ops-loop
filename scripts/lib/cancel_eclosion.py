@@ -51,7 +51,7 @@ import state_yaml  # noqa: E402
 DEFAULT_GH_ORG = "vdk888"
 
 # The systemd unit pattern matches deploy-to-morty.sh.
-UNIT_PATTERN = "ops-loop-{slug}.service"
+UNIT_PATTERN = "bubble-agent@{slug}.service"
 
 # Default SSH target for Morty (matches deploy-to-morty.sh).
 DEFAULT_REMOTE = os.environ.get("BUBBLE_MORTY_HOST", "claude@morty")
@@ -85,6 +85,7 @@ def _disable_morty_unit(slug: str, remote: str = DEFAULT_REMOTE
         "ssh", remote,
         f"sudo systemctl disable --now {unit} || true; "
         f"sudo rm -f /etc/systemd/system/{unit}; "
+        f"sudo rm -rf /etc/systemd/system/{unit}.d; "
         "sudo systemctl daemon-reload",
     ]
     return subprocess.run(cmd, capture_output=True, text=True, check=False)

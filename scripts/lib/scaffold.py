@@ -308,31 +308,23 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 
 ```python
 from scripts.lib.dispatch_helpers import (
-    build_dispatch_ctx, commit_dispatch, decide_dispatch,
-    event_trigger_ids_for_dispatch,
-    select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
-    resolve_mission_prompt,
+    build_dispatch_ctx, decide_dispatch,
+    select_due_missions, maybe_defer_ad_hoc_l3, resolve_mission_prompt,
 )
 import yaml
-reconcile_gate_dir('.')             # explicit PREPARE maintenance; not DECIDE
 ctx     = build_dispatch_ctx('.')
 phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
 dept    = yaml.safe_load(open('dept.yaml').read())
 missions = dept.get('recurring_missions') or []
-due     = select_due_missions(ctx, missions)  # pure read: no marker or queue writes
-maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit for #1085
+due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
+maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # #1085: no-op unless phase=="layer_3"
                                                     # AND this dept has no recurring L3
                                                     # mission at all (ad-hoc inbox decisions
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: remember dispatched_at=ctx['now_utc']. For an
-# event mission, choose `trigger_ids = event_trigger_ids_for_dispatch(ctx,
-# mission)` and hand that exact item to the worker (one trigger by default).
-# After the worker returns and validates, call commit_dispatch('.', mission,
-# dispatched_at=dispatched_at, artifacts=artifact_paths,
-# dispatched_trigger_ids=trigger_ids) with those same ids. Never rescan the
-# queue at COMMIT: other pending triggers belong to later workers/ticks.
+# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
+# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the date
@@ -340,7 +332,7 @@ from memory. `decide_dispatch` encodes the full min-time priority tree (Layer 4 
 19:00 Paris once L1+L2+L3 fired > research queue > inbox decisions > daily L1 >
 heartbeat) and is the SINGLE SOURCE of truth for *when* each phase fires.
 Layer 4 is eligible in the ~22:00 UTC dispatch window once L1+L2+L3 are done;
-idempotence is **per-mission** (`outputs/<today>/dispatch.json`), NOT a
+idempotence is **per-mission** (`outputs/<today>/missions/<id>/.last-run`), NOT a
 once-per-day layer cap — so MULTIPLE Layer-4 missions at different fire-times
 (e.g. a risk debrief at 21:00 + a wrap-up at 22:30) each run once on their own
 cadence. (The old shared `outputs/<today>/4/.last-run` layer-cap was removed — it
@@ -391,7 +383,7 @@ I wait for his answer, I commit.
 
 ONLY via my dedicated Telegram bot: `@bubbleops{slug_compact}_bot`.
 
-The bot token is in `/run/claude-agent-{slug}/env` (key
+The bot token is in `/run/bubble-agent-{slug}/env` (key
 `TELEGRAM_BOT_TOKEN`). I read messages via `plugin:telegram`.
 
 ## My first wake-up (SessionStart)
@@ -522,31 +514,23 @@ due missions on the highest-priority eligible phase, then spawn one subagent per
 
 ```python
 from scripts.lib.dispatch_helpers import (
-    build_dispatch_ctx, commit_dispatch, decide_dispatch,
-    event_trigger_ids_for_dispatch,
-    select_due_missions, maybe_defer_ad_hoc_l3, reconcile_gate_dir,
-    resolve_mission_prompt,
+    build_dispatch_ctx, decide_dispatch,
+    select_due_missions, maybe_defer_ad_hoc_l3, resolve_mission_prompt,
 )
 import yaml
-reconcile_gate_dir('.')             # explicit PREPARE maintenance; not DECIDE
 ctx     = build_dispatch_ctx('.')
 phase   = decide_dispatch(ctx)      # e.g. "layer_2" — phase string (back-compat)
 dept    = yaml.safe_load(open('dept.yaml').read())
 missions = dept.get('recurring_missions') or []
-due     = select_due_missions(ctx, missions)  # pure read: no marker or queue writes
-maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # explicit terminal commit for #1085
+due     = select_due_missions(ctx, missions)  # list of due mission dicts on that phase
+maybe_defer_ad_hoc_l3(ctx, missions, phase=phase)  # #1085: no-op unless phase=="layer_3"
                                                     # AND this dept has no recurring L3
                                                     # mission at all (ad-hoc inbox decisions
                                                     # only) — stamps L3 handled-today so L4
                                                     # isn't starved forever. Call EVERY tick,
                                                     # right after select_due_missions.
-# For each mission in `due`: remember dispatched_at=ctx['now_utc']. For an
-# event mission, choose `trigger_ids = event_trigger_ids_for_dispatch(ctx,
-# mission)` and hand that exact item to the worker (one trigger by default).
-# After the worker returns and validates, call commit_dispatch('.', mission,
-# dispatched_at=dispatched_at, artifacts=artifact_paths,
-# dispatched_trigger_ids=trigger_ids) with those same ids. Never rescan the
-# queue at COMMIT: other pending triggers belong to later workers/ticks.
+# For each mission in `due`: prompt = resolve_mission_prompt('.', mission)
+# then spawn Agent(prompt=prompt.read_text()) — one per mission, in parallel.
 ```
 
 `ctx['today']` is the authoritative UTC date (fresh each tick) — never type the
@@ -558,7 +542,7 @@ whose L3 work is ad-hoc `inbox/decisions/` items with NO recurring L3 mission wo
 otherwise never stamp L3 "handled today", permanently starving L4. `resolve_mission_prompt`
 returns `missions/<id>/PROMPT.md` when it exists, else falls back to `layers/<N>/PROMPT.md`
 (zero-regression shim for existing depts). L4 idempotence is **per-mission**
-(`outputs/<today>/dispatch.json`), so multiple L4 missions at different
+(`outputs/<today>/missions/<id>/.last-run`), so multiple L4 missions at different
 fire-times each run once — there is NO once-per-day L4 layer cap.
 
 **Fan-out rule:** missions with a dedicated `missions/<id>/PROMPT.md` each get
@@ -768,9 +752,9 @@ CLAUDE.md.
 ## How I am wired in
 
 - My dedicated Telegram bot: `@bubbleops{slug_compact}_bot`
-  (token in `/run/claude-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
+  (token in `/run/bubble-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
 - My repo: `bubble-ops-{slug}` (on GitHub, I commit + push at each tick)
-- My systemd service: `ops-loop-{slug}.service` (Morty)
+- My systemd service: `bubble-agent@{slug}.service` (Morty)
 - My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done — derived to box-UTC via `scripts/arm-wake-cron.sh`, board #850) — see runtime protocol below
 - My active layers: see the "My 4 moments per day" section
 - My recurring missions: declared in `dept.yaml::missions`, individual
@@ -883,20 +867,23 @@ each Moment task to a stateless subagent via Agent. The subagents
 
 1. **Tick-lock, FIRST** (board #861): `scripts/tick-lock.sh acquire {slug}` — holds the SAME lock the floor's backup fallback checks before it falls back to a competing headless `claude -p` tick, so a tick of mine that runs long (any subagent over ~4 min) never races a duplicate backup run on the same due-set. Never blocks — a failed acquire just runs this tick without the extra guard. Then sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'`
 
-2. **PREPARE, then mission-centric DECIDE (read-only)** (never a placeholder dict — queues must be scanned):
-   `reconcile_gate_dir('.')` (#1076 PREPARE) → `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])` → `maybe_defer_ad_hoc_l3(ctx, dept['recurring_missions'], phase=phase)` (#1085 terminal defer).
+2. **Mission-centric dispatch** (never a placeholder dict — queues must be scanned):
+   `ctx = build_dispatch_ctx('.')` → `phase = decide_dispatch(ctx)` → `due = select_due_missions(ctx, dept['recurring_missions'])` → `maybe_defer_ad_hoc_l3(ctx, dept['recurring_missions'], phase=phase)` (#1085 — no-op unless starved-ad-hoc; call every tick).
    `<today>` = `ctx['today']` (authoritative UTC, fresh each tick) — **never type the date from memory** (it froze Maya's loop on a stale folder).
 
 3. If `due` is NON-empty — spawn + verify each subagent (one per mission in `due`; drive off `due`, NOT `decide_dispatch` — a secondary L4 mission can be in `due` while decide_dispatch=heartbeat):
    - For each mission: `resolve_mission_prompt('.', mission)` → `missions/<id>/PROMPT.md`
      if it exists, else `layers/<N>/PROMPT.md` (legacy shim — zero regression for existing depts).
-   - For an event mission, retain `event_trigger_ids_for_dispatch(ctx, mission)` and hand that exact (one by default) queue item to the worker.
    - Call the **Agent tool** with that prompt as the task description, plus
      the specific context (queue item / time window / due mission).
    - **Parallel fan-out**: spawn one Agent per mission in the same tick (Anthropic
      supports it). Multiple missions on the same phase run concurrently.
-   - WORK OUTPUTS go under `outputs/<today>/<N>/`. Workers never stamp dispatch
-     state; the main session owns it through post-validation `commit_dispatch`.
+   - WORK OUTPUTS go under the layer dir `outputs/<today>/<N>/` (with `<N>`); LAST
+     action is `round_counter.json[<N>] += 1`. The per-mission idempotence MARKER is a
+     DIFFERENT path WITHOUT `<N>`: as its FIRST action the subagent stamps
+     `outputs/<today>/missions/<id>/.last-run` (this is what `select_due_missions`
+     reads to skip an already-run mission — a layered `<N>/missions/<id>` path is never
+     found → re-selected every tick = fire-spin).
 
    **After each subagent returns** (I am responsible for verifying
    its work — an employee does not validate their own output):
@@ -908,11 +895,7 @@ each Moment task to a stateless subagent via Agent. The subagents
       where `expected_artifacts` is defined by `layers/<N>/PROMPT.md`. Returns
       `(ok, missing, malformed)`.
 
-   c. **If `ok == True`**: call `commit_dispatch('.', mission, dispatched_at=ctx['now_utc'], artifacts=expected_artifact_paths,
-      dispatched_trigger_ids=trigger_ids)` **after return** (`trigger_ids=[]` for non-events; never rescan here).
-      This atomically records `materialized_at`, `dispatched_at`, `completed_at`, and `artifacts` in the one dispatch ledger.
-      It also advances the round counter/L1 baseline at that post-return boundary.
-      Then note in the heartbeat (`subagent N OK`) and move to step 4.
+   c. **If `ok == True`**: note in the heartbeat (`subagent N OK`), move to step 4.
 
    d. **If `ok == False`**: re-spawn the subagent via Agent tool with an incremented
       `retry_count` + the `missing/malformed` detail. `should_retry(retry_count, max=3)`
@@ -948,7 +931,7 @@ each Moment task to a stateless subagent via Agent. The subagents
    step is ever skipped — a missed release can never wedge my own ticking.
 
 **Available Python helpers** (`scripts/lib/dispatch_helpers.py`):
-`build_dispatch_ctx`, `commit_dispatch`, `read_dispatch_ledger`, `decide_dispatch`, `select_due_missions`, `maybe_defer_ad_hoc_l3`, `resolve_mission_prompt`,
+`build_dispatch_ctx`, `decide_dispatch`, `select_due_missions`, `maybe_defer_ad_hoc_l3`, `resolve_mission_prompt`,
 `read_last_run`, `write_last_run`, `read_round_counter`,
 `increment_round_counter`, `layer_1_gate_satisfied`, `is_mission_due`,
 `materialize_due_missions`, `validate_layer_output`, `should_retry`,
@@ -1044,28 +1027,22 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     )
 
 
-def render_systemd_unit(slug: str) -> str:
-    """Render the per-dept systemd unit by substituting placeholders in
-    deploy/templates/ops-loop-dept.service.template (Phase G1).
+def render_systemd_handoff(slug: str) -> str:
+    """Document the canonical renderer hand-off without generating a unit."""
+    return f"""# Agent service for {slug}
 
-    Onboarding retains the legacy shared ``claude`` OS user.  Opting a
-    department into its isolated user is an explicit deploy-time migration
-    performed by ``deploy-to-morty.sh --os-user=...``; a fresh scaffold must
-    therefore render every #1120 placeholder to the legacy values rather than
-    leave an invalid unit behind.
-    """
-    tpl_path = _PROJECT_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
-    text = tpl_path.read_text(encoding="utf-8")
-    telegram_state_dir = f"/home/claude/.claude/channels/telegram-{slug}"
-    env_file = f"/run/claude-agent-{slug}/env"
-    workdir = f"/home/claude/agents/{slug}"
-    text = text.replace("${DEPT_SLUG}", slug)
-    text = text.replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
-    text = text.replace("${ENV_FILE}", env_file)
-    text = text.replace("${OS_USER}", "claude")
-    text = text.replace("${OS_GROUP}", "claude")
-    text = text.replace("${WORKDIR}", workdir)
-    return text
+Systemd unit structure is intentionally not copied into a department repo.
+Render the canonical `bubble-agent@{slug}.service` from the final `dept.yaml`
+and the host's `tenant.yaml` with bubble-vps-platform:
+
+```bash
+scripts/render-agent-units.py --tenant /path/to/tenant.yaml \\
+  --dept /path/to/{slug}/dept.yaml --output-dir ./rendered --verify
+```
+
+Only the platform renderer owns `bubble-agent@.service` and its Environment-only
+instance drop-in. Review the rendered files before any deployment.
+"""
 
 
 def render_broker_policy(slug: str, *, level: str = "ops",
@@ -1660,10 +1637,11 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     write_with_dirs(root / "CLAUDE.md", render_claude_md(slug, display_name,
                                                          level=level, children=children))
 
-    # 10. deploy/ops-loop-<slug>.service — pre-rendered systemd unit (Phase G1).
+    # 10. Systemd renderer hand-off. Unit generation belongs exclusively to
+    #     bubble-vps-platform (#1119), after dept.yaml is finalized.
     write_with_dirs(
-        root / "deploy" / f"ops-loop-{slug}.service",
-        render_systemd_unit(slug),
+        root / "deploy" / "AGENT-UNIT.md",
+        render_systemd_handoff(slug),
     )
 
     # 11. deploy/policies/<slug>-policy.yaml — token-broker actor policy,

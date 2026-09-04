@@ -16,7 +16,7 @@ rebuilt or a new tenant box is provisioned.
 
 | # | What | Script | Idempotent | Notes |
 |---|------|--------|------------|-------|
-| 1 | Per-dept agent units (`ops-loop-<slug>`) | `deploy/templates/ops-loop-dept.service.template` via `scripts/bootstrap-dept.sh` / `activate-dept.sh` | yes | One per live dept. Decrypts per-dept SOPS → `/run/claude-agent-<slug>/env`. |
+| 1 | Per-dept agent units (`bubble-agent@<slug>`) | `bubble-vps-platform/scripts/render-agent-units.py` from tenant.yaml + dept.yaml | yes | One per live dept. Decrypts per-dept SOPS → `/run/bubble-agent-<slug>/env`. |
 | 2 | Console (cockpit) | `console/deploy/bubble-ops-console.service.template` + `scripts/deploy-console-to-vps.sh` | yes | Tailscale-served `:8443`. Fresh box: run `deploy-console-to-vps.sh` directly (materializes the unit, no pre-existing service needed). Ongoing deploys: `scripts/deploy-console-to-morty.sh` (git-pull + restart) calls `deploy-console-to-vps.sh --no-restart` after every pull, so a template edit merged to `main` reaches the box on the next deploy — see board #1081. |
 | 3 | Loop liveness watchdog (alerts) | `scripts/ops-loop-watchdog.{service,timer}` + `scripts/loop-watchdog.sh` | yes | Telegram alert on stale heartbeat. |
 | 4 | **Loop layer FLOOR (4 crons)** | **`scripts/install-loop-backup.sh`** | **yes** | **EXACTLY 4 cron units (`loop-layer1..4`), one per OODA layer (L1 07:00 / L2 12:00 / L3 16:00 / L4 19:00 Paris). Each fires its layer for every eligible dept, auto-discovered at runtime. The daily floor + safety net. New depts inherit it with ZERO config.** |
@@ -29,7 +29,7 @@ rebuilt or a new tenant box is provisioned.
 ## /loop boot re-arm (step 8) — env for existing depts
 
 NEW depts inherit the boot-rearm env automatically: it is baked into
-`deploy/templates/ops-loop-dept.service.template`
+`bubble-vps-platform/systemd/bubble-agent@.service`
 (`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`),
 substituted per-dept at scaffold/deploy time
 (`scripts/deploy-to-vps.sh`, `console/services/eclosure_launcher.py`).
