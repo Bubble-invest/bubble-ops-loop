@@ -6,6 +6,29 @@
 #   ${DEPT_SLUG}            kebab-case dept slug (e.g. "miranda")
 #   ${TELEGRAM_STATE_DIR}   /home/claude/.claude/channels/telegram-<slug>
 #   ${ENV_FILE}             /run/claude-agent-<slug>/env
+#   ${OS_USER}              Unix user this dept runs as. LEGACY default:
+#                           "claude" (shared, byte-identical to pre-#1120
+#                           renders). Per-dept isolation (board #1120):
+#                           "agent-<slug>" (e.g. "agent-ben"). Set via
+#                           `deploy-to-morty.sh --os-user=agent-<slug>`.
+#   ${OS_GROUP}             Primary group — always == ${OS_USER} (server.user
+#                           default: a system user's own group). LEGACY: "claude".
+#   ${WORKDIR}              On-box working directory + git-clone target.
+#                           LEGACY (${OS_USER}=claude): /home/claude/agents/<slug>
+#                           (unchanged). PER-USER: /srv/agents/<slug> — decoupled
+#                           from the user's home so the transcript-path rename
+#                           has a SINGLE point (mirrors bubble-vps-platform's
+#                           lib/host_helpers.agent_workdir() convention for the
+#                           pyinfra-managed concierges, so both deploy systems
+#                           agree on where a per-user dept's workdir lives).
+#
+# Board #1120 (same-UID cross-dept secret exposure): every ExecStartPre chown
+# below targets ${OS_USER}:${OS_GROUP} instead of a hardcoded "claude:claude"
+# so a migrated dept's decrypted secrets (/run/claude-agent-<slug>/env,
+# /run/bubble-<slug>/pem) are owner-readable ONLY by that dept's own OS user —
+# a same-UID neighbor dept can no longer `cat` them. See
+# LEAST-PRIVILEGE-MIGRATION-PLAN.md (bubble-vps-platform) for the full design
+# + RUNBOOK-1120-per-dept-os-user.md for the staged cutover (fund/ben LAST).
 #
 # Doctrine references:
 #   - SPEC-007 + SPEC-009 (Claude agent systemd recipe)
@@ -73,9 +96,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=claude
-Group=claude
-WorkingDirectory=/home/claude/agents/${DEPT_SLUG}
+User=${OS_USER}
+Group=${OS_GROUP}
+WorkingDirectory=${WORKDIR}
 
 # dtach interactive-terminal support (board #1097 — folds in the 2026-09-03
 # live hand-edit so a deploy-to-morty.sh re-render doesn't revert it; see
@@ -92,6 +115,10 @@ RuntimeDirectory=ops-loop-${DEPT_SLUG}
 # (`bubble-token-broker`, resolved via PATH) finds the binary — it lives there,
 # not in a standard PATH dir. Without this: "broker binary not found" (blocker #2
 # of the 2026-06-04 runtime-push outage).
+# NOTE: /home/claude/.bun/bin stays a literal shared path even for a
+# per-user (${OS_USER} != claude) dept — the bun/node runtime is SHARED-RO
+# across all depts by design (no secrets there), so any dept user just needs
+# read+execute on it (o+rX), not ownership. Do not parametrize this segment.
 Environment=PATH=/opt/bubble-token-broker/bin:/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
 Environment=BUBBLE_DEPT=${DEPT_SLUG}
 Environment=TELEGRAM_STATE_DIR=${TELEGRAM_STATE_DIR}
@@ -135,8 +162,12 @@ Environment=GITHUB_APP_INSTALLATION_ID_${DEPT_SLUG_UPPER}=135214360
 Environment=BUBBLE_BROKER_JOURNAL=on
 
 # Tmpfs runtime dir with per-dept isolation (mirrors morty's pattern).
+# Board #1120: chown to ${OS_USER} (not a hardcoded "claude") so a same-UID
+# neighbor dept cannot read this dept's decrypted secrets. This ExecStartPre
+# is root-only (the "+" prefix runs it as root regardless of User=), so no
+# sudo grant is needed for the chown itself.
 ExecStartPre=+/bin/mkdir -p /run/claude-agent-${DEPT_SLUG}
-ExecStartPre=+/bin/chown claude:claude /run/claude-agent-${DEPT_SLUG}
+ExecStartPre=+/bin/chown ${OS_USER}:${OS_GROUP} /run/claude-agent-${DEPT_SLUG}
 ExecStartPre=+/bin/chmod 0750 /run/claude-agent-${DEPT_SLUG}
 
 # Decrypt SOPS env file into tmpfs (root-only step).
@@ -149,22 +180,24 @@ ExecStartPre=+/bin/sh -c 'grep -v "^TELEGRAM_BOT_TOKEN=" /run/claude-agent-${DEP
 ExecStartPre=+/bin/rm /run/claude-agent-${DEPT_SLUG}/env.raw.tmp
 ExecStartPre=+/bin/mv /run/claude-agent-${DEPT_SLUG}/env.tmp ${ENV_FILE}
 ExecStartPre=+/bin/chmod 0400 ${ENV_FILE}
-ExecStartPre=+/bin/chown claude:claude ${ENV_FILE}
+ExecStartPre=+/bin/chown ${OS_USER}:${OS_GROUP} ${ENV_FILE}
 
-# Decrypt PEM into /run/bubble-<slug>/pem (claude-readable tmpfs).
+# Decrypt PEM into /run/bubble-<slug>/pem (${OS_USER}-readable tmpfs only —
+# board #1120: this is the per-dept scoped GitHub App key; a same-UID
+# neighbor dept must not be able to read it).
 ExecStartPre=+/bin/mkdir -p /run/bubble-${DEPT_SLUG}
-ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}
+ExecStartPre=+/bin/chown ${OS_USER}:${OS_GROUP} /run/bubble-${DEPT_SLUG}
 ExecStartPre=+/bin/chmod 0750 /run/bubble-${DEPT_SLUG}
 ExecStartPre=+/bin/sh -c 'SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops --decrypt --input-type binary --output-type binary --output /run/bubble-${DEPT_SLUG}/pem.tmp /srv/bubble-secrets/github-app-bubble-ops-bot.private-key.sops.pem'
 ExecStartPre=+/bin/mv /run/bubble-${DEPT_SLUG}/pem.tmp /run/bubble-${DEPT_SLUG}/pem
 ExecStartPre=+/bin/chmod 0400 /run/bubble-${DEPT_SLUG}/pem
-ExecStartPre=+/bin/chown claude:claude /run/bubble-${DEPT_SLUG}/pem
+ExecStartPre=+/bin/chown ${OS_USER}:${OS_GROUP} /run/bubble-${DEPT_SLUG}/pem
 
 # Re-vendor the canonical shared libs (dispatch_helpers/notify*/notion_logbook +
 # tools/notify_layer) from the framework at EVERY start, so they can never drift
 # stale via a checkout/reset/reclone ({{OPERATOR}} 2026-06-07: safe_pull + min-time model
 # silently reverted fleet-wide because vendored on-disk, not committed). Fail-open.
-ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh /home/claude/agents/${DEPT_SLUG}
+ExecStartPre=+/usr/local/bin/vendor-dept-libs.sh ${WORKDIR}
 
 # Re-apply BOTH telegram-plugin patches (bubble-inject — delivers a message into
 # this live session as if from {{OPERATOR}} — and boot_rearm, see the OPS_LOOP_BOOT_REARM

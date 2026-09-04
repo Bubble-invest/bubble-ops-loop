@@ -1029,14 +1029,25 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
 
 def render_systemd_unit(slug: str) -> str:
     """Render the per-dept systemd unit by substituting placeholders in
-    deploy/templates/ops-loop-dept.service.template (Phase G1)."""
+    deploy/templates/ops-loop-dept.service.template (Phase G1).
+
+    Onboarding retains the legacy shared ``claude`` OS user.  Opting a
+    department into its isolated user is an explicit deploy-time migration
+    performed by ``deploy-to-morty.sh --os-user=...``; a fresh scaffold must
+    therefore render every #1120 placeholder to the legacy values rather than
+    leave an invalid unit behind.
+    """
     tpl_path = _PROJECT_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
     text = tpl_path.read_text(encoding="utf-8")
     telegram_state_dir = f"/home/claude/.claude/channels/telegram-{slug}"
     env_file = f"/run/claude-agent-{slug}/env"
+    workdir = f"/home/claude/agents/{slug}"
     text = text.replace("${DEPT_SLUG}", slug)
     text = text.replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
     text = text.replace("${ENV_FILE}", env_file)
+    text = text.replace("${OS_USER}", "claude")
+    text = text.replace("${OS_GROUP}", "claude")
+    text = text.replace("${WORKDIR}", workdir)
     return text
 
 

@@ -47,6 +47,19 @@ Arguments:
                      sonnet[1m] for cheap-orchestrator depts that spawn Opus
                      subagents for heavy reasoning. Canonical per-dept value
                      lives in dept.yaml::department.model.
+  --os-user=<user>   Board #1120 per-dept OS-user isolation. Unix user this
+                     dept runs as. Default: "claude" (LEGACY — shared with
+                     every other dept, byte-identical to pre-#1120 renders).
+                     Pass "agent-<slug>" (e.g. --os-user=agent-ben) to run
+                     this dept under its OWN OS user so a same-UID neighbor
+                     dept can no longer read its decrypted secrets. The user
+                     MUST already exist on the box (see
+                     scripts/bootstrap-os-user.sh) and must NOT be "claude"
+                     itself. Changes WorkingDirectory/REMOTE_REPO_PATH from
+                     /home/claude/agents/<slug> to /srv/agents/<slug> (see
+                     RUNBOOK-1120-per-dept-os-user.md) — the unit must be
+                     stopped before the migration and the workdir git-cloned
+                     fresh (or moved+chowned) at the new path.
   --remote=<host>    SSH target. Default: $BUBBLE_MORTY_HOST (fallback claude@morty).
   --dry-run          Print the rendered unit + every SSH command without
                      running them. Exits 0 if template is renderable.
@@ -73,11 +86,15 @@ DRY_RUN=0
 # Default keeps prior behaviour: the live tony/ben/maya/accountant units pinned
 # opus[1m] before this flag existed. Cost-optimization depts pass --model=sonnet[1m].
 CLAUDE_MODEL="opus[1m]"
+# Board #1120 per-dept OS-user isolation. Default "claude" = LEGACY, keeps
+# every render byte-identical to pre-#1120 behaviour until a dept opts in.
+OS_USER="claude"
 
 for arg in "$@"; do
   case "$arg" in
     --slug=*) SLUG="${arg#*=}" ;;
     --model=*) CLAUDE_MODEL="${arg#*=}" ;;
+    --os-user=*) OS_USER="${arg#*=}" ;;
     --remote=*) REMOTE="${arg#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --help|-h) usage; exit 0 ;;
@@ -100,20 +117,43 @@ if [[ ! -f "$TEMPLATE" ]]; then
   exit 1
 fi
 
+# Board #1120: OS_GROUP always == OS_USER (server.user / useradd default
+# primary group for a system user shares its own name — same convention as
+# bubble-vps-platform's pyinfra/tasks/agent/_os_user.py).
+OS_GROUP="${OS_USER}"
+
 # Render the template with the dept's substitutions.
-TELEGRAM_STATE_DIR="/home/claude/.claude/channels/telegram-${SLUG}"
+#
+# Board #1120: WORKDIR (and therefore TELEGRAM_STATE_DIR + REMOTE_REPO_PATH)
+# depends on OS_USER. LEGACY (claude) keeps the canonical
+# /home/claude/agents/<slug> convention (Fix 1 — Sprint H+I) byte-identical.
+# PER-USER (os_user != claude) moves the workdir OUT of any user's home to
+# /srv/agents/<slug> — decouples the workdir from the home dir so the
+# session-transcript path (claude derives it from the absolute WorkingDirectory
+# by '/'->'-') has a SINGLE rename point, and matches
+# bubble-vps-platform's lib/host_helpers.agent_workdir() convention for the
+# pyinfra-managed concierges so both deploy systems agree.
+if [[ "${OS_USER}" == "claude" ]]; then
+  WORKDIR="/home/claude/agents/${SLUG}"
+  TELEGRAM_STATE_DIR="/home/claude/.claude/channels/telegram-${SLUG}"
+else
+  WORKDIR="/srv/agents/${SLUG}"
+  TELEGRAM_STATE_DIR="/home/${OS_USER}/.claude/channels/telegram-${SLUG}"
+fi
 ENV_FILE="/run/claude-agent-${SLUG}/env"
 UNIT_NAME="ops-loop-${SLUG}.service"
 REMOTE_UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
-# Canonical convention (Fix 1 — Sprint H+I):
+# Canonical convention (Fix 1 — Sprint H+I), extended by board #1120:
 # REMOTE_REPO_PATH must match the WorkingDirectory= in
 # deploy/templates/ops-loop-dept.service.template, otherwise the systemd
 # unit starts in a directory that has no cloned repo and crash-loops.
-# Canonical path = /home/claude/agents/<slug> (matches Morty fixture,
-# docs/ARCHITECTURE.md §1, docs/OPERATOR-GUIDE.md, Phase-G smoke test).
-REMOTE_REPO_PATH="/home/claude/agents/${SLUG}"
+# Kept as its OWN variable (not just an alias for WORKDIR) so
+# tests/test_systemd_path_matches_deploy.py can keep asserting the two never
+# drift apart, whichever OS_USER is in play.
+REMOTE_REPO_PATH="${WORKDIR}"
 
-# Substitute placeholders (DEPT_SLUG, DEPT_SLUG_UPPER, TELEGRAM_STATE_DIR, ENV_FILE).
+# Substitute placeholders (DEPT_SLUG, DEPT_SLUG_UPPER, TELEGRAM_STATE_DIR,
+# ENV_FILE, OS_USER, OS_GROUP, WORKDIR, CLAUDE_MODEL).
 # DEPT_SLUG_UPPER = slug upper-cased with '-'→'_' — matches the broker's
 # GITHUB_APP_INSTALLATION_ID_<DEPT> env-var naming (cli.py::_resolve_installation_id).
 # Use sed with `|` delimiter since paths contain `/`.
@@ -125,8 +165,18 @@ rendered=$(
     -e "s|\${TELEGRAM_STATE_DIR}|${TELEGRAM_STATE_DIR}|g" \
     -e "s|\${ENV_FILE}|${ENV_FILE}|g" \
     -e "s|\${CLAUDE_MODEL}|${CLAUDE_MODEL}|g" \
+    -e "s|\${OS_USER}|${OS_USER}|g" \
+    -e "s|\${OS_GROUP}|${OS_GROUP}|g" \
+    -e "s|\${WORKDIR}|${WORKDIR}|g" \
     "$TEMPLATE"
 )
+
+# Refuse an obviously-broken --os-user (empty after substitution, or "root" —
+# never run a dept agent as root even by typo).
+if [[ -z "${OS_USER}" || "${OS_USER}" == "root" ]]; then
+  echo "ERROR: --os-user must be a non-empty, non-root Unix user" >&2
+  exit 64
+fi
 
 # Doctrine check: NON-comment lines of rendered unit must NOT reference
 # morty's own unit. (Comments may carry safety-rule reminders.)
@@ -147,8 +197,14 @@ if [[ "$DRY_RUN" = "1" ]]; then
   echo ""
   echo "Doctrine reminder: NEVER touch /etc/systemd/system/claude-agent-morty.service"
   echo ""
-  echo "# 1. Verify dept repo cloned at ${REMOTE_REPO_PATH}, or clone it."
+  if [[ "${OS_USER}" != "claude" ]]; then
+    echo "# 0. (board #1120) ${OS_USER} MUST already exist — run FIRST, once:"
+    echo "ssh ${REMOTE} 'sudo scripts/bootstrap-os-user.sh --os-user=${OS_USER} --workdir=${WORKDIR}'"
+    echo ""
+  fi
+  echo "# 1. Verify dept repo cloned at ${REMOTE_REPO_PATH}, or clone it (then chown to ${OS_USER}:${OS_GROUP})."
   echo "ssh ${REMOTE} 'test -d ${REMOTE_REPO_PATH} || sudo git clone https://github.com/vdk888/bubble-ops-${SLUG} ${REMOTE_REPO_PATH}'"
+  echo "ssh ${REMOTE} 'sudo chown -R ${OS_USER}:${OS_GROUP} ${REMOTE_REPO_PATH}'"
   echo ""
   echo "# 2. Write the rendered unit to /tmp on Morty."
   echo "ssh ${REMOTE} 'cat > /tmp/${UNIT_NAME}' < <rendered>"
@@ -169,8 +225,20 @@ echo "[deploy] target: ${REMOTE}"
 echo "[deploy] unit:   ${UNIT_NAME}"
 echo "[deploy] repo:   ${REMOTE_REPO_PATH}"
 
-# 1. Ensure the dept repo is cloned on Morty.
+# 0. Board #1120: refuse to run for real against a non-legacy os_user until
+#    that user already exists on the box (bootstrap-os-user.sh is a SEPARATE,
+#    explicit, human-run step — this script never creates OS users itself).
+if [[ "${OS_USER}" != "claude" ]]; then
+  if ! ssh "${REMOTE}" "id -u ${OS_USER}" >/dev/null 2>&1; then
+    echo "[deploy] FAIL: OS user '${OS_USER}' does not exist on ${REMOTE}." >&2
+    echo "         Run scripts/bootstrap-os-user.sh --os-user=${OS_USER} --workdir=${WORKDIR} FIRST." >&2
+    exit 1
+  fi
+fi
+
+# 1. Ensure the dept repo is cloned on Morty, owned by the dept's OS user.
 ssh "${REMOTE}" "test -d ${REMOTE_REPO_PATH} || sudo git clone https://github.com/vdk888/bubble-ops-${SLUG} ${REMOTE_REPO_PATH}"
+ssh "${REMOTE}" "sudo chown -R ${OS_USER}:${OS_GROUP} ${REMOTE_REPO_PATH}"
 
 # 2. Push the rendered unit via stdin SSH.
 echo "$rendered" | ssh "${REMOTE}" "sudo tee /tmp/${UNIT_NAME} > /dev/null"
