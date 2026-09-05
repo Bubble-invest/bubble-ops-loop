@@ -135,14 +135,29 @@ fi
 
 say "validating patched server.ts with bun build"
 BUILD_OUT="$(mktemp -d)"
-if ( cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$BUILD_OUT" ) >/tmp/install-boot-rearm-build.log 2>&1; then
+# Board #1150: this MUST be a per-invocation mktemp file, not a fixed
+# /tmp/install-boot-rearm-build.log — under per-dept OS-user isolation every
+# agent user runs this installer independently, and a shared, fixed path is
+# created+owned (e.g. 0664 claude:claude) by whichever user gets there first.
+# Every OTHER user's redirect into it then fails with Permission denied —
+# the underlying `bun build` actually succeeds, but the shell's own
+# redirect failure corrupts the `if (...)` exit check, producing a false
+# rc=4 here (boot_rearm never gets wired, so the dept never self-wakes).
+# mktemp (same pattern as BUILD_OUT above) gives every invocation its own
+# private, uniquely-owned log file — no cross-user collision possible.
+BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/install-boot-rearm-build.XXXXXX")"
+if ( cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$BUILD_OUT" ) >"$BUILD_LOG" 2>&1; then
   say "bun build OK — boot re-arm wired into $SERVER_TS"
   rm -rf "$BUILD_OUT"
+  rm -f "$BUILD_LOG"
 else
   echo "ERR: bun build FAILED on patched server.ts — restoring backup" >&2
-  tail -8 /tmp/install-boot-rearm-build.log >&2 || true
+  tail -8 "$BUILD_LOG" >&2 || true
+  echo "     full log: $BUILD_LOG" >&2
   cp "$BAK" "$SERVER_TS"
   rm -rf "$BUILD_OUT"
+  # Deliberately NOT removed on failure — named above for operator
+  # inspection; each invocation gets its own uniquely-named mktemp file.
   exit 4
 fi
 
