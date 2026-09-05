@@ -296,17 +296,28 @@ PY
     return 2
   fi
 
-  local build_out
+  local build_out build_log
   build_out="$(mktemp -d)"
+  # Board #1150: per-invocation mktemp, not a fixed
+  # /tmp/install-channel-patches-inject-build.log — under per-dept OS-user
+  # isolation each agent user runs this hook independently; a shared fixed
+  # path is owned by whichever user creates it first, so every OTHER user's
+  # redirect into it fails with Permission denied (the build itself
+  # succeeds; only the log redirect breaks, corrupting the exit check).
+  build_log="$(mktemp "${TMPDIR:-/tmp}/install-channel-patches-inject-build.XXXXXX")"
   if ( cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$build_out" ) \
-      >/tmp/install-channel-patches-inject-build.log 2>&1; then
+      >"$build_log" 2>&1; then
     log "bubble-inject: applied + bun build OK ($SERVER_TS)"
     rm -rf "$build_out"
+    rm -f "$build_log"
     return 0
   else
-    log "bubble-inject: bun build FAILED — restoring backup (see /tmp/install-channel-patches-inject-build.log)"
+    log "bubble-inject: bun build FAILED — restoring backup (see $build_log)"
     cp "$bak" "$SERVER_TS"
     rm -rf "$build_out"
+    # Deliberately NOT removed on failure — the path is named in the log
+    # line above so an operator can inspect it; each invocation gets its
+    # own uniquely-named mktemp file, so leftovers never collide.
     return 4
   fi
 }

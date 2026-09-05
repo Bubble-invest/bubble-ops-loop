@@ -1,0 +1,9 @@
+{
+  "hasCompletedOnboarding": true,
+  "hasTrustDialogAccepted": true,
+  "projects": {
+    "__WORKDIR__": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}

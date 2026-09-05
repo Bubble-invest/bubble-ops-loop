@@ -132,20 +132,36 @@ tightly-scoped sudoers rule.
 
 ## guard-stale-credentials.sh
 
-ExecStartPre guard that prevents a stale `~/.claude/.credentials.json` from
+ExecStartPre guard that prevents a stale `$HOME/.claude/.credentials.json` from
 SHADOWING the env `CLAUDE_CODE_OAUTH_TOKEN` (board #294 / incident 2026-06-25:
 the shared on-disk creds file expired 2026-06-03 and 401'd all 5 depts, because
 claude prefers the on-disk credentials file over the env token).
 
+- **Source:** `scripts/guard-stale-credentials.sh` (board #1150 — moved from
+  `deploy/bin/`, which lived outside the `scripts/` tree that every other
+  framework-consumed installer sources from; a root-owned
+  `/opt/bubble-ops-loop` checkout + `bubble-safe-install` only ever copies
+  from `scripts/<relative-path>`, e.g. `bubble-safe-install
+  scripts/guard-stale-credentials.sh /usr/local/bin/guard-stale-credentials.sh` —
+  see `bubble-vps-platform`'s `pyinfra/templates/bubble-safe-install.sh.j2`).
 - **What it does:** if the dept env file provides `CLAUDE_CODE_OAUTH_TOKEN` AND
-  `/home/claude/.claude/.credentials.json` exists, moves the file aside
-  (`.shadowed-<ts>`) so claude falls back to the env token. Only acts when an env
-  token exists to fall back to — never strips the sole available auth.
+  `$BUBBLE_AGENT_HOME/.claude/.credentials.json` (falling back to `$HOME`)
+  exists, moves the file aside (`.shadowed-<ts>`) so claude falls back to the
+  env token. Only acts when an env token exists to fall back to — never
+  strips the sole available auth. Board #1150: under per-dept OS-user
+  isolation the credentials file lives under the INVOKING dept's own
+  `$HOME` (`/home/agent-<slug>`), never the legacy shared `/home/claude` —
+  a hardcoded path silently no-ops for every non-`claude` agent user.
 - **Reversible / fail-open:** renames (never deletes), and always `exit 0` so it
-  can never block a dept from starting. Never echoes secret values.
+  can never block a dept from starting. Never echoes secret values. Refuses
+  (fail-open, loud warning) rather than guess if neither `$BUBBLE_AGENT_HOME`
+  nor `$HOME` is set.
 - **Install:** `/usr/local/bin/guard-stale-credentials.sh`, root-owned `0755`.
 - **Called by:** `ExecStartPre=+/usr/local/bin/guard-stale-credentials.sh ${ENV_FILE}`
-  in `ops-loop-dept.service.template` (runs as root, before `EnvironmentFile`).
+  in `systemd/bubble-agent-prepare` (`bubble-vps-platform`, #1119's canonical
+  unit — runs as root, gated by `BUBBLE_AGENT_GUARD_CREDENTIALS=1`, before
+  `EnvironmentFile`; inherits `BUBBLE_AGENT_HOME` from the unit's
+  `Environment=`).
 
 ## bubble-rotate-dept-secret
 
