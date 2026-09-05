@@ -53,7 +53,7 @@ if str(_HERE) not in sys.path:
 import state_yaml  # noqa: E402
 
 
-UNIT_PATTERN = "ops-loop-{slug}.service"
+UNIT_PATTERN = "bubble-agent@{slug}.service"
 DEFAULT_REMOTE = os.environ.get("BUBBLE_MORTY_HOST", "claude@morty")
 
 
@@ -121,7 +121,7 @@ def _disable_morty_unit_graceful(slug: str, remote: str = DEFAULT_REMOTE
     left ops-loop-fixture.service still active+enabled.
     """
     unit = UNIT_PATTERN.format(slug=slug)
-    unit_path = Path(f"/etc/systemd/system/{unit}")
+    unit_path = Path(f"/etc/systemd/system/{unit}.d")
     # NOTE: NO --now. The currently-running iteration finishes; future
     # cycles do not start. Operator can stop manually if needed.
     if unit_path.exists():

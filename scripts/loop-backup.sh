@@ -254,7 +254,7 @@ dept_host() {
 }
 
 # dept_eligible <slug>: is this dept a LIVE, tickable dept?
-#   - its ops-loop-<slug>.service must EXIST and be ENABLED (so paused depts
+#   - its bubble-agent@<slug>.service must EXIST and be ENABLED (so paused depts
 #     like cgp and the disabled test fixture are skipped); `is-enabled` exits 0
 #     only for enabled, 1 for disabled, 4/non-zero for not-found.
 #   - in layer-floor mode, it must have layers/<FORCE_LAYER>/PROMPT.md (so a
@@ -264,8 +264,8 @@ dept_host() {
 # output) when eligible.
 dept_eligible() {
     local slug="$1"
-    if ! "$SYSTEMCTL" is-enabled "ops-loop-${slug}.service" >/dev/null 2>&1; then
-        echo "service ops-loop-${slug}.service not enabled (paused/absent)"
+    if ! "$SYSTEMCTL" is-enabled "bubble-agent@${slug}.service" >/dev/null 2>&1; then
+        echo "service bubble-agent@${slug}.service not enabled (paused/absent)"
         return 1
     fi
     if [[ -n "$FORCE_LAYER" ]]; then
@@ -625,7 +625,7 @@ PYEOF
     case "$action" in
         restart)
             log "$slug: AUTO-RESTART — $reason"
-            if "$SYSTEMCTL" restart "ops-loop-${slug}.service" ; then
+            if "$SYSTEMCTL" restart "bubble-agent@${slug}.service" ; then
                 _record_restart_event "$slug" "restart" "$reason"
                 # Surface the restart on Telegram (best-effort) so a human knows
                 # the dept was revived by force, not by the gentle backup tick.
@@ -633,7 +633,7 @@ PYEOF
             else
                 log "$slug: AUTO-RESTART FAILED — systemctl restart returned non-zero"
                 _record_restart_event "$slug" "restart-failed" "$reason"
-                notify_autorestart "$slug" "restart-FAILED" "systemctl restart ops-loop-${slug}.service failed — needs a human"
+                notify_autorestart "$slug" "restart-FAILED" "systemctl restart bubble-agent@${slug}.service failed — needs a human"
             fi
             ;;
         escalate)
@@ -842,7 +842,7 @@ PROMPT
 # back to a `claude -p` backup tick.
 inject_live_loop() {
     local slug="$1"
-    local svc="ops-loop-${slug}.service"
+    local svc="bubble-agent@${slug}.service"
     # session alive? = a bun process in this service's cgroup.
     local main_pid; main_pid=$("$SYSTEMCTL" show "$svc" -p MainPID --value 2>/dev/null || echo 0)
     [[ "$main_pid" =~ ^[0-9]+$ ]] && (( main_pid > 0 )) || return 1

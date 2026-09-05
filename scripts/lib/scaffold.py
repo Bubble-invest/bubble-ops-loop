@@ -391,7 +391,7 @@ I wait for his answer, I commit.
 
 ONLY via my dedicated Telegram bot: `@bubbleops{slug_compact}_bot`.
 
-The bot token is in `/run/claude-agent-{slug}/env` (key
+The bot token is in `/run/bubble-agent-{slug}/env` (key
 `TELEGRAM_BOT_TOKEN`). I read messages via `plugin:telegram`.
 
 ## My first wake-up (SessionStart)
@@ -768,9 +768,9 @@ CLAUDE.md.
 ## How I am wired in
 
 - My dedicated Telegram bot: `@bubbleops{slug_compact}_bot`
-  (token in `/run/claude-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
+  (token in `/run/bubble-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
 - My repo: `bubble-ops-{slug}` (on GitHub, I commit + push at each tick)
-- My systemd service: `ops-loop-{slug}.service` (Morty)
+- My systemd service: `bubble-agent@{slug}.service` (Morty)
 - My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done — derived to box-UTC via `scripts/arm-wake-cron.sh`, board #850) — see runtime protocol below
 - My active layers: see the "My 4 moments per day" section
 - My recurring missions: declared in `dept.yaml::missions`, individual
@@ -1044,28 +1044,26 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     )
 
 
-def render_systemd_unit(slug: str) -> str:
-    """Render the per-dept systemd unit by substituting placeholders in
-    deploy/templates/ops-loop-dept.service.template (Phase G1).
+def render_systemd_handoff(slug: str) -> str:
+    """Document the canonical renderer hand-off without generating a unit."""
+    return f"""# Agent service for {slug}
 
-    Onboarding retains the legacy shared ``claude`` OS user.  Opting a
-    department into its isolated user is an explicit deploy-time migration
-    performed by ``deploy-to-morty.sh --os-user=...``; a fresh scaffold must
-    therefore render every #1120 placeholder to the legacy values rather than
-    leave an invalid unit behind.
-    """
-    tpl_path = _PROJECT_ROOT / "deploy" / "templates" / "ops-loop-dept.service.template"
-    text = tpl_path.read_text(encoding="utf-8")
-    telegram_state_dir = f"/home/claude/.claude/channels/telegram-{slug}"
-    env_file = f"/run/claude-agent-{slug}/env"
-    workdir = f"/home/claude/agents/{slug}"
-    text = text.replace("${DEPT_SLUG}", slug)
-    text = text.replace("${TELEGRAM_STATE_DIR}", telegram_state_dir)
-    text = text.replace("${ENV_FILE}", env_file)
-    text = text.replace("${OS_USER}", "claude")
-    text = text.replace("${OS_GROUP}", "claude")
-    text = text.replace("${WORKDIR}", workdir)
-    return text
+Systemd unit structure is intentionally not copied into a department repo.
+Render the canonical `bubble-agent@{slug}.service` from the final `dept.yaml`
+and the host's `tenant.yaml` with bubble-vps-platform:
+
+```bash
+scripts/render-agent-units.py --tenant /path/to/tenant.yaml \\
+  --dept /path/to/{slug}/dept.yaml --output-dir ./rendered --verify
+```
+
+Only the platform renderer owns `bubble-agent@.service` and its per-instance
+drop-in. The drop-in renders User=/Group=/WorkingDirectory= from dept.yaml;
+when unset, the #1120-compatible defaults are claude/claude and
+`/home/claude/agents/{slug}`. Use deploy-to-morty.sh --os-user=agent-{slug}
+for an explicit migration to `/srv/agents/{slug}`. Review the rendered files
+before deployment.
+"""
 
 
 def render_broker_policy(slug: str, *, level: str = "ops",
@@ -1660,10 +1658,11 @@ def scaffold(root: Path, slug: str, display_name: str, owner: str,
     write_with_dirs(root / "CLAUDE.md", render_claude_md(slug, display_name,
                                                          level=level, children=children))
 
-    # 10. deploy/ops-loop-<slug>.service — pre-rendered systemd unit (Phase G1).
+    # 10. Systemd renderer hand-off. Unit generation belongs exclusively to
+    #     bubble-vps-platform (#1119), after dept.yaml is finalized.
     write_with_dirs(
-        root / "deploy" / f"ops-loop-{slug}.service",
-        render_systemd_unit(slug),
+        root / "deploy" / "AGENT-UNIT.md",
+        render_systemd_handoff(slug),
     )
 
     # 11. deploy/policies/<slug>-policy.yaml — token-broker actor policy,

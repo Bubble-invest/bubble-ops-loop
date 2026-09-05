@@ -63,42 +63,15 @@ def test_bootstrap_claude_md_substitutes_slug_and_display(bootstrapped_repo: Pat
     assert "SmokeTest" in text, "CLAUDE.md must contain the display name"
 
 
-def test_bootstrap_generates_systemd_unit_in_repo(bootstrapped_repo: Path) -> None:
-    """The bootstrapped repo must contain deploy/ops-loop-<slug>.service
-    (rendered from deploy/templates/ops-loop-dept.service.template)."""
-    unit_path = bootstrapped_repo / "deploy" / "ops-loop-smoke-test.service"
-    assert unit_path.exists(), \
-        f"systemd unit missing at {unit_path}"
-    text = unit_path.read_text(encoding="utf-8")
-    # Must NOT contain unsubstituted ${DEPT_SLUG} placeholders.
-    assert "${DEPT_SLUG}" not in text, \
-        "systemd unit must have DEPT_SLUG substituted"
-    assert "smoke-test" in text, \
-        "systemd unit must reference the dept slug"
-    # Must use script(1) per doctrine Ban #1 (in ExecStart, not just comments).
-    exec_lines = [ln for ln in text.splitlines()
-                  if ln.startswith("ExecStart=") and not ln.startswith("ExecStartPre=")]
-    assert exec_lines, "must have an ExecStart= line"
-    exec_text = "\n".join(exec_lines)
-    assert "/usr/bin/script" in exec_text, \
-        "ExecStart must use /usr/bin/script (Ban #1)"
-    # Must NOT use tmux in ExecStart per doctrine Ban #1.
-    assert "tmux" not in exec_text, \
-        f"ExecStart must NOT use tmux (Ban #1); got: {exec_text}"
-    # Must NOT use `claude -p` or --print per doctrine Ban #2.
-    assert "claude -p" not in exec_text, \
-        "ExecStart must NOT use 'claude -p' (Ban #2)"
-    assert "--print" not in exec_text, \
-        "ExecStart must NOT use '--print' (Ban #2)"
-    # Must use interactive claude with --dangerously-skip-permissions.
-    assert "--dangerously-skip-permissions" in exec_text
-    assert "--channels plugin:telegram@claude-plugins-official" in exec_text
-    # Per-dept env file path
-    assert "/run/claude-agent-smoke-test/env" in text
-    # Per-dept Telegram state dir
-    assert "/home/claude/.claude/channels/telegram-smoke-test" in text
-    # Per-dept working dir
-    assert "/home/claude/agents/smoke-test" in text
+def test_bootstrap_emits_canonical_renderer_handoff(bootstrapped_repo: Path) -> None:
+    """A dept repo carries data + instructions, never a second unit template."""
+    handoff = bootstrapped_repo / "deploy" / "AGENT-UNIT.md"
+    assert handoff.exists()
+    text = handoff.read_text(encoding="utf-8")
+    assert "scripts/render-agent-units.py" in text
+    assert "--tenant" in text and "--dept" in text and "--verify" in text
+    assert "bubble-agent@smoke-test.service" in text
+    assert not list((bootstrapped_repo / "deploy").glob("*.service"))
 
 
 def test_bootstrap_emits_botfather_instruction(bootstrapped_repo: Path, run_bootstrap) -> None:
@@ -137,11 +110,11 @@ def test_bootstrap_supports_dry_run_mode(scripts_dir: Path, tmp_clone_dir: Path)
     )
     assert res.returncode == 0, \
         f"--dry-run must exit 0; stdout={res.stdout}\nstderr={res.stderr}"
-    # Skeleton + CLAUDE.md + systemd unit all rendered.
+    # Skeleton + CLAUDE.md + canonical renderer hand-off all rendered.
     assert (target / "CLAUDE.md").exists(), \
         f"dry-run must render CLAUDE.md at {target}"
-    assert (target / "deploy" / "ops-loop-drysmoke.service").exists(), \
-        "dry-run must render the systemd unit"
+    assert (target / "deploy" / "AGENT-UNIT.md").exists(), \
+        "dry-run must render the unit-renderer hand-off"
     assert (target / "dept.yaml.draft").exists(), \
         "dry-run must render dept.yaml.draft"
     assert (target / "onboarding" / "STATE.yaml").exists(), \

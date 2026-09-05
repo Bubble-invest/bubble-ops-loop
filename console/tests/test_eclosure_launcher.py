@@ -3,8 +3,8 @@ test_eclosure_launcher.py — unit tests for console/services/eclosure_launcher.
 
 The launcher owns the post-bootstrap chain:
   1. Create per-dept SOPS env file with DEPT_TELEGRAM_BOT_TOKEN.
-  2. Render systemd unit template + install at /etc/systemd/system/.
-  3. Enable + start ops-loop-<slug>.service.
+  2. Delegate canonical unit rendering to bubble-vps-platform + install it.
+  3. Stop/disable the legacy unit, then enable + start bubble-agent@<slug>.
   4. (Best-effort) install the GitHub App on the new repo via API.
 
 All side-effecting calls (sops, systemctl, gh) are monkeypatched.
@@ -33,28 +33,90 @@ def test_telegram_token_validation_rejects_garbage():
     assert is_valid_telegram_bot_token("123456789abc") is False
 
 
-def test_render_systemd_unit_substitutes_slug(tmp_path: Path, monkeypatch):
+def test_render_systemd_bundle_delegates_to_platform(tmp_path: Path, monkeypatch):
     from console.services import eclosure_launcher
-    template_text = (
-        "Description=Claude Agent — ops-loop-${DEPT_SLUG}\n"
-        "WorkingDirectory=/home/claude/agents/${DEPT_SLUG}\n"
-        "ExecStartPre=+/bin/mkdir -p /run/claude-agent-${DEPT_SLUG}\n"
-        "ExecStartPre=+/bin/sh -c '... /etc/bubble/secrets-${DEPT_SLUG}.sops.env'\n"
-        "EnvironmentFile=-${ENV_FILE}\n"
-    )
-    tpl_path = tmp_path / "tpl.service.template"
-    tpl_path.write_text(template_text, encoding="utf-8")
-    monkeypatch.setattr(eclosure_launcher, "SYSTEMD_TEMPLATE_PATH", tpl_path)
+    platform = tmp_path / "platform"
+    agents = tmp_path / "agents"
+    tenant = tmp_path / "tenant.yaml"
+    (platform / "scripts").mkdir(parents=True)
+    (platform / "scripts" / "render-agent-units.py").write_text("", encoding="utf-8")
+    (agents / "maya").mkdir(parents=True)
+    (agents / "maya" / "dept.yaml").write_text("department:\n  slug: maya\n", encoding="utf-8")
+    tenant.write_text("tenant_name: test\n", encoding="utf-8")
+    monkeypatch.setattr(eclosure_launcher, "PLATFORM_ROOT", platform)
+    monkeypatch.setattr(eclosure_launcher, "AGENTS_PARENT", agents)
+    monkeypatch.setattr(eclosure_launcher, "TENANT_YAML_PATH", tenant)
+    captured = []
 
-    rendered = eclosure_launcher.render_systemd_unit("maya")
-    assert "ops-loop-maya" in rendered
-    assert "/home/claude/agents/maya" in rendered
-    assert "/run/claude-agent-maya" in rendered
-    assert "/etc/bubble/secrets-maya.sops.env" in rendered
-    assert "/run/claude-agent-maya/env" in rendered
-    # placeholders fully substituted (no ${} left)
-    assert "${DEPT_SLUG}" not in rendered
-    assert "${ENV_FILE}" not in rendered
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(eclosure_launcher.subprocess, "run", fake_run)
+    unit, helper, dropin = eclosure_launcher._render_systemd_bundle("maya", tmp_path / "out")
+    assert captured[0][0] == str(platform / "scripts" / "render-agent-units.py")
+    assert captured[0][-1] == "--verify"
+    assert unit.name == "bubble-agent@.service"
+    assert helper.name == "bubble-agent-prepare"
+    assert dropin.as_posix().endswith("bubble-agent@maya.service.d/maya.conf")
+
+
+def test_systemctl_cutover_orders_legacy_stop_disable_before_canonical_start(monkeypatch):
+    from console.services import eclosure_launcher
+
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        returncode = 3 if "is-active" in cmd else 0
+        return type("Result", (), {"returncode": returncode, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(eclosure_launcher.subprocess, "run", fake_run)
+    eclosure_launcher.systemctl_enable_and_start("maya")
+    assert commands == [
+        ["sudo", "systemctl", "daemon-reload"],
+        ["sudo", "systemctl", "cat", "ops-loop-maya.service"],
+        ["sudo", "systemctl", "stop", "ops-loop-maya.service"],
+        ["sudo", "systemctl", "disable", "ops-loop-maya.service"],
+        ["sudo", "systemctl", "is-active", "--quiet", "ops-loop-maya.service"],
+        ["sudo", "systemctl", "enable", "--now", "bubble-agent@maya.service"],
+    ]
+    assert all("claude-agent-morty.service" not in " ".join(cmd) for cmd in commands)
+
+
+def test_systemctl_cutover_is_idempotent_when_legacy_unit_is_absent(monkeypatch):
+    from console.services import eclosure_launcher
+
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        returncode = 1 if "cat" in cmd or "is-active" in cmd else 0
+        return type("Result", (), {"returncode": returncode, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(eclosure_launcher.subprocess, "run", fake_run)
+    eclosure_launcher.systemctl_enable_and_start("maya")
+    assert ["sudo", "systemctl", "stop", "ops-loop-maya.service"] not in commands
+    assert ["sudo", "systemctl", "disable", "ops-loop-maya.service"] not in commands
+    assert commands[-1] == [
+        "sudo", "systemctl", "enable", "--now", "bubble-agent@maya.service"
+    ]
+
+
+def test_systemctl_cutover_never_starts_canonical_when_legacy_stop_fails(monkeypatch):
+    from console.services import eclosure_launcher
+
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        returncode = 1 if "stop" in cmd else 0
+        return type("Result", (), {"returncode": returncode, "stdout": "", "stderr": "stop failed"})()
+
+    monkeypatch.setattr(eclosure_launcher.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="stop failed"):
+        eclosure_launcher.systemctl_enable_and_start("maya")
+    assert not any("bubble-agent@maya.service" in cmd for cmd in commands)
 
 
 def test_launch_dispatches_4_steps_in_order(tmp_path: Path, monkeypatch):

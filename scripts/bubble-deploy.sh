@@ -21,7 +21,7 @@
 #   BUBBLE_DEPLOY_INFRA_DIR     default: /home/claude/bubble-ops-loop
 #   BUBBLE_DEPLOY_AGENTS_ROOT   default: /home/claude/agents
 #   BUBBLE_DEPLOY_DEPT_PREFIX   default: bubble-ops-   (dept dir/unit naming prefix)
-#   BUBBLE_DEPLOY_UNIT_PREFIX   default: ops-loop-     (systemd unit naming prefix)
+#   BUBBLE_DEPLOY_UNIT_PREFIX   default: bubble-agent@ (systemd unit naming prefix)
 #   BUBBLE_DEPLOY_ENTRYPOINT    default: main.py       (relative path probed for
 #                                import-smoke; skipped if not found — not every
 #                                dept/client entrypoint is a plain script)
@@ -43,7 +43,7 @@ set -uo pipefail
 INFRA_DIR="${BUBBLE_DEPLOY_INFRA_DIR:-/home/claude/bubble-ops-loop}"
 AGENTS_ROOT="${BUBBLE_DEPLOY_AGENTS_ROOT:-/home/claude/agents}"
 DEPT_PREFIX="${BUBBLE_DEPLOY_DEPT_PREFIX:-bubble-ops-}"
-UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-ops-loop-}"
+UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
 ENTRYPOINT="${BUBBLE_DEPLOY_ENTRYPOINT:-main.py}"
 DRY_RUN=0; INFRA_ONLY=0; ONE_DEPT=""
 for a in "$@"; do case "$a" in

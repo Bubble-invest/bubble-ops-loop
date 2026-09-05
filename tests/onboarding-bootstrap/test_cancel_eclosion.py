@@ -154,11 +154,11 @@ def test_systemd_subprocess_called_with_disable_now(tmp_path, patched_subprocess
 
     flat = [" ".join(c) for c in patched_subprocess]
     has_disable_now = any(
-        "systemctl disable --now" in line and "ops-loop-smoke.service" in line
+        "systemctl disable --now" in line and "bubble-agent@smoke.service" in line
         for line in flat
     )
     assert has_disable_now, (
-        f"Expected systemctl disable --now ops-loop-smoke.service call; "
+        f"Expected systemctl disable --now bubble-agent@smoke.service call; "
         f"got calls: {flat}"
     )
 

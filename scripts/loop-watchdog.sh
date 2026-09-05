@@ -15,7 +15,7 @@
 #     happen legitimately right after a reboot before the first tick lands.
 #     If a full day passes with no heartbeat, the daily backup cron will
 #     catch the missing outputs directory.
-#   - We do NOT touch ops-loop-fixture.service — alerting only, no
+#   - We do NOT touch bubble-agent@fixture.service — alerting only, no
 #     auto-restart. {{OPERATOR}} decides whether to intervene.
 #   - We re-alert every 40 min while stale (idempotent: same message). This
 #     is intentional pressure to act, not annoyance: Telegram dedupes
@@ -68,7 +68,7 @@ if [ -z "$TOKEN_VAL" ]; then
 fi
 
 LAST_HUMAN=$(date -u -d "@${LAST_MTIME}" -Iseconds)
-MSG=$(printf 'WARN ops-loop-fixture watchdog: heartbeat stale.\nAge: %ss (threshold: %ss)\nLast tick: %s\nCheck: sudo journalctl -u ops-loop-fixture.service -n 50' \
+MSG=$(printf 'WARN bubble-agent@fixture watchdog: heartbeat stale.\nAge: %ss (threshold: %ss)\nLast tick: %s\nCheck: sudo journalctl -u bubble-agent@fixture.service -n 50' \
   "$AGE" "$STALE_THRESHOLD_SEC" "$LAST_HUMAN")
 
 # Best-effort POST; do not fail the unit if Telegram is down.
