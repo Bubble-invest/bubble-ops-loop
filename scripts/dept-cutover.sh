@@ -207,12 +207,12 @@ PY
 step_c_register_plugin() {
   say "(c) register marketplace ${MARKETPLACE} + install telegram plugin as ${OS_USER}"
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  + runuser -l ${OS_USER} -c 'claude plugin marketplace add ${MARKETPLACE}'"
-    echo "  + runuser -l ${OS_USER} -c 'claude plugin install telegram@claude-plugins-official --scope user -y'"
+    echo "  + runuser -u ${OS_USER} -- claude plugin marketplace add ${MARKETPLACE}"
+    echo "  + runuser -u ${OS_USER} -- claude plugin install telegram@claude-plugins-official --scope user -y"
   else
-    runuser -l "${OS_USER}" -c "claude plugin marketplace add '${MARKETPLACE}'" \
+    runuser -u "${OS_USER}" -- claude plugin marketplace add "${MARKETPLACE}" \
       || say "    WARN: marketplace add failed/already-present — continuing"
-    runuser -l "${OS_USER}" -c "claude plugin install telegram@claude-plugins-official --scope user -y" \
+    runuser -u "${OS_USER}" -- claude plugin install telegram@claude-plugins-official --scope user -y \
       || { echo "ERROR: telegram plugin install failed for ${OS_USER}" >&2; exit 1; }
   fi
 
