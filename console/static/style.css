@@ -4418,6 +4418,32 @@ body.m4 .gate-batch-meta {
   letter-spacing: .02em;
 }
 
+/* ── Kanban card-detail comment thread (board #482 thread + #1136 human author)
+   Aligns the comment thread with the m4 cabinet look: a soft glass row per
+   comment, an initial avatar (reusing .avatar), and a byline that names the
+   HUMAN who posted via the cockpit (recovered from the machine marker) rather
+   than the board bot. Front-end only. ────────────────────────────────────── */
+body.m4 .kanban-comment {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 12px; padding: 12px 14px;
+  background: rgba(255,255,255,.55); border: 1px solid rgba(255,255,255,.8);
+  border-radius: 10px;
+}
+body.m4 .kanban-comment-head { display: flex; align-items: center; gap: 10px; }
+body.m4 .kanban-comment-avatar { width: 28px; height: 28px; font-size: 12px; }
+body.m4 .kanban-comment-byline {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  font-size: 12.5px; color: var(--body-muted);
+}
+body.m4 .kanban-comment-byline strong { color: var(--ink); font-weight: 600; }
+body.m4 .kanban-comment-source {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--violet);
+  background: var(--violet-08); border: 1px solid var(--violet-12);
+  border-radius: 999px; padding: 1px 7px;
+}
+body.m4 .kanban-comment-date { font-size: 11.5px; color: var(--body-muted); }
+
 /* ── Triage controls — Option A: channel chips + 2-state sort toggle ────
    Replaces the old paired <select> forms (Jade wave 2) with clickable
    pill/chip links, per the validated mockup

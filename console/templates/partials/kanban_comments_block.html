@@ -7,14 +7,18 @@
    .md-render script on kanban_card.html (re-run via htmx:afterSwap there). #}
 <div id="kanban-comments-{{ card.id }}">
   {% if comments %}
-  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 12px;">
-    Commentaires ({{ comments | length }})
-  </h3>
+  <h2 class="section-title" style="margin:0 0 14px;">Commentaires ({{ comments | length }})</h2>
   {% for c in comments %}
-  <div style="margin-bottom:12px; padding:10px 12px; background:var(--paper-soft); border:1px solid var(--line); border-radius:3px;">
-    <div style="font-size:12px; color:var(--body-muted); margin-bottom:4px;">
-      <strong>{{ c.user.login if c.user else 'inconnu' }}</strong>
-      · {{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}
+  <div class="kanban-comment">
+    <div class="kanban-comment-head">
+      {# #1136: cockpit-posted comments carry the human's name in a machine
+         marker — show that person (initial avatar) instead of the board bot. #}
+      <span class="avatar kanban-comment-avatar" aria-hidden="true">{{ c.display_initial or '?' }}</span>
+      <div class="kanban-comment-byline">
+        <strong>{{ c.display_author or (c.user.login if c.user else 'inconnu') }}</strong>
+        {% if c.display_via_cockpit %}<span class="kanban-comment-source">via cockpit</span>{% endif %}
+        <span class="kanban-comment-date">{{ c.created_at[:16].replace('T', ' ') if c.created_at else '' }}</span>
+      </div>
     </div>
     <div class="md-render" data-md="1">{{ c.body[:6000] }}</div>
   </div>
