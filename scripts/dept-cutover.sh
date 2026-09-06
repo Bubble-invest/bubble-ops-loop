@@ -363,8 +363,11 @@ step_e_copy_codex_and_state() {
 #     with NO venv, silently blinding every Python tool the dept runs. This
 #     exact gap blinded Ben's L1 (no pandas/numpy/scipy/yfinance/alpaca-py/
 #     ccxt/matplotlib) the day after his cutover — board #1156. Rebuild it
-#     fresh from the migrated requirements.txt. Idempotent: skips if a working
-#     populated venv is already present.
+#     fresh from the migrated requirements.txt, and (for playwright/patchright
+#     depts) reinstall the browser binaries into the new user's cache — those
+#     live in ~/.cache/ms-playwright, also stranded in the old home by the
+#     rsync (this broke maya's browser automation). Idempotent: skips the
+#     rebuild if a working populated venv is already present.
 step_e2_rebuild_venv() {
   local req="${WORKDIR}/requirements.txt"
   local venv="${WORKDIR}/.venv"
@@ -383,6 +386,21 @@ step_e2_rebuild_venv() {
   run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" "${venv}/bin/python" -m pip install --upgrade pip -q
   run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" "${venv}/bin/python" -m pip install -r "${req}"
   run chown -R "${OS_USER}:${OS_USER}" "${venv}"
+  # Playwright/patchright depts: browser binaries live OUTSIDE the venv, in
+  # ~/.cache/ms-playwright, so the workdir rsync never carried them and they
+  # stay stranded in the OLD home — chromium then won't launch for the new user
+  # (this broke maya's LinkedIn browser automation — the sibling of #1156's
+  # missing-venv). Reinstall the browser into the NEW user's cache when the
+  # venv ships playwright/patchright. (--with-deps is NOT used: the OS-level
+  # libs were already installed when the dept first ran on this box; a fresh
+  # box installs them via its own provisioning.)
+  local pw
+  for pw in playwright patchright; do
+    if sudo -u "${OS_USER}" "${venv}/bin/python" -c "import ${pw}" >/dev/null 2>&1; then
+      say "    ${pw} present — installing its chromium browser for ${OS_USER}"
+      run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" "${venv}/bin/python" -m "${pw}" install chromium
+    fi
+  done
   # Verify functionally (avoid dist-name→import-name guessing, e.g. alpaca-py
   # imports as `alpaca`, PyYAML as `yaml`): interpreter runs + packages present.
   if [[ "$DRY_RUN" != 1 ]]; then
