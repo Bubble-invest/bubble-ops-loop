@@ -36,6 +36,10 @@
 #   - the OLD telegram-watchdog-<slug>.timer (still targeting the pre-cutover
 #     unit) kept running, risk #409 (watchdog "fixing" a unit that's supposed
 #     to be down during the cutover window).
+#   - the workdir rsync EXCLUDES .venv (its shebangs/pyvenv.cfg carry absolute
+#     /home/claude paths), and nothing rebuilt it → the new user had NO Python
+#     venv, silently blinding every Python tool the dept runs. This blinded
+#     Ben's L1 the day after his cutover (board #1156). Step (e2) rebuilds it.
 #
 # This script performs (b)-(g) below, calling (a) first unless
 # --skip-user-bootstrap is passed (e.g. a retry after (a) already succeeded).
@@ -351,6 +355,48 @@ step_e_copy_codex_and_state() {
   say "    must be REGENERATED for ${OS_USER}, not just chowned — verify explicitly."
 }
 
+# ── (e2) rebuild the dept's Python venv in the NEW workdir ─────────────────
+#     The workdir is populated by an rsync that EXCLUDES .venv (a venv's bin/
+#     shebangs + pyvenv.cfg carry absolute interpreter paths, so copying it to
+#     the new home would leave them pointing at the old /home/claude tree and
+#     break). Nothing else recreates it → the isolated agent-<slug> ends up
+#     with NO venv, silently blinding every Python tool the dept runs. This
+#     exact gap blinded Ben's L1 (no pandas/numpy/scipy/yfinance/alpaca-py/
+#     ccxt/matplotlib) the day after his cutover — board #1156. Rebuild it
+#     fresh from the migrated requirements.txt. Idempotent: skips if a working
+#     populated venv is already present.
+step_e2_rebuild_venv() {
+  local req="${WORKDIR}/requirements.txt"
+  local venv="${WORKDIR}/.venv"
+  if [[ ! -f "$req" ]]; then
+    say "(e2) no ${req} — dept has no Python deps, skipping venv rebuild"
+    return 0
+  fi
+  if [[ -x "${venv}/bin/python" ]] \
+     && sudo -u "${OS_USER}" "${venv}/bin/python" -c "import sys" >/dev/null 2>&1 \
+     && [[ "$(sudo -u "${OS_USER}" "${venv}/bin/python" -m pip list 2>/dev/null | wc -l)" -gt 2 ]]; then
+    say "(e2) ${venv} already present + populated — skipping rebuild"
+    return 0
+  fi
+  say "(e2) rebuilding Python venv ${venv} from ${req} (as ${OS_USER})"
+  run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" python3 -m venv "${venv}"
+  run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" "${venv}/bin/python" -m pip install --upgrade pip -q
+  run sudo -u "${OS_USER}" -H env HOME="${HOME_DIR}" "${venv}/bin/python" -m pip install -r "${req}"
+  run chown -R "${OS_USER}:${OS_USER}" "${venv}"
+  # Verify functionally (avoid dist-name→import-name guessing, e.g. alpaca-py
+  # imports as `alpaca`, PyYAML as `yaml`): interpreter runs + packages present.
+  if [[ "$DRY_RUN" != 1 ]]; then
+    local n; n="$(sudo -u "${OS_USER}" "${venv}/bin/pip" list 2>/dev/null | wc -l)"
+    if [[ -x "${venv}/bin/python" ]] \
+       && sudo -u "${OS_USER}" "${venv}/bin/python" -c "import sys" >/dev/null 2>&1 \
+       && [[ "$n" -gt 2 ]]; then
+      say "    venv OK — ${n} packages installed, interpreter runs"
+    else
+      say "    WARN: venv rebuild did not verify (interpreter/pip check failed) — inspect ${venv}"
+    fi
+  fi
+}
+
 # ── (f) clear stale /tmp build logs (belt-and-suspenders until board #1150's ─
 #     mktemp fix — install-boot-rearm.sh / install-channel-patches.sh — is    ─
 #     deployed everywhere; harmless no-op afterward)                         ─
@@ -378,6 +424,7 @@ step_b_seed_claude_json
 step_c_register_plugin
 step_d_strip_settings_env
 step_e_copy_codex_and_state
+step_e2_rebuild_venv
 step_f_clear_stale_tmp_logs
 step_g_disable_old_watchdog
 
