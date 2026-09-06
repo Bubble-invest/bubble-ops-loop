@@ -35,6 +35,7 @@ from console.services.github_reader import (
     attachment_media_type,
     resolve_kanban_attachment_path,
 )
+from console.services.cockpit_comment_author import annotate_comment_authors
 
 from console import settings
 
@@ -904,7 +905,10 @@ def kanban_card_detail(number: int, request: Request):
         raise HTTPException(404, "Issue not found" if not error else error)
 
     card = issue_to_card(issue)
-    comments = issue.get("comments_list") or []
+    # Recover the human author for cockpit-posted comments (board #1136): GitHub
+    # attributes them to the board bot, but the machine-appended marker carries
+    # the human's name — display it (marker text left byte-intact for rnd_loop).
+    comments = annotate_comment_authors(issue.get("comments_list") or [])
 
     # Extract structured sections from body for readable layout
     body_text = issue.get("body") or ""
@@ -1116,6 +1120,8 @@ def kanban_card_comment(
             "body": text,
         }]
 
+    # #1136: surface the human name behind cockpit-posted marker comments.
+    comments = annotate_comment_authors(comments)
     return _render_comments_block(request, card, comments, "", 200)
 
 

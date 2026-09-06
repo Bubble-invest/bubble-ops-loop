@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Carte #{{ card.id }} — Kanban{% endblock %}
+{# body.m4 scopes the mockup-4 "atmosphérique warm épuré" skin — the SAME skin
+   the kanban board, home, dept and gate pages use. Without it this detail page
+   rendered unstyled/off-brand (board #1137). #}
+{% block body_class %}m4{% endblock %}
+{% set nav_active = 'kanban' %}
 {% block head_extra %}
 <!-- Mermaid diagram renderer (client-side, CDN + SRI) — visual-planning ROUND2 B1 -->
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"
@@ -42,12 +47,13 @@
 
 {% block content %}
 
-<header class="dept-header">
-  <h1 class="dept-title">
+<header class="page-hero m4-hero dept-header" aria-labelledby="kanban-card-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>kanban — carte</div>
+  <h1 class="page-hero-title dept-title" id="kanban-card-title">
     {{ card.title or '(sans titre)' }}
   </h1>
-  <p class="dept-subtitle">
-    Carte #{{ card.id }}
+  <p class="page-hero-lede dept-subtitle">
+    <span class="slug-ref">#{{ card.id }}</span>
     {% if card.owner %} · {{ card.owner }}{% endif %}
     {% if card.priority %} · {{ card.priority }}{% endif %}
     {% if card.kanban_type %} · {{ card.kanban_type }}{% endif %}
@@ -65,9 +71,9 @@
 <div class="gate-card" style="margin-bottom:24px;">
   {% for name, content in sections.items() %}
   <div style="margin-bottom:20px;">
-    <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px;">
+    <h2 class="section-title" style="font-size:15px; margin:0 0 8px; border-bottom:1px solid var(--line); padding-bottom:6px;">
       {{ name }}
-    </h3>
+    </h2>
     {# raw markdown in the element text; rendered client-side by the script below (data-md flags it) #}
     <div class="md-render" data-md="1">{{ content[:6000] }}</div>
   </div>
@@ -83,7 +89,7 @@
 {# ── Mermaid diagram (structured card.mermaid_src, body-level) ─────────── #}
 {% if card.mermaid_src %}
 <div class="gate-card" style="margin-bottom:24px;">
-  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">Diagramme</h3>
+  <h2 class="section-title" style="margin:0 0 12px;">Diagramme</h2>
   <div class="mermaid">{{ card.mermaid_src }}</div>
 </div>
 {% endif %}
@@ -91,7 +97,7 @@
 {# ── Visual attachments (reuses #89 render) ───────────────────────────── #}
 {% if card.visual_attachments %}
 <div class="gate-card" style="margin-bottom:24px;">
-  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">Pièces jointes</h3>
+  <h2 class="section-title" style="margin:0 0 12px;">Pièces jointes</h2>
   {% for att_path in card.visual_attachments %}
   {% set ext = att_path.lower().split('.')[-1] if '.' in att_path else '' %}
   {% if ext in ('png', 'jpg', 'jpeg', 'gif', 'svg', 'webp') %}
@@ -118,9 +124,7 @@
    is for board needs:human cards. #}
 {% if card.needs_human %}
 <div id="rnd-card-{{ card.id }}" class="gate-card" style="margin-bottom:24px;">
-  <h3 style="font-size:15px; font-weight:600; color:var(--ink); margin:0 0 10px;">
-    Ta décision
-  </h3>
+  <h2 class="section-title" style="margin:0 0 12px;">Ta décision</h2>
   {% include "partials/rnd_card_actions.html" %}
 </div>
 {% endif %}
