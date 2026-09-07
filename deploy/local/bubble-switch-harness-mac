@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# =============================================================================
+# bubble-switch-harness-mac — board #1133 runtime switcher (Claude Code <-> Hermes)
+# for a launchd-supervised ops-loop dept on Joris's Mac (user joris, NO root).
+# Mac analog of the VPS root controller /usr/local/bin/bubble-switch-harness.
+#
+# One selector -> one harness -> one Telegram poller (no 409).
+# Auto-rollback to the previous harness on any failure.
+#
+# Usage: bubble-switch-harness-mac <agent> <claude|hermes> [<request-id>]
+#
+# Registry (runs ON each agent's own Mac; the launchd-label preflight gates to the
+# local machine, so this one file is safe fleet-wide). Hermes profile == slug.
+#   Joris Mac : tonio (main), rick (rnd, guarded)   M5 : geraldine (accountant), ellie
+#   M1        : content
+# Validated end-to-end on tonio (claude⇄hermes round-trip + rollback), 2026-09-07.
+#
+# Mac-specific notes vs the VPS controller:
+#   - launchd (not systemd): restart via `launchctl kickstart -k gui/<uid>/<label>`.
+#   - selector lives under ~/Library/Application Support/bubble-ops-loop/harness-<slug>
+#     (no /etc); the aligned wrapper (#748, rendered by install-local-loop.sh) reads
+#     it at launch and runs start_claude / start_hermes accordingly.
+#   - Claude's project dir maps BOTH '/' AND '_' to '-' (so Tony_CEO -> Tony-CEO).
+#   - readiness is tmux-pane scoped (pane_pid's command), NOT a bare `pgrep claude`,
+#     because other agents (e.g. Rick) also run `bin/claude` on this Mac.
+# =============================================================================
+set -uo pipefail
+
+AGENT="${1:-}"; TARGET="${2:-}"; REQ="${3:-manual}"
+UID_NUM="$(id -u)"
+SUPPORT_DIR="$HOME/Library/Application Support/bubble-ops-loop"
+LOG="$HOME/.local/log/bubble-switch-harness-mac.log"
+HERMES="$HOME/.local/bin/hermes"
+TMUX_BIN="$HOME/.local/bin/tmux"
+mkdir -p "$(dirname "$LOG")"
+
+say(){ echo "[$(date -u +%H:%M:%SZ)] [$AGENT->$TARGET $REQ] $*" | tee -a "$LOG" ; }
+die(){ say "FAIL: $*"; echo "SWITCH_RESULT=failed reason=$*"; exit 1; }
+
+# --- agent registry (all Mac ops-loop agents) -------------------------------
+# One file, deployed to every Mac; it runs ON the agent's own Mac (paths are
+# $HOME-relative, resolved as that Mac's user). The launchd-label preflight below
+# fails cleanly if you invoke an agent that doesn't live on this Mac. Hermes
+# profile == slug (the aligned wrapper runs `hermes -p <slug>`).
+#   Joris Mac : tonio (main), rick (rnd)      | M5 : geraldine (accountant), ellie
+#   M1        : content
+case "$AGENT" in
+  tonio)
+    SLUG="main";       LABEL="com.bubble.ops-loop-main";       PROFILE="main"
+    WORKDIR="$HOME/claude-workspaces/Tony_CEO";      SESSION="ops-loop-main";       CHAT_ID="6532205130" ;;
+  rick|rnd)
+    # Rick = the R&D session that RUNS this controller. Included for completeness/
+    # manual recovery, but the Mac commander must NOT offer to switch Rick (it would
+    # kill the operating session). Guard: refuse unless BUBBLE_ALLOW_RICK_SWITCH=1.
+    [[ "${BUBBLE_ALLOW_RICK_SWITCH:-}" == "1" ]] || die "refusing to switch Rick (rnd) — the controlling session; set BUBBLE_ALLOW_RICK_SWITCH=1 to override"
+    SLUG="rnd";        LABEL="com.bubble.ops-loop-rnd";        PROFILE="rnd"
+    WORKDIR="$HOME/claude-workspaces/Rick_RnD";      SESSION="ops-loop-rnd";        CHAT_ID="6532205130" ;;
+  geraldine|accountant)
+    SLUG="accountant"; LABEL="com.bubble.ops-loop-accountant"; PROFILE="accountant"
+    WORKDIR="$HOME/claude-workspaces/bubble-ops-accountant"; SESSION="ops-loop-accountant"; CHAT_ID="6532205130" ;;
+  ellie)
+    SLUG="ellie";      LABEL="com.bubble.ops-loop-ellie";      PROFILE="ellie"
+    WORKDIR="$HOME/claude-workspaces/ellie";         SESSION="ops-loop-ellie";      CHAT_ID="6532205130" ;;
+  content)
+    SLUG="content";    LABEL="com.bubble.ops-loop-content";    PROFILE="content"
+    WORKDIR="$HOME/claude-workspaces/bubble-ops-content"; SESSION="ops-loop-content"; CHAT_ID="6532205130" ;;
+  *) die "unknown agent '$AGENT' (registry: tonio|rick|geraldine|ellie|content)";;
+esac
+
+# --- validate ---------------------------------------------------------------
+[[ "$TARGET" == "claude" || "$TARGET" == "hermes" ]] || die "target must be claude|hermes"
+launchctl print "gui/${UID_NUM}/${LABEL}" >/dev/null 2>&1 || die "no launchd label $LABEL"
+
+# --- mutual exclusion (per-agent) -------------------------------------------
+# The whole flow takes 75-120s; a caller that times out and retries, or two
+# concurrent requests for the same agent, would race on the selector + kickstart
+# (each rolling back from its own $PREV snapshot). mkdir is atomic → one winner.
+LOCKDIR="$SUPPORT_DIR/.switch-lock-$AGENT"
+mkdir -p "$SUPPORT_DIR" 2>/dev/null || true
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  die "another switch for '$AGENT' is already in progress (lock: $LOCKDIR) — wait or remove the stale lock"
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+
+SELDIR="$SUPPORT_DIR"
+SEL="$SELDIR/harness-$SLUG"
+CUR="claude"; [[ -r "$SEL" ]] && CUR="$(tr -d '[:space:]' < "$SEL")"
+[[ "$CUR" == "claude" || "$CUR" == "hermes" ]] || CUR="claude"
+say "current=$CUR target=$TARGET slug=$SLUG label=$LABEL workdir=$WORKDIR"
+
+if [[ "$CUR" == "$TARGET" ]]; then
+  say "already on $TARGET (idempotent)"; echo "SWITCH_RESULT=ready note=already-on-$TARGET"; exit 0
+fi
+
+# --- preflight --------------------------------------------------------------
+if [[ "$TARGET" == "hermes" ]]; then
+  [[ -d "$HOME/.hermes/profiles/$PROFILE" ]] || die "hermes profile '$PROFILE' missing ($HOME/.hermes/profiles/$PROFILE)"
+fi
+
+# harness_of_session: report the harness the tmux session's pane process is running
+# (claude|hermes|none) — Mac-scoped so we never match another agent's claude.
+harness_of_session(){
+  local pp cmd
+  "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null || { echo none; return; }
+  pp="$("$TMUX_BIN" list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  [[ -n "$pp" ]] || { echo none; return; }
+  cmd="$(ps -p "$pp" -o command= 2>/dev/null)"
+  # Check hermes FIRST (specific: its own args), then claude with a path-agnostic
+  # match — '/claude' / bounded 'claude' — so a custom --claude-bin (app bundle,
+  # relocated binary) without a literal 'bin/' segment is still recognised.
+  if   printf '%s' "$cmd" | grep -Eq 'hermes.*gateway|hermes-agent/hermes'; then echo hermes
+  elif printf '%s' "$cmd" | grep -Eq '(^|/|[[:space:]])claude([[:space:]]|$)'; then echo claude
+  else echo other; fi
+}
+
+# --- completed-turn gate (avoid switching mid-turn) -------------------------
+# BEST-EFFORT, claude→* only. Claude maps '/' and '_' to '-' for its project dir.
+# Limitations (accepted): (a) it detects a jsonl actively being WRITTEN; a long
+# tool call (e.g. a multi-minute build) writes no jsonl and reads as idle; (b)
+# there is no symmetric gate for hermes→claude — but that direction's continuity
+# is a handoff NOTE (not a transcript import), so it does not depend on a clean
+# hermes transcript; the cost of a mid-turn hermes kill is at most its in-flight
+# turn, which launchd relaunch + the handoff note recover from.
+proj_dir="$HOME/.claude/projects/$(echo "$WORKDIR" | sed 's#[/_]#-#g')"
+# newest .jsonl by mtime — portable (macOS BSD `find` has no GNU -printf; `ls -t` works on both).
+jf="$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)"
+if [[ "$CUR" == "claude" && -n "$jf" ]]; then
+  m1=$(stat -f %m "$jf" 2>/dev/null); sleep 6; m2=$(stat -f %m "$jf" 2>/dev/null)
+  # both-empty (jsonl rotated/deleted mid-check) is treated as stable — it means
+  # the file we sampled is gone, not that a turn is streaming.
+  [[ "$m1" == "$m2" ]] || die "busy: claude jsonl still growing (mid-turn) — retry"
+  say "completed-turn gate ok (jsonl stable): $(basename "$jf")"
+elif [[ "$CUR" == "claude" ]]; then
+  say "no claude jsonl found in $proj_dir — proceeding (fresh session / no prior transcript)"
+fi
+
+# --- continuity: carry context into the target harness ----------------------
+CONTINUITY="none"
+if [[ "$TARGET" == "hermes" && -n "$jf" ]]; then
+  say "importing claude session -> hermes ($(basename "$jf"))"
+  if "$HERMES" -p "$PROFILE" sessions import --from claude "$jf" >>"$LOG" 2>&1; then
+    CONTINUITY="claude-jsonl-imported"; say "import ok"
+  else
+    say "WARN import failed — hermes will start fresh"; CONTINUITY="fresh(import-failed)"
+  fi
+elif [[ "$TARGET" == "claude" ]]; then
+  hf="$WORKDIR/HARNESS_HANDOFF.md"
+  printf '# Harness handoff (Hermes -> Claude) %s\n\nYou were just switched back to the Claude harness from Hermes. Read your recent Hermes session / workspace state and continue where you left off; check your latest outputs + working memory.\n' "$(date -u +%FT%TZ)" > "$hf" 2>>"$LOG" \
+    && CONTINUITY="handoff-note-written" && say "handoff note written ($hf)"
+fi
+
+# --- switch: save prev, flip selector, kickstart (launchd relaunches wrapper)-
+PREV="$CUR"
+readiness_ok(){  # $1 = expected harness
+  local want="$1" got other_seen=no
+  got="$(harness_of_session)"
+  [[ "$got" == "$want" ]] || return 1
+  return 0
+}
+rollback(){
+  say "ROLLBACK -> $PREV"
+  echo "$PREV" > "$SEL"
+  launchctl kickstart -k "gui/${UID_NUM}/${LABEL}" >>"$LOG" 2>&1 || true
+  local waited=0; while (( waited < 45 )); do sleep 3; waited=$((waited+3)); [[ "$(harness_of_session)" == "$PREV" ]] && break; done
+  local ok=no; [[ "$(harness_of_session)" == "$PREV" ]] && ok=yes
+  say "rollback relaunch done (prev harness '$PREV' up=$ok)"
+  if [[ "$ok" == "yes" ]]; then
+    echo "SWITCH_RESULT=rolled_back to=$PREV continuity=$CONTINUITY"
+  else
+    # Rollback's OWN relaunch did not confirm — the agent may be fully DOWN.
+    # Surface it in the machine-readable line so a caller/commander alerts,
+    # rather than reading a plain 'rolled_back' as safe. launchd KeepAlive is
+    # the last resort; the selector is already restored to $PREV.
+    say "CRITICAL: rollback did NOT confirm '$PREV' up — agent may be DOWN (launchd KeepAlive should relaunch)"
+    echo "SWITCH_RESULT=rollback_failed to=$PREV note=agent-may-be-down continuity=$CONTINUITY"
+  fi
+  exit 1
+}
+
+echo "$PREV" > "$SEL.prev"
+echo "$TARGET" > "$SEL"; chmod 644 "$SEL"
+say "selector -> $TARGET ($SEL); kickstart $LABEL"
+launchctl kickstart -k "gui/${UID_NUM}/${LABEL}" >>"$LOG" 2>&1 || { say "kickstart failed"; rollback; }
+
+# --- readiness: wait for the target harness to come up in the tmux session --
+# claude resume-gate + hermes gateway boot can take a while; poll up to ~75s.
+waited=0; up=no
+while (( waited < 75 )); do
+  sleep 5; waited=$((waited+5))
+  cur_h="$(harness_of_session)"
+  if [[ "$cur_h" == "$TARGET" ]]; then up=yes; break; fi
+done
+[[ "$up" == "yes" ]] || { say "readiness: target '$TARGET' not up after ${waited}s (saw '$(harness_of_session)')"; rollback; }
+
+# confirm the OTHER harness is gone (single harness / single poller)
+otherh="$(harness_of_session)"
+[[ "$otherh" == "$TARGET" ]] || { say "readiness: session running '$otherh' not '$TARGET'"; rollback; }
+say "readiness: tmux '$SESSION' pane running '$TARGET' (other gone)"
+
+# telegram: same bot reachable (getMe). Token from the <slug> profile .env (== live vault token).
+TOK="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$HOME/.hermes/profiles/$PROFILE/.env" 2>/dev/null | cut -d= -f2-)"
+bot="?"; bot_verified=no
+if [[ -n "$TOK" ]]; then
+  bot=$(curl -s "https://api.telegram.org/bot$TOK/getMe" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("username","?"))' 2>/dev/null || echo "?")
+  [[ "$bot" != "?" ]] && bot_verified=yes
+  say "readiness: bot=@$bot (getMe $bot_verified) chat_id=$CHAT_ID"
+else
+  say "readiness: no TELEGRAM_BOT_TOKEN in profile .env — bot reachability UNVERIFIED"
+fi
+
+# The harness IS up (pane-confirmed above). Telegram reachability is a secondary
+# signal — report it explicitly so an automated caller can tell a fully-verified
+# switch from one where the bot check couldn't run (bot=@? / bot_verified=no).
+say "SWITCH OK -> $TARGET (continuity=$CONTINUITY, bot_verified=$bot_verified)"
+echo "SWITCH_RESULT=ready harness=$TARGET continuity=$CONTINUITY bot=@${bot} bot_verified=$bot_verified"
