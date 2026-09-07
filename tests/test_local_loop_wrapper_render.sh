@@ -110,9 +110,10 @@ want "T11e multi export B" 'export B="two"' "$TMP/xexp2.sh"
 nowant "T11f no extra-export by default" "export PYTHONPATH" "$TMP/generic.sh"
 
 echo "== auto-mode prompt auto-dismiss (in the --continue resume-gate) =="
-want "T12a auto-mode prompt handled"  "auto mode your default" "$TMP/flags.sh"
-want "T12b continue after dismiss"    "-> \"No, keep accept edits\"" "$TMP/flags.sh"
-nowant "T12c not present without --continue" "auto mode your default" "$TMP/generic.sh"
+want "T12a full-title match (not the changelog substring)" "auto mode your default permission mode" "$TMP/flags.sh"
+want "T12b single-shot guard present"  "_am_done" "$TMP/flags.sh"
+want "T12c declines (2nd option)"      "decline (2nd option)" "$TMP/flags.sh"
+nowant "T12d not present without --continue" "auto mode your default" "$TMP/generic.sh"
 
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
