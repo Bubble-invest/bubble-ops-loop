@@ -217,6 +217,19 @@ fi
 # discover_depts: when BUBBLE_BACKUP_DEPTS is unset/empty, the dept set is the
 # basenames (minus the bubble-ops- prefix) of $AGENTS_ROOT/bubble-ops-* dirs.
 # When BUBBLE_BACKUP_DEPTS is set, it wins verbatim (test / pin override).
+_dept_workdir() {
+    # #1170: a dept's LIVE workdir — prefer the migrated /srv/agents/<slug>, fall
+    # back to the legacy /home/claude/agents/bubble-ops-<slug> clone. EVERY read
+    # derived from the workdir (STATE, the layer PROMPT probe, the staleness
+    # heartbeat, the tick itself) MUST go through this so the floor reads live
+    # state, not the stale pre-#1120 clone (which for a migrated-only dept like
+    # claudette/morty doesn't even exist).
+    local slug="$1"
+    local wd="${SRV_AGENTS_ROOT}/${slug}"   # separate stmt: `local a=$1 b=$a` won't see a
+    [[ -d "$wd" ]] || wd="${AGENTS_ROOT}/bubble-ops-${slug}"
+    printf '%s' "$wd"
+}
+
 discover_depts() {
     if [[ -n "${BUBBLE_BACKUP_DEPTS:-}" ]]; then
         printf '%s\n' ${BUBBLE_BACKUP_DEPTS}
@@ -254,7 +267,7 @@ discover_depts() {
 #     must NEVER silently mute a real vps dept.
 dept_host() {
     local slug="$1"
-    local state="${AGENTS_ROOT}/bubble-ops-${slug}/onboarding/STATE.yaml"
+    local state="$(_dept_workdir "$slug")/onboarding/STATE.yaml"
     [[ -f "$state" ]] || { echo "vps"; return 0; }
     # Top-level `host:` only (anchored, no leading space) so a nested key can't
     # be mistaken for the dept host. Tolerate quotes + trailing comment. A grep
@@ -285,7 +298,7 @@ dept_eligible() {
         return 1
     fi
     if [[ -n "$FORCE_LAYER" ]]; then
-        local prompt="${AGENTS_ROOT}/bubble-ops-${slug}/layers/${FORCE_LAYER}/PROMPT.md"
+        local prompt="$(_dept_workdir "$slug")/layers/${FORCE_LAYER}/PROMPT.md"
         if [[ ! -f "$prompt" ]]; then
             echo "no layers/${FORCE_LAYER}/PROMPT.md (dept doesn't run L${FORCE_LAYER})"
             return 1
@@ -410,7 +423,7 @@ PYEOF
 # not abort the safety net.
 write_external_heartbeat() {
     local slug="$1" outcome="$2" layer="${3:-}" exit_code="${4:-}"
-    local hb="${AGENTS_ROOT}/bubble-ops-${slug}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
     "$PY" - "$hb" "$outcome" "$layer" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write truthful heartbeat to $hb"
 import sys
 sys.path.insert(0, "/home/claude/bubble-ops-loop")
@@ -871,7 +884,7 @@ inject_live_loop() {
     local state_dir="/home/claude/.claude/channels/telegram-${slug}"
     local inject="${state_dir}/inject"
     [[ -d "$state_dir" ]] || return 1
-    local hb="${AGENTS_ROOT}/bubble-ops-${slug}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
     local before; before=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
@@ -1152,8 +1165,7 @@ for slug in "${DEPTS[@]}"; do
     # #1170: prefer the migrated workdir /srv/agents/<slug>; fall back to the
     # legacy clone for an un-migrated dept. So the tick + staleness check read
     # the LIVE dir, not the stale pre-#1120 clone.
-    workdir="${SRV_AGENTS_ROOT}/${slug}"
-    [[ -d "$workdir" ]] || workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
+    workdir="$(_dept_workdir "$slug")"
     # #1168: the #1120 uid isolation moved each dept's runtime env to
     # /run/bubble-agent-<slug>/env (0400 agent-<slug>) — UNREADABLE by this
     # claude-run floor — and left the old /run/claude-agent-<slug>/env dead. So
