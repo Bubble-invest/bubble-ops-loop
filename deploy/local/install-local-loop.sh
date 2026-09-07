@@ -241,6 +241,8 @@ say "  plist         = $PLIST_PATH"
 #    systemd ExecStart): the selected harness (claude default | hermes) inside
 #    tmux, KeepAlive-supervised. The #748/#1133 alignment knobs flow to
 #    render_loop_wrapper via LOOP_* env vars (only the ones the caller set).
+# Selector lives WITH the wrapper unless overridden, so --wrapper-dir moves both.
+[[ -n "$HARNESS_SELECTOR_DIR" ]] || HARNESS_SELECTOR_DIR="$WRAPPER_DIR"
 [[ -n "$VAULT_PATH" ]]           && export LOOP_VAULT_PATH="$VAULT_PATH"
 [[ -n "$LEGACY_ENV_PATH" ]]      && export LOOP_LEGACY_ENV="$LEGACY_ENV_PATH"
 [[ -n "$AGE_KEY_FILE" ]]         && export LOOP_AGE_KEY_FILE="$AGE_KEY_FILE"

@@ -38,8 +38,13 @@ install-local-loop.sh --dept-dir ~/claude-workspaces/Tony_CEO --slug main \
   --claude-bin ~/.local/bin/claude --tmux-bin ~/.local/bin/tmux \
   --telegram-state-dir ~/.claude/channels/telegram \
   --vault ~/claude-workspaces/Tony_CEO/secrets.sops.env \
-  --model 'claude-opus-4-8[1m]' --chrome --continue    # inline-env default is correct
+  --model 'claude-opus-4-8[1m]' --chrome --continue \
+  --inline-env "TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN"
 ```
+> `--inline-env` is REQUIRED for every aligned agent: the default is now EMPTY (a
+> no-knobs render is the plain bare-exec generic wrapper, so uncustomized depts
+> never get a token baked into the tmux argv). Agents that need secrets to reach
+> the harness through tmux opt in explicitly, as above.
 
 ### Joris Mac — Rick (rnd)  [regenerate LAST; do NOT restart — this is the live session]
 ```
@@ -47,7 +52,8 @@ install-local-loop.sh --dept-dir ~/claude-workspaces/Rick_RnD --slug rnd \
   --claude-bin ~/.local/bin/claude --tmux-bin ~/.local/bin/tmux \
   --telegram-state-dir ~/.claude/channels/telegram-rnd \
   --vault ~/claude-workspaces/Rick_RnD/secrets.sops.env \
-  --model 'claude-opus-4-8[1m]' --continue
+  --model 'claude-opus-4-8[1m]' --continue \
+  --inline-env "TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN"
 ```
 Rick's wrapper regenerates but takes effect only on the **next** restart — never
 `launchctl kickstart` Rick from within Rick's own session.
@@ -73,7 +79,8 @@ Currently plaintext `.env` + `--model opus` (drift) + no hermes. Before regenera
 install-local-loop.sh --dept-dir <content-dept-dir> --slug content \
   --telegram-state-dir ~/.claude/channels/telegram-socials \
   --vault <content-dept-dir>/secrets.sops.env \
-  --model 'claude-opus-4-8[1m]' --chrome --continue
+  --model 'claude-opus-4-8[1m]' --chrome --continue \
+  --inline-env "TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN"
 ```
 
 ### M5 — Ellie  [fold decision: yes]

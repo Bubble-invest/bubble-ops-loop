@@ -199,7 +199,12 @@ render_loop_wrapper() {
     local model="${LOOP_MODEL:-}"                                             # e.g. claude-opus-4-8[1m]; empty = no --model
     local chrome="${LOOP_CHROME:-}"                                          # 1 = add --chrome
     local do_continue="${LOOP_CONTINUE:-}"                                    # 1 = --continue + resume-gate + fresh-fallback
-    local inline_env_vars="${LOOP_INLINE_ENV-TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN}"  # passed INLINE into tmux (server env != wrapper env)
+    # Vars passed INLINE into the tmux command (server env != wrapper env). DEFAULT
+    # IS EMPTY — an uncustomized dept keeps the plain bare-exec launch and does NOT
+    # get its token baked into the tmux argv (visible via ps); aligned agents that
+    # NEED secrets to reach the harness opt in explicitly (--inline-env). This keeps
+    # the no-knobs render behaviour-identical to the pre-alignment generic wrapper.
+    local inline_env_vars="${LOOP_INLINE_ENV-}"
     local env_unset_vars="${LOOP_ENV_UNSET:-}"                               # e.g. CLAUDE_CODE_OAUTH_TOKEN (Géraldine keychain override)
     local selector_dir="${LOOP_HARNESS_SELECTOR_DIR:-\$HOME/Library/Application Support/bubble-ops-loop}"
     local hermes_bin="${LOOP_HERMES_BIN:-hermes}"
@@ -244,14 +249,8 @@ fi
 "
     fi
 
-    # Build the inline-env prefix (TELEGRAM_STATE_DIR literal + each token as a
-    # runtime-expanded, single-quoted assignment so it survives tmux's re-parse).
-    local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' " _v
-    for _v in $inline_env_vars; do
-        inline_prefix+="${_v}='\${${_v}:-}' "
-    done
     # env -u prefix (drop vars so a lower-precedence source wins, e.g. keychain).
-    local env_unset_prefix=""
+    local env_unset_prefix="" _v
     for _v in $env_unset_vars; do env_unset_prefix+="-u ${_v} "; done
     [[ -n "$env_unset_prefix" ]] && env_unset_prefix="env ${env_unset_prefix}"
     # claude flags
@@ -261,18 +260,41 @@ fi
     local cont_flag=""
     [[ "$do_continue" == "1" ]] && cont_flag="--continue"
 
+    # Build the claude launch string (the inner command handed to tmux new-session).
+    # When there is inline-env or env -u to apply, use the INLINE form: cd + a
+    # TELEGRAM_STATE_DIR literal + each requested var as a runtime-expanded,
+    # single-quoted assignment (survives tmux's re-parse) + env -u + exec. Otherwise
+    # emit the plain bare-exec form (identical to the pre-alignment generic wrapper —
+    # no secrets in argv). \$1 is the leading flag ("--continue" or "").
+    local claude_flags="\$1${chrome_flag}${model_flag} --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+    local claude_launch
+    if [[ -n "$inline_env_vars" || -n "$env_unset_prefix" ]]; then
+        local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' "
+        for _v in $inline_env_vars; do inline_prefix+="${_v}='\${${_v}:-}' "; done
+        claude_launch="cd '${dept_dir}' && ${inline_prefix}exec ${env_unset_prefix}'${claude_bin}' ${claude_flags}"
+    else
+        claude_launch="exec '${claude_bin}' ${claude_flags}"
+    fi
+    # Hermes launch (#1133): cd + inline PATH so the tmux SERVER env (which is NOT
+    # this wrapper's env) still resolves the hermes binary + its profile cwd. Hermes
+    # reads its own profile secrets, so no inline-env forwarding is needed.
+    local hermes_launch="cd '${dept_dir}' && PATH='${extra_path}:\$PATH' exec ${hermes_bin} -p '${slug}' gateway run --replace"
+
     # Resume-gate + fresh-fallback blocks (only meaningful with --continue).
     local resume_block=""
     if [[ "$do_continue" == "1" ]]; then
         resume_block="
   # Auto-answer the resume gate: pick \"Resume full session as-is\" (option 2).
   # Poll the pane; stop early once the REPL is ready (small sessions: no gate).
+  # NB: guarded with '|| true' so a transient non-zero (e.g. the session dying
+  # mid-poll — exactly the race the fresh-fallback below handles) does NOT abort
+  # the wrapper under 'set -e' before that fallback can run.
   for _i in \$(seq 1 30); do
     sleep 1
     \"\$TMUX_BIN\" has-session -t \"\$SESSION\" 2>/dev/null || break
-    _pane=\"\$(\"\$TMUX_BIN\" capture-pane -t \"\$SESSION\" -p 2>/dev/null)\"
+    _pane=\"\$(\"\$TMUX_BIN\" capture-pane -t \"\$SESSION\" -p 2>/dev/null || true)\"
     if printf '%s' \"\$_pane\" | grep -q 'Resume full session as-is'; then
-      \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter   # 1 -> 2, confirm full resume
+      \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter 2>/dev/null || true  # 1 -> 2, full resume
       break
     fi
     printf '%s' \"\$_pane\" | grep -q 'bypass permissions on' && break   # REPL ready, no gate
@@ -317,16 +339,16 @@ HARNESS="claude"
 
 CONT_FLAG="${cont_flag}"
 
-# Tokens are passed INLINE into the tmux command because tmux new-session runs the
-# inner command in the tmux SERVER's global env, NOT this wrapper's env.
+# The inner command is handed to tmux new-session, which runs it in the tmux
+# SERVER's global env (NOT this wrapper's env) — hence the inline cd/PATH/secrets.
 start_claude() {  # \$1 = leading flag(s): "--continue" or "" (fresh)
   "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-    "cd '${dept_dir}' && ${inline_prefix}exec ${env_unset_prefix}'${claude_bin}' \$1${chrome_flag}${model_flag} --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+    "${claude_launch}"
 }
 
 start_hermes() {  # #1133 alternate harness — hermes reads its own profile (${slug})
   "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-    "exec ${hermes_bin} -p '${slug}' gateway run --replace"
+    "${hermes_launch}"
 }
 
 # Kill any stale session from a previous run so we never stack sessions.
