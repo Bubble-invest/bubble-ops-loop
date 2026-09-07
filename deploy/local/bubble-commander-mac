@@ -240,14 +240,26 @@ def handle_cb(chat, cid, mid, data):
         acb(cid); edit(chat, mid, f"🔀 <b>{val}</b> is on <b>{running_harness(val)}</b>. Switch to:", harness_target_kb(val)); return
     if pfx == "hset":
         agent, _, target = val.partition(":"); acb(cid)
+        if target not in ("claude", "hermes"): edit(chat, mid, "❌ bad target", back_kb()); return
         if agent not in switchable(): edit(chat, mid, f"❌ {agent} not switchable", back_kb()); return
         if current_harness(agent) == target: edit(chat, mid, f"✅ {agent} already on {target}", back_kb()); return
         n = stage("harness", agent, target)
         edit(chat, mid, f"⚠️ Switch <b>{agent}</b> {current_harness(agent)} → <b>{target}</b>? (restart, fence-then-start)", confirm_kb(n)); return
-    if pfx == "on":
-        acb(cid, "starting…")
-        edit(chat, mid, f"⏳ starting <b>{val}</b>…")
-        edit(chat, mid, do_launchctl(val, "on"), back_kb()); return
+    if pfx == "on":                          # low-risk (no confirm) but still THREADED
+        acb(cid, "starting…")                # so the ~100s launchctl chain can't block the poll loop
+        if val not in controllable(): edit(chat, mid, f"🚫 {val} is not controllable", back_kb()); return
+        if val in BUSY: edit(chat, mid, f"⏳ {val} already has an action in progress — wait.", back_kb()); return
+        BUSY.add(val)
+        def _on(agent=val):
+            try:
+                edit(chat, mid, f"⏳ starting <b>{agent}</b>…")
+                edit(chat, mid, do_launchctl(agent, "on"), back_kb())
+            except Exception as e:
+                print(f"[work] {e}", flush=True)
+                edit(chat, mid, f"❌ error: {html.escape(str(e))[:200]}", back_kb())
+            finally:
+                BUSY.discard(agent)
+        threading.Thread(target=_on, daemon=True).start(); return
     if pfx in ("off", "restart"):
         acb(cid)
         n = stage(pfx, val)
@@ -258,9 +270,13 @@ def handle_cb(chat, cid, mid, data):
         if not ent or time.time()-ent[3] > 120: edit(chat, mid, "⌛ expired — reopen /menu", back_kb()); return
         kind, agent, arg, _ = ent
         if pfx == "no": edit(chat, mid, "✖ cancelled", back_kb()); return
-        if agent in BUSY:
-            edit(chat, mid, f"⏳ {agent} already has an action in progress — wait for it.", back_kb()); return
-        BUSY.add(agent)
+        # Lock the affected agent(s). "all" locks every controllable agent so a
+        # concurrent per-agent action can't double-fire on one of them mid-batch.
+        locked = controllable() if agent == "all" else [agent]
+        clash = [a for a in locked if a in BUSY]
+        if clash:
+            edit(chat, mid, f"⏳ {', '.join(clash)} already has an action in progress — wait for it.", back_kb()); return
+        for a in locked: BUSY.add(a)
         def _work():
             try:
                 if kind == "restart" and agent == "all":
@@ -273,7 +289,7 @@ def handle_cb(chat, cid, mid, data):
                 print(f"[work] {e}", flush=True)
                 edit(chat, mid, f"❌ error: {html.escape(str(e))[:200]}", back_kb())
             finally:
-                BUSY.discard(agent)
+                for a in locked: BUSY.discard(a)
         threading.Thread(target=_work, daemon=True).start()
         return
 
@@ -288,8 +304,8 @@ def main():
     while True:
         resp = _api("getUpdates", {"offset": offset, "timeout": 25})  # <urllib 40s to avoid read-timeout re-delivery
         for u in resp.get("result", []):
-            offset = u["update_id"] + 1; save_offset(offset)
             try:
+                offset = u["update_id"] + 1; save_offset(offset)  # inside try: a malformed update / save error can't kill the loop
                 if "message" in u and "text" in u["message"]:
                     c = u["message"]["chat"]["id"]
                     print(f"[rx] msg chat={c} text={u['message']['text'][:40]!r} allowed={c in ALLOWED_CHATS}", flush=True)
