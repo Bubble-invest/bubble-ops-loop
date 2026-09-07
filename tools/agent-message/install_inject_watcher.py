@@ -67,7 +67,7 @@ TEMPLATE = r'''
   process.stderr.write('peer inbox: fixed route ' + route.sender + ' -> ' + route.recipient + '\n')
 }
 // END-BUBBLE-AGENT-MESSAGE-WATCHER-v1
-''' 
+'''
 
 
 def install(server, inbox, sender, recipient, chat_id):
