@@ -40,7 +40,9 @@ def test_runner_never_shell_loads_dotenv_or_hardcodes_shared_identity():
     assert "per-dept auth environment missing" in RUNNER
     assert "dispatch: delegated to Tony" in RUNNER
     assert "--remote-delivery" in RUNNER
-    assert "forbids a competing headless CLI" in RUNNER
+    assert "wake_hermes_gateway.py" in RUNNER
+    assert "one-shot /loop control" in RUNNER
+    assert "competing headless CLI forbidden" in RUNNER
     assert 'state_dir="${HOME}/.claude/channels/telegram-${slug}"' in RUNNER
     assert 'sys.path.insert(0, "/home/claude/bubble-ops-loop")' not in RUNNER
 

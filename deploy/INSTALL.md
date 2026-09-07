@@ -75,10 +75,13 @@ Concierges are skipped.
 
 Systemd loads `/run/bubble-agent-<slug>/env` literally before dropping to the
 agent UID. The runner never shell-sources dotenv text. Live and floor ticks use
-the same department-private runtime lock. Maya is injection-only while its live
-harness is Hermes; the floor reports a deferred failure rather than launch a
-competing headless Claude CLI. Tony alone relays operator-approved directives
-through private remote clones; failed delivery stays visible and retryable.
+the same department-private runtime lock. Maya's Hermes floor first verifies the
+live profile through `gateway.sock`, then arms a one-shot persisted `/loop` row;
+the existing gateway idle watcher injects it into the home Telegram session. No
+second model process starts. Paused, busy, missing, or ambiguous sessions defer
+visibly. Tony relays operator-approved directives and publishes manager status
+through private remote clones, so a manager-push failure leaves the live source
+approved and retryable.
 
 Install or stage for review:
 ```bash
@@ -86,6 +89,12 @@ bash scripts/install-loop-backup.sh --dry-run       # preview, no writes/timer c
 bash scripts/install-loop-backup.sh                 # install unit files, leave timers unchanged
 bash scripts/install-loop-backup.sh --activate      # reviewed cutover only; may catch up persistent timers
 ```
+
+`--activate` is fleet-wide. Combining it with `--dept` or
+`BUBBLE_FLOOR_DEPTS` is rejected before any write because retiring the four
+global timers for a partial replacement would drop omitted departments. The
+cutover snapshots every global timer's enabled/active state and restores those
+exact states if either global retirement or replacement activation fails.
 
 The old global templates remain for rollback, but the installer does not enable
 them. Manual fixture runs can pin one department explicitly:

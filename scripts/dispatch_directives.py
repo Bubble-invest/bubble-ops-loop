@@ -91,6 +91,7 @@ _INBOX_REL = "queues/management"
 _CRED_HELPER = "/usr/local/bin/bubble-gh-credential-helper.sh"
 _GH_ORG = "Bubble-invest"
 _SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
+_DIRECTIVE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
 def _log(msg: str) -> None:
@@ -300,6 +301,7 @@ def dispatch(
     manager_dirty = False
     manager_dirty_paths: list[str] = []
     manager_push_failed = False
+    remote_delivered: list[tuple[Path, str]] = []
 
     remote_tmp = tempfile.TemporaryDirectory(prefix="bubble-directives-") if remote_delivery else None
     remote_root = Path(remote_tmp.name) if remote_tmp else None
@@ -311,7 +313,7 @@ def dispatch(
         if d is None:
             skipped += 1
             continue
-        did = str(d.get("directive_id") or draft.stem.replace("directive-", ""))
+        did_raw = d.get("directive_id") or draft.stem.replace("directive-", "")
         target = d.get("target_dept")
         approved_by = d.get("approved_by")
         status = d.get("status")
@@ -324,6 +326,11 @@ def dispatch(
                  f"(approved_by={approved_by!r} status={status!r}) — {{OPERATOR}} must approve")
             skipped += 1
             continue
+        if not isinstance(did_raw, str) or not _DIRECTIVE_ID_RE.fullmatch(did_raw):
+            _log(f"SKIP {draft.name}: missing/invalid directive_id")
+            skipped += 1
+            continue
+        did = did_raw
         if not isinstance(target, str) or not _SLUG_RE.fullmatch(target):
             _log(f"SKIP {draft.name}: missing/invalid target_dept")
             skipped += 1
@@ -415,14 +422,73 @@ def dispatch(
         delivered += 1
 
         # ── MARK source dispatched (in Tony's repo) ────────────────────
-        if not dry_run:
+        if remote_delivery:
+            # Never publish a status transition from Tony's live checkout.
+            # A private clone of Tony's remote is updated only after every
+            # target push succeeds. If that manager push fails, the live
+            # source remains approved and the next floor run retries; the
+            # target-side file is idempotent and verified from its commit.
+            remote_delivered.append((draft, did))
+        elif not dry_run:
             d["status"] = "dispatched"
             d["dispatched_at"] = _now_iso()
             draft.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
             manager_dirty = True
             manager_dirty_paths.append(str(draft))
 
-    # Push Tony's repo once if any source was marked dispatched.
+    # Remote delivery updates Tony's durable status through a private clone,
+    # never through the live manager worktree. This makes target-push success
+    # + manager-push failure retryable: the source stays approved locally and
+    # the already-committed child file is a verified no-op on the next run.
+    if remote_delivery and remote_delivered:
+        manager_clone = remote_root / f"manager-bubble-ops-{manager}"  # type: ignore[operator]
+        ok, detail = _clone_remote_repo(manager_clone, f"bubble-ops-{manager}")
+        if not ok:
+            _log(f"WARN manager status clone: {detail}")
+            manager_push_failed = True
+        else:
+            remote_paths: list[str] = []
+            for live_draft, did in remote_delivered:
+                rel = live_draft.relative_to(manager_repo)
+                remote_draft = manager_clone / rel
+                remote_data = _load_yaml(remote_draft)
+                remote_id = None
+                if isinstance(remote_data, dict):
+                    remote_id = remote_data.get("directive_id") or remote_draft.stem.replace(
+                        "directive-", ""
+                    )
+                if (
+                    not isinstance(remote_data, dict)
+                    or remote_id != did
+                    or remote_data.get("approved_by") != "operator"
+                    or remote_data.get("status") not in {"approved", "dispatched"}
+                ):
+                    _log(f"WARN manager status source invalid/missing: {rel}")
+                    manager_push_failed = True
+                    continue
+                if remote_data["status"] == "dispatched":
+                    continue
+                remote_data["status"] = "dispatched"
+                remote_data["dispatched_at"] = _now_iso()
+                remote_draft.write_text(
+                    yaml.safe_dump(remote_data, sort_keys=False), encoding="utf-8"
+                )
+                remote_paths.append(str(remote_draft))
+            if not manager_push_failed and remote_paths:
+                ok, detail = _push_repo(
+                    manager_clone,
+                    f"bubble-ops-{manager}",
+                    f"directive: mark {len(remote_paths)} dispatched",
+                    dry_run=False,
+                    paths=remote_paths,
+                )
+                _log(
+                    f"manager status push: {detail}"
+                    if ok else f"WARN manager push: {detail}"
+                )
+                manager_push_failed = not ok
+
+    # Legacy shared-UID delivery retains its existing local status push.
     if manager_dirty:
         ok, detail = _push_repo(
             manager_repo, f"bubble-ops-{manager}",

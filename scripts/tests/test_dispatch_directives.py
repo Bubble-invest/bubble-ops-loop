@@ -131,15 +131,21 @@ def test_remote_delivery_keeps_gate_and_marks_only_after_target_push(tmp_path, m
     legacy.mkdir()
     tony_legacy = _make_repo(legacy, "tony")
     maya_seed = _make_repo(legacy, "maya")
+    tony_remote = tmp_path / "tony-remote"
+    shutil.copytree(tony_legacy, tony_remote)
     tony = root / "tony"
     shutil.move(str(tony_legacy), tony)
     (tony / dd._OUTBOUND_REL).mkdir(parents=True)
-    directive = _drop(tony, "remote-1")
+    directive = _drop(tony, "remote-1", directive_id=None)
+    (tony_remote / dd._OUTBOUND_REL).mkdir(parents=True)
+    shutil.copy2(directive, tony_remote / dd._OUTBOUND_REL / directive.name)
+    _git(tony_remote, "add", "-A")
+    _git(tony_remote, "commit", "-qm", "approved directive")
     delivered = []
 
     def fake_clone(destination, repo_name):
-        assert repo_name == "bubble-ops-maya"
-        shutil.copytree(maya_seed, destination)
+        seed = maya_seed if repo_name == "bubble-ops-maya" else tony_remote
+        shutil.copytree(seed, destination)
         return True, "cloned(stub)"
 
     def fake_push(repo_dir, repo_name, message, dry_run, paths=None):
@@ -148,6 +154,9 @@ def test_remote_delivery_keeps_gate_and_marks_only_after_target_push(tmp_path, m
             delivered.append(payload)
         _git(repo_dir, "add", "--", *(paths or []))
         dd._run(["git", "-C", str(repo_dir), "commit", "-m", message])
+        if repo_name == "bubble-ops-tony":
+            shutil.copy2(repo_dir / dd._OUTBOUND_REL / directive.name,
+                         tony_remote / dd._OUTBOUND_REL / directive.name)
         return True, "pushed(stub)"
 
     monkeypatch.setattr(dd, "_clone_remote_repo", fake_clone)
@@ -156,7 +165,10 @@ def test_remote_delivery_keeps_gate_and_marks_only_after_target_push(tmp_path, m
     assert len(delivered) == 1
     assert delivered[0]["from"] == "tony"
     assert "status" not in delivered[0]
-    assert yaml.safe_load(directive.read_text())["status"] == "dispatched"
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+    assert yaml.safe_load(
+        (tony_remote / dd._OUTBOUND_REL / directive.name).read_text()
+    )["status"] == "dispatched"
     assert not (root / "maya").exists(), "remote delivery must not write another live UID tree"
 
 
@@ -201,6 +213,86 @@ def test_remote_delivery_rejects_path_shaped_target_before_transport(tmp_path, m
     assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
     assert yaml.safe_load(directive.read_text())["status"] == "approved"
     assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.parametrize("bad_id", ["../escape", "/absolute", "a/b", ".", "x" * 65, ["list"]])
+def test_remote_delivery_rejects_path_shaped_directive_id_before_transport(
+    tmp_path, monkeypatch, bad_id
+):
+    root = tmp_path / "isolated"
+    legacy = tmp_path / "legacy"
+    root.mkdir(); legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "safe-name", directive_id=bad_id)
+    monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: pytest.fail("transport called"))
+
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+    assert not (tmp_path / "escape").exists()
+
+
+def test_remote_manager_push_failure_keeps_source_approved_and_retries(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "isolated"
+    seeds = tmp_path / "seeds"
+    root.mkdir(); seeds.mkdir()
+    tony_seed = _make_repo(seeds, "tony")
+    maya_seed = _make_repo(seeds, "maya")
+    tony = root / "tony"
+    shutil.copytree(tony_seed, tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "retry-1")
+    (tony_seed / dd._OUTBOUND_REL).mkdir(parents=True)
+    shutil.copy2(directive, tony_seed / dd._OUTBOUND_REL / directive.name)
+    _git(tony_seed, "add", "-A")
+    _git(tony_seed, "commit", "-qm", "approved directive")
+    manager_attempts = 0
+
+    def fake_clone(destination, repo_name):
+        seed = maya_seed if repo_name == "bubble-ops-maya" else tony_seed
+        shutil.copytree(seed, destination)
+        return True, "cloned(stub)"
+
+    def fake_push(repo_dir, repo_name, message, dry_run, paths=None):
+        nonlocal manager_attempts
+        _git(repo_dir, "add", "--", *(paths or []))
+        if dd._run(["git", "-C", str(repo_dir), "status", "--porcelain"]).stdout.strip():
+            _git(repo_dir, "commit", "-qm", message)
+        if repo_name == "bubble-ops-tony":
+            manager_attempts += 1
+            if manager_attempts == 1:
+                return False, "synthetic manager rejection"
+            shutil.copy2(
+                repo_dir / dd._OUTBOUND_REL / directive.name,
+                tony_seed / dd._OUTBOUND_REL / directive.name,
+            )
+        elif repo_name == "bubble-ops-maya":
+            delivered = repo_dir / dd._INBOX_REL / "directive-retry-1.yaml"
+            target = maya_seed / dd._INBOX_REL / delivered.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(delivered, target)
+            _git(maya_seed, "add", "-A")
+            if dd._run(
+                ["git", "-C", str(maya_seed), "status", "--porcelain"]
+            ).stdout.strip():
+                _git(maya_seed, "commit", "-qm", "delivered")
+        return True, "pushed(stub)"
+
+    monkeypatch.setattr(dd, "_clone_remote_repo", fake_clone)
+    monkeypatch.setattr(dd, "_push_repo", fake_push)
+
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 1
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
+    assert manager_attempts == 2
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+    assert yaml.safe_load(
+        (tony_seed / dd._OUTBOUND_REL / directive.name).read_text()
+    )["status"] == "dispatched"
 
 
 def test_remote_dry_run_does_not_clone_or_change_queue(tmp_path, monkeypatch):

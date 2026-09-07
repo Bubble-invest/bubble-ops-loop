@@ -908,6 +908,13 @@ PROMPT
 # delivers it as a message from {{OPERATOR}}). We confirm it actually ticked by watching
 # the heartbeat.log mtime advance; if not (session wedged/dead), the caller falls
 # back to a `claude -p` backup tick.
+mtime_epoch() {
+    local path="$1" value
+    value=$(stat -c %Y "$path" 2>/dev/null) && { printf '%s\n' "$value"; return; }
+    value=$(stat -f %m "$path" 2>/dev/null) && { printf '%s\n' "$value"; return; }
+    printf '0\n'
+}
+
 inject_live_loop() {
     local slug="$1"
     local svc="bubble-agent@${slug}.service"
@@ -924,7 +931,7 @@ inject_live_loop() {
     local inject="${state_dir}/inject"
     [[ -d "$state_dir" ]] || return 1
     local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
-    local before; before=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+    local before; before=$(mtime_epoch "$hb")
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
     printf 'Resume your OODA loop (self-paced). Run your full tick now: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log. Then arm your OWN next wake via a single CronCreate (CronList first, dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 - treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet, or run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot if all 4 layers are done. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).\n' >> "$inject" 2>/dev/null || return 1
@@ -936,10 +943,56 @@ inject_live_loop() {
     local i after
     for i in $(seq 1 48); do
         sleep 5
-        after=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+        after=$(mtime_epoch "$hb")
         (( after > before )) && { log "$slug: live session ticked from inject (heartbeat advanced)"; return 0; }
     done
     log "$slug: inject sent but no tick within window — falling back to backup -p"
+    return 1
+}
+
+# Hermes gateways do not run the Claude Telegram plugin and therefore never
+# have a Bun child or consume ~/.claude/channels/.../inject.  Use Hermes's own
+# live control socket + persisted /loop API: the gateway's idle watcher turns
+# this one-shot row into a synthetic inbound on its existing Telegram session.
+# The helper only mutates scheduler state; it never starts another model.
+wake_hermes_loop() {
+    local slug="$1"
+    local workdir hb before i after
+    workdir="$(_dept_workdir "$slug")"
+    hb="${workdir}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    before=$(mtime_epoch "$hb")
+
+    local hermes_root="${BUBBLE_BACKUP_HERMES_ROOT:-/opt/hermes/hermes-agent}"
+    local hermes_py="${BUBBLE_BACKUP_HERMES_PY:-${hermes_root}/.venv/bin/python}"
+    local wake_helper="${BUBBLE_BACKUP_HERMES_WAKE_HELPER:-${REPO_ROOT}/scripts/wake_hermes_gateway.py}"
+    local profile_home="${BUBBLE_BACKUP_HERMES_PROFILE_HOME:-${HOME}/.hermes/profiles/${slug}}"
+    if [[ "$ISOLATED_FLOOR" == "1" ]]; then
+        hermes_root=/opt/hermes/hermes-agent
+        hermes_py="${hermes_root}/.venv/bin/python"
+        wake_helper="${REPO_ROOT}/scripts/wake_hermes_gateway.py"
+        profile_home="/home/agent-${slug}/.hermes/profiles/${slug}"
+    fi
+    [[ -x "$hermes_py" && -f "$wake_helper" ]] || return 1
+
+    log "$slug: waking live Hermes gateway through one-shot /loop control"
+    printf '%s' "$GENERIC_TICK_PROMPT" | "$hermes_py" "$wake_helper" \
+        --profile-home "$profile_home" --hermes-root "$hermes_root" || return 1
+
+    local wait_iterations="${BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS:-48}"
+    local wait_seconds="${BUBBLE_BACKUP_WAKE_WAIT_SECONDS:-5}"
+    if [[ "$ISOLATED_FLOOR" == "1" ]]; then
+        wait_iterations=48
+        wait_seconds=5
+    fi
+    for i in $(seq 1 "$wait_iterations"); do
+        sleep "$wait_seconds"
+        after=$(mtime_epoch "$hb")
+        (( after > before )) && {
+            log "$slug: live Hermes gateway ticked (heartbeat advanced)"
+            return 0
+        }
+    done
+    log "$slug: Hermes wake armed but no tick completed within window"
     return 1
 }
 
@@ -1377,11 +1430,11 @@ PYEOF2
         [[ "$_harness_slug" == "$slug" ]] && _inject_only=1
     done
     if [[ "$_inject_only" == "1" ]]; then
-        if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
-            emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
+        if [[ "${DEGRADED_L4:-0}" != "1" ]] && wake_hermes_loop "$slug"; then
+            emit_event "$slug" "run" "live Hermes gateway woken — $reason" "$age" 0
         else
-            log "$slug: DEFERRED — configured harness forbids a competing headless CLI; live injection unavailable"
-            emit_event "$slug" "deferred" "harness-safe floor could not inject live session" "$age"
+            log "$slug: DEFERRED — Hermes gateway wake unavailable; competing headless CLI forbidden"
+            emit_event "$slug" "deferred" "Hermes gateway floor wake unavailable" "$age"
             OVERALL=1
         fi
         continue

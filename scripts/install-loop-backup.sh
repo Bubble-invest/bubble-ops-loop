@@ -22,6 +22,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# A scoped activation cannot retire the four global timers safely: those
+# timers still provide floor coverage for every department omitted from the
+# selection. Keep --dept/BUBBLE_FLOOR_DEPTS useful for install-only and dry
+# inspection, but require a fleet-wide discovery for the actual cutover.
+if [[ "$ACTIVATE" == 1 && ( -n "$ONLY_DEPT" || -n "${BUBBLE_FLOOR_DEPTS:-}" ) ]]; then
+    echo "ERR: --activate must cover every enabled department; scoped activation would drop floor coverage" >&2
+    exit 64
+fi
+
 say() { echo "[install-loop-backup] $*"; }
 root_run() {
     if [[ "$DRY" == "1" ]]; then
@@ -93,7 +102,7 @@ for layer in 1 2 3 4; do
         root_run install -m 0644 -o root -g root "$TEMPLATE_DIR/$unit" "$SYSTEMD_DIR/$unit"
     done
 done
-root_run systemctl daemon-reload
+root_run "$SYSTEMCTL" daemon-reload
 
 if [[ "$ACTIVATE" == 0 ]]; then
     say "unit templates installed only; timers unchanged"
@@ -112,18 +121,54 @@ done
 # Explicit cutover only. Stop the global timers before starting persistent
 # replacements so a catch-up activation cannot overlap the legacy floor.
 OLD_TIMERS=(loop-layer1.timer loop-layer2.timer loop-layer3.timer loop-layer4.timer)
-for timer in "${OLD_TIMERS[@]}"; do root_run systemctl disable --now "$timer"; done
 if [[ "$DRY" == "1" ]]; then
-    for timer in "${NEW_TIMERS[@]}"; do root_run systemctl enable --now "$timer"; done
+    for timer in "${OLD_TIMERS[@]}"; do root_run "$SYSTEMCTL" disable --now "$timer"; done
+    for timer in "${NEW_TIMERS[@]}"; do root_run "$SYSTEMCTL" enable --now "$timer"; done
 else
+    # Snapshot each global timer before touching any of them. A failed
+    # `disable --now` may already have disabled/stopped its target before
+    # returning nonzero, so rollback must restore ALL four exact states, not
+    # just the timers preceding the failing command.
+    OLD_ENABLED=()
+    OLD_ACTIVE=()
+    for timer in "${OLD_TIMERS[@]}"; do
+        OLD_ENABLED+=("$("$SYSTEMCTL" is-enabled "$timer" 2>/dev/null || true)")
+        OLD_ACTIVE+=("$("$SYSTEMCTL" is-active "$timer" 2>/dev/null || true)")
+    done
+
+    restore_old_timers() {
+        local i old
+        for i in "${!OLD_TIMERS[@]}"; do
+            old="${OLD_TIMERS[$i]}"
+            case "${OLD_ENABLED[$i]}" in
+                enabled|enabled-runtime) sudo -- "$SYSTEMCTL" enable "$old" || true ;;
+                *) sudo -- "$SYSTEMCTL" disable "$old" || true ;;
+            esac
+            case "${OLD_ACTIVE[$i]}" in
+                active|activating) sudo -- "$SYSTEMCTL" start "$old" || true ;;
+                *) sudo -- "$SYSTEMCTL" stop "$old" || true ;;
+            esac
+        done
+    }
+
+    for timer in "${OLD_TIMERS[@]}"; do
+        if ! sudo -- "$SYSTEMCTL" disable --now "$timer"; then
+            echo "ERR: global timer retirement failed; restoring exact prior timer states" >&2
+            restore_old_timers
+            exit 1
+        fi
+    done
+
     ENABLED_NEW=()
     for timer in "${NEW_TIMERS[@]}"; do
-        if sudo -- systemctl enable --now "$timer"; then
+        if sudo -- "$SYSTEMCTL" enable --now "$timer"; then
             ENABLED_NEW+=("$timer")
         else
             echo "ERR: replacement activation failed; restoring global timers" >&2
-            for enabled in "${ENABLED_NEW[@]}"; do sudo -- systemctl disable --now "$enabled" || true; done
-            for old in "${OLD_TIMERS[@]}"; do sudo -- systemctl enable --now "$old" || true; done
+            for enabled in "${ENABLED_NEW[@]}"; do
+                sudo -- "$SYSTEMCTL" disable --now "$enabled" || true
+            done
+            restore_old_timers
             exit 1
         fi
     done

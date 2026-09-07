@@ -69,30 +69,66 @@ set -e
 [[ -s "$TMP/agents/demo/state/loop-backup.jsonl" ]] || fail "event state missing"
 [[ -s "$TMP/agents/demo/outputs/$(date -u +%Y-%m-%d)/heartbeat.log" ]] || fail "heartbeat missing"
 
-# A non-Claude harness is injection-only and can never fall through to the
-# fake headless model when injection is unavailable.
+# A Hermes harness wakes its existing gateway through the supported /loop
+# control state and can never fall through to the fake headless model.
 python3 - "$TMP/model-called" "$TMP/agents/demo/outputs" <<'PY'
 from pathlib import Path
 import shutil, sys
 Path(sys.argv[1]).unlink()
 shutil.rmtree(sys.argv[2], ignore_errors=True)
 PY
-set +e
+cat >"$TMP/hermes-wake" <<EOF
+#!/usr/bin/env bash
+mkdir -p "$TMP/agents/demo/outputs/\$(date -u +%Y-%m-%d)"
+touch "$TMP/agents/demo/outputs/\$(date -u +%Y-%m-%d)/heartbeat.log"
+printf 'hermes-wake-called\n' >"$TMP/hermes-wake-called"
+EOF
+chmod +x "$TMP/hermes-wake"
 out="$(
   HOME="$TMP/home" CLAUDE_CODE_OAUTH_TOKEN=synthetic BUBBLE_BACKUP_TEST_UID_OK=1 \
   BUBBLE_OPS_LOOP_ROOT="$TMP/framework" BUBBLE_BACKUP_SRV_AGENTS_ROOT="$TMP/agents" \
   BUBBLE_BACKUP_AGENTS_ROOT="$TMP/legacy" BUBBLE_BACKUP_LOCK_DIR="$TMP/locks" \
   BUBBLE_BACKUP_LOG="$TMP/agents/demo/state/inject-only.jsonl" \
   BUBBLE_BACKUP_SYSTEMCTL="$TMP/systemctl" BUBBLE_BACKUP_CLAUDE_BIN="$TMP/fake-model" \
+  BUBBLE_BACKUP_HERMES_PY="$BASH_BIN" BUBBLE_BACKUP_HERMES_WAKE_HELPER="$TMP/hermes-wake" \
+  BUBBLE_BACKUP_HERMES_PROFILE_HOME="$TMP/home" BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS=1 \
+  BUBBLE_BACKUP_WAKE_WAIT_SECONDS=0 \
   BUBBLE_BACKUP_LAYER_OFFSET_H=-24 BUBBLE_BACKUP_INJECT_ONLY_DEPTS=demo \
   BUBBLE_DISPATCH_DIRECTIVES=remote BUBBLE_AUTORESTART=0 \
   "$BASH_BIN" "$ROOT/scripts/loop-backup.sh" --layer 1 --dept demo 2>&1
 )"
 rc=$?
-set -e
-[[ "$rc" -ne 0 ]] || fail "inject-only failure returned green"
+[[ "$rc" -eq 0 ]] || fail "Hermes gateway wake failed: $out"
 [[ ! -e "$TMP/model-called" ]] || fail "headless model called for inject-only harness"
-[[ "$out" == *"forbids a competing headless CLI"* ]] || fail "inject-only deferral invisible"
+[[ -e "$TMP/hermes-wake-called" ]] || fail "Hermes wake helper not called"
+[[ "$out" == *"live Hermes gateway ticked"* ]] || fail "Hermes wake result invisible"
+
+# A failed Hermes control wake is explicit and still never falls through.
+python3 - "$TMP/agents/demo/outputs" <<'PY'
+import shutil, sys
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+PY
+cat >"$TMP/hermes-wake" <<'EOF'
+#!/usr/bin/env bash
+exit 71
+EOF
+set +e
+out="$(
+  HOME="$TMP/home" CLAUDE_CODE_OAUTH_TOKEN=synthetic BUBBLE_BACKUP_TEST_UID_OK=1 \
+  BUBBLE_OPS_LOOP_ROOT="$TMP/framework" BUBBLE_BACKUP_SRV_AGENTS_ROOT="$TMP/agents" \
+  BUBBLE_BACKUP_AGENTS_ROOT="$TMP/legacy" BUBBLE_BACKUP_LOCK_DIR="$TMP/locks" \
+  BUBBLE_BACKUP_LOG="$TMP/agents/demo/state/hermes-failed.jsonl" \
+  BUBBLE_BACKUP_SYSTEMCTL="$TMP/systemctl" BUBBLE_BACKUP_CLAUDE_BIN="$TMP/fake-model" \
+  BUBBLE_BACKUP_HERMES_PY="$BASH_BIN" BUBBLE_BACKUP_HERMES_WAKE_HELPER="$TMP/hermes-wake" \
+  BUBBLE_BACKUP_HERMES_PROFILE_HOME="$TMP/home" BUBBLE_BACKUP_LAYER_OFFSET_H=-24 \
+  BUBBLE_BACKUP_INJECT_ONLY_DEPTS=demo BUBBLE_DISPATCH_DIRECTIVES=remote BUBBLE_AUTORESTART=0 \
+  "$BASH_BIN" "$ROOT/scripts/loop-backup.sh" --layer 1 --dept demo 2>&1
+)"
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "failed Hermes wake returned green"
+[[ ! -e "$TMP/model-called" ]] || fail "headless model called after failed Hermes wake"
+[[ "$out" == *"Hermes gateway wake unavailable"* ]] || fail "Hermes failure invisible"
 
 # UID mismatch fails before any model execution.
 python3 - "$TMP/model-called" <<'PY'
