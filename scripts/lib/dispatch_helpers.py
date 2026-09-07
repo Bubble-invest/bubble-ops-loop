@@ -3901,6 +3901,14 @@ _VENDORED_NONPUSHABLE_GLOBS = (
     "scripts/lib/**",
 )
 
+# Harness continuity files are injected at the repository root during
+# resume/handoff. They are local runner state, not dept runtime artifacts, and
+# are outside every runtime push allowlist. Keep this deliberately exact and
+# root-only: do not turn it into a broader allowlist or ignore arbitrary files.
+_UNTRACKED_HARNESS_ROOT_ARTIFACTS = frozenset(
+    {"AGENTS.md", "HARNESS_HANDOFF.md"}
+)
+
 
 def _is_vendored_nonpushable(path: str) -> bool:
     """True if `path` is a vendored, canonical-sourced file a dept must not push
@@ -3915,6 +3923,14 @@ def _is_vendored_nonpushable(path: str) -> bool:
         elif path == g:
             return True
     return False
+
+
+def _is_untracked_harness_root_artifact(status_code: str, path: str) -> bool:
+    """True only for an untracked harness-owned file at the repo root."""
+    return (
+        status_code == "??"
+        and path in _UNTRACKED_HARNESS_ROOT_ARTIFACTS
+    )
 
 
 # ─── Sandbox-aware git helpers (#453, 2026-07-02) ──────────────────────────
@@ -4256,7 +4272,7 @@ def force_commit_and_push(
     # never a runtime push to main. _is_structural is the single source of truth
     # (same globs the guard uses), so this can't drift from the push policy.
     changed = [
-        line[3:].strip().strip('"')
+        (line[:2], line[3:].strip().strip('"'))
         for line in status.stdout.splitlines()
         if line.strip()
     ]
@@ -4265,7 +4281,8 @@ def force_commit_and_push(
     runtime_paths = []
     skipped_structural = []
     skipped_vendored = []
-    for c in changed:
+    skipped_harness = []
+    for status_code, c in changed:
         path = c.split(" -> ")[-1] if " -> " in c else c
         if _is_struct(path):
             skipped_structural.append(path)
@@ -4275,6 +4292,11 @@ def force_commit_and_push(
             # "scripts/lib/... not in allowed_paths" guard DENY that strands the
             # whole runtime push behind it (Tony, 2026-06-11).
             skipped_vendored.append(path)
+        elif _is_untracked_harness_root_artifact(status_code, path):
+            # --resume/handoff injects these local root artifacts. They are not
+            # runtime state and the guard rejects them, poisoning otherwise
+            # valid output/queue/inbox commits (board #1158).
+            skipped_harness.append(path)
         else:
             runtime_paths.append(path)
     if skipped_structural:
@@ -4289,8 +4311,14 @@ def force_commit_and_push(
             "the runtime push (owned by scripts/sync-dispatch-lib.sh): "
             + ", ".join(sorted(set(skipped_vendored)))
         )
+    if skipped_harness:
+        print(
+            "[force_commit_and_push] NOT staging untracked harness root "
+            "artifact(s) for the runtime push: "
+            + ", ".join(sorted(set(skipped_harness)))
+        )
     if not runtime_paths:
-        # Only structural changes pending — nothing for the runtime push to do.
+        # Only excluded changes pending — nothing for the runtime push to do.
         return True, None
 
     # 2a. Sandbox-aware: a single unreadable TRACKED path (e.g. `.gitmodules`
