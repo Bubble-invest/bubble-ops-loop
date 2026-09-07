@@ -30,8 +30,12 @@ AGENT="${1:-}"; TARGET="${2:-}"; REQ="${3:-manual}"
 UID_NUM="$(id -u)"
 SUPPORT_DIR="$HOME/Library/Application Support/bubble-ops-loop"
 LOG="$HOME/.local/log/bubble-switch-harness-mac.log"
-HERMES="$HOME/.local/bin/hermes"
-TMUX_BIN="$HOME/.local/bin/tmux"
+# Resolve binaries via PATH — tmux lives at DIFFERENT paths across the fleet
+# (M5 built-from-source ~/.local/bin/tmux; M1/Joris /opt/homebrew/bin/tmux). Any
+# tmux client reaches the same per-uid server socket, so PATH resolution is safe.
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
+HERMES="$(command -v hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")"
+TMUX_BIN="$(command -v tmux 2>/dev/null || echo "$HOME/.local/bin/tmux")"
 mkdir -p "$(dirname "$LOG")"
 
 say(){ echo "[$(date -u +%H:%M:%SZ)] [$AGENT->$TARGET $REQ] $*" | tee -a "$LOG" ; }

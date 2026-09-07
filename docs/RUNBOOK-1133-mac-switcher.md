@@ -57,8 +57,43 @@ agent's aligned wrapper (#748) already installed, and (for hermes targets) a
 `~/.hermes/profiles/<slug>` profile that is gateway-onboarded (telegram token +
 TELEGRAM_ALLOWED_USERS + home_chat_id + model provider + cwd).
 
+## The Mac commander (`bubble-commander-mac`, @Unclestockbubblebot)
+Mac-hosted, always-on Telegram bot (analog of the VPS `bubble-commander`). Buttons:
+Status / On / Off / Restart / Restart-All (launchctl) + Harness switch (this
+controller). Reaches LOCAL agents (tonio, rick) directly and REMOTE agents (M5:
+geraldine, ellie · M1: content) via **SSH Mac→Mac** (`jade-m5`/`jade-m1`). There is
+no VPS→Mac SSH; the commander never runs on the VPS. Rick is **status-only** (never
+On/Off/Restart/Switch — it is the operating session).
+
+Hardening: strict chat allowlist, per-destructive-action confirm nonce, threaded
+slow actions (BUSY lock) so the poll loop stays responsive, harness-switch
+allowlist. **Token**: read FIRST from `~/.config/telegram/bot_token_mac_commander`
+(0600) — never an ambient `TELEGRAM_BOT_TOKEN` (or, launched from inside an agent
+session whose wrapper inlines its own bot token, the commander would come up as
+that agent's bot and 409 its live channel). Rotate to SOPS via the `auth` skill
+after build+test.
+
+### Deploy
+1. Controller on every Mac: `install -m 755 deploy/local/bubble-switch-harness-mac ~/.local/bin/` (scp to jade-m5 / jade-m1).
+2. Commander on the host Mac: `install -m 755 deploy/local/bubble-commander-mac ~/.local/bin/`.
+3. Put the @Unclestockbubblebot token in `~/.config/telegram/bot_token_mac_commander` (chmod 600).
+4. Render + load the launchd service:
+```
+sed -e "s#__HOME__#$HOME#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+  deploy/local/com.bubble.commander-mac.plist.template \
+  > ~/Library/LaunchAgents/com.bubble.commander-mac.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bubble.commander-mac.plist
+```
+Verify: `~/Library/Logs/bubble-ops-loop/commander-mac.out.log` shows
+`up as @Unclestockbubblebot`; send `/menu` → 📊 Status lists all 5 agents.
+
+### Fleet tmux-path note
+tmux lives at different paths across the Macs (M5 built-from-source `~/.local/bin/tmux`;
+M1/Joris `/opt/homebrew/bin/tmux`). Both the controller and commander resolve tmux
+via PATH (any client reaches the same per-uid server socket) — do NOT hardcode it.
+
 ## Still to come (tracked)
-- The Mac **commander** bot (`@Unclestockbubblebot`, Mac-hosted): buttons to
-  switch/status any Mac agent — local via this controller, remote (M5/M1) via
-  Mac→Mac SSH. No VPS→Mac SSH.
-- Hermes profiles (by slug) for geraldine / ellie / content; real hermes install on M1.
+- Hermes profiles (by slug) for geraldine / ellie / content; real hermes install on M1
+  (its `~/.local/bin/hermes` is a 191-byte stub) — needed before those agents can
+  switch TO hermes (the claude harness + all launchctl controls work today).
+- Rotate the commander token to SOPS (auth skill) after Joris confirms the buttons.
