@@ -91,6 +91,16 @@ your artifacts so COMMIT cannot claim unrelated pending decisions.
 
 5. **Record**: write a `trades` row, flip `decisions.status='executed'` with the
    linked `trade_id`, and notify the principal with the fill.
+6. **Archive the successful decision** with its real processing timestamp:
+
+   ```python
+   from scripts.lib.dispatch_helpers import archive_successful_decision
+   archive_successful_decision(".", "<decision-id>", execution_succeeded=True)
+   ```
+
+   Call this only after steps 1-5 succeeded. A failure, hold, defer, or
+   unexecuted decision stays in the active inbox and must not receive a
+   `processed_at` timestamp.
 
 ## Voice + audience
 

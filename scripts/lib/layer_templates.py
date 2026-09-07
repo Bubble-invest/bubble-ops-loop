@@ -202,8 +202,11 @@ happen on its own.
 
 {l3_work}
 
-After successful execution: move the item to `inbox/decisions/.processed/` \
-(so a future tick does not re-process it) and log in `logs.jsonl`. **Then \
+After successful execution, stamp + move the item with the canonical helper: \
+`python3 -c "from scripts.lib.dispatch_helpers import archive_successful_decision; \
+archive_successful_decision('.', '<id>', execution_succeeded=True)"`. This \
+records the real processing time and prevents a future tick from re-processing \
+the item. Then log in `logs.jsonl`. **Then \
 archive the corresponding gate card** so `queues/gates/` shows only genuinely- \
 open gates (#1076): \
 `python3 -c "from scripts.lib.dispatch_helpers import archive_gate_card; \

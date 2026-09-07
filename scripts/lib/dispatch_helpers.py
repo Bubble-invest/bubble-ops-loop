@@ -1523,6 +1523,81 @@ _ARCHIVED_EVENT_TIME_FIELDS = (
 )
 
 
+def archive_successful_decision(
+    repo_dir: Path | str,
+    decision_id: str,
+    *,
+    execution_succeeded: bool,
+    processed_at: datetime | None = None,
+) -> Path:
+    """Stamp and archive one successfully executed L3 decision atomically.
+
+    The explicit success flag prevents failure/hold paths from accidentally
+    creating L3 completion evidence. Replays return the existing archive
+    without changing its original ``processed_at`` timestamp.
+    """
+    if execution_succeeded is not True:
+        raise ValueError("refusing to archive decision without successful execution")
+    raw_id = str(decision_id or "")
+    if raw_id.endswith(".yaml"):
+        raw_id = raw_id[:-5]
+    if not raw_id or raw_id.startswith(".") or Path(raw_id).name != raw_id:
+        raise ValueError("decision_id must be one safe filename stem")
+
+    decisions_dir = Path(repo_dir) / "inbox" / "decisions"
+    source = decisions_dir / f"{raw_id}.yaml"
+    processed_dir = decisions_dir / ".processed"
+    destination = processed_dir / source.name
+
+    if destination.is_file():
+        if source.exists():
+            raise FileExistsError(
+                f"decision exists in both active and processed queues: {raw_id}"
+            )
+        return destination
+    if not source.is_file():
+        raise FileNotFoundError(f"active decision not found: {raw_id}")
+
+    try:
+        data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise ValueError(f"decision YAML is unreadable: {raw_id}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"decision YAML must be a mapping: {raw_id}")
+
+    # Preserve an earlier valid value if a crash happened after the atomic
+    # rewrite but before the move. Otherwise stamp the real archive attempt.
+    existing = data.get("processed_at")
+    try:
+        existing_ts = (
+            existing
+            if isinstance(existing, datetime)
+            else _parse_iso(str(existing))
+        )
+    except (TypeError, ValueError):
+        existing_ts = None
+    if existing_ts is None:
+        when = processed_at or datetime.now(timezone.utc)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        data["processed_at"] = (
+            when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+
+    # Rewrite in place atomically, then move on the same filesystem. If the
+    # process dies between these operations, the active item is stamped but is
+    # not evidence until a retry completes the move into .processed/.
+    _atomic_write_text(
+        source,
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+    )
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise FileExistsError(f"processed decision already exists: {raw_id}")
+    os.replace(source, destination)
+    return destination
+
+
 def _event_archive_evidence_today(
     repo_dir: Path, mission: dict, *, now_utc: datetime,
 ) -> bool:
@@ -1552,14 +1627,16 @@ def _event_archive_evidence_today(
             continue
         if not isinstance(data, dict):
             continue
+        timestamp = None
         for field in _ARCHIVED_EVENT_TIME_FIELDS:
             raw = data.get(field)
             try:
                 timestamp = raw if isinstance(raw, datetime) else _parse_iso(str(raw))
             except (TypeError, ValueError):
                 continue
-            if _to_paris(timestamp).date() == today:
-                return True
+            break
+        if timestamp is not None and _to_paris(timestamp).date() == today:
+            return True
     return False
 
 
