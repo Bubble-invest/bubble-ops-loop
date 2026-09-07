@@ -125,7 +125,12 @@ want   "T5e wrapper grants the workspace via --add-dir (brain↔body)" "add-dir 
 # Backup floor render (NO --activate)
 # -----------------------------------------------------------------------------
 out="$WORK/backup.log"
+TG_BACKUP="$WORK/tg-backup"; mkdir -p "$TG_BACKUP"; chmod 700 "$TG_BACKUP"
+TMUX_BACKUP="$WORK/tmux"; printf '#!/bin/sh\nexit 0\n' >"$TMUX_BACKUP"; chmod 700 "$TMUX_BACKUP"
 "$INSTALL_BACKUP" --dept-dir "$DEPT" --slug "$SLUG" --interval 10800 \
+    --telegram-state-dir "$TG_BACKUP" --session-name "ops-loop-$SLUG" \
+    --harness-selector "$WORK/harness-$SLUG" \
+    --tmux-bin "$TMUX_BACKUP" --stale-sec 5400 --cooldown-sec 900 \
     --launch-agents-dir "$LA" --log-dir "$LOGS" \
     >"$out" 2>&1
 rc=$?
@@ -138,6 +143,12 @@ want   "T6e backup plist StartInterval"    "<key>StartInterval</key>" "$BPLIST"
 nowant "T6f backup plist no StartCalendarInterval key" "<key>StartCalendarInterval</key>" "$BPLIST"
 want   "T6g backup plist invokes the runner" "local-loop-backup-runner.sh" "$BPLIST"
 want   "T6h backup plist passes --dept-dir"  "dept-dir" "$BPLIST"
+want   "T6i backup plist activates existing-session injection" "activate-inject" "$BPLIST"
+want   "T6j backup plist carries exact channel state" "$TG_BACKUP" "$BPLIST"
+want   "T6k backup plist carries exact session" "ops-loop-$SLUG" "$BPLIST"
+want   "T6k2 backup plist carries harness selector" "$WORK/harness-$SLUG" "$BPLIST"
+nowant "T6l backup plist has no model flag" "claude-bin" "$BPLIST"
+nowant "T6m backup plist avoids shell -c" "<string>-c</string>" "$BPLIST"
 
 # -----------------------------------------------------------------------------
 # T7: idempotent re-run
@@ -208,9 +219,13 @@ absent "T8b plist removed by --uninstall" "$PLIST"
 absent "T8c wrapper removed by --uninstall" "$WRAPPER"
 
 # -----------------------------------------------------------------------------
-# T9: launchctl was NEVER called (no --activate anywhere above)
+# T9: only read-only launchctl print is allowed without --activate.
 # -----------------------------------------------------------------------------
-nowant "T9 launchctl was NEVER invoked (no --activate)" "." "$LC_TRIP"
+if grep -v "TRIPWIRE: launchctl print " "$LC_TRIP" 2>/dev/null | grep -q .; then
+    echo "  FAIL: T9 non-read-only launchctl invoked without --activate"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: T9 no registration-changing launchctl without --activate"; PASS=$((PASS+1))
+fi
 
 # -----------------------------------------------------------------------------
 # T10: fixture safety — LaunchAgents dir is a throwaway, not the real one

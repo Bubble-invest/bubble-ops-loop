@@ -15,14 +15,16 @@
 #     aligned wrapper (#748). Secrets come from a per-Mac SOPS vault when the
 #     LOOP_VAULT_PATH knob is set (legacy .env fallback otherwise); push is via
 #     the Mac's own `gh`/git credential (no VPS-style token-broker/tmpfs).
-#   - a BACKUP floor       (launchd plist, StartInterval) — the VPS loop-backup's
-#     Mac twin: force-tick the dept's /loop iff its heartbeat is STALE.
+#   - a BACKUP floor       (launchd plist, StartInterval) — when stale, append a
+#     cooldown-limited wake to the existing persistent session. Never start a
+#     competing model process.
 #
 # This file is sourced by both installers. It provides:
 #   - is_heartbeat_stale  : THE testable core — fresh vs stale vs missing.
 #   - render_loop_wrapper : render the generic persistent-session wrapper script.
 #   - render_loop_plist   : render the main-runner launchd plist (KeepAlive).
-#   - render_backup_plist : render the backup-floor launchd plist (StartInterval).
+#   - inject_loop_wake    : secure existing-session wake append + cooldown.
+#   - render_backup_plist : render the injection-floor plist (StartInterval).
 #
 # DOCTRINE — MAIN runner = KeepAlive (persistent session), the Mac twin of the
 # VPS systemd dept unit which runs interactive `claude --channels` (NOT
@@ -38,8 +40,8 @@
 # fires after the Mac reopens. A fixed StartCalendarInterval whose wall-clock
 # time passed while asleep would be silently MISSED. See deploy/local/README.md.
 #
-# Fail-safe everywhere: a staleness-check error → treat as STALE (tick) rather
-# than skip; never crash the caller.
+# Fail-safe everywhere: a staleness-check error means STALE. If the existing
+# session/channel is unavailable, report non-green; never launch another model.
 # =============================================================================
 
 # Resolve the bubble-ops-loop repo root from THIS file's location
@@ -55,7 +57,7 @@ LOCAL_LOOP_STALE_SEC_DEFAULT=5400
 # pick a python3 (the repo's loop_backup.py is plain stdlib).
 _lll_py() { command -v python3 || command -v python; }
 
-# ── is_heartbeat_stale <dept-dir> [stale_sec] ────────────────────────────────
+# ── is_heartbeat_stale <dept-dir> [stale_sec] [now_epoch] ────────────────────────────────
 # Echoes "stale" or "fresh" and returns 0 (the caller branches on the WORD, not
 # rc — rc is reserved for "the check itself blew up"). Reads the dept's
 # outputs/<*>/heartbeat.log via the canonical scripts/lib/loop_backup.py
@@ -67,6 +69,7 @@ _lll_py() { command -v python3 || command -v python; }
 is_heartbeat_stale() {
     local dept_dir="$1"
     local stale_sec="${2:-$LOCAL_LOOP_STALE_SEC_DEFAULT}"
+    local now_epoch="${3:-$(date +%s)}"
     local outputs_dir="${dept_dir%/}/outputs"
     local py; py="$(_lll_py)"
 
@@ -78,13 +81,13 @@ is_heartbeat_stale() {
 
     local action
     action="$(
-        cd "$LLL_REPO_ROOT" 2>/dev/null && "$py" - "$outputs_dir" "$stale_sec" <<'PYEOF'
-import sys, time
+        cd "$LLL_REPO_ROOT" 2>/dev/null && "$py" - "$outputs_dir" "$stale_sec" "$now_epoch" <<'PYEOF'
+import sys
 try:
     from scripts.lib.loop_backup import latest_heartbeat_epoch, backup_decision
-    outputs, stale = sys.argv[1], int(sys.argv[2])
+    outputs, stale, now_epoch = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
     hb = latest_heartbeat_epoch(outputs)
-    d = backup_decision(hb, time.time(), stale)
+    d = backup_decision(hb, now_epoch, stale)
     # action "run" == loop stale (tick), "skip" == loop fresh (no tick)
     print("stale" if d.get("action") == "run" else "fresh")
 except Exception:
@@ -468,60 +471,143 @@ render_loop_plist() {
 PLIST
 }
 
-# ── render_backup_plist <label> <dept-dir> <slug> <interval_sec> <runner> <log_dir> ──
-# Echo a launchd plist for the BACKUP floor. On its StartInterval it runs the
-# backup runner script (which checks heartbeat staleness and force-ticks the
-# /loop only if stale). The runner path is baked in so the plist is the only
-# scheduling surface.
+# ── inject_loop_wake <state-dir> <slug> <now_epoch> <cooldown_sec> ───────────
+# Receives the fixed non-secret wake message as argv. Emits only "injected" or "cooldown".
+# Python performs lstat/openat-style checks unavailable in stock Bash 3.2.
+inject_loop_wake() {
+    local state_dir="$1" slug="$2" now_epoch="$3" cooldown="$4" message="$5"
+    local py; py="$(_lll_py)"
+    [[ -n "$py" ]] || return 1
+    "$py" - "$state_dir" "$slug" "$now_epoch" "$cooldown" "$message" <<'PYEOF'
+import fcntl
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+state = Path(sys.argv[1])
+slug = sys.argv[2]
+now = int(sys.argv[3])
+cooldown = int(sys.argv[4])
+message = sys.argv[5]
+if not state.is_absolute() or ".." in state.parts or not message or len(message.encode()) > 8192:
+    raise SystemExit(1)
+# Reject symlinks in every existing component.
+cur = Path(state.anchor)
+for part in state.parts[1:]:
+    cur = cur / part
+    info = os.lstat(cur)
+    if stat.S_ISLNK(info.st_mode):
+        raise SystemExit(1)
+info = os.lstat(state)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    raise SystemExit(1)
+
+def checked_regular(path, create=False):
+    flags = os.O_RDWR | os.O_NOFOLLOW
+    if create:
+        flags |= os.O_CREAT
+    fd = os.open(path, flags, 0o600)
+    meta = os.fstat(fd)
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid() or meta.st_nlink != 1 or meta.st_mode & 0o022:
+        os.close(fd)
+        raise SystemExit(1)
+    os.fchmod(fd, 0o600)
+    return fd
+
+lock_path = state / ".backup-floor.lock"
+lock_fd = checked_regular(lock_path, create=True)
+try:
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    marker = state / f".backup-floor-{slug}.last-inject"
+    last = 0
+    if marker.exists():
+        marker_fd = checked_regular(marker)
+        try:
+            raw = os.read(marker_fd, 64).decode("ascii", "strict").strip()
+            last = int(raw) if raw.isdigit() else 0
+        finally:
+            os.close(marker_fd)
+    if last and now >= last and now - last < cooldown:
+        print("cooldown")
+        raise SystemExit(0)
+    inject = state / "inject"
+    inject_fd = checked_regular(inject, create=True)
+    try:
+        os.lseek(inject_fd, 0, os.SEEK_END)
+        body = message.rstrip("\n").encode("utf-8") + b"\n"
+        if os.write(inject_fd, body) != len(body):
+            raise OSError("incomplete append")
+        os.fsync(inject_fd)
+    finally:
+        os.close(inject_fd)
+    fd, tmp = tempfile.mkstemp(prefix=f".{marker.name}.", suffix=".tmp", dir=str(state))
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, (str(now) + "\n").encode("ascii"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, marker)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    print("injected")
+finally:
+    os.close(lock_fd)
+PYEOF
+}
+
+# ── render_backup_plist <label> <dept-dir> <slug> <interval> <runner>
+#      <log-dir> <telegram-state-dir> <session-name> <harness-selector>
+#      <tmux-bin> <stale> <cooldown>
 render_backup_plist() {
     local label="$1" dept_dir="$2" slug="$3" interval="$4" runner="$5" log_dir="$6"
-    local e_dept e_runner e_out e_err
+    local tg_state="$7" session="$8" selector="$9" tmux_bin="${10}" stale="${11}" cooldown="${12}"
+    local e_dept e_runner e_out e_err e_state e_session e_selector e_tmux
     e_dept="$(_lll_xml_escape "$dept_dir")"
     e_runner="$(_lll_xml_escape "$runner")"
     e_out="$(_lll_xml_escape "${log_dir%/}/${label}.out.log")"
     e_err="$(_lll_xml_escape "${log_dir%/}/${label}.err.log")"
+    e_state="$(_lll_xml_escape "$tg_state")"
+    e_session="$(_lll_xml_escape "$session")"
+    e_selector="$(_lll_xml_escape "$selector")"
+    e_tmux="$(_lll_xml_escape "$tmux_bin")"
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>${label}</string>
-
-    <!-- The backup floor: force-tick the dept's /loop IFF its heartbeat is
-         stale. The runner does the staleness check + the force-tick; the plist
-         only schedules it. -->
+    <key>Label</key><string>${label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>exec '${e_runner}' --dept-dir '${e_dept}' --slug '${slug}'</string>
+        <string>/bin/bash</string><string>${e_runner}</string>
+        <string>--dept-dir</string><string>${e_dept}</string>
+        <string>--slug</string><string>${slug}</string>
+        <string>--telegram-state-dir</string><string>${e_state}</string>
+        <string>--session-name</string><string>${e_session}</string>
+        <string>--harness-selector</string><string>${e_selector}</string>
+        <string>--tmux-bin</string><string>${e_tmux}</string>
+        <string>--stale-sec</string><string>${stale}</string>
+        <string>--cooldown-sec</string><string>${cooldown}</string>
+        <string>--activate-inject</string>
     </array>
-
-    <key>WorkingDirectory</key>
-    <string>${e_dept}</string>
-
-    <!-- DOCTRINE: StartInterval so the backstop also fires on wake. -->
-    <key>StartInterval</key>
-    <integer>${interval}</integer>
-
-    <key>RunAtLoad</key>
-    <true/>
-
+    <key>WorkingDirectory</key><string>${e_dept}</string>
+    <key>StartInterval</key><integer>${interval}</integer>
+    <key>RunAtLoad</key><true/>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>OPS_LOOP_DEPT</key>
-        <string>${slug}</string>
-        <key>BUBBLE_DEPT</key>
-        <string>${slug}</string>
-        <key>BUBBLE_HOST</key>
-        <string>local</string>
+        <key>OPS_LOOP_DEPT</key><string>${slug}</string>
+        <key>BUBBLE_DEPT</key><string>${slug}</string>
+        <key>BUBBLE_HOST</key><string>local</string>
     </dict>
-
-    <key>StandardOutPath</key>
-    <string>${e_out}</string>
-    <key>StandardErrorPath</key>
-    <string>${e_err}</string>
+    <key>StandardOutPath</key><string>${e_out}</string>
+    <key>StandardErrorPath</key><string>${e_err}</string>
 </dict>
 </plist>
 PLIST

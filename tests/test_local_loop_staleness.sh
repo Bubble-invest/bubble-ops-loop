@@ -98,6 +98,10 @@ d="$(make_dept missing1)"   # no heartbeat written at all
 res="$(is_heartbeat_stale "$d" "$STALE_SEC")"
 chk_eq "T3 missing heartbeat → stale (fail-safe)" "stale" "$res"
 
+TG_STATE="$WORK/tg"; mkdir -p "$TG_STATE"; chmod 700 "$TG_STATE"
+TMUX_STUB="$WORK/tmux"; printf '#!/bin/sh\nexit 0\n' >"$TMUX_STUB"; chmod 700 "$TMUX_STUB"
+RUN_ARGS=(--telegram-state-dir "$TG_STATE" --session-name ops-loop-test --harness-selector "$WORK/harness-test" --tmux-bin "$TMUX_STUB")
+
 # -----------------------------------------------------------------------------
 # T4: runner WITHOUT --activate-tick on a STALE dept → dry decision, no claude
 # -----------------------------------------------------------------------------
@@ -113,11 +117,11 @@ echo "TRIPWIRE: claude launched" > "$TRIP"
 EOF
 chmod +x "$SHIM/claude"
 out="$WORK/run-stale.log"
-PATH="$SHIM:$PATH" "$RUNNER" --dept-dir "$d" --slug stale2 --stale-sec "$STALE_SEC" >"$out" 2>&1
+PATH="$SHIM:$PATH" "$RUNNER" --dept-dir "$d" --slug stale2 --stale-sec "$STALE_SEC" "${RUN_ARGS[@]}" >"$out" 2>&1
 rc=$?
-chk "T4 runner (dry) on stale dept exits 0" 0 "$rc"
+chk "T4 runner (inactive) on stale dept is non-green" 1 "$rc"
 want   "T4b stale dept logged as STALE" "STALE" "$out"
-want   "T4c stale dept prints a dry 'would force-tick'" "would force-tick" "$out"
+want   "T4c stale dept reports injection deferred" "DEFERRED" "$out"
 nowant "T4d dry run NEVER launched claude" "." "$TRIP"
 
 # -----------------------------------------------------------------------------
@@ -132,11 +136,11 @@ echo "TRIPWIRE" > "$TRIP2"
 EOF
 chmod +x "$SHIM/claude"
 out="$WORK/run-fresh.log"
-PATH="$SHIM:$PATH" "$RUNNER" --dept-dir "$d" --slug fresh2 --stale-sec "$STALE_SEC" >"$out" 2>&1
+PATH="$SHIM:$PATH" "$RUNNER" --dept-dir "$d" --slug fresh2 --stale-sec "$STALE_SEC" "${RUN_ARGS[@]}" >"$out" 2>&1
 rc=$?
 chk "T5 runner on fresh dept exits 0" 0 "$rc"
 want   "T5b fresh dept logged as FRESH" "FRESH" "$out"
-nowant "T5c fresh dept never force-ticks" "would force-tick" "$out"
+nowant "T5c fresh dept never injects" "WAKE_QUEUED" "$out"
 nowant "T5d fresh dept never launched claude" "." "$TRIP2"
 
 # -----------------------------------------------------------------------------
