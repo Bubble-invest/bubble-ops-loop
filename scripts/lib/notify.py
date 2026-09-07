@@ -34,7 +34,8 @@ Public surface
 - ``SMTPEmailBackend`` — stdlib smtplib + email.mime, MIME multipart/alternative
   (plain text + HTML), attachments, STARTTLS or SMTPS.
 - ``TelegramBackend`` — direct HTTPS to api.telegram.org/bot{token}/sendMessage,
-  MarkdownV2 with escape, 4096-char truncation.
+  MarkdownV2 with escape by default, explicit plaintext for entity-safe split
+  payloads, and 4096-char truncation as a final safeguard.
 - ``render_markdown_to_html(md_body)`` — stdlib-only Markdown→HTML converter
   (headings, bold/italic/code, links, lists, paragraphs, code fences).
 - ``resolve_recipients(account_used, channels, config)`` — config-driven
@@ -140,8 +141,9 @@ class NotificationPayload:
         attachments: Optional file paths. Email = MIME attach; Telegram =
             sendDocument if ≤20MB, else ignore with warning.
         priority: "normal" or "urgent". Urgent = phone-buzz worthy.
-        metadata: Caller-provided context (slug, tier, cron_name, etc.). Used
-            for receipts/logging only.
+        metadata: Caller-provided context (slug, tier, cron_name, etc.).
+            ``telegram_plain_text=True`` opts a Telegram payload out of parse
+            mode when preserving literal split content matters.
     """
 
     subject: str
@@ -895,7 +897,8 @@ class TelegramBackend:
     Reads ``TELEGRAM_BOT_TOKEN`` from the environment (set by
     ``tools/sync-secrets.sh``). Sends to a ``chat_id`` recipient via
     ``api.telegram.org/bot{token}/sendMessage`` (or ``sendDocument`` for
-    attachments ≤20MB).
+    attachments ≤20MB). Payload metadata may set ``telegram_plain_text`` to
+    omit parse mode and send subject/body literally.
     """
 
     name = "telegram-alert"
@@ -924,22 +927,34 @@ class TelegramBackend:
         return token
 
     def _build_telegram_body(self, payload: NotificationPayload) -> str:
-        # Subject as bold first line, then body translated to MarkdownV2.
-        subject_line = f"*{_escape_telegram_text(payload.subject)}*"
-        body_md2 = _markdown_to_telegram(payload.markdown_body)
-        full = subject_line + "\n\n" + body_md2
+        # Long generated briefs opt into literal plaintext so chunk boundaries
+        # cannot split a MarkdownV2 entity and make Telegram reject the whole
+        # message (board #1134). Other callers retain the formatted path.
+        plain_text = bool(payload.metadata.get("telegram_plain_text"))
+        if plain_text:
+            subject_line = payload.subject
+            rendered_body = payload.markdown_body
+        else:
+            subject_line = f"*{_escape_telegram_text(payload.subject)}*"
+            rendered_body = _markdown_to_telegram(payload.markdown_body)
+        full = subject_line + "\n\n" + rendered_body
 
         if len(full) <= TELEGRAM_MESSAGE_MAX:
             return full
 
         # Truncate; preserve subject line and as much body as possible
-        suffix = "\n\n" + _escape_telegram_text(TELEGRAM_TRUNCATION_SUFFIX)
+        suffix_text = (
+            TELEGRAM_TRUNCATION_SUFFIX
+            if plain_text
+            else _escape_telegram_text(TELEGRAM_TRUNCATION_SUFFIX)
+        )
+        suffix = "\n\n" + suffix_text
         # Budget for body: cap - subject - separator - suffix length
         max_body = TELEGRAM_MESSAGE_MAX - len(subject_line) - 2 - len(suffix)
         if max_body < 0:
             # Pathological subject — just return subject + suffix
             return subject_line[:TELEGRAM_MESSAGE_MAX]
-        truncated_body = body_md2[:max_body]
+        truncated_body = rendered_body[:max_body]
         return subject_line + "\n\n" + truncated_body + suffix
 
     def _send_one(
@@ -948,6 +963,7 @@ class TelegramBackend:
         chat_id: str,
         token: str,
         text: str,
+        parse_mode: Optional[str] = "MarkdownV2",
     ) -> DeliveryReceipt:
         """Send one Telegram message to a single chat_id. Helper for ``send``."""
         delivered_at = _now_iso_paris()
@@ -955,9 +971,10 @@ class TelegramBackend:
         body_payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "MarkdownV2",
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            body_payload["parse_mode"] = parse_mode
         data = json.dumps(body_payload).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -1081,16 +1098,22 @@ class TelegramBackend:
             )
 
         text = self._build_telegram_body(payload)
+        parse_mode = (
+            None if payload.metadata.get("telegram_plain_text") else "MarkdownV2"
+        )
 
         chat_ids = [c.strip() for c in str(recipient).split(",") if c.strip()]
         if not chat_ids:
             chat_ids = [recipient]
 
         if len(chat_ids) == 1:
-            return self._send_one(payload, chat_ids[0], token, text)
+            return self._send_one(
+                payload, chat_ids[0], token, text, parse_mode=parse_mode
+            )
 
         per_receipts = [
-            self._send_one(payload, cid, token, text) for cid in chat_ids
+            self._send_one(payload, cid, token, text, parse_mode=parse_mode)
+            for cid in chat_ids
         ]
         all_ok = all(r.success for r in per_receipts)
         errors = [

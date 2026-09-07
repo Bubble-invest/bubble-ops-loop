@@ -20,8 +20,10 @@ Message shapes
       ``🔁 <dept> · L<N> fired — <first line of summary.md>``
   immediate (brief artifact configured+found, board #521) :
       ``🔁 <dept> · L<N> fired`` header, then the FULL BODY of the dept's
-      real brief artifact (e.g. ``morning_brief.md`` / ``telegram_message.md``),
-      truncated to ``BRIEF_MAX_CHARS`` with a "…(tronqué)" marker when cut.
+      real brief artifact (e.g. ``morning_brief.md`` / ``telegram_message.md``).
+      Long briefs are split into numbered Telegram messages without dropping
+      their tail; brief parts use literal plaintext so a split cannot leave a
+      Markdown entity unclosed (board #1134).
   batched   :  ``🔁 <dept> · L2 ×3, L3 ×1``
 
 Board #521 (fleet-wide L1/L4 brief delivery)
@@ -99,6 +101,7 @@ try:  # pragma: no cover - import-path dependent
         resolve_recipients,
         CHANNEL_TELEGRAM_ALERT,
         MissingCredentialError,
+        TELEGRAM_MESSAGE_MAX,
     )
 except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts/lib
     from notify import (  # type: ignore
@@ -107,6 +110,7 @@ except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts
         resolve_recipients,
         CHANNEL_TELEGRAM_ALERT,
         MissingCredentialError,
+        TELEGRAM_MESSAGE_MAX,
     )
 
 # The default account the loop pings on a layer fire. Dept configs map this
@@ -119,15 +123,6 @@ LAYER_FIRE_GLYPH = "🔁"
 # Layers that get the IMMEDIATE, full-brief-body treatment (board #521). L2/L3
 # stay batched one-liners — they're internal cadence, not operator briefs.
 BRIEF_LAYERS = ("1", "4")
-
-# Telegram hard cap is 4096 chars for the WHOLE message (subject + body, see
-# notify.TELEGRAM_MESSAGE_MAX); the TelegramBackend already truncates at that
-# level, but we truncate the brief body ourselves first so the cut lands at a
-# sane boundary with a clear French "tronqué" marker (board #521 requirement)
-# rather than an arbitrary mid-word chop deep inside notify.py's own budget
-# math. Leaves headroom for the subject line + cockpit link + the marker.
-BRIEF_MAX_CHARS = int(os.environ.get("BUBBLE_BRIEF_MAX_CHARS", "3500"))
-BRIEF_TRUNCATION_MARKER = "\n\n…(tronqué)"
 
 # Default notify-log filename, written under the dept's outputs dir (or
 # BUBBLE_NOTIFY_LOG_PATH when the caller doesn't have an outputs dir handy).
@@ -242,25 +237,86 @@ def _resolve_brief_path(summary_path, layer, config: dict):
 
 
 def _read_brief_body(brief_path) -> str:
-    """Read + truncate a brief artifact's full text (board #521, cause 1).
-
-    Truncates to ``BRIEF_MAX_CHARS`` with ``BRIEF_TRUNCATION_MARKER`` appended
-    when cut, so an oversized brief (or a pathological huge file) never blows
-    past Telegram's message cap. Defensive — never raises; "" on any error
-    (caller then falls back to the first-line shape).
-    """
+    """Read a brief artifact's full text. Defensive: never raises."""
     try:
         text = Path(brief_path).read_text(encoding="utf-8", errors="replace").strip()
     except Exception:  # noqa: BLE001
         return ""
     if not text:
         return ""
-    if len(text) > BRIEF_MAX_CHARS:
-        budget = BRIEF_MAX_CHARS - len(BRIEF_TRUNCATION_MARKER)
-        if budget < 0:
-            budget = 0
-        text = text[:budget] + BRIEF_TRUNCATION_MARKER
     return text
+
+
+def _rendered_telegram_length(subject: str, markdown_body: str) -> int:
+    """Return the exact plaintext length used for a split brief part.
+
+    Brief parts deliberately opt out of parse mode so a chunk boundary cannot
+    leave a MarkdownV2 entity unclosed and make Telegram reject the message.
+    """
+    return len(subject) + 2 + len(markdown_body)
+
+
+def _preferred_split(text: str, hard_limit: int) -> int:
+    """Prefer a paragraph, line, or word boundary near ``hard_limit``."""
+    floor = hard_limit // 2
+    for separator in ("\n\n", "\n", " "):
+        boundary = text.rfind(separator, floor, hard_limit)
+        if boundary >= floor:
+            return boundary + len(separator)
+    return hard_limit
+
+
+def _split_brief_messages(
+    text: str,
+    header: str,
+    cockpit_link: str,
+    *,
+    max_chars: int = TELEGRAM_MESSAGE_MAX,
+) -> list[str]:
+    """Split ``text`` into lossless chunks that TelegramBackend will not cut.
+
+    Every candidate is measured in the literal plaintext form sent to
+    Telegram. The sizing pass reserves room for the numbered subject and
+    cockpit link on every part;
+    the real send uses the link only on the last part, so all messages remain
+    within Telegram's limit. Concatenating the returned chunks reproduces the
+    source text exactly.
+    """
+    if not text:
+        return [""]
+    link_suffix = "\n\n" + cockpit_link
+    if _rendered_telegram_length(header, text + link_suffix) <= max_chars:
+        return [text]
+
+    # A brief cannot yield more parts than source characters, so this marker
+    # reserves enough digits before the final part count is known.
+    digits = len(str(len(text)))
+    marker = "9" * digits
+    reserved_subject = f"{header} ({marker}/{marker})"
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        low, high, best = 1, len(remaining), 0
+        while low <= high:
+            midpoint = (low + high) // 2
+            candidate = remaining[:midpoint] + link_suffix
+            if _rendered_telegram_length(reserved_subject, candidate) <= max_chars:
+                best = midpoint
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        if best == 0:  # Pathological caller-supplied header/link; still progress.
+            best = 1
+        cut = _preferred_split(remaining, best)
+        # Markdown matching can make rendered length slightly non-monotonic
+        # around an unmatched delimiter. ``best`` itself was measured as safe.
+        if _rendered_telegram_length(
+            reserved_subject, remaining[:cut] + link_suffix
+        ) > max_chars:
+            cut = best
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:]
+    return chunks
 
 
 def log_notify_event(
@@ -325,7 +381,7 @@ def notify_layer_fired(
         ``brief_artifacts`` filename for this layer AND that file exists
         alongside ``summary_path``, the ping is a short header
         (``🔁 <dept> · L<N> fired``) followed by the FULL BRIEF BODY
-        (truncated to ``BRIEF_MAX_CHARS`` with a "…(tronqué)" marker).
+        split into numbered messages when needed so the complete body arrives.
       - Otherwise (no brief configured, brief not found, or L2/L3 callers
         that pass this function directly) — falls back to the pre-#521
         shape: ``🔁 <dept> · L<N> fired — <first line of summary.md>``. No
@@ -365,41 +421,77 @@ def notify_layer_fired(
     else:
         body = ""
 
-    if body:
-        # Real brief body wins: header as the message subject (bold, via
-        # TelegramBackend), full brief as the markdown body.
-        text_subject = header
-        markdown_body = body + "\n\n" + _cockpit_link(dept)
-        used_brief = True
-    else:
-        # Fallback: pre-#521 first-line-of-summary shape, all in one line.
-        first = _first_line_of_summary(summary_path)
-        text_subject = header
-        if first:
-            text_subject += f" — {first}"
-        markdown_body = _cockpit_link(dept)
-        used_brief = False
-
     recipient = _resolve_chat_recipient(config or {}, account)
+    backend = _telegram_backend(config or {}, opener)
+    cockpit_link = _cockpit_link(dept)
+
+    if body:
+        chunks = _split_brief_messages(body, header, cockpit_link)
+        part_count = len(chunks)
+        receipt = None
+        for part_number, chunk in enumerate(chunks, 1):
+            subject = header
+            if part_count > 1:
+                subject += f" ({part_number}/{part_count})"
+            markdown_body = chunk
+            if part_number == part_count:
+                markdown_body += "\n\n" + cockpit_link
+            payload = NotificationPayload(
+                subject=subject,
+                markdown_body=markdown_body,
+                metadata={
+                    "dept": dept,
+                    "layer": layer_str,
+                    "kind": "layer_fired",
+                    "brief_sent": True,
+                    "part": part_number,
+                    "parts": part_count,
+                    "telegram_plain_text": True,
+                },
+            )
+            receipt = backend.send(payload, recipient)
+            log_notify_event(
+                {
+                    "dept": dept,
+                    "layer": layer_str,
+                    "kind": "layer_fired",
+                    "brief_sent": True,
+                    "brief_path": str(brief_path),
+                    "part": part_number,
+                    "parts": part_count,
+                    "recipient": recipient,
+                    "success": bool(getattr(receipt, "success", False)),
+                    "error": getattr(receipt, "error", None),
+                },
+                notify_log_path=notify_log_path,
+            )
+            if not bool(getattr(receipt, "success", False)):
+                break
+        return receipt
+
+    # Fallback: pre-#521 first-line-of-summary shape, all in one line.
+    first = _first_line_of_summary(summary_path)
+    text_subject = header
+    if first:
+        text_subject += f" — {first}"
     payload = NotificationPayload(
         subject=text_subject,
-        markdown_body=markdown_body,
+        markdown_body=cockpit_link,
         metadata={
             "dept": dept,
             "layer": layer_str,
             "kind": "layer_fired",
-            "brief_sent": used_brief,
+            "brief_sent": False,
         },
     )
-    backend = _telegram_backend(config or {}, opener)
     receipt = backend.send(payload, recipient)
     log_notify_event(
         {
             "dept": dept,
             "layer": layer_str,
             "kind": "layer_fired",
-            "brief_sent": used_brief,
-            "brief_path": str(brief_path) if brief_path else None,
+            "brief_sent": False,
+            "brief_path": None,
             "recipient": recipient,
             "success": bool(getattr(receipt, "success", False)),
             "error": getattr(receipt, "error", None),
@@ -487,7 +579,6 @@ __all__ = [
     "DEFAULT_ACCOUNT",
     "LAYER_FIRE_GLYPH",
     "BRIEF_LAYERS",
-    "BRIEF_MAX_CHARS",
-    "BRIEF_TRUNCATION_MARKER",
+    "_split_brief_messages",
     "MissingCredentialError",
 ]

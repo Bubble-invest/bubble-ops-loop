@@ -241,3 +241,73 @@ def test_default_notify_log_path_uses_outputs_dir(tmp_path, monkeypatch, nl):
 def test_default_notify_log_path_env_override(tmp_path, monkeypatch, nl):
     monkeypatch.setenv("BUBBLE_NOTIFY_LOG_PATH", str(tmp_path / "custom.log"))
     assert nl._default_notify_log_path() == str(tmp_path / "custom.log")
+
+
+def test_real_cli_uses_canonical_lossless_splitter_without_http(
+    tmp_path, monkeypatch, nl
+):
+    """Exercise tools/notify_layer.py with the real loop_notify module.
+
+    The backend alone is replaced so this test proves the runtime CLI reaches
+    the canonical splitter and plaintext payload path without a network send.
+    """
+    from scripts.lib import loop_notify as canonical_loop_notify
+
+    layer_dir = tmp_path / "outputs" / "2026-09-07" / "1"
+    layer_dir.mkdir(parents=True)
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief_text = (
+        "Intro\n\n```python\n"
+        + ("x = 1 # code\n" * 400)
+        + "```\n\n[link](https://example.test) **bold** `inline` TAIL_SENTINEL"
+    )
+    brief.write_text(brief_text)
+    (tmp_path / "config.yaml").write_text(
+        "accounts:\n"
+        "  Operator:\n"
+        "    telegram_chat_id: '123456'\n"
+        "brief_artifacts:\n"
+        "  '1': morning_brief.md\n"
+    )
+
+    sent = []
+
+    class _Backend:
+        def send(self, payload, recipient):
+            sent.append((payload, recipient))
+            return _FakeReceipt(success=True)
+
+    monkeypatch.setattr(nl, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        canonical_loop_notify,
+        "_telegram_backend",
+        lambda config, opener: _Backend(),
+    )
+    monkeypatch.setitem(sys.modules, "loop_notify", canonical_loop_notify)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "notify_layer.py",
+            "fired",
+            "--layer",
+            "1",
+            "--summary",
+            str(summary),
+        ],
+    )
+
+    assert nl.main() == 0
+    assert len(sent) > 1
+    assert all(recipient == "123456" for _, recipient in sent)
+    assert all(
+        payload.metadata.get("telegram_plain_text") is True
+        for payload, _ in sent
+    )
+    link_suffix = "\n\n" + canonical_loop_notify._cockpit_link(tmp_path.name)
+    bodies = [payload.markdown_body for payload, _ in sent]
+    assert bodies[-1].endswith(link_suffix)
+    bodies[-1] = bodies[-1][: -len(link_suffix)]
+    assert "".join(bodies) == brief_text

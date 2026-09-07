@@ -12,10 +12,10 @@ Covers:
   * graceful email degradation: no SMTP creds → Telegram still delivers,
     email returns a failed-but-non-fatal receipt (per-channel isolation in the
     promoted notify.deliver).
-  * board #521 (fleet-wide L1/L4 real-brief delivery): the brief BODY is sent
-    (not just the summary heading); the config-driven brief_artifacts path
-    resolves + falls back safely; oversized briefs truncate; L2/L3 unchanged;
-    every send outcome is logged (observability).
+  * board #521/#1134 (fleet-wide L1/L4 real-brief delivery): the brief BODY is
+    sent (not just the summary heading); the config-driven brief_artifacts path
+    resolves + falls back safely; oversized briefs split without data loss;
+    L2/L3 stay unchanged; every send outcome is logged (observability).
 
 No live HTTP — a fake opener captures every request.
 """
@@ -71,6 +71,20 @@ class _CapturingOpener:
         )
         resp = {"ok": True, "result": {"message_id": self._mid}}
         return _FakeResponse(json.dumps(resp).encode("utf-8"), status=200)
+
+
+class _FailingOpener(_CapturingOpener):
+    """Record every attempt and inject a transport failure at one call."""
+
+    def __init__(self, fail_on_call: int):
+        super().__init__()
+        self._fail_on_call = fail_on_call
+
+    def __call__(self, req, timeout=None):
+        response = super().__call__(req, timeout=timeout)
+        if len(self.calls) == self._fail_on_call:
+            raise OSError("synthetic transport failure")
+        return response
 
 
 # ─── Fixtures ──────────────────────────────────────────────────────────────
@@ -477,22 +491,116 @@ def test_layer_fired_brief_artifacts_from_department_nested_config(tmp_path, tok
     assert "Nested config brief body" in text
 
 
-def test_layer_fired_oversized_brief_is_truncated(tmp_path, token_env, monkeypatch):
-    """Cause 1 + robustness: an oversized brief must be truncated with a
-    visible marker, never sent raw past the message budget."""
-    monkeypatch.setattr(loop_notify, "BRIEF_MAX_CHARS", 100)
+def test_layer_fired_long_brief_is_split_without_losing_tail(tmp_path, token_env):
+    """Board #1134: every character reaches Telegram in bounded messages."""
     layer_dir = _make_layer_dir(tmp_path, "1")
     summary = layer_dir / "summary.md"
     summary.write_text("# heading\n")
     brief = layer_dir / "morning_brief.md"
-    brief.write_text("A" * 5000)
+    brief_text = "".join(
+        f"## Section {index}\n\nFinding {index}: " + ("evidence " * 80) + "\n\n"
+        for index in range(14)
+    ).strip() + "\n\nTAIL_SENTINEL"
+    brief.write_text(brief_text)
 
     opener = _CapturingOpener()
-    loop_notify.notify_layer_fired("tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener)
-    text = opener.calls[0]["body"]["text"]
-    assert "tronqu" in text  # "…(tronqué)" marker present (accent-safe substring)
-    # The raw 5000-char brief must not have been sent whole.
-    assert "A" * 5000 not in text
+    log_path = tmp_path / "notify.log"
+    receipt = loop_notify.notify_layer_fired(
+        "tony",
+        1,
+        summary,
+        config=CONFIG_WITH_BRIEFS,
+        opener=opener,
+        notify_log_path=log_path,
+    )
+
+    chunks = loop_notify._split_brief_messages(
+        brief_text, "🔁 tony · L1 fired", loop_notify._cockpit_link("tony")
+    )
+    assert "".join(chunks) == brief_text
+    assert receipt.success is True
+    assert len(opener.calls) == len(chunks) > 1
+    assert all(len(call["body"]["text"]) <= notify.TELEGRAM_MESSAGE_MAX for call in opener.calls)
+    assert all("truncated" not in call["body"]["text"] for call in opener.calls)
+    assert all("parse_mode" not in call["body"] for call in opener.calls)
+    assert "TAIL_SENTINEL" in opener.calls[-1]["body"]["text"]
+    assert "/dept/tony" in opener.calls[-1]["body"]["text"]
+    assert all("/dept/tony" not in call["body"]["text"] for call in opener.calls[:-1])
+    for part_number, call in enumerate(opener.calls, 1):
+        assert call["body"]["text"].startswith(
+            f"🔁 tony · L1 fired ({part_number}/{len(chunks)})\n\n"
+        )
+
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert len(records) == len(chunks)
+    assert [record["part"] for record in records] == list(range(1, len(chunks) + 1))
+    assert all(record["parts"] == len(chunks) for record in records)
+
+
+@pytest.mark.parametrize(
+    "brief_text",
+    [
+        "Intro\n\n```python\n" + ("x = 1 # code\n" * 80) + "```\n\nTAIL",
+        "Intro `" + ("inline-code " * 100) + "` TAIL",
+        "[" + ("linked label " * 100) + "](https://example.test/path?q=1) TAIL",
+        "**" + ("bold text " * 120) + "** TAIL",
+        "*" + ("italic text " * 120) + "* TAIL",
+        ("symbols _*[]()~`>#+-=|{}.! and \\slashes\n" * 80) + "TAIL",
+    ],
+    ids=["fence", "inline-code", "link", "bold", "italic", "specials"],
+)
+def test_split_brief_parts_use_entity_safe_plaintext(brief_text):
+    """Forced splits inside Markdown constructs remain literal and sendable."""
+    header = "🔁 ben · L4 fired"
+    link = loop_notify._cockpit_link("ben")
+
+    chunks = loop_notify._split_brief_messages(
+        brief_text, header, link, max_chars=300
+    )
+
+    assert "".join(chunks) == brief_text
+    assert len(chunks) > 1
+    part_count = len(chunks)
+    for part_number, chunk in enumerate(chunks, 1):
+        subject = f"{header} ({part_number}/{part_count})"
+        body = chunk + ("\n\n" + link if part_number == part_count else "")
+        payload = notify.NotificationPayload(
+            subject=subject,
+            markdown_body=body,
+            metadata={"telegram_plain_text": True},
+        )
+        actual = notify.TelegramBackend({})._build_telegram_body(payload)
+        assert actual == subject + "\n\n" + body
+        assert len(actual) <= 300
+    assert "TAIL" in actual
+
+
+def test_layer_fired_stops_after_first_failed_part(tmp_path, token_env):
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text(("Paragraph with evidence.\n\n" * 800) + "TAIL")
+    log_path = tmp_path / "notify.log"
+    opener = _FailingOpener(fail_on_call=2)
+
+    receipt = loop_notify.notify_layer_fired(
+        "tony",
+        1,
+        summary,
+        config=CONFIG_WITH_BRIEFS,
+        opener=opener,
+        notify_log_path=log_path,
+    )
+
+    assert receipt.success is False
+    assert len(opener.calls) == 2
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert len(records) == 2
+    assert records[0]["success"] is True
+    assert records[1]["success"] is False
+    assert records[1]["part"] == 2
+    assert records[1]["parts"] > 2
 
 
 def test_layer_fired_script_like_brief_content_handled(tmp_path, token_env):
