@@ -1,5 +1,6 @@
 """Tests for dispatch_directives — gate, idempotency, isolation. No network."""
 import sys
+import shutil
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,96 @@ def test_dry_run_writes_nothing(world):
     assert not (maya / dd._INBOX_REL / "directive-d7.yaml").exists()
     src = yaml.safe_load((tony / dd._OUTBOUND_REL / "directive-d7.yaml").read_text())
     assert src["status"] == "approved"  # unchanged
+
+
+def test_remote_delivery_keeps_gate_and_marks_only_after_target_push(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    root.mkdir()
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    maya_seed = _make_repo(legacy, "maya")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "remote-1")
+    delivered = []
+
+    def fake_clone(destination, repo_name):
+        assert repo_name == "bubble-ops-maya"
+        shutil.copytree(maya_seed, destination)
+        return True, "cloned(stub)"
+
+    def fake_push(repo_dir, repo_name, message, dry_run, paths=None):
+        if repo_name == "bubble-ops-maya":
+            payload = yaml.safe_load((repo_dir / dd._INBOX_REL / "directive-remote-1.yaml").read_text())
+            delivered.append(payload)
+        _git(repo_dir, "add", "--", *(paths or []))
+        dd._run(["git", "-C", str(repo_dir), "commit", "-m", message])
+        return True, "pushed(stub)"
+
+    monkeypatch.setattr(dd, "_clone_remote_repo", fake_clone)
+    monkeypatch.setattr(dd, "_push_repo", fake_push)
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
+    assert len(delivered) == 1
+    assert delivered[0]["from"] == "tony"
+    assert "status" not in delivered[0]
+    assert yaml.safe_load(directive.read_text())["status"] == "dispatched"
+    assert not (root / "maya").exists(), "remote delivery must not write another live UID tree"
+
+
+def test_remote_delivery_failure_leaves_approved_queue_untouched(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    legacy = tmp_path / "legacy"
+    root.mkdir(); legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "remote-held")
+    monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: (False, "synthetic failure"))
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 1
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+
+
+def test_remote_delivery_still_rejects_unapproved_before_transport(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    legacy = tmp_path / "legacy"
+    root.mkdir(); legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "remote-denied", approved_by="tony")
+    monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: pytest.fail("transport called"))
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+
+
+def test_remote_delivery_rejects_path_shaped_target_before_transport(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    legacy = tmp_path / "legacy"
+    root.mkdir(); legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "remote-path", target_dept="../../outside")
+    monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: pytest.fail("transport called"))
+    assert dd.dispatch(root, "tony", False, remote_delivery=True) == 0
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"
+    assert not (tmp_path / "outside").exists()
+
+
+def test_remote_dry_run_does_not_clone_or_change_queue(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    legacy = tmp_path / "legacy"
+    root.mkdir(); legacy.mkdir()
+    tony_legacy = _make_repo(legacy, "tony")
+    tony = root / "tony"
+    shutil.move(str(tony_legacy), tony)
+    (tony / dd._OUTBOUND_REL).mkdir(parents=True)
+    directive = _drop(tony, "remote-dry")
+    monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: pytest.fail("dry-run cloned"))
+    assert dd.dispatch(root, "tony", True, remote_delivery=True) == 0
+    assert yaml.safe_load(directive.read_text())["status"] == "approved"

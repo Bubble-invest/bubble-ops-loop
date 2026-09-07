@@ -92,17 +92,13 @@ def test_layer_service_clears_own_failed_state():
     )
 
 
-def test_installer_grants_scoped_resetfailed_sudoers():
-    """The installer must lay down a TIGHTLY SCOPED sudoers grant: only
-    reset-failed, only loop-layer@*.service — never a blanket systemctl."""
+def test_isolated_installer_adds_no_sudoers_or_privileged_floor_bridge():
+    """Per-dept units run as their own agent UID and need no sudo grant."""
     inst = _read(INSTALL_SH)
-    assert "reset-failed loop-layer@*.service" in inst, (
-        "installer must grant claude NOPASSWD for `systemctl reset-failed "
-        "loop-layer@*.service` so the ExecStartPre hygiene actually works"
-    )
-    # Scope guard: the grant must be reset-failed-only (no bare `systemctl *`).
-    assert "NOPASSWD: /bin/systemctl reset-failed loop-layer@*.service" in inst, (
-        "sudoers grant must be scoped to reset-failed of the layer units only"
-    )
-    # And it must be visudo-validated before install (never lock sudo).
-    assert "visudo -cf" in inst, "sudoers drop-in must be visudo-validated"
+    assert "NOPASSWD" not in inst
+    assert "visudo" not in inst
+    for layer in range(1, 5):
+        svc = _read(os.path.join(REPO_ROOT, "deploy", "templates", f"loop-layer{layer}@.service"))
+        assert "User=agent-%i" in svc
+        assert "User=root" not in svc
+        assert "sudo" not in svc

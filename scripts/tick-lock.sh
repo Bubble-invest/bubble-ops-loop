@@ -83,7 +83,15 @@ set -uo pipefail
 # command failure as a hard stop. A lock helper that itself can crash the
 # calling tick would defeat the entire point of this file.
 
-LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
+if [[ -n "${BUBBLE_BACKUP_LOCK_DIR:-}" ]]; then
+    LOCK_DIR="$BUBBLE_BACKUP_LOCK_DIR"
+elif [[ "${BUBBLE_AGENT_SLUG:-}" =~ ^[a-z][a-z0-9-]{0,31}$ ]] \
+     && [[ -d "/run/bubble-agent-${BUBBLE_AGENT_SLUG}" ]] \
+     && [[ -w "/run/bubble-agent-${BUBBLE_AGENT_SLUG}" ]]; then
+    LOCK_DIR="/run/bubble-agent-${BUBBLE_AGENT_SLUG}"
+else
+    LOCK_DIR="/run/lock"
+fi
 MAX_HOLD_SECS="${TICK_LOCK_MAX_HOLD_SECS:-1800}"
 PY="${BUBBLE_TICK_LOCK_PY:-python3}"
 

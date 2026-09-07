@@ -44,7 +44,7 @@ FAKE_TOKEN = "ghs_ThisIsATotallyFakeTestTokenNotReal1234567890"
 
 
 def test_push_repo_token_not_in_argv(tmp_path, monkeypatch):
-    monkeypatch.setattr(dd, "_mint_token", lambda repo_name: FAKE_TOKEN)
+    monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir=None: FAKE_TOKEN)
 
     calls = []  # (cmd, kwargs) pairs, exactly as handed to subprocess.run
 
@@ -100,7 +100,7 @@ def test_push_repo_no_mint_no_push(tmp_path, monkeypatch):
     """Unrelated to #921/#923 directly, but guards the surrounding logic
     this fix sits inside: if minting fails, _push_repo must fail closed
     (no push attempted) — unchanged behaviour."""
-    monkeypatch.setattr(dd, "_mint_token", lambda repo_name: None)
+    monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir=None: None)
 
     calls = []
 
@@ -118,3 +118,25 @@ def test_push_repo_no_mint_no_push(tmp_path, monkeypatch):
     assert ok is False
     assert "could not mint token" in detail
     assert not any("push" in cmd for cmd, _ in calls)
+
+
+def test_remote_clone_token_not_in_argv(tmp_path, monkeypatch):
+    monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir=None: FAKE_TOKEN)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(dd.subprocess, "run", fake_run)
+    destination = tmp_path / "private" / "target"
+    ok, detail = dd._clone_remote_repo(destination, "bubble-ops-maya")
+    assert ok is True, detail
+    clone_cmd, clone_kw = calls[-1]
+    argv = " ".join(clone_cmd)
+    assert FAKE_TOKEN not in argv
+    assert "x-access-token:" not in argv
+    assert "https://github.com/Bubble-invest/bubble-ops-maya.git" in clone_cmd
+    assert "credential.helper=" in clone_cmd
+    values = [v for k, v in clone_kw["env"].items() if k.startswith("GIT_CONFIG_VALUE_")]
+    assert values and all(FAKE_TOKEN not in str(x) for x in clone_cmd)

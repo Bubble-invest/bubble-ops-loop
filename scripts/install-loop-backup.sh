@@ -1,123 +1,131 @@
 #!/usr/bin/env bash
-# install-loop-backup.sh — install the ops-loop "4-cron layer FLOOR".
-#
-# Part of the bubble-ops-loop install package. Idempotent: safe to re-run
-# (e.g. on every deploy / fresh box bring-up).
-#
-# WHAT IT INSTALLS (the floor):
-#   EXACTLY 4 cron units, one per OODA layer, forever:
-#     loop-layer1.timer → L1 (Observe)  07:00 Europe/Paris
-#     loop-layer2.timer → L2 (Orient)   12:00 Europe/Paris
-#     loop-layer3.timer → L3 (Decide)   16:00 Europe/Paris
-#     loop-layer4.timer → L4 (Act)      19:00 Europe/Paris
-#   All four share ONE template service `loop-layer@.service`
-#   (ExecStart=…/loop-backup.sh --layer %i). Each fires its layer for EVERY
-#   eligible dept, discovered at RUNTIME (glob /home/claude/agents/bubble-ops-*).
-#   A NEW dept being born adds ZERO new units — it's picked up automatically.
-#
-# WHY a floor: each dept runs a persistent `/loop` session. If that session
-# dies for any reason (auth lapse, crash, OOM, "parked" after a restart) the
-# dept silently stops working while systemd still reports `active`. These four
-# crons GUARANTEE each OODA layer fires >=1x/day per dept even if the live
-# /loop is dead. A heartbeat freshness gate skips depts whose live loop is
-# healthy, so a working dept is never double-ticked; a flock mutex guarantees a
-# floor tick never overlaps a live tick. See scripts/loop-backup.sh +
-# scripts/lib/loop_backup.py.
-#
-# LEGACY: the old twice-daily generic `loop-backup.timer` (decide_dispatch tick,
-# no forced layer) is RETIRED by this installer — the 4-layer floor supersedes
-# it (it fired ~L1 only; the floor fires all four). We `disable --now` it if
-# present. The generic mode of the script (no --layer) is KEPT for manual /
-# emergency use; only the redundant TIMER is retired.
-#
-# Usage (on the box, as a sudoer):
-#   bash scripts/install-loop-backup.sh
-#   bash scripts/install-loop-backup.sh --dry-run
-
+# Install the per-department four-layer VPS floor (#606 isolation repair).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_DIR="$PROJECT_ROOT/deploy/templates"
-SYSTEMD_DIR="/etc/systemd/system"
+SYSTEMD_DIR="${BUBBLE_FLOOR_SYSTEMD_DIR:-/etc/systemd/system}"
+AGENTS_ROOT="${BUBBLE_FLOOR_AGENTS_ROOT:-/srv/agents}"
+SYSTEMCTL="${BUBBLE_FLOOR_SYSTEMCTL:-systemctl}"
 DRY=0
-[[ "${1:-}" == "--dry-run" ]] && DRY=1
-
-# The 4 layer timers + the one template service that backs them.
-LAYER_TIMERS=(loop-layer1.timer loop-layer2.timer loop-layer3.timer loop-layer4.timer)
-TEMPLATE_SERVICE="loop-layer@.service"
+ACTIVATE=0
+ONLY_DEPT=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY=1; shift ;;
+        --install-only) ACTIVATE=0; shift ;; # compatibility alias; now the safe default
+        --activate) ACTIVATE=1; shift ;;
+        --dept) ONLY_DEPT="${2:-}"; shift 2 ;;
+        --dept=*) ONLY_DEPT="${1#--dept=}"; shift ;;
+        *) echo "ERR: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+done
 
 say() { echo "[install-loop-backup] $*"; }
-run() { if [[ "$DRY" == "1" ]]; then echo "  DRY: $*"; else eval "$*"; fi; }
-
-# 1) The runner script + decision lib are part of the cloned repo already
-#    (scripts/loop-backup.sh, scripts/lib/loop_backup.py). Just ensure the
-#    runner is executable.
-[[ -f "$PROJECT_ROOT/scripts/loop-backup.sh" ]] || { echo "ERR: scripts/loop-backup.sh missing in repo" >&2; exit 2; }
-run "chmod +x '$PROJECT_ROOT/scripts/loop-backup.sh'"
-
-# 2) Install the template service + the 4 layer timers from templates.
-for unit in "$TEMPLATE_SERVICE" "${LAYER_TIMERS[@]}"; do
-    src="$TEMPLATE_DIR/$unit"
-    [[ -f "$src" ]] || { echo "ERR: template $src missing" >&2; exit 2; }
-    say "installing $unit"
-    run "sudo install -m 0644 -o root -g root '$src' '$SYSTEMD_DIR/$unit'"
-done
-
-# 2b) Scoped sudoers grant so the layer service (User=claude) can clear its OWN
-#     stale `failed` marker via the ExecStartPre `sudo -n systemctl reset-failed`
-#     (unit hygiene — a non-zero tick must not leave the templated instance red
-#     forever once the next tick succeeds). Tightly scoped: ONLY reset-failed,
-#     ONLY the loop-layer@*.service instances. Validate with visudo before
-#     installing so a malformed drop-in can never lock sudo.
-SUDOERS_FILE="/etc/sudoers.d/bubble-loop-layer-resetfailed"
-SUDOERS_LINE='claude ALL=(root) NOPASSWD: /bin/systemctl reset-failed loop-layer@*.service'
-say "installing scoped sudoers grant ($SUDOERS_FILE)"
-if [[ "$DRY" == "1" ]]; then
-    echo "  DRY: install $SUDOERS_FILE = '$SUDOERS_LINE' (visudo-validated, mode 0440)"
-else
-    _tmp_sudoers="$(mktemp)"
-    printf '# Installed by bubble-ops-loop/scripts/install-loop-backup.sh (Rick 2026-06-19).\n# Lets the loop-layer@N.service ExecStartPre clear its OWN stale failed state.\n%s\n' "$SUDOERS_LINE" > "$_tmp_sudoers"
-    if sudo visudo -cf "$_tmp_sudoers" >/dev/null 2>&1; then
-        sudo install -m 0440 -o root -g root "$_tmp_sudoers" "$SUDOERS_FILE"
-        say "sudoers grant installed + visudo-validated"
+root_run() {
+    if [[ "$DRY" == "1" ]]; then
+        printf '  DRY:'; printf ' %q' "$@"; printf '\n'
     else
-        echo "ERR: sudoers drop-in failed visudo validation — NOT installing" >&2
-        rm -f "$_tmp_sudoers"
-        exit 2
+        sudo -- "$@"
     fi
-    rm -f "$_tmp_sudoers"
-fi
+}
+valid_slug() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; }
 
-# 2c) One-shot cleanup: clear any EXISTING stale failed-state on the four
-#     instances right now (e.g. Ben's loop-layer@4.service left failed by the
-#     2026-06-18 wedge), so the fix takes effect without waiting for the next
-#     tick. Never fatal — a clean box has nothing to reset.
-for n in 1 2 3 4; do
-    run "sudo systemctl reset-failed 'loop-layer@${n}.service' 2>/dev/null || true"
+[[ -f "$PROJECT_ROOT/scripts/loop-backup.sh" ]] || { echo "ERR: runner missing" >&2; exit 2; }
+for layer in 1 2 3 4; do
+    for kind in service timer; do
+        f="$TEMPLATE_DIR/loop-layer${layer}@.${kind}"
+        [[ -f "$f" ]] || { echo "ERR: template missing: $f" >&2; exit 2; }
+    done
 done
 
-# 3) Reload, then enable+start each layer timer (the template service is
-#    oneshot, fired by its timer — never enabled directly).
-run "sudo systemctl daemon-reload"
-for t in "${LAYER_TIMERS[@]}"; do
-    run "sudo systemctl enable --now '$t'"
+VERIFY_UNITS=()
+for layer in 1 2 3 4; do
+    VERIFY_UNITS+=("$TEMPLATE_DIR/loop-layer${layer}@.service")
+    VERIFY_UNITS+=("$TEMPLATE_DIR/loop-layer${layer}@.timer")
 done
-
-# 4) Retire the legacy generic timer if it's present (superseded by the floor).
-#    Idempotent: disable --now is a no-op if it's already gone/stopped.
-if systemctl cat loop-backup.timer >/dev/null 2>&1; then
-    say "retiring legacy generic loop-backup.timer (superseded by the 4-layer floor)"
-    run "sudo systemctl disable --now loop-backup.timer || true"
+if command -v systemd-analyze >/dev/null 2>&1; then
+    systemd-analyze verify "${VERIFY_UNITS[@]}"
+elif [[ "$DRY" == "1" ]]; then
+    say "systemd-analyze unavailable; static dry-run only"
 else
-    say "legacy loop-backup.timer not present — nothing to retire"
+    echo "ERR: systemd-analyze required before installing units" >&2
+    exit 2
 fi
 
-# 5) Show next fire times.
-if [[ "$DRY" != "1" ]]; then
-    say "installed. Next runs:"
-    systemctl list-timers 'loop-layer*.timer' --no-pager 2>/dev/null | grep -E "loop-layer|NEXT" || true
-    say "Manual smoke test (no side effects): BUBBLE_BACKUP_DRY_RUN=1 $PROJECT_ROOT/scripts/loop-backup.sh --layer 1"
+DEPTS=()
+if [[ -n "$ONLY_DEPT" ]]; then
+    valid_slug "$ONLY_DEPT" || { echo "ERR: invalid dept slug" >&2; exit 2; }
+    DEPTS+=("$ONLY_DEPT")
+elif [[ -n "${BUBBLE_FLOOR_DEPTS:-}" ]]; then
+    for slug in $BUBBLE_FLOOR_DEPTS; do
+        valid_slug "$slug" || { echo "ERR: invalid dept slug" >&2; exit 2; }
+        DEPTS+=("$slug")
+    done
 else
-    say "DRY RUN complete — nothing installed."
+    while read -r unit _rest; do
+        [[ "$unit" =~ ^bubble-agent@([a-z][a-z0-9-]{0,31})\.service$ ]] || continue
+        slug="${BASH_REMATCH[1]}"
+        "$SYSTEMCTL" is-enabled "$unit" >/dev/null 2>&1 || continue
+        DEPTS+=("$slug")
+    done < <("$SYSTEMCTL" list-units 'bubble-agent@*.service' --all --plain --no-legend 2>/dev/null || true)
 fi
+[[ "${#DEPTS[@]}" -gt 0 ]] || { echo "ERR: no enabled departments discovered" >&2; exit 2; }
+
+ELIGIBLE=()
+for slug in "${DEPTS[@]}"; do
+    wd="$AGENTS_ROOT/$slug"
+    [[ -f "$wd/dept.yaml" ]] || { say "skip $slug: no dept.yaml (not a department floor)"; continue; }
+    if [[ "${BUBBLE_FLOOR_TEST_UIDS:-0}" != "1" ]]; then
+        id "agent-$slug" >/dev/null 2>&1 || { echo "ERR: OS user agent-$slug missing" >&2; exit 2; }
+    fi
+    has_layer=0
+    for layer in 1 2 3 4; do [[ -f "$wd/layers/$layer/PROMPT.md" ]] && has_layer=1; done
+    [[ "$has_layer" == 1 ]] || { say "skip $slug: no layer prompts"; continue; }
+    ELIGIBLE+=("$slug")
+done
+[[ "${#ELIGIBLE[@]}" -gt 0 ]] || { echo "ERR: no eligible departments" >&2; exit 2; }
+
+for layer in 1 2 3 4; do
+    for kind in service timer; do
+        unit="loop-layer${layer}@.${kind}"
+        root_run install -m 0644 -o root -g root "$TEMPLATE_DIR/$unit" "$SYSTEMD_DIR/$unit"
+    done
+done
+root_run systemctl daemon-reload
+
+if [[ "$ACTIVATE" == 0 ]]; then
+    say "unit templates installed only; timers unchanged"
+    exit 0
+fi
+
+NEW_TIMERS=()
+for slug in "${ELIGIBLE[@]}"; do
+    for layer in 1 2 3 4; do
+        [[ -f "$AGENTS_ROOT/$slug/layers/$layer/PROMPT.md" ]] || continue
+        NEW_TIMERS+=("loop-layer${layer}@${slug}.timer")
+    done
+done
+[[ "${#NEW_TIMERS[@]}" -gt 0 ]] || { echo "ERR: no timer instances selected" >&2; exit 2; }
+
+# Explicit cutover only. Stop the global timers before starting persistent
+# replacements so a catch-up activation cannot overlap the legacy floor.
+OLD_TIMERS=(loop-layer1.timer loop-layer2.timer loop-layer3.timer loop-layer4.timer)
+for timer in "${OLD_TIMERS[@]}"; do root_run systemctl disable --now "$timer"; done
+if [[ "$DRY" == "1" ]]; then
+    for timer in "${NEW_TIMERS[@]}"; do root_run systemctl enable --now "$timer"; done
+else
+    ENABLED_NEW=()
+    for timer in "${NEW_TIMERS[@]}"; do
+        if sudo -- systemctl enable --now "$timer"; then
+            ENABLED_NEW+=("$timer")
+        else
+            echo "ERR: replacement activation failed; restoring global timers" >&2
+            for enabled in "${ENABLED_NEW[@]}"; do sudo -- systemctl disable --now "$enabled" || true; done
+            for old in "${OLD_TIMERS[@]}"; do sudo -- systemctl enable --now "$old" || true; done
+            exit 1
+        fi
+    done
+fi
+say "installed ${#NEW_TIMERS[@]} per-department layer timers; retired four global timers"

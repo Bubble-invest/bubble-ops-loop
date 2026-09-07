@@ -29,22 +29,19 @@
 # mutex guarantees the backup tick never overlaps a live tick, so the
 # dept's queue is never double-processed.
 #
-# Dept set: auto-discovered at RUNTIME by globbing $AGENTS_ROOT/bubble-ops-*
-# (no hardcoded list — a NEW dept is picked up with ZERO config). A discovered
-# dept is SKIPPED unless its `ops-loop-<slug>.service` exists AND is enabled
-# (so paused depts like cgp and the test fixture are not ticked), and — in
-# layer-floor mode — unless it has a `layers/<N>/PROMPT.md` for the forced
-# layer. `BUBBLE_BACKUP_DEPTS="maya tony"` overrides discovery (for tests).
+# Production units pass exactly one `--dept <slug>` and run as that department's
+# isolated `agent-<slug>` UID. Legacy/manual mode can still discover the union of
+# migrated and legacy workdirs. Enabled-service and layer-prompt gates remain.
 #
 # Deploy: part of the bubble-ops-loop install package (see deploy/ +
-# scripts/install-loop-backup.sh). Runs as the `claude` user via the
-# loop-layer{1,2,3,4}.timer units.
+# scripts/install-loop-backup.sh). Production runs as `agent-<slug>` via
+# loop-layer{1,2,3,4}@<slug>.timer instances.
 #
 # Per-dept requirements (already true for live depts):
-#   - WorkingDirectory   = /home/claude/agents/bubble-ops-<slug>
-#   - env file           = /run/claude-agent-<slug>/env  (has CLAUDE_CODE_OAUTH_TOKEN)
+#   - WorkingDirectory   = /srv/agents/<slug>
+#   - env file           = /run/bubble-agent-<slug>/env (systemd EnvironmentFile)
 #   - outputs/<date>/heartbeat.log  (the liveness signal)
-#   - ops-loop-<slug>.service        (enabled = live dept)
+#   - bubble-agent@<slug>.service    (enabled = live dept)
 #   - layers/<N>/PROMPT.md           (the per-layer mission, floor mode)
 
 set -euo pipefail
@@ -54,6 +51,8 @@ set -euo pipefail
 # the dept to run Layer N per its CLAUDE.md protocol. When omitted, FORCE_LAYER
 # stays empty and the generic decide_dispatch tick runs (original behavior).
 FORCE_LAYER=""
+PINNED_DEPT=""
+ISOLATED_FLOOR=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --layer)
@@ -64,8 +63,16 @@ while [[ $# -gt 0 ]]; do
             FORCE_LAYER="${1#--layer=}"
             shift
             ;;
+        --dept)
+            PINNED_DEPT="${2:-}"
+            shift 2 || { echo "ERR: --dept needs a slug" >&2; exit 2; }
+            ;;
+        --dept=*)
+            PINNED_DEPT="${1#--dept=}"
+            shift
+            ;;
         *)
-            echo "ERR: unknown argument '$1' (only --layer N is supported)" >&2
+            echo "ERR: unknown argument '$1'" >&2
             exit 2
             ;;
     esac
@@ -73,6 +80,19 @@ done
 if [[ -n "$FORCE_LAYER" && ! "$FORCE_LAYER" =~ ^[1-4]$ ]]; then
     echo "ERR: --layer must be 1, 2, 3 or 4 (got '$FORCE_LAYER')" >&2
     exit 2
+fi
+if [[ -n "$PINNED_DEPT" ]]; then
+    [[ "$PINNED_DEPT" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || {
+        echo "ERR: invalid --dept slug" >&2; exit 2;
+    }
+    expected_user="agent-${PINNED_DEPT}"
+    if [[ "$(id -un)" == "$expected_user" ]]; then
+        ISOLATED_FLOOR=1
+    elif [[ "${BUBBLE_BACKUP_TEST_UID_OK:-0}" != "1" ]]; then
+        echo "ERR: --dept ${PINNED_DEPT} must run as ${expected_user}" >&2
+        exit 77
+    fi
+    BUBBLE_BACKUP_DEPTS="$PINNED_DEPT"
 fi
 
 # Depts to back up. UNSET/empty → auto-discover (glob $AGENTS_ROOT/bubble-ops-*).
@@ -84,6 +104,16 @@ MODEL="${BUBBLE_BACKUP_MODEL:-sonnet}"
 # can substitute a stub and exercise the run-branch WITHOUT spending a real tick.
 CLAUDE_BIN="${BUBBLE_BACKUP_CLAUDE_BIN:-/usr/bin/claude}"
 REPO_ROOT="${BUBBLE_OPS_LOOP_ROOT:-/home/claude/bubble-ops-loop}"
+if [[ "$ISOLATED_FLOOR" == "1" ]]; then
+    STALE_AFTER_SEC=5400
+    BUDGET_USD=3.00
+    MODEL=sonnet
+    CLAUDE_BIN=/usr/bin/claude
+    REPO_ROOT=/opt/bubble-ops-loop
+    HOME="/home/agent-${PINNED_DEPT}"
+    export HOME
+fi
+export BUBBLE_OPS_LOOP_ROOT="$REPO_ROOT"
 PY="${REPO_ROOT}/venv/bin/python"
 
 # Holds the most recent backup tick's work summary (final assistant message,
@@ -113,10 +143,22 @@ AGENTS_ROOT="${BUBBLE_BACKUP_AGENTS_ROOT:-/home/claude/agents}"
 # migrated depts (e.g. claudette, morty) have NO legacy clone, so the old
 # legacy-only glob never backed them up at all. Overridable for the harness.
 SRV_AGENTS_ROOT="${BUBBLE_BACKUP_SRV_AGENTS_ROOT:-/srv/agents}"
-LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
+[[ "$ISOLATED_FLOOR" == "1" ]] && SRV_AGENTS_ROOT=/srv/agents
+if [[ "$ISOLATED_FLOOR" == "1" ]]; then
+    LOCK_DIR="/run/bubble-agent-${PINNED_DEPT}"
+elif [[ -n "${BUBBLE_BACKUP_LOCK_DIR:-}" ]]; then
+    LOCK_DIR="$BUBBLE_BACKUP_LOCK_DIR"
+elif [[ -n "$PINNED_DEPT" ]]; then
+    LOCK_DIR="/run/bubble-agent-${PINNED_DEPT}"
+elif [[ -n "${BUBBLE_AGENT_SLUG:-}" ]]; then
+    LOCK_DIR="/run/bubble-agent-${BUBBLE_AGENT_SLUG}"
+else
+    LOCK_DIR="/run/lock"
+fi
 # systemctl, overridable so the test harness can stub `is-enabled` without a
 # real systemd (BUBBLE_BACKUP_SYSTEMCTL="$STUB"). Default = the real binary.
 SYSTEMCTL="${BUBBLE_BACKUP_SYSTEMCTL:-systemctl}"
+[[ "$ISOLATED_FLOOR" == "1" ]] && SYSTEMCTL=systemctl
 
 # ── flock portability shim (#675) ───────────────────────────────────────────
 # Production always runs on Linux (util-linux `flock` present) — this branch
@@ -184,6 +226,7 @@ esac
 # Event log the cockpit reads to surface this safety net in the front end
 # ({{OPERATOR}} msg 1171). Keep in sync with console.settings.BACKUP_LOG_PATH.
 BACKUP_LOG="${BUBBLE_BACKUP_LOG:-${REPO_ROOT}/state/loop-backup.jsonl}"
+[[ "$ISOLATED_FLOOR" == "1" ]] && BACKUP_LOG="/srv/agents/${PINNED_DEPT}/state/loop-backup.jsonl"
 
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(TS)] [loop-backup] $*"; }
@@ -343,7 +386,7 @@ select_forced_layer_missions() {
     out="$("$PY" - "$workdir" "$FORCE_LAYER" <<'PYEOF' 2>/dev/null || true
 import sys
 from datetime import datetime, timezone
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.dispatch_helpers import (
     select_due_missions_for_forced_layer, resolve_mission_prompt,
 )
@@ -389,7 +432,7 @@ emit_event() {
     local slug="$1" action="$2" reason="$3" age="${4:-}" exit_code="${5:-}"
     "$PY" - "$BACKUP_LOG" "$slug" "$action" "$reason" "$age" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write event to $BACKUP_LOG"
 import sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.loop_backup import format_event, append_event
 path, slug, action, reason, age, exit_code = sys.argv[1:7]
 ev = format_event(
@@ -426,7 +469,7 @@ write_external_heartbeat() {
     local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
     "$PY" - "$hb" "$outcome" "$layer" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write truthful heartbeat to $hb"
 import sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.loop_backup import append_external_heartbeat
 hb, outcome, layer, exit_code = sys.argv[1:5]
 line = append_external_heartbeat(
@@ -459,8 +502,7 @@ PYEOF
 # silent-alert outage (Telegram 400 chat_id is empty, never surfaced). The
 # literal below is the actual default now, not just documentation of one.
 #
-# TELEGRAM_BOT_TOKEN must be in the environment — the caller sources the dept
-# envfile (which carries it) before invoking this. Never fatal: a notify failure
+# TELEGRAM_BOT_TOKEN must already be in the systemd-loaded environment. Never fatal: a notify failure
 # must not abort the safety net (mirrors emit_event's posture) — but per #749/#750
 # it must never be SILENT either, so an unresolved chat_id is logged loudly at
 # each send site instead of being POSTed empty (see notify_backup_fired /
@@ -531,7 +573,7 @@ notify_backup_fired() {
     local fired_line="🛟 ${what} fired for ${slug} (primary loop stale ${age_h}) — exit=${exit_code}${reason_tag}"
     "$PY" - "$BACKUP_CHAT_ID" "$fired_line" "$summary" <<'PYEOF' || log "$slug: warn — could not send backup-fired Telegram ping"
 import sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.notify import TelegramBackend, NotificationPayload
 chat_id, subject = sys.argv[1], sys.argv[2]
 body = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -571,7 +613,7 @@ PYEOF
 # (no fresh brief was written — the dept only wrote a carried-over debrief,
 # and it already gets a real dispatch on the LIVE loop's next good tick).
 notify_floor_layer_brief() {
-    local slug="$1" workdir="$2" envfile="$3" layer="$4" exit_code="$5"
+    local slug="$1" workdir="$2" _envfile="$3" layer="$4" exit_code="$5"
     [[ "$layer" == "1" || "$layer" == "4" ]] || return 0
     [[ "$exit_code" == "0" ]] || { log "$slug: skip floor L${layer} brief relay (tick exit=${exit_code})"; return 0; }
 
@@ -591,10 +633,6 @@ notify_floor_layer_brief() {
         return 0
     fi
     (
-        set -a
-        # shellcheck disable=SC1090
-        [[ -f "$envfile" ]] && . "$envfile"
-        set +a
         cd "$workdir" || exit 1
         "$PY" tools/notify_layer.py fired --layer "$layer" --summary "$summary_path"
     ) 2>&1 | while IFS= read -r _l; do log "$slug: [floor-brief] $_l"; done
@@ -616,6 +654,7 @@ notify_floor_layer_brief() {
 # gate uses (test harness stubs it). Never fatal — a restart/escalation failure
 # must not abort the floor.
 AUTORESTART_ENABLED="${BUBBLE_AUTORESTART:-1}"
+[[ "$ISOLATED_FLOOR" == "1" ]] && AUTORESTART_ENABLED=0
 AUTORESTART_STATE="${BUBBLE_AUTORESTART_STATE:-${REPO_ROOT}/state/auto-restart.jsonl}"
 AUTORESTART_MAX_PER_HOUR="${BUBBLE_AUTORESTART_MAX_PER_HOUR:-3}"
 AUTORESTART_OPTOUT="${BUBBLE_AUTORESTART_OPTOUT:-}"
@@ -637,7 +676,7 @@ maybe_auto_restart() {
     local decision action reason
     decision="$("$PY" - "$AUTORESTART_STATE" "$slug" "$AUTORESTART_MAX_PER_HOUR" "$opted_out" 2>/dev/null <<'PYEOF'
 import sys, time
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.auto_restart import decide_restart, read_restart_events
 state, slug, maxph, opted = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1"
 hist = read_restart_events(state)
@@ -683,7 +722,7 @@ _record_restart_event() {
     local slug="$1" action="$2" reason="$3"
     "$PY" - "$AUTORESTART_STATE" "$slug" "$action" "$reason" <<'PYEOF' 2>/dev/null || log "$slug: warn — could not record restart event"
 import sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.auto_restart import append_restart_event, format_restart_event
 state, slug, action, reason = sys.argv[1:5]
 append_restart_event(state, format_restart_event(slug, action, reason))
@@ -711,7 +750,7 @@ notify_autorestart() {
     fi
     "$PY" - "$BACKUP_CHAT_ID" "$subject" "$reason" <<'PYEOF' || log "$slug: warn — could not send auto-restart Telegram ping"
 import sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.notify import TelegramBackend, NotificationPayload
 chat_id, subject = sys.argv[1], sys.argv[2]
 body = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -881,7 +920,7 @@ inject_live_loop() {
     done
     (( alive == 0 )) || return 1   # no live poller → can't inject
 
-    local state_dir="/home/claude/.claude/channels/telegram-${slug}"
+    local state_dir="${HOME}/.claude/channels/telegram-${slug}"
     local inject="${state_dir}/inject"
     [[ -d "$state_dir" ]] || return 1
     local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
@@ -944,13 +983,13 @@ run_backup_tick() {
     # collision. We KEEP `--setting-sources user` so hooks/permissions/CLAUDE.md
     # still load; we only strip MCP. A layer subagent tick needs Bash/Edit/Read,
     # not the Telegram channel (the wrapper relays the result to {{OPERATOR}} itself).
-    # Source the dept env (brings CLAUDE_CODE_OAUTH_TOKEN + per-dept vars) in a
-    # subshell so it doesn't leak across depts.
+    # The per-dept systemd unit loads its mode-0400 dotenv with EnvironmentFile.
+    # Never shell-source it here: `$` must remain literal and no value is logged.
     (
-        set -a
-        # shellcheck disable=SC1090
-        [[ -f "$envfile" ]] && . "$envfile"
-        set +a
+        if [[ -n "$PINNED_DEPT" && -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+            echo "ERR: per-dept auth environment missing" >&2
+            exit 78
+        fi
         cd "$workdir" || exit 1
         "$CLAUDE_BIN" \
             --print \
@@ -965,6 +1004,9 @@ run_backup_tick() {
     ) >"$runlog" 2>&1
     local exit=$?
     log "$slug: backup tick exit=$exit"
+    if [[ "$exit" == "78" ]]; then
+        log "$slug: FATAL — per-dept auth environment missing; model was not invoked"
+    fi
     # Extract the tick's final assistant message (the work summary), its
     # `subtype` (e.g. "success" / "error_max_budget_usd"), and its `is_error`
     # flag from the `claude --output-format json` envelope, in ONE pass over
@@ -1071,7 +1113,7 @@ do_one_tick() {
     # tick output can be large/multiline, which argv handles poorly.
     outcome="$(BUBBLE_TICK_RAW_TEXT="$LAST_TICK_RAW" "$PY" - "$tick_exit" "$LAST_TICK_SUBTYPE" <<'PYEOF' 2>/dev/null || echo "BACKUP-FAILED"
 import os, sys
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.loop_backup import classify_tick_outcome
 exit_code, subtype = int(sys.argv[1]), sys.argv[2]
 raw = os.environ.get("BUBBLE_TICK_RAW_TEXT", "")
@@ -1099,15 +1141,9 @@ PYEOF
     else
         write_external_heartbeat "$slug" "$outcome" "${FORCE_LAYER:-}" "$tick_exit"
     fi
-    # Notify-on-fire: a backup tick ACTUALLY RAN for this dept (covers every
-    # dept in DEPTS, both success and failure exit). Source the dept env in a
-    # subshell so TELEGRAM_BOT_TOKEN is available to the send without leaking
-    # across depts. Lock-held returns above → no ping on a fresh/healthy loop.
+    # Notify-on-fire uses the already-loaded per-dept systemd environment.
+    # Lock-held returns above → no ping on a fresh/healthy loop.
     (
-        set -a
-        # shellcheck disable=SC1090
-        [[ -f "$envfile" ]] && . "$envfile"
-        set +a
         notify_backup_fired "$slug" "$age" "$tick_exit" "$LAST_TICK_SUMMARY" "$outcome"
         # Board #521 cause 3: on a floor-fired L1/L4 (not degraded), also
         # relay the REAL brief body — a SEPARATE message from the 🛟 ping
@@ -1125,8 +1161,8 @@ PYEOF
         # anything (a budget cap or expired auth survives a restart) and
         # would just burn an auto-restart guardrail slot for nothing. The
         # pure decision enforces the concierge guard + the 3/hour guardrail.
-        # Runs in the same env-sourced subshell so the escalation Telegram
-        # ping has the token.
+        # Runs in the same systemd-loaded environment so the escalation
+        # Telegram ping has the token.
         if [[ "$tick_exit" != "0" && "$outcome" == "BACKUP-FAILED" ]]; then
             maybe_auto_restart "$slug"
         fi
@@ -1147,17 +1183,41 @@ fi
 # crosses repo boundaries (the manager is isolated to its own repo). Pure
 # mechanical relay (NOT claude -p — template Ban #2). Gated: only directives with
 # approved_by=operator AND status=approved ship. Idempotent + never-fatal so it is
-# safe on every layer-floor moment. Disable with BUBBLE_DISPATCH_DIRECTIVES=0.
-if [[ "${BUBBLE_DISPATCH_DIRECTIVES:-1}" == "1" ]]; then
+# safe on every layer-floor moment. Under per-dept UID isolation, only Tony's
+# instance owns the outbound queue; it uses a private remote target clone and
+# the existing credential helper instead of writing another UID's live tree.
+_dispatch_mode="${BUBBLE_DISPATCH_DIRECTIVES:-1}"
+[[ "$ISOLATED_FLOOR" == "1" ]] && _dispatch_mode=remote
+_dispatch_dry=()
+[[ "$DRY_RUN" == "1" ]] && _dispatch_dry+=(--dry-run)
+if [[ "$_dispatch_mode" == "remote" && "$PINNED_DEPT" == "tony" ]]; then
+    _dispatcher="$(dirname "${BASH_SOURCE[0]}")/dispatch_directives.py"
+    log "dispatch: relaying operator-approved directives through isolated remote clones"
+    _dispatch_log="$(mktemp)"
+    if ! "$PY" "$_dispatcher" \
+            --agents-root "$SRV_AGENTS_ROOT" \
+            --manager "${BUBBLE_DISPATCH_MANAGER:-tony}" \
+            --lock-dir "$LOCK_DIR" \
+            --remote-delivery "${_dispatch_dry[@]}" >"$_dispatch_log" 2>&1; then
+        OVERALL=1
+        log "dispatch: ATTENTION — one or more approved directives remain unresolved"
+    fi
+    while IFS= read -r _l; do log "$_l"; done <"$_dispatch_log"
+    rm -f "$_dispatch_log"
+elif [[ "$_dispatch_mode" == "1" ]]; then
     _dispatcher="$(dirname "${BASH_SOURCE[0]}")/dispatch_directives.py"
     if [[ -f "$_dispatcher" ]]; then
         log "dispatch: relaying approved CEO directives (manager=${BUBBLE_DISPATCH_MANAGER:-tony})"
-        python3 "$_dispatcher" \
+        "$PY" "$_dispatcher" \
             --agents-root "$AGENTS_ROOT" \
             --manager "${BUBBLE_DISPATCH_MANAGER:-tony}" \
             --lock-dir "$LOCK_DIR" \
-            ${DRY_RUN:+--dry-run} 2>&1 | while IFS= read -r _l; do log "$_l"; done || true
+            "${_dispatch_dry[@]}" 2>&1 | while IFS= read -r _l; do log "$_l"; done || true
     fi
+elif [[ "$_dispatch_mode" == "remote" ]]; then
+    log "dispatch: delegated to Tony's isolated floor instance; queue state untouched here"
+else
+    log "dispatch: DEFERRED — cross-repo directive transport is unavailable under per-dept UID isolation; approved queue state remains untouched"
 fi
 
 for slug in "${DEPTS[@]}"; do
@@ -1166,21 +1226,9 @@ for slug in "${DEPTS[@]}"; do
     # legacy clone for an un-migrated dept. So the tick + staleness check read
     # the LIVE dir, not the stale pre-#1120 clone.
     workdir="$(_dept_workdir "$slug")"
-    # #1168: the #1120 uid isolation moved each dept's runtime env to
-    # /run/bubble-agent-<slug>/env (0400 agent-<slug>) — UNREADABLE by this
-    # claude-run floor — and left the old /run/claude-agent-<slug>/env dead. So
-    # the catch-up tick sourced a missing file, had no CLAUDE_CODE_OAUTH_TOKEN,
-    # and every layer died BACKUP-AUTH-FAILED (the terse "<dept> · L2 ×N" pings).
-    # Resolve to a READABLE env carrying the account-wide OAUTH: prefer a readable
-    # per-dept env (a legacy dept still on the old path, or if perms ever allow),
-    # else the shared claude env /run/claude-agent/env. This is option (a) — the
-    # safety-net floor tick runs with the shared automation identity rather than
-    # the dept's private one; NO access-widening (the shared env is already
-    # claude-readable). Overridable for the hermetic test harness.
-    envfile="${BUBBLE_BACKUP_SHARED_ENV:-/run/claude-agent/env}"
-    for _cand in "/run/bubble-agent-${slug}/env" "/run/claude-agent-${slug}/env"; do
-        if [[ -r "$_cand" ]]; then envfile="$_cand"; break; fi
-    done
+    # Informational only: systemd has already parsed this department's file
+    # literally into the environment. The runner never reads/sources it.
+    envfile="/run/bubble-agent-${slug}/env"
     if [[ ! -d "$workdir" ]]; then
         log "$slug: SKIP — workdir $workdir not found"
         continue
@@ -1206,7 +1254,7 @@ for slug in "${DEPTS[@]}"; do
     # (tab-separated) so we can record age in the cockpit event.
     decision="$("$PY" - "$workdir/outputs" "$STALE_AFTER_SEC" <<'PYEOF'
 import sys, time
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.loop_backup import latest_heartbeat_epoch, backup_decision
 outputs, stale = sys.argv[1], int(sys.argv[2])
 hb = latest_heartbeat_epoch(outputs)
@@ -1237,7 +1285,7 @@ PYEOF
         layer_ok="$("$PY" - "$workdir" "$FORCE_LAYER" "${BUBBLE_BACKUP_LAYER_OFFSET_H:-2}" <<'PYEOF2' 2>/dev/null || echo "ERR"
 import sys
 from datetime import datetime, timezone, timedelta
-sys.path.insert(0, "/home/claude/bubble-ops-loop")
+sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.dispatch_helpers import (
     build_dispatch_ctx, _LAYER_MIN_TIME, _to_paris, _layer_fired_today,
 )
@@ -1324,6 +1372,20 @@ PYEOF2
     # own /loop protocol (STEP C, mission-centric per scaffold.py's canonical
     # dispatch) will pick up every pending mission itself once woken, so we must
     # NOT also spawn N headless mission ticks on top of it.
+    _inject_only=0
+    for _harness_slug in ${BUBBLE_BACKUP_INJECT_ONLY_DEPTS:-} maya; do
+        [[ "$_harness_slug" == "$slug" ]] && _inject_only=1
+    done
+    if [[ "$_inject_only" == "1" ]]; then
+        if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
+            emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
+        else
+            log "$slug: DEFERRED — configured harness forbids a competing headless CLI; live injection unavailable"
+            emit_event "$slug" "deferred" "harness-safe floor could not inject live session" "$age"
+            OVERALL=1
+        fi
+        continue
+    fi
     if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
         emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
         continue

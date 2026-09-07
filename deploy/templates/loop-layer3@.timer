@@ -1,0 +1,12 @@
+[Unit]
+Description=Fire ops-loop Layer 3 (Decide) floor for %i
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+Unit=loop-layer3@%i.service
+OnCalendar=*-*-* 18:00:00 Europe/Paris
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

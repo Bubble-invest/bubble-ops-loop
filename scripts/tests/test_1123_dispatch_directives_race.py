@@ -80,7 +80,7 @@ def world(tmp_path, monkeypatch):
     # network push would if it got that far. This isolates the test to the
     # status/add/commit race + the lock/verify guards, which is what #1123
     # is actually about.
-    monkeypatch.setattr(dd, "_mint_token", lambda repo_name: "ghs_fake")
+    monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir=None: "ghs_fake")
 
     def fake_run_for_push(cmd, cwd=None, stdin=None, env=None):
         if "push" in cmd:

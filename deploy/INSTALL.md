@@ -19,7 +19,7 @@ rebuilt or a new tenant box is provisioned.
 | 1 | Per-dept agent units (`bubble-agent@<slug>`) | `bubble-vps-platform/scripts/render-agent-units.py` from tenant.yaml + dept.yaml | yes | One per live dept. Decrypts per-dept SOPS → `/run/bubble-agent-<slug>/env`. |
 | 2 | Console (cockpit) | `console/deploy/bubble-ops-console.service.template` + `scripts/deploy-console-to-vps.sh` | yes | Tailscale-served `:8443`. Fresh box: run `deploy-console-to-vps.sh` directly (materializes the unit, no pre-existing service needed). Ongoing deploys: `scripts/deploy-console-to-morty.sh` (git-pull + restart) calls `deploy-console-to-vps.sh --no-restart` after every pull, so a template edit merged to `main` reaches the box on the next deploy — see board #1081. |
 | 3 | Loop liveness watchdog (alerts) | `scripts/ops-loop-watchdog.{service,timer}` + `scripts/loop-watchdog.sh` | yes | Telegram alert on stale heartbeat. |
-| 4 | **Loop layer FLOOR (4 crons)** | **`scripts/install-loop-backup.sh`** | **yes** | **EXACTLY 4 cron units (`loop-layer1..4`), one per OODA layer (L1 07:00 / L2 12:00 / L3 16:00 / L4 19:00 Paris). Each fires its layer for every eligible dept, auto-discovered at runtime. The daily floor + safety net. New depts inherit it with ZERO config.** |
+| 4 | **Isolated loop layer floor** | **`scripts/install-loop-backup.sh`** | **yes** | **One timer per enabled department and supported layer, running as `agent-<slug>` from `/srv/agents/<slug>`. Existing 09:00 / 14:00 / 18:00 / 21:00 Paris cadence and 120-second jitter are preserved.** |
 | 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. (Script filename kept as-is; see script for VPS-specific config.) |
 | 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
 | 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
@@ -57,53 +57,41 @@ plugin code loads.
 
 ## Loop layer FLOOR (step 4) — what it is
 
-Each dept runs a persistent `/loop` session. If that session dies for any
-reason — auth lapse, crash, OOM, or "parked" after a restart — the dept
-silently stops working while systemd still reports `active`. The layer floor
-is an independent safety net AND a daily cadence guarantee.
+Each VPS department has one isolated timer instance per supported OODA layer.
+The service runs as that department's `agent-<slug>` UID from
+`/srv/agents/<slug>` and reads the root-owned framework at
+`/opt/bubble-ops-loop`; it never uses the retired shared `claude` identity.
 
-- **EXACTLY 4 cron units, forever** — one per OODA layer, sharing one template
-  service `loop-layer@.service` (`ExecStart=…/loop-backup.sh --layer %i`):
-  - `loop-layer1.timer` — L1 (Observe) 07:00 Europe/Paris
-  - `loop-layer2.timer` — L2 (Orient)  12:00 Europe/Paris
-  - `loop-layer3.timer` — L3 (Decide)  16:00 Europe/Paris
-  - `loop-layer4.timer` — L4 (Act)     19:00 Europe/Paris
-- Each cron fires ITS layer for EVERY eligible dept, **discovered at runtime**
-  by globbing `/home/claude/agents/bubble-ops-*` — **no hardcoded dept list**.
-  A NEW dept being born adds **ZERO** new units; it is picked up automatically
-  once its `ops-loop-<slug>.service` is enabled and it has `layers/N/PROMPT.md`.
-- A dept is SKIPPED if its loop service is disabled/absent (paused depts,
-  concierges) or — in layer-floor mode — it lacks `layers/N/PROMPT.md` for that
-  layer.
-- For each in-scope dept the cron checks heartbeat freshness
-  (`scripts/lib/loop_backup.py`): fresh (loop alive) → **skip** (no
-  double-processing); stale > 90 min, or no heartbeat → run **ONE** forced
-  Layer-N tick via `claude -p` in the dept's authed workspace, then stop. The
-  tick's work summary is relayed to {{OPERATOR}} on Telegram.
-- A `flock` mutex guarantees a floor tick never overlaps a live tick.
+- `loop-layer1@<slug>.timer` — 09:00 Europe/Paris
+- `loop-layer2@<slug>.timer` — 14:00 Europe/Paris
+- `loop-layer3@<slug>.timer` — 18:00 Europe/Paris
+- `loop-layer4@<slug>.timer` — 21:00 Europe/Paris
 
-The floor SUPERSEDES the old twice-daily generic `loop-backup.timer` (which
-fired only ~L1 via `decide_dispatch`); the installer retires that legacy timer.
-The script's generic mode (`scripts/loop-backup.sh` with no `--layer`) is kept
-for manual / emergency "loop fully dead" use.
+The existing 120-second deterministic jitter, persistence, heartbeat freshness,
+layer offset/prerequisite, mission due-set, and approval gates remain. The
+installer discovers enabled `bubble-agent@<slug>.service` instances and creates
+timers only for workspaces with `dept.yaml` and the matching layer prompt.
+Concierges are skipped.
 
-Install / re-install:
+Systemd loads `/run/bubble-agent-<slug>/env` literally before dropping to the
+agent UID. The runner never shell-sources dotenv text. Live and floor ticks use
+the same department-private runtime lock. Maya is injection-only while its live
+harness is Hermes; the floor reports a deferred failure rather than launch a
+competing headless Claude CLI. Tony alone relays operator-approved directives
+through private remote clones; failed delivery stays visible and retryable.
+
+Install or stage for review:
 ```bash
-bash scripts/install-loop-backup.sh            # idempotent: installs the 4 floor crons, retires the legacy timer
-bash scripts/install-loop-backup.sh --dry-run  # preview
+bash scripts/install-loop-backup.sh --dry-run       # preview, no writes/timer changes
+bash scripts/install-loop-backup.sh                 # install unit files, leave timers unchanged
+bash scripts/install-loop-backup.sh --activate      # reviewed cutover only; may catch up persistent timers
 ```
 
-Manual smoke test (no side effects):
+The old global templates remain for rollback, but the installer does not enable
+them. Manual fixture runs can pin one department explicitly:
 ```bash
-BUBBLE_BACKUP_DRY_RUN=1 scripts/loop-backup.sh --layer 1   # floor L1, dry
-BUBBLE_BACKUP_DRY_RUN=1 scripts/loop-backup.sh             # generic, dry
+BUBBLE_BACKUP_DRY_RUN=1 scripts/loop-backup.sh --layer 1 --dept maya
 ```
-
-Tune the global threshold / model / budget via the template service
-`Environment=` lines (`BUBBLE_BACKUP_STALE_SEC`, `BUBBLE_BACKUP_MODEL`,
-`BUBBLE_BACKUP_BUDGET_USD`) — no script edit, no per-dept config needed. The
-dept set is auto-discovered, not configured; `BUBBLE_BACKUP_DEPTS` remains a
-test/pin override only.
 
 | 9 | Cache sync (every 10min) |  | yes | Keeps /srv/bubble-ops/repos/ synced with GitHub. |
 | 10 | Secrets tmp sweep (every 30min) |  | yes | Scans /tmp for leaked plaintext secrets. |
