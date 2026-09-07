@@ -2,9 +2,12 @@
 # =============================================================================
 # install-local-loop.sh — install the MAIN /loop runner for a host:local dept
 # as a macOS launchd agent. The Mac twin of the VPS systemd dept unit
-# (deploy/templates/ops-loop-dept.service.template), with the VPS-only plumbing
-# (systemd, SOPS env pre-decrypt, token-broker, tmpfs) DROPPED: on the Mac the
-# dept pushes via the operator's own `gh`/git credential.
+# (deploy/templates/ops-loop-dept.service.template). The VPS systemd/token-broker
+# plumbing is replaced by Mac-native equivalents: secrets from a per-Mac SOPS
+# vault decrypted IN the wrapper (--vault; legacy .env fallback), and push via the
+# operator's own `gh`/git credential. Renders from ONE aligned wrapper (#748) with
+# the harness selector (#1133): the per-agent customizations (vault, model pin,
+# --chrome, --continue, inline-env, env -u) are FLAGS, not hand-edits.
 #
 # WHAT IT INSTALLS:
 #   ~/Library/Application Support/bubble-ops-loop/ops-loop-<slug>-wrapper.sh
@@ -28,6 +31,21 @@
 # --telegram-state-dir / --extra-path / --workspace-dir / --channel-patches-script
 # — any future local dept (ours or a client's) uses the same script. NOT
 # Miranda-hardcoded.
+#
+# ALIGNMENT FLAGS (#748/#1133) — fold the per-agent customizations that had drifted
+# into hand-edited live wrappers back into flags on this ONE installer:
+#   --vault <path>           SOPS secrets.sops.env (this Mac's age key); no vault → source .env only
+#   --legacy-env <path>      plaintext fallback (default <telegram-state-dir>/.env)
+#   --age-key-file <path>    age key (default $HOME/.config/sops/age/keys.txt)
+#   --model <val>            model pin, e.g. 'claude-opus-4-8[1m]' (avoids bare --model opus drift)
+#   --chrome                 add --chrome
+#   --continue               add --continue + resume-gate auto-answer + fresh-fallback
+#   --inline-env "<VARS>"    space-sep var names passed INLINE into tmux (tmux server env != wrapper env);
+#                            default TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN; pass "" for none
+#   --env-unset "<VARS>"     space-sep var names to `env -u` before exec (e.g. CLAUDE_CODE_OAUTH_TOKEN)
+#   --harness-selector-dir <dir>  dir holding harness-<slug> (default: wrapper dir)
+#   --hermes-bin <path>      hermes binary (default: hermes)
+# Every rendered wrapper reads <selector-dir>/harness-<slug> at launch (claude default | hermes).
 #
 # --channel-patches-script (board #956): re-applies the telegram plugin's
 # boot_rearm + bubble-inject patches before every claude launch, so a plugin
@@ -55,7 +73,11 @@
 #                         [--tmux-bin <path>] [--telegram-state-dir <dir>]
 #                         [--extra-path <PATH>] [--launch-agents-dir <dir>]
 #                         [--log-dir <dir>] [--wrapper-dir <dir>]
-#                         [--channel-patches-script <path>] [--activate]
+#                         [--channel-patches-script <path>]
+#                         [--vault <path>] [--legacy-env <path>] [--age-key-file <path>]
+#                         [--model <val>] [--chrome] [--continue]
+#                         [--inline-env "<VARS>"] [--env-unset "<VARS>"]
+#                         [--harness-selector-dir <dir>] [--hermes-bin <path>] [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
 #                         [--wrapper-dir <dir>]
 # =============================================================================
@@ -84,6 +106,21 @@ CHANNEL_PATCHES_SCRIPT="${LOCAL_LOOP_CHANNEL_PATCHES_SCRIPT-$SCRIPT_DIR/../../sc
 ACTIVATE=0
 UNINSTALL=0
 
+# ── ALIGNMENT KNOBS (#748 / #1133) — fold the previously hand-edited per-agent
+# customizations into flags so every Mac wrapper renders from this ONE source of
+# truth. All optional; defaults reproduce the plain generic wrapper. They flow to
+# render_loop_wrapper as LOOP_* env vars just before the render call.
+VAULT_PATH="${LOCAL_LOOP_VAULT_PATH:-}"                 # SOPS vault (secrets.sops.env); empty = no vault block
+LEGACY_ENV_PATH="${LOCAL_LOOP_LEGACY_ENV:-}"            # plaintext fallback (default: <tg-state>/.env)
+AGE_KEY_FILE="${LOCAL_LOOP_AGE_KEY_FILE:-}"             # SOPS age key (default: $HOME/.config/sops/age/keys.txt)
+MODEL_PIN="${LOCAL_LOOP_MODEL:-}"                       # e.g. claude-opus-4-8[1m]; empty = no --model
+USE_CHROME="${LOCAL_LOOP_CHROME:-}"                     # 1 = --chrome
+USE_CONTINUE="${LOCAL_LOOP_CONTINUE:-}"                 # 1 = --continue + resume-gate + fresh-fallback
+INLINE_ENV="${LOCAL_LOOP_INLINE_ENV-__RENDER_DEFAULT__}"  # space-sep var names passed INLINE into tmux; sentinel = leave the render default (TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
+ENV_UNSET="${LOCAL_LOOP_ENV_UNSET:-}"                   # space-sep var names to env -u (e.g. CLAUDE_CODE_OAUTH_TOKEN)
+HARNESS_SELECTOR_DIR="${LOCAL_LOOP_HARNESS_SELECTOR_DIR:-}"  # dir holding harness-<slug> (default: wrapper dir)
+HERMES_BIN="${LOCAL_LOOP_HERMES_BIN:-}"                 # hermes binary (default: hermes)
+
 die() { echo "ERR: $*" >&2; exit 2; }
 
 while [[ $# -gt 0 ]]; do
@@ -110,9 +147,27 @@ while [[ $# -gt 0 ]]; do
         --workspace-dir=*)    WORKSPACE_DIR="${1#--workspace-dir=}"; shift ;;
         --channel-patches-script)   CHANNEL_PATCHES_SCRIPT="${2-}"; shift 2 ;;
         --channel-patches-script=*) CHANNEL_PATCHES_SCRIPT="${1#--channel-patches-script=}"; shift ;;
+        --vault)              VAULT_PATH="${2:?}"; shift 2 ;;
+        --vault=*)            VAULT_PATH="${1#--vault=}"; shift ;;
+        --legacy-env)         LEGACY_ENV_PATH="${2:?}"; shift 2 ;;
+        --legacy-env=*)       LEGACY_ENV_PATH="${1#--legacy-env=}"; shift ;;
+        --age-key-file)       AGE_KEY_FILE="${2:?}"; shift 2 ;;
+        --age-key-file=*)     AGE_KEY_FILE="${1#--age-key-file=}"; shift ;;
+        --model)              MODEL_PIN="${2:?}"; shift 2 ;;
+        --model=*)            MODEL_PIN="${1#--model=}"; shift ;;
+        --chrome)             USE_CHROME=1; shift ;;
+        --continue)           USE_CONTINUE=1; shift ;;
+        --inline-env)         INLINE_ENV="${2-}"; shift 2 ;;
+        --inline-env=*)       INLINE_ENV="${1#--inline-env=}"; shift ;;
+        --env-unset)          ENV_UNSET="${2-}"; shift 2 ;;
+        --env-unset=*)        ENV_UNSET="${1#--env-unset=}"; shift ;;
+        --harness-selector-dir)   HARNESS_SELECTOR_DIR="${2:?}"; shift 2 ;;
+        --harness-selector-dir=*) HARNESS_SELECTOR_DIR="${1#--harness-selector-dir=}"; shift ;;
+        --hermes-bin)         HERMES_BIN="${2:?}"; shift 2 ;;
+        --hermes-bin=*)       HERMES_BIN="${1#--hermes-bin=}"; shift ;;
         --activate)           ACTIVATE=1; shift ;;
         --uninstall)          UNINSTALL=1; shift ;;
-        -h|--help)            sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)            sed -n '2,90p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument '$1'" ;;
     esac
 done
@@ -182,8 +237,20 @@ say "  channel-patches-script = ${CHANNEL_PATCHES_SCRIPT:-<none> (patch self-hea
 say "  wrapper       = $WRAPPER_PATH"
 say "  plist         = $PLIST_PATH"
 
-# 1) Render the generic persistent-session wrapper (the Mac twin of the VPS
-#    systemd ExecStart): claude --channels telegram inside tmux, KeepAlive-supervised.
+# 1) Render the aligned persistent-session wrapper (the Mac twin of the VPS
+#    systemd ExecStart): the selected harness (claude default | hermes) inside
+#    tmux, KeepAlive-supervised. The #748/#1133 alignment knobs flow to
+#    render_loop_wrapper via LOOP_* env vars (only the ones the caller set).
+[[ -n "$VAULT_PATH" ]]           && export LOOP_VAULT_PATH="$VAULT_PATH"
+[[ -n "$LEGACY_ENV_PATH" ]]      && export LOOP_LEGACY_ENV="$LEGACY_ENV_PATH"
+[[ -n "$AGE_KEY_FILE" ]]         && export LOOP_AGE_KEY_FILE="$AGE_KEY_FILE"
+[[ -n "$MODEL_PIN" ]]            && export LOOP_MODEL="$MODEL_PIN"
+[[ -n "$USE_CHROME" ]]           && export LOOP_CHROME="$USE_CHROME"
+[[ -n "$USE_CONTINUE" ]]         && export LOOP_CONTINUE="$USE_CONTINUE"
+[[ "$INLINE_ENV" != "__RENDER_DEFAULT__" ]] && export LOOP_INLINE_ENV="$INLINE_ENV"
+[[ -n "$ENV_UNSET" ]]            && export LOOP_ENV_UNSET="$ENV_UNSET"
+[[ -n "$HARNESS_SELECTOR_DIR" ]] && export LOOP_HARNESS_SELECTOR_DIR="$HARNESS_SELECTOR_DIR"
+[[ -n "$HERMES_BIN" ]]           && export LOOP_HERMES_BIN="$HERMES_BIN"
 render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_PATH" \
     || die "failed to render wrapper to $WRAPPER_PATH"
 chmod +x "$WRAPPER_PATH"

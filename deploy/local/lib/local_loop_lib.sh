@@ -10,9 +10,11 @@
 # that Mac (the VPS loop-backup SKIPS host:local depts — B1). So the Mac needs
 # its OWN launchd analogues:
 #   - a MAIN loop runner   (launchd plist, KeepAlive) — the systemd unit's Mac
-#     twin: a PERSISTENT interactive `claude --channels telegram` session (via a
-#     generic wrapper, running inside tmux), with NO SOPS / NO token-broker / NO
-#     tmpfs: push is via the Mac's own `gh`/git credential.
+#     twin: a PERSISTENT interactive harness session (claude --channels telegram,
+#     or hermes via the #1133 selector) running inside tmux, rendered from the
+#     aligned wrapper (#748). Secrets come from a per-Mac SOPS vault when the
+#     LOOP_VAULT_PATH knob is set (legacy .env fallback otherwise); push is via
+#     the Mac's own `gh`/git credential (no VPS-style token-broker/tmpfs).
 #   - a BACKUP floor       (launchd plist, StartInterval) — the VPS loop-backup's
 #     Mac twin: force-tick the dept's /loop iff its heartbeat is STALE.
 #
@@ -138,10 +140,38 @@ _lll_xml_escape() {
 # port-existing-working-components, brain in the dept repo, body in the workspace.
 #
 # GENERIC: parameterized by dept-dir/slug/claude-bin/tmux-bin/telegram-state-dir/
-# extra-path/workspace-dir/channel-patches-script. NO SOPS / NO token-broker / NO
-# tmpfs (Mac pushes via its own gh/git credential). The telegram env file
-# (TELEGRAM_BOT_TOKEN etc.) is sourced from <telegram-state-dir>/.env if present,
-# matching the convention.
+# extra-path/workspace-dir/channel-patches-script (positional) PLUS the optional
+# ALIGNMENT KNOBS below (#748/#1133) read from the environment. With NO knobs set
+# it renders the plain generic wrapper (telegram env sourced from
+# <telegram-state-dir>/.env; push via the Mac's own gh/git credential — no
+# token-broker/tmpfs). The knobs fold in the customizations that used to be
+# HAND-EDITED into each live Mac wrapper (#748: launchers had drifted into 3
+# different shapes), making THIS the single source of truth:
+#   LOOP_VAULT_PATH   SOPS-encrypted secrets.sops.env (this Mac's age key) —
+#                     decrypted to a chmod-600 tmpfile, sourced, shredded; legacy
+#                     .env is the fallback. Empty = no vault (source .env only).
+#   LOOP_LEGACY_ENV   plaintext fallback path (default <telegram-state-dir>/.env).
+#   LOOP_AGE_KEY_FILE age key for the vault (default $HOME/.config/sops/age/keys.txt).
+#   LOOP_MODEL        model pin, e.g. claude-opus-4-8[1m] (empty = no --model; a
+#                     bare `--model opus` silently drifts to the latest Opus — the
+#                     drift #748 also fixes on M1 content).
+#   LOOP_CHROME=1     add --chrome (Chrome-extension agents).
+#   LOOP_CONTINUE=1   add --continue + the resume-gate auto-answer + fresh-fallback.
+#   LOOP_INLINE_ENV   space-sep VAR names passed INLINE into the tmux command
+#                     (default: TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN) —
+#                     REQUIRED because `tmux new-session` runs the inner command in
+#                     the tmux SERVER's global env, NOT this wrapper's env, so
+#                     exported secrets would NOT reach the harness otherwise.
+#   LOOP_ENV_UNSET    space-sep VAR names to `env -u` before exec (e.g.
+#                     CLAUDE_CODE_OAUTH_TOKEN so a keychain login wins — Géraldine).
+#   LOOP_HARNESS_SELECTOR_DIR  dir holding harness-<slug> (default
+#                     $HOME/Library/Application Support/bubble-ops-loop).
+#   LOOP_HERMES_BIN   hermes binary (default `hermes`).
+# HARNESS SELECTOR (#1133): every rendered wrapper reads
+# <selector-dir>/harness-<slug> at launch — "hermes" runs `hermes -p <slug>
+# gateway run --replace`, anything else (default) runs claude. The Mac twin of the
+# VPS /etc/bubble-harness/<slug> selector; a switch flips the file then
+# `launchctl kickstart -k` restarts the wrapper, which re-reads it.
 #
 # channel-patches-script (board #956): before every claude launch, self-heal the
 # telegram plugin's boot_rearm + bubble-inject patches — the plugin cache is
@@ -157,6 +187,52 @@ render_loop_wrapper() {
     local dept_dir="$1" slug="$2" claude_bin="$3" tmux_bin="$4" tg_state="$5" extra_path="$6" workspace_dir="${7:-}" channel_patches_script="${8:-}"
     local add_dir_arg=""
     [[ -n "$workspace_dir" ]] && add_dir_arg=" --add-dir '${workspace_dir}'"
+
+    # ── ALIGNMENT KNOBS (#748 / #1133) — optional, read from the env, safe defaults ──
+    # These fold the customizations that were previously HAND-EDITED into each live
+    # Mac wrapper (SOPS vault, inline-env for the tmux-server-env gotcha, model pin,
+    # --chrome, --continue + resume-gate + fresh-fallback, per-agent env -u) back
+    # into this single source of truth, PLUS the #1133 harness selector.
+    local vault_path="${LOOP_VAULT_PATH:-}"                                   # SOPS vault; empty = no vault block
+    local legacy_env="${LOOP_LEGACY_ENV:-${tg_state}/.env}"                   # plaintext fallback
+    local age_key_file="${LOOP_AGE_KEY_FILE:-\$HOME/.config/sops/age/keys.txt}"
+    local model="${LOOP_MODEL:-}"                                             # e.g. claude-opus-4-8[1m]; empty = no --model
+    local chrome="${LOOP_CHROME:-}"                                          # 1 = add --chrome
+    local do_continue="${LOOP_CONTINUE:-}"                                    # 1 = --continue + resume-gate + fresh-fallback
+    local inline_env_vars="${LOOP_INLINE_ENV-TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN}"  # passed INLINE into tmux (server env != wrapper env)
+    local env_unset_vars="${LOOP_ENV_UNSET:-}"                               # e.g. CLAUDE_CODE_OAUTH_TOKEN (Géraldine keychain override)
+    local selector_dir="${LOOP_HARNESS_SELECTOR_DIR:-\$HOME/Library/Application Support/bubble-ops-loop}"
+    local hermes_bin="${LOOP_HERMES_BIN:-hermes}"
+
+    # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
+    local age_export="" vault_block=""
+    if [[ -n "$vault_path" ]]; then
+        age_export="export SOPS_AGE_KEY_FILE=\"${age_key_file}\""
+        vault_block="
+# --- Load dept secrets: SOPS vault primary, legacy plaintext .env fallback ---
+VAULT=\"${vault_path}\"
+LEGACY_ENV=\"${legacy_env}\"
+if [ -f \"\$VAULT\" ]; then
+  _sec=\"\$(mktemp -t ${slug}-sops)\"
+  chmod 600 \"\$_sec\"
+  if sops --decrypt --output \"\$_sec\" \"\$VAULT\" 2>/dev/null; then
+    set -a; . \"\$_sec\"; set +a
+  fi
+  rm -f \"\$_sec\"
+fi
+if [ -z \"\${TELEGRAM_BOT_TOKEN:-}\" ] && [ -f \"\$LEGACY_ENV\" ]; then
+  echo \"[wrapper] vault yielded no token; falling back to legacy .env\" >&2
+  set -a; . \"\$LEGACY_ENV\"; set +a
+fi"
+    else
+        # No vault: preserve the original behaviour (source the dept .env if present).
+        vault_block="
+# Source the dept telegram bot env (sets TELEGRAM_BOT_TOKEN etc.) if present.
+if [ -f \"${legacy_env}\" ]; then
+  set -a; . \"${legacy_env}\"; set +a
+fi"
+    fi
+
     local patch_block=""
     if [[ -n "$channel_patches_script" ]]; then
         patch_block="
@@ -167,14 +243,56 @@ if [ -x '${channel_patches_script}' ]; then
 fi
 "
     fi
+
+    # Build the inline-env prefix (TELEGRAM_STATE_DIR literal + each token as a
+    # runtime-expanded, single-quoted assignment so it survives tmux's re-parse).
+    local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' " _v
+    for _v in $inline_env_vars; do
+        inline_prefix+="${_v}='\${${_v}:-}' "
+    done
+    # env -u prefix (drop vars so a lower-precedence source wins, e.g. keychain).
+    local env_unset_prefix=""
+    for _v in $env_unset_vars; do env_unset_prefix+="-u ${_v} "; done
+    [[ -n "$env_unset_prefix" ]] && env_unset_prefix="env ${env_unset_prefix}"
+    # claude flags
+    local chrome_flag="" model_flag=""
+    [[ "$chrome" == "1" ]] && chrome_flag=" --chrome"
+    [[ -n "$model" ]] && model_flag=" --model '${model}'"
+    local cont_flag=""
+    [[ "$do_continue" == "1" ]] && cont_flag="--continue"
+
+    # Resume-gate + fresh-fallback blocks (only meaningful with --continue).
+    local resume_block=""
+    if [[ "$do_continue" == "1" ]]; then
+        resume_block="
+  # Auto-answer the resume gate: pick \"Resume full session as-is\" (option 2).
+  # Poll the pane; stop early once the REPL is ready (small sessions: no gate).
+  for _i in \$(seq 1 30); do
+    sleep 1
+    \"\$TMUX_BIN\" has-session -t \"\$SESSION\" 2>/dev/null || break
+    _pane=\"\$(\"\$TMUX_BIN\" capture-pane -t \"\$SESSION\" -p 2>/dev/null)\"
+    if printf '%s' \"\$_pane\" | grep -q 'Resume full session as-is'; then
+      \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter   # 1 -> 2, confirm full resume
+      break
+    fi
+    printf '%s' \"\$_pane\" | grep -q 'bypass permissions on' && break   # REPL ready, no gate
+  done
+  # Fresh-fallback: if --continue produced an unresumable (dead) session, retry
+  # once WITHOUT --continue instead of crash-looping on KeepAlive.
+  if ! \"\$TMUX_BIN\" has-session -t \"\$SESSION\" 2>/dev/null; then
+    echo \"[wrapper] --continue session gone (unresumable?); retrying fresh\" >&2
+    start_claude \"\"
+  fi"
+    fi
+
     cat <<WRAPPER
 #!/bin/bash
 # ops-loop LOCAL main-runner wrapper for dept '${slug}' (host: local).
-# Rendered by install-local-loop.sh. Runs claude INSIDE a tmux session
-# "ops-loop-${slug}" so a human can \`tmux attach -t ops-loop-${slug}\` to watch
-# it live; launchd (KeepAlive=true) supervises THIS wrapper and restarts it on
-# crash. Mac twin of the VPS systemd dept unit; NO SOPS / NO token-broker — the
-# dept pushes via the Mac's own gh/git credential.
+# Rendered by install-local-loop.sh (ALIGNED — #748 single source of truth).
+# Runs the selected HARNESS inside a tmux session "ops-loop-${slug}" so a human
+# can \`tmux attach -t ops-loop-${slug}\` to watch it live; launchd (KeepAlive=true)
+# supervises THIS wrapper and restarts it on crash. Mac twin of the VPS systemd
+# dept unit + the #1133 harness selector (claude default | hermes).
 set -e
 export PATH="${extra_path}:\$PATH"
 export TELEGRAM_STATE_DIR="${tg_state}"
@@ -182,35 +300,52 @@ export OPS_LOOP_DEPT="${slug}"
 export BUBBLE_DEPT="${slug}"
 export BUBBLE_HOST="local"
 export OPS_LOOP_BOOT_REARM=1
+${age_export}
 cd "${dept_dir}"
-
-# Source the dept telegram bot env (sets TELEGRAM_BOT_TOKEN etc.) if present.
-if [ -f "${tg_state}/.env" ]; then
-  set -a
-  . "${tg_state}/.env"
-  set +a
-fi
+${vault_block}
 ${patch_block}
 TMUX_BIN="${tmux_bin}"
 SESSION="ops-loop-${slug}"
 
+# --- HARNESS SELECTOR (#1133): claude (default) | hermes ---
+# The Mac twin of the VPS /etc/bubble-harness/<slug> selector. A switch flips this
+# file then \`launchctl kickstart -k\` restarts the wrapper, which re-reads it here.
+SELECTOR="${selector_dir}/harness-${slug}"
+HARNESS="claude"
+[ -f "\$SELECTOR" ] && HARNESS="\$(tr -d '[:space:]' < "\$SELECTOR" 2>/dev/null)"
+[ -n "\$HARNESS" ] || HARNESS="claude"
+
+CONT_FLAG="${cont_flag}"
+
+# Tokens are passed INLINE into the tmux command because tmux new-session runs the
+# inner command in the tmux SERVER's global env, NOT this wrapper's env.
+start_claude() {  # \$1 = leading flag(s): "--continue" or "" (fresh)
+  "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
+    "cd '${dept_dir}' && ${inline_prefix}exec ${env_unset_prefix}'${claude_bin}' \$1${chrome_flag}${model_flag} --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+}
+
+start_hermes() {  # #1133 alternate harness — hermes reads its own profile (${slug})
+  "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
+    "exec ${hermes_bin} -p '${slug}' gateway run --replace"
+}
+
 # Kill any stale session from a previous run so we never stack sessions.
 "\$TMUX_BIN" kill-session -t "\$SESSION" 2>/dev/null || true
 
-# Start claude detached inside tmux. tmux gives it a real PTY. The inner shell
-# \`exec\`s claude so the pane dies exactly when claude dies. cwd is the dept repo
-# (loop state); when a workspace is granted it loads that dir's .claude/skills.
-"\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-  "exec '${claude_bin}' --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+if [ "\$HARNESS" = "hermes" ]; then
+  start_hermes
+else
+  start_claude "\$CONT_FLAG"${resume_block}
+fi
 
-# Block in the foreground until the session ends. When claude exits, the session
-# disappears, this loop ends, the wrapper exits non-zero, and launchd KeepAlive
-# relaunches the wrapper (which recreates the session). Poll is cheap (5s).
+# Block in the foreground until the session ends. When the harness exits, the
+# session disappears, this loop ends, the wrapper exits non-zero, and launchd
+# KeepAlive relaunches the wrapper (which recreates the session). Poll is cheap.
 while "\$TMUX_BIN" has-session -t "\$SESSION" 2>/dev/null; do
   sleep 5
 done
 
-# Session gone => claude exited. Exit non-zero so launchd KeepAlive restarts us.
+# Session gone => harness exited. Exit non-zero so launchd KeepAlive restarts us.
 exit 1
 WRAPPER
 }
