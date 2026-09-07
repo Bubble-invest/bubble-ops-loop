@@ -304,6 +304,14 @@ fi
     sleep 1
     \"\$TMUX_BIN\" has-session -t \"\$SESSION\" 2>/dev/null || break
     _pane=\"\$(\"\$TMUX_BIN\" capture-pane -t \"\$SESSION\" -p 2>/dev/null || true)\"
+    # Dismiss the \"Make auto mode your default permission mode?\" prompt (newer
+    # Claude Code shows it on a fresh start / after an upgrade and it BLOCKS the
+    # session). Pick \"No, keep accept edits\" (option 2) so we never silently flip
+    # the agent's permission mode; keep polling for the resume gate / REPL after.
+    if printf '%s' \"\$_pane\" | grep -q 'auto mode your default'; then
+      \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter 2>/dev/null || true  # -> \"No, keep accept edits\"
+      continue
+    fi
     if printf '%s' \"\$_pane\" | grep -q 'Resume full session as-is'; then
       \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter 2>/dev/null || true  # 1 -> 2, full resume
       break
