@@ -300,10 +300,24 @@ fi
   # NB: guarded with '|| true' so a transient non-zero (e.g. the session dying
   # mid-poll — exactly the race the fresh-fallback below handles) does NOT abort
   # the wrapper under 'set -e' before that fallback can run.
+  _am_done=0   # auto-mode prompt answered? (single-shot — never resend into the REPL)
   for _i in \$(seq 1 30); do
     sleep 1
     \"\$TMUX_BIN\" has-session -t \"\$SESSION\" 2>/dev/null || break
     _pane=\"\$(\"\$TMUX_BIN\" capture-pane -t \"\$SESSION\" -p 2>/dev/null || true)\"
+    # Dismiss the \"Make auto mode your default permission mode?\" prompt (newer
+    # Claude Code shows it on a fresh start / after an upgrade and it BLOCKS the
+    # session). Pick the second option (decline — keep the current permission mode)
+    # so we never silently flip it; keep polling for the resume gate / REPL after.
+    # SINGLE-SHOT (_am_done): answer at most once, so a lagged pane snapshot can't
+    # resend Down+Enter into the live REPL (history-recall + submit = stray turn).
+    # Match the FULL title incl. 'permission mode' — the shorter 'auto mode your
+    # default' substring also appears in a bundled changelog line (false positive).
+    if [ \"\$_am_done\" = 0 ] && printf '%s' \"\$_pane\" | grep -q 'auto mode your default permission mode'; then
+      \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter 2>/dev/null || true  # decline (2nd option)
+      _am_done=1
+      continue
+    fi
     if printf '%s' \"\$_pane\" | grep -q 'Resume full session as-is'; then
       \"\$TMUX_BIN\" send-keys -t \"\$SESSION\" Down Enter 2>/dev/null || true  # 1 -> 2, full resume
       break
