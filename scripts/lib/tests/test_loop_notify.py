@@ -12,10 +12,10 @@ Covers:
   * graceful email degradation: no SMTP creds → Telegram still delivers,
     email returns a failed-but-non-fatal receipt (per-channel isolation in the
     promoted notify.deliver).
-  * board #521 (fleet-wide L1/L4 real-brief delivery): the brief BODY is sent
-    (not just the summary heading); the config-driven brief_artifacts path
-    resolves + falls back safely; oversized briefs truncate; L2/L3 unchanged;
-    every send outcome is logged (observability).
+  * board #521/#1134 (fleet-wide L1/L4 real-brief delivery): the brief BODY is
+    sent (not just the summary heading); the config-driven brief_artifacts path
+    resolves + falls back safely; oversized briefs split without data loss;
+    L2/L3 stay unchanged; every send outcome is logged (observability).
 
 No live HTTP — a fake opener captures every request.
 """
@@ -477,22 +477,63 @@ def test_layer_fired_brief_artifacts_from_department_nested_config(tmp_path, tok
     assert "Nested config brief body" in text
 
 
-def test_layer_fired_oversized_brief_is_truncated(tmp_path, token_env, monkeypatch):
-    """Cause 1 + robustness: an oversized brief must be truncated with a
-    visible marker, never sent raw past the message budget."""
-    monkeypatch.setattr(loop_notify, "BRIEF_MAX_CHARS", 100)
+def test_layer_fired_long_brief_is_split_without_losing_tail(tmp_path, token_env):
+    """Board #1134: every character reaches Telegram in bounded messages."""
     layer_dir = _make_layer_dir(tmp_path, "1")
     summary = layer_dir / "summary.md"
     summary.write_text("# heading\n")
     brief = layer_dir / "morning_brief.md"
-    brief.write_text("A" * 5000)
+    brief_text = "".join(
+        f"## Section {index}\n\nFinding {index}: " + ("evidence " * 80) + "\n\n"
+        for index in range(14)
+    ).strip() + "\n\nTAIL_SENTINEL"
+    brief.write_text(brief_text)
 
     opener = _CapturingOpener()
-    loop_notify.notify_layer_fired("tony", 1, summary, config=CONFIG_WITH_BRIEFS, opener=opener)
-    text = opener.calls[0]["body"]["text"]
-    assert "tronqu" in text  # "…(tronqué)" marker present (accent-safe substring)
-    # The raw 5000-char brief must not have been sent whole.
-    assert "A" * 5000 not in text
+    log_path = tmp_path / "notify.log"
+    receipt = loop_notify.notify_layer_fired(
+        "tony",
+        1,
+        summary,
+        config=CONFIG_WITH_BRIEFS,
+        opener=opener,
+        notify_log_path=log_path,
+    )
+
+    chunks = loop_notify._split_brief_messages(
+        brief_text, "🔁 tony · L1 fired", loop_notify._cockpit_link("tony")
+    )
+    assert "".join(chunks) == brief_text
+    assert receipt.success is True
+    assert len(opener.calls) == len(chunks) > 1
+    assert all(len(call["body"]["text"]) <= notify.TELEGRAM_MESSAGE_MAX for call in opener.calls)
+    assert all("truncated" not in call["body"]["text"] for call in opener.calls)
+    assert "TAIL\\_SENTINEL" in opener.calls[-1]["body"]["text"]
+    assert "/dept/tony" in opener.calls[-1]["body"]["text"]
+    assert all("/dept/tony" not in call["body"]["text"] for call in opener.calls[:-1])
+    assert "(1/" in opener.calls[0]["body"]["text"]
+
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert len(records) == len(chunks)
+    assert [record["part"] for record in records] == list(range(1, len(chunks) + 1))
+    assert all(record["parts"] == len(chunks) for record in records)
+
+
+def test_split_accounts_for_markdownv2_escape_growth():
+    """Raw 3,600-char chunks are unsafe when MarkdownV2 escaping expands them."""
+    brief_text = ("symbols _*[]()~`>#+-=|{}.! and evidence\n" * 180).strip()
+    header = "🔁 ben · L4 fired"
+    link = loop_notify._cockpit_link("ben")
+
+    chunks = loop_notify._split_brief_messages(brief_text, header, link)
+
+    assert "".join(chunks) == brief_text
+    assert len(chunks) > 1
+    part_count = len(chunks)
+    for part_number, chunk in enumerate(chunks, 1):
+        subject = f"{header} ({part_number}/{part_count})"
+        body = chunk + ("\n\n" + link if part_number == part_count else "")
+        assert loop_notify._rendered_telegram_length(subject, body) <= notify.TELEGRAM_MESSAGE_MAX
 
 
 def test_layer_fired_script_like_brief_content_handled(tmp_path, token_env):
