@@ -125,50 +125,80 @@ if [[ "$DRY" == "1" ]]; then
     for timer in "${OLD_TIMERS[@]}"; do root_run "$SYSTEMCTL" disable --now "$timer"; done
     for timer in "${NEW_TIMERS[@]}"; do root_run "$SYSTEMCTL" enable --now "$timer"; done
 else
-    # Snapshot each global timer before touching any of them. A failed
-    # `disable --now` may already have disabled/stopped its target before
-    # returning nonzero, so rollback must restore ALL four exact states, not
-    # just the timers preceding the failing command.
+    # Snapshot every global AND replacement timer before touching any of them.
+    # Both `disable --now` and `enable --now` may mutate their target before
+    # returning nonzero. A rerun may also begin with some already-active
+    # replacements. Rollback therefore restores every timer's exact prior
+    # enablement kind and active state, including the failing command's target.
     OLD_ENABLED=()
     OLD_ACTIVE=()
     for timer in "${OLD_TIMERS[@]}"; do
         OLD_ENABLED+=("$("$SYSTEMCTL" is-enabled "$timer" 2>/dev/null || true)")
         OLD_ACTIVE+=("$("$SYSTEMCTL" is-active "$timer" 2>/dev/null || true)")
     done
+    NEW_ENABLED=()
+    NEW_ACTIVE=()
+    for timer in "${NEW_TIMERS[@]}"; do
+        NEW_ENABLED+=("$("$SYSTEMCTL" is-enabled "$timer" 2>/dev/null || true)")
+        NEW_ACTIVE+=("$("$SYSTEMCTL" is-active "$timer" 2>/dev/null || true)")
+    done
 
-    restore_old_timers() {
-        local i old
-        for i in "${!OLD_TIMERS[@]}"; do
-            old="${OLD_TIMERS[$i]}"
-            case "${OLD_ENABLED[$i]}" in
-                enabled|enabled-runtime) sudo -- "$SYSTEMCTL" enable "$old" || true ;;
-                *) sudo -- "$SYSTEMCTL" disable "$old" || true ;;
-            esac
-            case "${OLD_ACTIVE[$i]}" in
-                active|activating) sudo -- "$SYSTEMCTL" start "$old" || true ;;
-                *) sudo -- "$SYSTEMCTL" stop "$old" || true ;;
-            esac
+    restore_one_timer() {
+        local timer="$1" enabled="$2" active="$3"
+        case "$enabled" in
+            enabled) sudo -- "$SYSTEMCTL" enable "$timer" || true ;;
+            enabled-runtime)
+                # Remove any persistent link created by the failed attempt
+                # before restoring the original runtime-only enablement.
+                sudo -- "$SYSTEMCTL" disable "$timer" || true
+                sudo -- "$SYSTEMCTL" enable --runtime "$timer" || true
+                ;;
+            masked) sudo -- "$SYSTEMCTL" mask "$timer" || true ;;
+            masked-runtime)
+                sudo -- "$SYSTEMCTL" unmask "$timer" || true
+                sudo -- "$SYSTEMCTL" mask --runtime "$timer" || true
+                ;;
+            disabled|not-found|*) sudo -- "$SYSTEMCTL" disable "$timer" || true ;;
+        esac
+        case "$active" in
+            active|activating) sudo -- "$SYSTEMCTL" start "$timer" || true ;;
+            inactive|failed|deactivating) sudo -- "$SYSTEMCTL" stop "$timer" || true ;;
+        esac
+    }
+
+    restore_all_timers() {
+        local i timer
+        # Stop/disable changed replacement timers first so restoring the global
+        # floor does not create new duplicate coverage. Pre-existing active
+        # replacements are restored to their prior state below.
+        for i in "${!NEW_TIMERS[@]}"; do
+            timer="${NEW_TIMERS[$i]}"
+            restore_one_timer "$timer" "${NEW_ENABLED[$i]}" "${NEW_ACTIVE[$i]}"
         done
+        for i in "${!OLD_TIMERS[@]}"; do
+            timer="${OLD_TIMERS[$i]}"
+            restore_one_timer "$timer" "${OLD_ENABLED[$i]}" "${OLD_ACTIVE[$i]}"
+        done
+    }
+
+    rollback_cutover() {
+        restore_all_timers
     }
 
     for timer in "${OLD_TIMERS[@]}"; do
         if ! sudo -- "$SYSTEMCTL" disable --now "$timer"; then
             echo "ERR: global timer retirement failed; restoring exact prior timer states" >&2
-            restore_old_timers
+            rollback_cutover
             exit 1
         fi
     done
 
-    ENABLED_NEW=()
     for timer in "${NEW_TIMERS[@]}"; do
         if sudo -- "$SYSTEMCTL" enable --now "$timer"; then
-            ENABLED_NEW+=("$timer")
+            :
         else
-            echo "ERR: replacement activation failed; restoring global timers" >&2
-            for enabled in "${ENABLED_NEW[@]}"; do
-                sudo -- "$SYSTEMCTL" disable --now "$enabled" || true
-            done
-            restore_old_timers
+            echo "ERR: replacement activation failed; restoring exact prior timer states" >&2
+            rollback_cutover
             exit 1
         fi
     done

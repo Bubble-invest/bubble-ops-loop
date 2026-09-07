@@ -82,10 +82,21 @@ case "$cmd" in
     [[ "$timer" == "${FAIL_DISABLE:-}" ]] && exit 42
     ;;
   enable)
-    now=0; [[ "${1:-}" == --now ]] && { now=1; shift; }
-    timer="$1"; printf enabled >"$STATE_DIR/$timer.enabled"
+    now=0; runtime=0
+    while [[ "${1:-}" == --* ]]; do
+      [[ "$1" == --now ]] && now=1
+      [[ "$1" == --runtime ]] && runtime=1
+      shift
+    done
+    timer="$1"; [[ "$runtime" == 1 ]] && printf enabled-runtime >"$STATE_DIR/$timer.enabled" || printf enabled >"$STATE_DIR/$timer.enabled"
     [[ "$now" == 1 ]] && printf active >"$STATE_DIR/$timer.active"
+    [[ "$timer" == "${FAIL_ENABLE:-}" ]] && exit 43
     ;;
+  mask)
+    runtime=0; [[ "${1:-}" == --runtime ]] && { runtime=1; shift; }
+    [[ "$runtime" == 1 ]] && printf masked-runtime >"$STATE_DIR/$1.enabled" || printf masked >"$STATE_DIR/$1.enabled"
+    ;;
+  unmask) printf disabled >"$STATE_DIR/$1.enabled" ;;
   start) printf active >"$STATE_DIR/$1.active" ;;
   stop) printf inactive >"$STATE_DIR/$1.active" ;;
   *) exit 2 ;;
@@ -104,6 +115,37 @@ set -e
 for n in 1 2 3 4; do
   [[ "$(cat "$STATE/loop-layer$n.timer.enabled")" == enabled ]] || fail "global L$n not re-enabled"
   [[ "$(cat "$STATE/loop-layer$n.timer.active")" == active ]] || fail "global L$n not restarted"
+done
+
+# A replacement enable may likewise mutate before returning failure. Restore
+# its target, replacements enabled before this rerun, and all global timers to
+# their exact prior states (including runtime-only vs persistent enablement).
+for n in 1 2 3 4; do
+  printf enabled >"$STATE/loop-layer$n.timer.enabled"
+  printf active >"$STATE/loop-layer$n.timer.active"
+  printf disabled >"$STATE/loop-layer$n@alpha.timer.enabled"
+  printf inactive >"$STATE/loop-layer$n@alpha.timer.active"
+done
+printf enabled-runtime >"$STATE/loop-layer1@alpha.timer.enabled"
+printf active >"$STATE/loop-layer1@alpha.timer.active"
+set +e
+out="$(PATH="$TMP/fake-bin:$PATH" STATE_DIR="$STATE" FAIL_ENABLE=loop-layer3@alpha.timer \
+  BUBBLE_FLOOR_AGENTS_ROOT="$TMP/agents" BUBBLE_FLOOR_SYSTEMD_DIR="$TMP/rollback-systemd" \
+  BUBBLE_FLOOR_SYSTEMCTL="$TMP/stateful-systemctl" BUBBLE_FLOOR_TEST_UIDS=1 \
+  "$ROOT/scripts/install-loop-backup.sh" --activate 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "replacement mutate-then-fail returned green"
+[[ "$out" == *"restoring exact prior timer states"* ]] || fail "replacement rollback message missing"
+for n in 1 2 3 4; do
+  [[ "$(cat "$STATE/loop-layer$n.timer.enabled")" == enabled ]] || fail "global L$n enablement changed"
+  [[ "$(cat "$STATE/loop-layer$n.timer.active")" == active ]] || fail "global L$n activity changed"
+done
+[[ "$(cat "$STATE/loop-layer1@alpha.timer.enabled")" == enabled-runtime ]] || fail "runtime enablement widened"
+[[ "$(cat "$STATE/loop-layer1@alpha.timer.active")" == active ]] || fail "pre-existing replacement stopped"
+for n in 2 3 4; do
+  [[ "$(cat "$STATE/loop-layer$n@alpha.timer.enabled")" == disabled ]] || fail "replacement L$n left enabled"
+  [[ "$(cat "$STATE/loop-layer$n@alpha.timer.active")" == inactive ]] || fail "replacement L$n left active"
 done
 
 echo "isolated floor installer tests: PASS"
