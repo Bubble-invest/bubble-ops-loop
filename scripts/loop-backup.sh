@@ -1134,7 +1134,21 @@ fi
 for slug in "${DEPTS[@]}"; do
     [[ -n "$slug" ]] || continue
     workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
-    envfile="/run/claude-agent-${slug}/env"
+    # #1168: the #1120 uid isolation moved each dept's runtime env to
+    # /run/bubble-agent-<slug>/env (0400 agent-<slug>) — UNREADABLE by this
+    # claude-run floor — and left the old /run/claude-agent-<slug>/env dead. So
+    # the catch-up tick sourced a missing file, had no CLAUDE_CODE_OAUTH_TOKEN,
+    # and every layer died BACKUP-AUTH-FAILED (the terse "<dept> · L2 ×N" pings).
+    # Resolve to a READABLE env carrying the account-wide OAUTH: prefer a readable
+    # per-dept env (a legacy dept still on the old path, or if perms ever allow),
+    # else the shared claude env /run/claude-agent/env. This is option (a) — the
+    # safety-net floor tick runs with the shared automation identity rather than
+    # the dept's private one; NO access-widening (the shared env is already
+    # claude-readable). Overridable for the hermetic test harness.
+    envfile="${BUBBLE_BACKUP_SHARED_ENV:-/run/claude-agent/env}"
+    for _cand in "/run/bubble-agent-${slug}/env" "/run/claude-agent-${slug}/env"; do
+        if [[ -r "$_cand" ]]; then envfile="$_cand"; break; fi
+    done
     if [[ ! -d "$workdir" ]]; then
         log "$slug: SKIP — workdir $workdir not found"
         continue

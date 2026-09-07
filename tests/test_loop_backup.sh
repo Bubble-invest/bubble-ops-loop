@@ -268,6 +268,10 @@ common_env() {
     export BUBBLE_BACKUP_AGENTS_ROOT="$AGENTS_ROOT"    # fake dept workdirs (tmp)
     export BUBBLE_BACKUP_LOCK_DIR="$WORK/lock"         # flock dir → tmp
     export BUBBLE_BACKUP_SYSTEMCTL="$SYSTEMCTL_STUB"   # stub is-enabled
+    # #1168: pin the shared-env fallback to a hermetic empty file so the tick's
+    # env-source never reaches the REAL /run/claude-agent/env on a live box.
+    : > "$WORK/shared.env"
+    export BUBBLE_BACKUP_SHARED_ENV="$WORK/shared.env"
     unset CLAUDE_STUB_RESULT
     mkdir -p "$WORK/lock"
 }
