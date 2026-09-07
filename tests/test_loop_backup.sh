@@ -266,6 +266,10 @@ common_env() {
     export BUBBLE_BACKUP_NOTIFY_CMD="$NOTIFY_STUB"     # no real Telegram
     export BUBBLE_BACKUP_TELEGRAM_CHAT_ID="9999"       # deterministic recipient
     export BUBBLE_BACKUP_AGENTS_ROOT="$AGENTS_ROOT"    # fake dept workdirs (tmp)
+    # #1170: pin the migrated-layout root to a hermetic empty dir so discovery's
+    # /srv/agents scan can never reach the REAL /srv/agents on a live box.
+    mkdir -p "$WORK/srv-agents"
+    export BUBBLE_BACKUP_SRV_AGENTS_ROOT="$WORK/srv-agents"
     export BUBBLE_BACKUP_LOCK_DIR="$WORK/lock"         # flock dir → tmp
     export BUBBLE_BACKUP_SYSTEMCTL="$SYSTEMCTL_STUB"   # stub is-enabled
     # #1168: pin the shared-env fallback to a hermetic empty file so the tick's

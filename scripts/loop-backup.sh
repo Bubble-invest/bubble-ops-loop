@@ -107,6 +107,12 @@ CURRENT_MISSION_ID=""
 # BUBBLE_BACKUP_LOCK_DIR) so the test harness can run hermetically inside a
 # tmpdir; production defaults are unchanged.
 AGENTS_ROOT="${BUBBLE_BACKUP_AGENTS_ROOT:-/home/claude/agents}"
+# #1170: post-#1120 the migrated per-dept workdir is /srv/agents/<slug> (no
+# bubble-ops- prefix). The floor must discover + tick against THAT — the legacy
+# /home/claude/agents/bubble-ops-<slug> clone lingers but is stale, and some
+# migrated depts (e.g. claudette, morty) have NO legacy clone, so the old
+# legacy-only glob never backed them up at all. Overridable for the harness.
+SRV_AGENTS_ROOT="${BUBBLE_BACKUP_SRV_AGENTS_ROOT:-/srv/agents}"
 LOCK_DIR="${BUBBLE_BACKUP_LOCK_DIR:-/run/lock}"
 # systemctl, overridable so the test harness can stub `is-enabled` without a
 # real systemd (BUBBLE_BACKUP_SYSTEMCTL="$STUB"). Default = the real binary.
@@ -216,13 +222,23 @@ discover_depts() {
         printf '%s\n' ${BUBBLE_BACKUP_DEPTS}
         return 0
     fi
+    # #1170: UNION of the migrated (/srv/agents/<slug>) and legacy
+    # (/home/claude/agents/bubble-ops-<slug>) layouts, deduped. The legacy-only
+    # glob missed migrated depts with no legacy clone (claudette, morty); the
+    # union covers every dept exactly once. A non-dept dir under /srv/agents is
+    # harmless — downstream eligibility (host-gate + heartbeat) skips it cleanly.
     local d slug
-    for d in "${AGENTS_ROOT}"/bubble-ops-*; do
-        [[ -d "$d" ]] || continue          # no match → glob stays literal; -d guards it
-        slug="$(basename "$d")"
-        slug="${slug#bubble-ops-}"
-        printf '%s\n' "$slug"
-    done
+    {
+        for d in "${SRV_AGENTS_ROOT}"/*; do
+            [[ -d "$d" ]] || continue      # no match → glob stays literal; -d guards it
+            printf '%s\n' "$(basename "$d")"
+        done
+        for d in "${AGENTS_ROOT}"/bubble-ops-*; do
+            [[ -d "$d" ]] || continue      # no match → glob stays literal; -d guards it
+            slug="$(basename "$d")"
+            printf '%s\n' "${slug#bubble-ops-}"
+        done
+    } | sort -u
 }
 
 # dept_host <slug>: where does this dept's loop RUN? Reads the `host:` field from
@@ -1133,7 +1149,11 @@ fi
 
 for slug in "${DEPTS[@]}"; do
     [[ -n "$slug" ]] || continue
-    workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
+    # #1170: prefer the migrated workdir /srv/agents/<slug>; fall back to the
+    # legacy clone for an un-migrated dept. So the tick + staleness check read
+    # the LIVE dir, not the stale pre-#1120 clone.
+    workdir="${SRV_AGENTS_ROOT}/${slug}"
+    [[ -d "$workdir" ]] || workdir="${AGENTS_ROOT}/bubble-ops-${slug}"
     # #1168: the #1120 uid isolation moved each dept's runtime env to
     # /run/bubble-agent-<slug>/env (0400 agent-<slug>) — UNREADABLE by this
     # claude-run floor — and left the old /run/claude-agent-<slug>/env dead. So
