@@ -47,7 +47,11 @@
 #   --hermes-bin <path>      hermes binary (default: hermes)
 #   --extra-export "KEY=VAL" extra wrapper export line, emitted verbatim as
 #                            `export KEY=VAL` (repeatable; caller owns quoting —
-#                            e.g. 'PYTHONPATH="$HOME/x:${PYTHONPATH:-}"')
+#                            e.g. 'PYTHONPATH="$HOME/x:${PYTHONPATH:-}"'). Emitted
+#                            BEFORE the vault decrypt, so a value must NOT depend
+#                            on a vault-provided secret (it'd resolve empty). The
+#                            rendered wrapper is bash -n'd, so a bad quote fails
+#                            the install rather than shipping a broken wrapper.
 # Every rendered wrapper reads <selector-dir>/harness-<slug> at launch (claude default | hermes).
 #
 # --channel-patches-script (board #956): re-applies the telegram plugin's
@@ -263,8 +267,20 @@ say "  plist         = $PLIST_PATH"
 [[ -n "$EXTRA_EXPORTS" ]]        && export LOOP_EXTRA_EXPORTS="$EXTRA_EXPORTS"
 render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_PATH" \
     || die "failed to render wrapper to $WRAPPER_PATH"
+# Syntax-gate the rendered wrapper BEFORE it can be activated — the twin of the
+# plist's plutil -lint below. Catches a malformed knob (esp. a fat-fingered
+# --extra-export with an unbalanced quote, which is emitted verbatim) at install
+# time instead of silently installing a wrapper that only fails at launchd/tmux
+# exec time. On failure, remove the broken wrapper so a prior good one isn't
+# shadowed by an unrunnable file.
+if ! bash -n "$WRAPPER_PATH" 2>/tmp/.wrapper-lint.$$; then
+    say "rendered wrapper failed bash -n: $(cat /tmp/.wrapper-lint.$$ 2>/dev/null)"
+    rm -f "$WRAPPER_PATH" /tmp/.wrapper-lint.$$
+    die "rendered wrapper is not valid bash (check --extra-export / other knob quoting): $WRAPPER_PATH"
+fi
+rm -f /tmp/.wrapper-lint.$$
 chmod +x "$WRAPPER_PATH"
-say "wrote $WRAPPER_PATH (chmod +x)"
+say "wrote $WRAPPER_PATH (chmod +x, bash -n OK)"
 
 # 2) Render the launchd plist (KeepAlive) that supervises the wrapper.
 #    launchd does NOT expand $HOME inside plist <string> values, so expand it for
