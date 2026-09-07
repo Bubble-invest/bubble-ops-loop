@@ -270,6 +270,12 @@ def test_finalize_rewires_settings_json_hook_to_shell_script(tmp_path):
     assert "session-start.sh" in flat, (
         "settings.json must point to the working shell hook script"
     )
+    handler = hooks[0]["hooks"][0]
+    assert handler["command"] == "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"
+    assert handler["args"] == []
+    relocated = tmp_path / "relocated-zeta"
+    resolved = handler["command"].replace("${CLAUDE_PROJECT_DIR}", str(relocated))
+    assert Path(resolved) == relocated / ".claude" / "hooks" / "session-start.sh"
 
 
 # ── Bug-adjacent (queued-prompts dir) ────────────────────────────────────────

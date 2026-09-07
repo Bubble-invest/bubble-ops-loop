@@ -148,8 +148,10 @@ def _install_operating_session_hook(repo_dir: Path, dept_doc: dict | None,
     hook_file.write_text(hook_body, encoding="utf-8")
     hook_file.chmod(0o755)
 
-    # Wire settings.json SessionStart → this hook's canonical absolute path.
-    canonical_cmd = f"/home/claude/agents/bubble-ops-{slug}/.claude/hooks/session-start.sh"
+    # Claude substitutes this documented project-root placeholder before exec,
+    # so a post-isolation move from /home/claude/agents to /srv/agents cannot
+    # strand the hook on its old physical checkout.
+    canonical_cmd = "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"
     try:
         import json as _json
         data = _json.loads(settings_path.read_text(encoding="utf-8"))
@@ -157,7 +159,7 @@ def _install_operating_session_hook(repo_dir: Path, dept_doc: dict | None,
         return
     hooks = data.get("hooks", {}) or {}
     hooks["SessionStart"] = [{
-        "hooks": [{"type": "command", "command": canonical_cmd}],
+        "hooks": [{"type": "command", "command": canonical_cmd, "args": []}],
     }]
     data["hooks"] = hooks
     settings_path.write_text(
