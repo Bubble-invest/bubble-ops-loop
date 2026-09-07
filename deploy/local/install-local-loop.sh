@@ -45,6 +45,9 @@
 #   --env-unset "<VARS>"     space-sep var names to `env -u` before exec (e.g. CLAUDE_CODE_OAUTH_TOKEN)
 #   --harness-selector-dir <dir>  dir holding harness-<slug> (default: wrapper dir)
 #   --hermes-bin <path>      hermes binary (default: hermes)
+#   --extra-export "KEY=VAL" extra wrapper export line, emitted verbatim as
+#                            `export KEY=VAL` (repeatable; caller owns quoting —
+#                            e.g. 'PYTHONPATH="$HOME/x:${PYTHONPATH:-}"')
 # Every rendered wrapper reads <selector-dir>/harness-<slug> at launch (claude default | hermes).
 #
 # --channel-patches-script (board #956): re-applies the telegram plugin's
@@ -77,7 +80,8 @@
 #                         [--vault <path>] [--legacy-env <path>] [--age-key-file <path>]
 #                         [--model <val>] [--chrome] [--continue]
 #                         [--inline-env "<VARS>"] [--env-unset "<VARS>"]
-#                         [--harness-selector-dir <dir>] [--hermes-bin <path>] [--activate]
+#                         [--harness-selector-dir <dir>] [--hermes-bin <path>]
+#                         [--extra-export "KEY=VAL"]... [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
 #                         [--wrapper-dir <dir>]
 # =============================================================================
@@ -120,6 +124,7 @@ INLINE_ENV="${LOCAL_LOOP_INLINE_ENV-__RENDER_DEFAULT__}"  # space-sep var names 
 ENV_UNSET="${LOCAL_LOOP_ENV_UNSET:-}"                   # space-sep var names to env -u (e.g. CLAUDE_CODE_OAUTH_TOKEN)
 HARNESS_SELECTOR_DIR="${LOCAL_LOOP_HARNESS_SELECTOR_DIR:-}"  # dir holding harness-<slug> (default: wrapper dir)
 HERMES_BIN="${LOCAL_LOOP_HERMES_BIN:-}"                 # hermes binary (default: hermes)
+EXTRA_EXPORTS="${LOCAL_LOOP_EXTRA_EXPORTS:-}"           # newline-joined KEY=VALUE extra wrapper exports (repeatable --extra-export)
 
 die() { echo "ERR: $*" >&2; exit 2; }
 
@@ -165,6 +170,8 @@ while [[ $# -gt 0 ]]; do
         --harness-selector-dir=*) HARNESS_SELECTOR_DIR="${1#--harness-selector-dir=}"; shift ;;
         --hermes-bin)         HERMES_BIN="${2:?}"; shift 2 ;;
         --hermes-bin=*)       HERMES_BIN="${1#--hermes-bin=}"; shift ;;
+        --extra-export)       EXTRA_EXPORTS+="${EXTRA_EXPORTS:+$'\n'}${2:?}"; shift 2 ;;
+        --extra-export=*)     EXTRA_EXPORTS+="${EXTRA_EXPORTS:+$'\n'}${1#--extra-export=}"; shift ;;
         --activate)           ACTIVATE=1; shift ;;
         --uninstall)          UNINSTALL=1; shift ;;
         -h|--help)            sed -n '2,90p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -253,6 +260,7 @@ say "  plist         = $PLIST_PATH"
 [[ -n "$ENV_UNSET" ]]            && export LOOP_ENV_UNSET="$ENV_UNSET"
 [[ -n "$HARNESS_SELECTOR_DIR" ]] && export LOOP_HARNESS_SELECTOR_DIR="$HARNESS_SELECTOR_DIR"
 [[ -n "$HERMES_BIN" ]]           && export LOOP_HERMES_BIN="$HERMES_BIN"
+[[ -n "$EXTRA_EXPORTS" ]]        && export LOOP_EXTRA_EXPORTS="$EXTRA_EXPORTS"
 render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_PATH" \
     || die "failed to render wrapper to $WRAPPER_PATH"
 chmod +x "$WRAPPER_PATH"

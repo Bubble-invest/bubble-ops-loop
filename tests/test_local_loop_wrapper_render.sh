@@ -96,6 +96,19 @@ echo "== secrecy: no VALUES embedded (env -i render) =="
 env -i bash -c 'source "$0"; TELEGRAM_BOT_TOKEN=SUPERSECRET LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN" render_loop_wrapper /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" ""' "$LIB" > "$TMP/secref.sh" 2>/dev/null
 nowant "T10 no secret value embedded at render time" "SUPERSECRET" "$TMP/secref.sh"
 
+echo "== extra-export (per-agent wrapper exports, e.g. Géraldine PYTHONPATH) =="
+LOOP_EXTRA_EXPORTS='PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' \
+  render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/xexp.sh"
+bash -n "$TMP/xexp.sh"; ok "T11a extra-export render valid" $?
+want "T11b export emitted verbatim (runtime refs literal)" 'export PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' "$TMP/xexp.sh"
+want "T11c export sits before cd" "export PYTHONPATH" "$TMP/xexp.sh"
+# multiple entries (newline-joined) both emitted
+printf 'A=1\nB="two"' > "$TMP/multi"
+LOOP_EXTRA_EXPORTS="$(cat "$TMP/multi")" render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/xexp2.sh"
+want "T11d multi export A" "export A=1"     "$TMP/xexp2.sh"
+want "T11e multi export B" 'export B="two"' "$TMP/xexp2.sh"
+nowant "T11f no extra-export by default" "export PYTHONPATH" "$TMP/generic.sh"
+
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
