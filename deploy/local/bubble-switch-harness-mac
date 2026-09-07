@@ -9,10 +9,11 @@
 #
 # Usage: bubble-switch-harness-mac <agent> <claude|hermes> [<request-id>]
 #
-# Pilot agent registry (#1133): tonio.
-#   tonio -> slug=main, label=com.bubble.ops-loop-main, profile=tonio,
-#            workspace=~/claude-workspaces/Tony_CEO, tmux=ops-loop-main,
-#            bot=@ClaudeRickyBot, chat_id=6532205130
+# Registry (runs ON each agent's own Mac; the launchd-label preflight gates to the
+# local machine, so this one file is safe fleet-wide). Hermes profile == slug.
+#   Joris Mac : tonio (main), rick (rnd, guarded)   M5 : geraldine (accountant), ellie
+#   M1        : content
+# Validated end-to-end on tonio (claude⇄hermes round-trip + rollback), 2026-09-07.
 #
 # Mac-specific notes vs the VPS controller:
 #   - launchd (not systemd): restart via `launchctl kickstart -k gui/<uid>/<label>`.
@@ -69,6 +70,18 @@ esac
 # --- validate ---------------------------------------------------------------
 [[ "$TARGET" == "claude" || "$TARGET" == "hermes" ]] || die "target must be claude|hermes"
 launchctl print "gui/${UID_NUM}/${LABEL}" >/dev/null 2>&1 || die "no launchd label $LABEL"
+
+# --- mutual exclusion (per-agent) -------------------------------------------
+# The whole flow takes 75-120s; a caller that times out and retries, or two
+# concurrent requests for the same agent, would race on the selector + kickstart
+# (each rolling back from its own $PREV snapshot). mkdir is atomic → one winner.
+LOCKDIR="$SUPPORT_DIR/.switch-lock-$AGENT"
+mkdir -p "$SUPPORT_DIR" 2>/dev/null || true
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  die "another switch for '$AGENT' is already in progress (lock: $LOCKDIR) — wait or remove the stale lock"
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+
 SELDIR="$SUPPORT_DIR"
 SEL="$SELDIR/harness-$SLUG"
 CUR="claude"; [[ -r "$SEL" ]] && CUR="$(tr -d '[:space:]' < "$SEL")"
@@ -92,20 +105,33 @@ harness_of_session(){
   pp="$("$TMUX_BIN" list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [[ -n "$pp" ]] || { echo none; return; }
   cmd="$(ps -p "$pp" -o command= 2>/dev/null)"
-  if   printf '%s' "$cmd" | grep -q 'bin/claude'; then echo claude
-  elif printf '%s' "$cmd" | grep -Eq 'hermes.*gateway|hermes-agent/hermes'; then echo hermes
+  # Check hermes FIRST (specific: its own args), then claude with a path-agnostic
+  # match — '/claude' / bounded 'claude' — so a custom --claude-bin (app bundle,
+  # relocated binary) without a literal 'bin/' segment is still recognised.
+  if   printf '%s' "$cmd" | grep -Eq 'hermes.*gateway|hermes-agent/hermes'; then echo hermes
+  elif printf '%s' "$cmd" | grep -Eq '(^|/|[[:space:]])claude([[:space:]]|$)'; then echo claude
   else echo other; fi
 }
 
 # --- completed-turn gate (avoid switching mid-turn) -------------------------
-# Claude maps '/' and '_' to '-' for its project dir.
+# BEST-EFFORT, claude→* only. Claude maps '/' and '_' to '-' for its project dir.
+# Limitations (accepted): (a) it detects a jsonl actively being WRITTEN; a long
+# tool call (e.g. a multi-minute build) writes no jsonl and reads as idle; (b)
+# there is no symmetric gate for hermes→claude — but that direction's continuity
+# is a handoff NOTE (not a transcript import), so it does not depend on a clean
+# hermes transcript; the cost of a mid-turn hermes kill is at most its in-flight
+# turn, which launchd relaunch + the handoff note recover from.
 proj_dir="$HOME/.claude/projects/$(echo "$WORKDIR" | sed 's#[/_]#-#g')"
 # newest .jsonl by mtime — portable (macOS BSD `find` has no GNU -printf; `ls -t` works on both).
 jf="$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)"
 if [[ "$CUR" == "claude" && -n "$jf" ]]; then
   m1=$(stat -f %m "$jf" 2>/dev/null); sleep 6; m2=$(stat -f %m "$jf" 2>/dev/null)
+  # both-empty (jsonl rotated/deleted mid-check) is treated as stable — it means
+  # the file we sampled is gone, not that a turn is streaming.
   [[ "$m1" == "$m2" ]] || die "busy: claude jsonl still growing (mid-turn) — retry"
   say "completed-turn gate ok (jsonl stable): $(basename "$jf")"
+elif [[ "$CUR" == "claude" ]]; then
+  say "no claude jsonl found in $proj_dir — proceeding (fresh session / no prior transcript)"
 fi
 
 # --- continuity: carry context into the target harness ----------------------
@@ -138,7 +164,17 @@ rollback(){
   local waited=0; while (( waited < 45 )); do sleep 3; waited=$((waited+3)); [[ "$(harness_of_session)" == "$PREV" ]] && break; done
   local ok=no; [[ "$(harness_of_session)" == "$PREV" ]] && ok=yes
   say "rollback relaunch done (prev harness '$PREV' up=$ok)"
-  echo "SWITCH_RESULT=rolled_back to=$PREV continuity=$CONTINUITY"; exit 1
+  if [[ "$ok" == "yes" ]]; then
+    echo "SWITCH_RESULT=rolled_back to=$PREV continuity=$CONTINUITY"
+  else
+    # Rollback's OWN relaunch did not confirm — the agent may be fully DOWN.
+    # Surface it in the machine-readable line so a caller/commander alerts,
+    # rather than reading a plain 'rolled_back' as safe. launchd KeepAlive is
+    # the last resort; the selector is already restored to $PREV.
+    say "CRITICAL: rollback did NOT confirm '$PREV' up — agent may be DOWN (launchd KeepAlive should relaunch)"
+    echo "SWITCH_RESULT=rollback_failed to=$PREV note=agent-may-be-down continuity=$CONTINUITY"
+  fi
+  exit 1
 }
 
 echo "$PREV" > "$SEL.prev"
@@ -161,13 +197,19 @@ otherh="$(harness_of_session)"
 [[ "$otherh" == "$TARGET" ]] || { say "readiness: session running '$otherh' not '$TARGET'"; rollback; }
 say "readiness: tmux '$SESSION' pane running '$TARGET' (other gone)"
 
-# telegram: same bot reachable (getMe). Token from the tonio profile .env (== live vault token).
+# telegram: same bot reachable (getMe). Token from the <slug> profile .env (== live vault token).
 TOK="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$HOME/.hermes/profiles/$PROFILE/.env" 2>/dev/null | cut -d= -f2-)"
-bot="?"
+bot="?"; bot_verified=no
 if [[ -n "$TOK" ]]; then
   bot=$(curl -s "https://api.telegram.org/bot$TOK/getMe" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("username","?"))' 2>/dev/null || echo "?")
-  say "readiness: bot=@$bot (getMe ok) chat_id=$CHAT_ID"
+  [[ "$bot" != "?" ]] && bot_verified=yes
+  say "readiness: bot=@$bot (getMe $bot_verified) chat_id=$CHAT_ID"
+else
+  say "readiness: no TELEGRAM_BOT_TOKEN in profile .env — bot reachability UNVERIFIED"
 fi
 
-say "SWITCH OK -> $TARGET (continuity=$CONTINUITY)"
-echo "SWITCH_RESULT=ready harness=$TARGET continuity=$CONTINUITY bot=@${bot}"
+# The harness IS up (pane-confirmed above). Telegram reachability is a secondary
+# signal — report it explicitly so an automated caller can tell a fully-verified
+# switch from one where the bot check couldn't run (bot=@? / bot_verified=no).
+say "SWITCH OK -> $TARGET (continuity=$CONTINUITY, bot_verified=$bot_verified)"
+echo "SWITCH_RESULT=ready harness=$TARGET continuity=$CONTINUITY bot=@${bot} bot_verified=$bot_verified"
