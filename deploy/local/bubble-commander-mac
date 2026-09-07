@@ -36,7 +36,7 @@ except Exception:
     TOKEN = ""
 if not TOKEN:
     TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED_CHATS = {6532205130}                     # Joris
+ALLOWED_CHATS = {6532205130, 7470271615}         # Joris, Jade
 OFFSET_FILE = os.path.expanduser("~/.local/state/bubble-commander-mac/offset")
 API = f"https://api.telegram.org/bot{TOKEN}"
 PENDING = {}                                      # nonce -> (kind, agent, arg, ts)
