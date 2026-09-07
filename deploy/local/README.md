@@ -24,7 +24,7 @@ pushes via the operator's own **`gh`/git credential**.
 |------|------|
 | `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`). The VPS loop-backup twin, for one local dept. |
-| `local-loop-backup-runner.sh` | The per-tick body the backup agent runs: heartbeat-staleness check → force-tick the `/loop` only if stale. |
+| `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → cooldown-limited wake injection into the existing tmux session. It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
 
 ### Main runner shape — persistent `--channels` session (KeepAlive), NOT a per-tick job
@@ -46,16 +46,20 @@ Tests (run from repo root, no launchctl, no live machine):
 ```sh
 bash tests/test_local_loop_staleness.sh   deploy/local/lib/local_loop_lib.sh deploy/local/local-loop-backup-runner.sh
 bash tests/test_local_loop_plist_render.sh deploy/local/install-local-loop.sh deploy/local/install-local-loop-backup.sh
+bash tests/test_local_loop_injection_floor.sh deploy/local/local-loop-backup-runner.sh
 ```
 
 ## Test-safe by default (no `--activate`)
 
-Both installers **only render** the plist (write the file + print what they would
-do) unless `--activate` is passed. `launchctl load` happens **only** with
-`--activate`. The backup runner likewise only **decides + prints** unless
-`--activate-tick` is passed — it never launches `claude` in a dry run. This is
-how the test suites exercise the full render + decision paths with zero side
-effects.
+Both installers **only render** the plist unless `--activate` is passed.
+`launchctl load` happens only with `--activate`. The backup plist always selects
+`--activate-inject`: a stale heartbeat appends one fixed wake to the explicitly
+configured existing channel/session, subject to a cooldown. The runner contains
+no model-launch path. Calling it without `--activate-inject` reports a non-green
+deferred result, and legacy `--activate-tick` is rejected. The runner re-reads
+the main wrapper's harness selector each time: `claude` supports the channel
+inject path; `hermes` remains visibly deferred until it has a reviewed consumer.
+An append is logged as unconfirmed until the normal heartbeat advances.
 
 ## Install (on the Mac, only after re-audit PASS + {{OPERATOR}} go — see MIRANDA-BUILD-SPEC P4)
 
@@ -67,13 +71,21 @@ deploy/local/install-local-loop.sh \
     --telegram-state-dir ~/.claude/channels/telegram-socials
 
 deploy/local/install-local-loop-backup.sh \
-    --dept-dir ~/claude-workspaces/bubble-ops-content \
-    --slug content --interval 10800 --stale-sec 5400
+    --dept-dir ~/claude-workspaces/bubble-ops-content --slug content \
+    --telegram-state-dir ~/.claude/channels/telegram-socials \
+    --session-name ops-loop-content --tmux-bin /opt/homebrew/bin/tmux \
+    --harness-selector "$HOME/Library/Application Support/bubble-ops-loop/harness-content" \
+    --interval 10800 --stale-sec 5400 --cooldown-sec 900
 
 # When ready, activate (loads the launchd agents):
 deploy/local/install-local-loop.sh        --dept-dir ... --slug content ... --activate
-deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --activate
+deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --telegram-state-dir ... --session-name ... --tmux-bin ... --activate
 ```
+
+The backup installer renders and lints a private candidate before atomically
+publishing the plist. Without `--activate`, the loaded job is untouched. With
+`--activate`, a load failure restores both the previous plist bytes and prior
+registration state.
 
 Uninstall: `install-local-loop.sh --uninstall --slug content` (removes the plist
 + wrapper; add `--activate` to also `launchctl unload`).

@@ -1,29 +1,6 @@
 #!/usr/bin/env bash
-# =============================================================================
-# local-loop-backup-runner.sh — the per-tick body of the Mac BACKUP FLOOR.
-#
-# Invoked by the launchd backup agent (com.bubble.ops-loop-backup-<slug>) on its
-# StartInterval. The Mac twin of the VPS loop-backup.sh runner, for ONE local
-# dept. It:
-#   1. Reads the dept's heartbeat staleness via the shared is_heartbeat_stale
-#      (which reuses scripts/lib/loop_backup.py — same staleness def as the VPS).
-#   2. If FRESH (the main /loop is ticking): log + exit 0 (no double-tick).
-#   3. If STALE (main loop wedged / Mac just woke / never ticked): force ONE tick
-#      of the dept's /loop, then exit.
-#
-# FAIL-SAFE: a staleness-check error is treated as STALE (tick) by the lib, never
-# a crash. A force-tick that itself fails logs but still exits 0 (a backstop must
-# not flap the launchd agent into a fast-respawn loop).
-#
-# TEST-SAFE: WITHOUT --activate-tick it only DECIDES + PRINTS (no `claude`
-# launched). The real force-tick runs only under --activate-tick, so a test can
-# exercise the decision path with zero side effects.
-#
-# Usage:
-#   local-loop-backup-runner.sh --dept-dir <path> --slug <slug>
-#                               [--stale-sec <sec>] [--claude-bin <path>]
-#                               [--activate-tick]
-# =============================================================================
+# Mac backup floor: wake the existing persistent session when its heartbeat is stale.
+# This runner never launches Claude, Hermes, or any other model process.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,53 +9,113 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPT_DIR=""
 SLUG=""
+TELEGRAM_STATE_DIR=""
+SESSION_NAME=""
+HARNESS_SELECTOR=""
+TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-tmux}"
 STALE_SEC="$LOCAL_LOOP_STALE_SEC_DEFAULT"
-CLAUDE_BIN="${LOCAL_LOOP_CLAUDE_BIN:-claude}"
-ACTIVATE_TICK=0
+COOLDOWN_SEC="${LOCAL_LOOP_BACKUP_COOLDOWN_SEC:-900}"
+ACTIVATE_INJECT=0
+LEGACY_ACTIVATION=0
 
 die() { echo "ERR: $*" >&2; exit 2; }
+TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { echo "[$(TS)] [local-loop-backup:${SLUG:-unknown}] $*"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dept-dir)       DEPT_DIR="${2:?--dept-dir needs a value}"; shift 2 ;;
-        --dept-dir=*)     DEPT_DIR="${1#--dept-dir=}"; shift ;;
-        --slug)           SLUG="${2:?--slug needs a value}"; shift 2 ;;
-        --slug=*)         SLUG="${1#--slug=}"; shift ;;
-        --stale-sec)      STALE_SEC="${2:?--stale-sec needs a value}"; shift 2 ;;
-        --stale-sec=*)    STALE_SEC="${1#--stale-sec=}"; shift ;;
-        --claude-bin)     CLAUDE_BIN="${2:?}"; shift 2 ;;
-        --claude-bin=*)   CLAUDE_BIN="${1#--claude-bin=}"; shift ;;
-        --activate-tick)  ACTIVATE_TICK=1; shift ;;
-        -h|--help)        sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --dept-dir) DEPT_DIR="${2:?--dept-dir needs a value}"; shift 2 ;;
+        --dept-dir=*) DEPT_DIR="${1#--dept-dir=}"; shift ;;
+        --slug) SLUG="${2:?--slug needs a value}"; shift 2 ;;
+        --slug=*) SLUG="${1#--slug=}"; shift ;;
+        --telegram-state-dir) TELEGRAM_STATE_DIR="${2:?--telegram-state-dir needs a value}"; shift 2 ;;
+        --telegram-state-dir=*) TELEGRAM_STATE_DIR="${1#--telegram-state-dir=}"; shift ;;
+        --session-name) SESSION_NAME="${2:?--session-name needs a value}"; shift 2 ;;
+        --session-name=*) SESSION_NAME="${1#--session-name=}"; shift ;;
+        --harness-selector) HARNESS_SELECTOR="${2:?--harness-selector needs a value}"; shift 2 ;;
+        --harness-selector=*) HARNESS_SELECTOR="${1#--harness-selector=}"; shift ;;
+        --tmux-bin) TMUX_BIN="${2:?--tmux-bin needs a value}"; shift 2 ;;
+        --tmux-bin=*) TMUX_BIN="${1#--tmux-bin=}"; shift ;;
+        --stale-sec) STALE_SEC="${2:?--stale-sec needs a value}"; shift 2 ;;
+        --stale-sec=*) STALE_SEC="${1#--stale-sec=}"; shift ;;
+        --cooldown-sec) COOLDOWN_SEC="${2:?--cooldown-sec needs a value}"; shift 2 ;;
+        --cooldown-sec=*) COOLDOWN_SEC="${1#--cooldown-sec=}"; shift ;;
+        --activate-inject) ACTIVATE_INJECT=1; shift ;;
+        # Old rendered plists may carry these. Accept data-only flags so a
+        # runner-first rollout fails clearly instead of launching a model.
+        --claude-bin|--workspace-dir|--extra-path) shift 2 ;;
+        --claude-bin=*|--workspace-dir=*|--extra-path=*) shift ;;
+        --activate-tick) LEGACY_ACTIVATION=1; shift ;;
+        -h|--help) sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument '$1'" ;;
     esac
 done
 
-[[ -n "$DEPT_DIR" ]] || die "--dept-dir is required"
-[[ -n "$SLUG" ]] || die "--slug is required"
+[[ "$SLUG" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die "invalid --slug"
+[[ -n "$DEPT_DIR" && "$DEPT_DIR" == /* ]] || die "--dept-dir must be absolute"
+[[ -n "$TELEGRAM_STATE_DIR" && "$TELEGRAM_STATE_DIR" == /* ]] || die "--telegram-state-dir must be absolute"
+[[ -n "$SESSION_NAME" ]] || die "--session-name is required"
+[[ -n "$HARNESS_SELECTOR" && "$HARNESS_SELECTOR" == /* ]] || die "--harness-selector must be absolute"
+[[ "$STALE_SEC" =~ ^[0-9]+$ ]] || die "--stale-sec must be an integer"
+[[ "$COOLDOWN_SEC" =~ ^[0-9]+$ ]] || die "--cooldown-sec must be an integer"
+[[ "$LEGACY_ACTIVATION" == 0 ]] || { log "ERROR: legacy --activate-tick is disabled; re-render this LaunchAgent for existing-session injection"; exit 64; }
 
-TS()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
-log() { echo "[$(TS)] [local-loop-backup:${SLUG}] $*"; }
-
-STATE="$(is_heartbeat_stale "$DEPT_DIR" "$STALE_SEC")"
-
+NOW_EPOCH="${LOCAL_LOOP_NOW_EPOCH:-$(date +%s)}"
+[[ "$NOW_EPOCH" =~ ^[0-9]+$ ]] || die "LOCAL_LOOP_NOW_EPOCH must be an integer"
+STATE="$(is_heartbeat_stale "$DEPT_DIR" "$STALE_SEC" "$NOW_EPOCH")"
 if [[ "$STATE" == "fresh" ]]; then
-    log "heartbeat FRESH (≤ ${STALE_SEC}s) — main /loop alive, no backup tick"
+    log "heartbeat FRESH (<= ${STALE_SEC}s) — existing session healthy"
     exit 0
 fi
+log "heartbeat STALE (> ${STALE_SEC}s, or missing) — existing-session wake required"
 
-log "heartbeat STALE (> ${STALE_SEC}s, or missing) — main /loop wedged/asleep; backup force-tick"
-
-if [[ "$ACTIVATE_TICK" != "1" ]]; then
-    log "(dry) would force-tick: cd '$DEPT_DIR' && '$CLAUDE_BIN' (pass --activate-tick to actually run)"
-    exit 0
+if [[ "$ACTIVATE_INJECT" != 1 ]]; then
+    log "DEFERRED: injection not activated; no model/session was launched"
+    exit 1
+fi
+if [[ -L "$HARNESS_SELECTOR" ]]; then
+    log "ERROR: harness selector is a symlink; injection not written"
+    exit 1
+fi
+HARNESS="claude"
+if [[ -e "$HARNESS_SELECTOR" && ! -f "$HARNESS_SELECTOR" ]]; then
+    log "ERROR: harness selector is not a regular file; injection not written"
+    exit 1
+fi
+if [[ -f "$HARNESS_SELECTOR" ]]; then
+    if [[ ! -r "$HARNESS_SELECTOR" ]]; then
+        log "ERROR: harness selector is unreadable; injection not written"
+        exit 1
+    fi
+    HARNESS="$(tr -d '[:space:]' <"$HARNESS_SELECTOR" 2>/dev/null)" || {
+        log "ERROR: harness selector read failed; injection not written"
+        exit 1
+    }
+fi
+case "$HARNESS" in
+    ""|claude) ;;
+    hermes)
+        log "DEFERRED: Hermes is active and has no reviewed channel-inject consumer; injection not written"
+        exit 1
+        ;;
+    *)
+        log "ERROR: unsupported harness selector; injection not written"
+        exit 1
+        ;;
+esac
+if [[ ! -x "$TMUX_BIN" ]] || ! "$TMUX_BIN" has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log "ERROR: existing session unavailable; injection not written"
+    exit 1
 fi
 
-# Force ONE tick of the dept's /loop. The dept's CLAUDE.md drives STEP A-F.
-# Fail-open: a tick error logs but exits 0 so launchd doesn't fast-respawn.
-if cd "$DEPT_DIR" 2>/dev/null; then
-    "$CLAUDE_BIN" --dangerously-skip-permissions || log "force-tick exited non-zero (logged, not fatal)"
-else
-    log "could not cd into dept-dir '$DEPT_DIR' (logged, not fatal)"
-fi
+WAKE_MESSAGE='Resume your OODA loop (self-paced). Run one normal full tick now: STEP A safe pull, STEP B read queues, STEP C apply the existing layer/mission/approval gates, STEP D dispatch only the selected work, STEP E commit only allowed runtime paths, STEP F notify, then arm the next normal wake. Preserve every human approval gate.'
+RESULT="$(inject_loop_wake "$TELEGRAM_STATE_DIR" "$SLUG" "$NOW_EPOCH" "$COOLDOWN_SEC" "$WAKE_MESSAGE")" || {
+    log "ERROR: secure existing-session injection failed"
+    exit 1
+}
+case "$RESULT" in
+    injected) log "WAKE_APPENDED_UNCONFIRMED: existing-session inbox accepted one wake; delivery, execution, and heartbeat advancement are not yet confirmed" ;;
+    cooldown) log "COOLDOWN: a recent wake is already pending; no duplicate appended" ;;
+    *) log "ERROR: unexpected injection result"; exit 1 ;;
+esac
 exit 0
