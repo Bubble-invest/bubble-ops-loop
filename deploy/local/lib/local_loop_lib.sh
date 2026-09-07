@@ -208,6 +208,17 @@ render_loop_wrapper() {
     local env_unset_vars="${LOOP_ENV_UNSET:-}"                               # e.g. CLAUDE_CODE_OAUTH_TOKEN (Géraldine keychain override)
     local selector_dir="${LOOP_HARNESS_SELECTOR_DIR:-\$HOME/Library/Application Support/bubble-ops-loop}"
     local hermes_bin="${LOOP_HERMES_BIN:-hermes}"
+    # Extra per-agent wrapper exports (newline-separated KEY=VALUE entries, e.g.
+    # Géraldine's PYTHONPATH for the department-onboarding-guide skill). Emitted
+    # verbatim as `export KEY=VALUE` in the wrapper body — the caller owns the
+    # value's quoting and any runtime refs ($HOME, ${PYTHONPATH:-} …) stay literal.
+    local extra_exports="${LOOP_EXTRA_EXPORTS:-}"
+    local extra_export_block="" _line
+    if [[ -n "$extra_exports" ]]; then
+        while IFS= read -r _line; do
+            [[ -n "$_line" ]] && extra_export_block+="export ${_line}"$'\n'
+        done <<<"$extra_exports"
+    fi
 
     # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
     local age_export="" vault_block=""
@@ -323,7 +334,7 @@ export BUBBLE_DEPT="${slug}"
 export BUBBLE_HOST="local"
 export OPS_LOOP_BOOT_REARM=1
 ${age_export}
-cd "${dept_dir}"
+${extra_export_block}cd "${dept_dir}"
 ${vault_block}
 ${patch_block}
 TMUX_BIN="${tmux_bin}"
