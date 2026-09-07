@@ -73,6 +73,20 @@ class _CapturingOpener:
         return _FakeResponse(json.dumps(resp).encode("utf-8"), status=200)
 
 
+class _FailingOpener(_CapturingOpener):
+    """Record every attempt and inject a transport failure at one call."""
+
+    def __init__(self, fail_on_call: int):
+        super().__init__()
+        self._fail_on_call = fail_on_call
+
+    def __call__(self, req, timeout=None):
+        response = super().__call__(req, timeout=timeout)
+        if len(self.calls) == self._fail_on_call:
+            raise OSError("synthetic transport failure")
+        return response
+
+
 # ─── Fixtures ──────────────────────────────────────────────────────────────
 
 
@@ -508,10 +522,14 @@ def test_layer_fired_long_brief_is_split_without_losing_tail(tmp_path, token_env
     assert len(opener.calls) == len(chunks) > 1
     assert all(len(call["body"]["text"]) <= notify.TELEGRAM_MESSAGE_MAX for call in opener.calls)
     assert all("truncated" not in call["body"]["text"] for call in opener.calls)
-    assert "TAIL\\_SENTINEL" in opener.calls[-1]["body"]["text"]
+    assert all("parse_mode" not in call["body"] for call in opener.calls)
+    assert "TAIL_SENTINEL" in opener.calls[-1]["body"]["text"]
     assert "/dept/tony" in opener.calls[-1]["body"]["text"]
     assert all("/dept/tony" not in call["body"]["text"] for call in opener.calls[:-1])
-    assert "(1/" in opener.calls[0]["body"]["text"]
+    for part_number, call in enumerate(opener.calls, 1):
+        assert call["body"]["text"].startswith(
+            f"🔁 tony · L1 fired ({part_number}/{len(chunks)})\n\n"
+        )
 
     records = [json.loads(line) for line in log_path.read_text().splitlines()]
     assert len(records) == len(chunks)
@@ -519,13 +537,26 @@ def test_layer_fired_long_brief_is_split_without_losing_tail(tmp_path, token_env
     assert all(record["parts"] == len(chunks) for record in records)
 
 
-def test_split_accounts_for_markdownv2_escape_growth():
-    """Raw 3,600-char chunks are unsafe when MarkdownV2 escaping expands them."""
-    brief_text = ("symbols _*[]()~`>#+-=|{}.! and evidence\n" * 180).strip()
+@pytest.mark.parametrize(
+    "brief_text",
+    [
+        "Intro\n\n```python\n" + ("x = 1 # code\n" * 80) + "```\n\nTAIL",
+        "Intro `" + ("inline-code " * 100) + "` TAIL",
+        "[" + ("linked label " * 100) + "](https://example.test/path?q=1) TAIL",
+        "**" + ("bold text " * 120) + "** TAIL",
+        "*" + ("italic text " * 120) + "* TAIL",
+        ("symbols _*[]()~`>#+-=|{}.! and \\slashes\n" * 80) + "TAIL",
+    ],
+    ids=["fence", "inline-code", "link", "bold", "italic", "specials"],
+)
+def test_split_brief_parts_use_entity_safe_plaintext(brief_text):
+    """Forced splits inside Markdown constructs remain literal and sendable."""
     header = "🔁 ben · L4 fired"
     link = loop_notify._cockpit_link("ben")
 
-    chunks = loop_notify._split_brief_messages(brief_text, header, link)
+    chunks = loop_notify._split_brief_messages(
+        brief_text, header, link, max_chars=300
+    )
 
     assert "".join(chunks) == brief_text
     assert len(chunks) > 1
@@ -533,7 +564,43 @@ def test_split_accounts_for_markdownv2_escape_growth():
     for part_number, chunk in enumerate(chunks, 1):
         subject = f"{header} ({part_number}/{part_count})"
         body = chunk + ("\n\n" + link if part_number == part_count else "")
-        assert loop_notify._rendered_telegram_length(subject, body) <= notify.TELEGRAM_MESSAGE_MAX
+        payload = notify.NotificationPayload(
+            subject=subject,
+            markdown_body=body,
+            metadata={"telegram_plain_text": True},
+        )
+        actual = notify.TelegramBackend({})._build_telegram_body(payload)
+        assert actual == subject + "\n\n" + body
+        assert len(actual) <= 300
+    assert "TAIL" in actual
+
+
+def test_layer_fired_stops_after_first_failed_part(tmp_path, token_env):
+    layer_dir = _make_layer_dir(tmp_path, "1")
+    summary = layer_dir / "summary.md"
+    summary.write_text("# heading\n")
+    brief = layer_dir / "morning_brief.md"
+    brief.write_text(("Paragraph with evidence.\n\n" * 800) + "TAIL")
+    log_path = tmp_path / "notify.log"
+    opener = _FailingOpener(fail_on_call=2)
+
+    receipt = loop_notify.notify_layer_fired(
+        "tony",
+        1,
+        summary,
+        config=CONFIG_WITH_BRIEFS,
+        opener=opener,
+        notify_log_path=log_path,
+    )
+
+    assert receipt.success is False
+    assert len(opener.calls) == 2
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert len(records) == 2
+    assert records[0]["success"] is True
+    assert records[1]["success"] is False
+    assert records[1]["part"] == 2
+    assert records[1]["parts"] > 2
 
 
 def test_layer_fired_script_like_brief_content_handled(tmp_path, token_env):

@@ -22,7 +22,8 @@ Message shapes
       ``🔁 <dept> · L<N> fired`` header, then the FULL BODY of the dept's
       real brief artifact (e.g. ``morning_brief.md`` / ``telegram_message.md``).
       Long briefs are split into numbered Telegram messages without dropping
-      their tail (board #1134).
+      their tail; brief parts use literal plaintext so a split cannot leave a
+      Markdown entity unclosed (board #1134).
   batched   :  ``🔁 <dept> · L2 ×3, L3 ×1``
 
 Board #521 (fleet-wide L1/L4 brief delivery)
@@ -101,8 +102,6 @@ try:  # pragma: no cover - import-path dependent
         CHANNEL_TELEGRAM_ALERT,
         MissingCredentialError,
         TELEGRAM_MESSAGE_MAX,
-        _escape_telegram_text,
-        _markdown_to_telegram,
     )
 except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts/lib
     from notify import (  # type: ignore
@@ -112,8 +111,6 @@ except Exception:  # noqa: BLE001 - allow sibling import when run inside scripts
         CHANNEL_TELEGRAM_ALERT,
         MissingCredentialError,
         TELEGRAM_MESSAGE_MAX,
-        _escape_telegram_text,
-        _markdown_to_telegram,
     )
 
 # The default account the loop pings on a layer fire. Dept configs map this
@@ -251,14 +248,12 @@ def _read_brief_body(brief_path) -> str:
 
 
 def _rendered_telegram_length(subject: str, markdown_body: str) -> int:
-    """Return the exact pre-send MarkdownV2 length used by TelegramBackend.
+    """Return the exact plaintext length used for a split brief part.
 
-    Raw Markdown length is not a safe proxy: escaping punctuation can almost
-    double the payload. Matching the backend renderer prevents its emergency
-    truncation from silently dropping content after we split a brief.
+    Brief parts deliberately opt out of parse mode so a chunk boundary cannot
+    leave a MarkdownV2 entity unclosed and make Telegram reject the message.
     """
-    subject_line = f"*{_escape_telegram_text(subject)}*"
-    return len(subject_line) + 2 + len(_markdown_to_telegram(markdown_body))
+    return len(subject) + 2 + len(markdown_body)
 
 
 def _preferred_split(text: str, hard_limit: int) -> int:
@@ -280,8 +275,9 @@ def _split_brief_messages(
 ) -> list[str]:
     """Split ``text`` into lossless chunks that TelegramBackend will not cut.
 
-    Every candidate is measured after MarkdownV2 rendering. The sizing pass
-    reserves room for the numbered subject and cockpit link on every part;
+    Every candidate is measured in the literal plaintext form sent to
+    Telegram. The sizing pass reserves room for the numbered subject and
+    cockpit link on every part;
     the real send uses the link only on the last part, so all messages remain
     within Telegram's limit. Concatenating the returned chunks reproduces the
     source text exactly.
@@ -450,6 +446,7 @@ def notify_layer_fired(
                     "brief_sent": True,
                     "part": part_number,
                     "parts": part_count,
+                    "telegram_plain_text": True,
                 },
             )
             receipt = backend.send(payload, recipient)
