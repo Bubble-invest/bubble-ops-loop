@@ -38,7 +38,13 @@ Everything between here and "## SYNTHESIS MODE" is the **compile** path.
 
 You mine transcripts from three origins, all under `/home/claude/.claude/projects/`:
 
-1. **VPS-native agents** — `-home-claude-agents-<dir>/*.jsonl` (written live on the box).
+1. **VPS-native agents** — `_vps-<slug>/-srv-agents-<slug>/*.jsonl`. Post-#1120 the
+   depts run isolated as `agent-<slug>` (HOME `/home/agent-<slug>`, 0750), so their
+   live transcripts are UNREADABLE by this claude-run compile. The
+   `wiki-transcript-sync.timer` (root, every 15 min) mirrors each dept's tree into
+   the claude-readable `_vps-<slug>/` cache. **The old `-home-claude-agents-<dir>/`
+   dirs are FROZEN at the #1120 cutover (~Sep 5) — historical only, do NOT mine
+   them for current activity.**
 2. **Joris's Mac** — `_mac-joris/-Users-joris-claude-workspaces-<WS>/*.jsonl` (rsync'd in every 15 min by the Mac push job).
 3. **Jade's Mac** — `_mac-jade/-Users-...-claude-workspaces-<WS>/*.jsonl` (same, when her Mac is on the tailnet).
 
@@ -54,13 +60,13 @@ also has a local workspace for them). Merge all sources for a given folder.
 
 | wiki folder       | VPS-native session dir                    | Joris-Mac cache dir                                              | Jade-Mac cache dir (same WS names) |
 |-------------------|-------------------------------------------|-----------------------------------------------------------------|------------------------------------|
-| `tony_ceo`        | `-home-claude-agents-bubble-ops-tony`     | *(none — see `tonio_extrnd` below)*                              | *(none)*                           |
+| `tony_ceo`        | `_vps-tony/-srv-agents-tony` (post-#1120; legacy `-home-claude-agents-bubble-ops-tony` frozen ~Sep 5) | *(none — see `tonio_extrnd` below)*                              | *(none)*                           |
 | `tonio_extrnd`    | *(none — Tonio is Mac-only, not a VPS-native agent)* | `_mac-joris/-Users-joris-claude-workspaces-Tony-CEO`  | *(none — Tonio runs on Joris's Mac only)* |
-| `maya_sales`      | `-home-claude-agents-bubble-ops-maya`     | *(none — Maya is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-28)* | *(none — never existed; phantom ref)* |
-| `claudette`       | `-home-claude-agents-claudette`           | *(none — Claudette is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-19)* | *(none — never existed; phantom ref)* |
-| `morty`           | `-home-claude-agents-morty`               | *(none — VPS-only concierge)*                                   | *(none)*                           |
+| `maya_sales`      | `_vps-maya/-srv-agents-maya` (post-#1120; legacy frozen ~Sep 5) | *(none — Maya is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-28)* | *(none — never existed; phantom ref)* |
+| `claudette`       | `_vps-claudette/-srv-agents-claudette` (post-#1120; legacy frozen ~Sep 5) | *(none — Claudette is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-19)* | *(none — never existed; phantom ref)* |
+| `morty`           | `_vps-morty/-srv-agents-morty` (post-#1120; legacy frozen ~Sep 5) | *(none — VPS-only concierge)*                                   | *(none)*                           |
 | `rick_rnd`        | *(none — Lab runs on the Mac)*            | `_mac-joris/-Users-joris-claude-workspaces-Rick-RnD`<br>`_mac-joris/-Users-joris-claude-workspaces-Rick-RnD-prototypes-deepseek-session` | `_mac-jade/...-Rick-RnD`           |
-| `ben_fund`        | `-home-claude-agents-bubble-ops-ben`      | *(none — Ben is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-07)* | *(none — never existed; phantom ref)* |
+| `ben_fund`        | `_vps-ben/-srv-agents-ben` (post-#1120; legacy frozen ~Sep 5) | *(none — Ben is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-07)* | *(none — never existed; phantom ref)* |
 | `miranda_socials` | *(none)*                                  | *(none — moved to Jade Mac M1)*                                  | `_mac-jade/...-bubble-ops-content` |
 | `ellie_assistant` | *(none — Jade's assistant, Jade-Mac only)* | *(none)*                                                       | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-ellie` |
 | `geraldine_accounting` | *(none — moved to Jade Mac M5, 2026-07-02)* | *(none)*                                                    | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-accountant` |
@@ -96,7 +102,7 @@ Understand what pages exist and per-agent counts. If the index looks stale
 ## STEP 2 — Freshness sanity on the Mac caches (log-only)
 
 ```bash
-for c in _mac-joris _mac-jade; do
+for c in _mac-joris _mac-jade _vps-tony _vps-maya _vps-ben _vps-claudette _vps-morty; do
   d=/home/claude/.claude/projects/$c
   if [ -d "$d" ]; then
     newest=$(find "$d" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -nr | head -1)
@@ -107,7 +113,7 @@ for c in _mac-joris _mac-jade; do
       echo "$c: present but no transcripts"
     fi
   else
-    echo "$c: ABSENT (that Mac hasn't pushed yet — normal if asleep)"
+    echo "$c: ABSENT (Mac asleep = normal; a _vps-* absent = wiki-transcript-sync.timer stalled — check it)"
   fi
 done
 ```
