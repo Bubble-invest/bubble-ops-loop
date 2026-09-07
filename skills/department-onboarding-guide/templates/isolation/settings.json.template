@@ -54,7 +54,7 @@
   "model": "{{ model }}",
   "env": {
     "BUBBLE_DEPT": "{{ slug }}",
-    "BUBBLE_DEPT_ROOT": "/home/claude/agents/bubble-ops-{{ slug }}",
+    "BUBBLE_DEPT_ROOT": "/srv/agents/{{ slug }}",
     "BUBBLE_DEPT_LEVEL": "{{ level }}",
     "TELEGRAM_STATE_DIR": "/home/agent-{{ slug }}/.claude/channels/telegram-{{ slug }}"
   },

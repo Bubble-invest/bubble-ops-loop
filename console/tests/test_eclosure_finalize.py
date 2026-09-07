@@ -47,6 +47,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -273,9 +275,19 @@ def test_finalize_rewires_settings_json_hook_to_shell_script(tmp_path):
     handler = hooks[0]["hooks"][0]
     assert handler["command"] == "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"
     assert handler["args"] == []
-    relocated = tmp_path / "relocated-zeta"
+    relocated = tmp_path / "relocated zeta workspace"
+    shutil.move(str(agents / "zeta"), relocated)
     resolved = handler["command"].replace("${CLAUDE_PROJECT_DIR}", str(relocated))
     assert Path(resolved) == relocated / ".claude" / "hooks" / "session-start.sh"
+    synthetic_home = tmp_path / "empty home"
+    synthetic_home.mkdir()
+    env = os.environ.copy()
+    env.update(HOME=str(synthetic_home), CLAUDE_PROJECT_DIR=str(relocated))
+    result = subprocess.run(
+        [resolved], cwd=relocated, env=env, text=True, capture_output=True, check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert "Première fois" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 # ── Bug-adjacent (queued-prompts dir) ────────────────────────────────────────
