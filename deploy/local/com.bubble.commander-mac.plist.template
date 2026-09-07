@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Mac Agent Commander (#1133) launchd service. Render placeholders then load:
+     sed -e "s#__HOME__#$HOME#g" -e "s#__PYTHON__#$(command -v python3)#g" \
+       deploy/local/com.bubble.commander-mac.plist.template \
+       > ~/Library/LaunchAgents/com.bubble.commander-mac.plist
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bubble.commander-mac.plist
+     The commander reads its token from ~/.config/telegram/bot_token_mac_commander
+     (0600) — NO secret in this plist. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bubble.commander-mac</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__HOME__/.local/bin/bubble-commander-mac</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>__HOME__</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/bubble-ops-loop/commander-mac.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/bubble-ops-loop/commander-mac.err.log</string>
+  <key>WorkingDirectory</key><string>__HOME__</string>
+</dict>
+</plist>

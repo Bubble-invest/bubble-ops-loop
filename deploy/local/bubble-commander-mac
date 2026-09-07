@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""
+bubble-commander-mac — always-on MAC Agent Commander (board #1133).
+
+The Mac analog of the VPS bubble-commander. Fully button-driven Telegram bot that
+manages the launchd-supervised ops-loop agents across the Mac fleet:
+  • Status / On / Off / Restart / Restart-All   (launchctl)
+  • Harness switch Claude Code <-> Hermes        (bubble-switch-harness-mac)
+
+Fleet spans THREE Macs. This commander is Mac-hosted (Joris's Mac) and reaches:
+  • LOCAL agents (tonio, rick) via local launchctl + bubble-switch-harness-mac.
+  • REMOTE agents (M5: geraldine, ellie · M1: content) via SSH Mac→Mac
+    (jade-m5 / jade-m1). There is deliberately NO VPS→Mac SSH; this bot never
+    runs on the VPS.
+
+Hardening (mirrors the VPS commander): strict chat allowlist, per-destructive-
+action confirm nonce, threaded slow actions (BUSY per-agent lock) so the poll
+loop stays responsive, harness-switch restricted to an allowlist. Rick (the R&D
+session) is STATUS-ONLY — never offered On/Off/Restart/Switch (that would kill the
+operating session). Token from env TELEGRAM_BOT_TOKEN.
+
+All interpolated command values come from the trusted registry below (never from
+user text); the user only picks agent+action from buttons, validated against it.
+"""
+import json, os, sys, time, subprocess, urllib.request, urllib.parse, urllib.error, secrets, html, threading, shlex
+
+# Token: the DEDICATED 0600 file is the source of truth (@Unclestockbubblebot).
+# Read it FIRST — never inherit an ambient TELEGRAM_BOT_TOKEN, or when launched
+# from inside an agent session (whose wrapper inlines its OWN bot token) the
+# commander would come up as that agent's bot and 409 against its live channel.
+# env is only a last resort (e.g. a deliberate override in a clean shell).
+_TOKEN_FILE = os.path.expanduser("~/.config/telegram/bot_token_mac_commander")
+try:
+    TOKEN = open(_TOKEN_FILE).read().strip()
+except Exception:
+    TOKEN = ""
+if not TOKEN:
+    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+ALLOWED_CHATS = {6532205130}                     # Joris
+OFFSET_FILE = os.path.expanduser("~/.local/state/bubble-commander-mac/offset")
+API = f"https://api.telegram.org/bot{TOKEN}"
+PENDING = {}                                      # nonce -> (kind, agent, arg, ts)
+BUSY = set()                                      # agents with an action in flight
+
+# ---- fleet registry --------------------------------------------------------
+# host: "local" | ssh alias (jade-m5 / jade-m1). label: launchd label. slug: the
+# harness selector/profile slug. switchable/controllable gate the UI.
+FLEET = {
+    "tonio":     {"host": "local",   "label": "com.bubble.ops-loop-main",       "slug": "main",       "switchable": True,  "controllable": True},
+    "rick":      {"host": "local",   "label": "com.bubble.ops-loop-rnd",        "slug": "rnd",        "switchable": False, "controllable": False},  # STATUS-ONLY (operating session)
+    "geraldine": {"host": "jade-m5", "label": "com.bubble.ops-loop-accountant", "slug": "accountant", "switchable": True,  "controllable": True},
+    "ellie":     {"host": "jade-m5", "label": "com.bubble.ops-loop-ellie",      "slug": "ellie",      "switchable": True,  "controllable": True},
+    "content":   {"host": "jade-m1", "label": "com.bubble.ops-loop-content",    "slug": "content",    "switchable": True,  "controllable": True},
+}
+AGENTS = list(FLEET.keys())
+def switchable():   return [a for a in AGENTS if FLEET[a]["switchable"]]
+def controllable(): return [a for a in AGENTS if FLEET[a]["controllable"]]
+
+# ---- telegram helpers (argv-free HTTP via urllib) ----
+def _api(method, payload):
+    try:
+        data = urllib.parse.urlencode(payload).encode()
+        with urllib.request.urlopen(f"{API}/{method}", data=data, timeout=40) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try: body = e.read().decode()[:300]
+        except Exception: body = ""
+        if "message is not modified" in body:
+            return {"ok": True, "benign": "not_modified"}
+        print(f"[api] {method}: HTTP {e.code}: {body}", flush=True); return {}
+    except Exception as e:
+        print(f"[api] {method}: {e}", flush=True); return {}
+def send(chat, text, kb=None):
+    p = {"chat_id": chat, "text": text, "parse_mode": "HTML"}
+    if kb: p["reply_markup"] = json.dumps(kb)
+    return _api("sendMessage", p)
+def edit(chat, mid, text, kb=None):
+    p = {"chat_id": chat, "message_id": mid, "text": text, "parse_mode": "HTML"}
+    if kb: p["reply_markup"] = json.dumps(kb)
+    return _api("editMessageText", p)
+def acb(cid, text=""):
+    _api("answerCallbackQuery", {"callback_query_id": cid, "text": text})
+
+def load_offset():
+    try: return int(open(OFFSET_FILE).read().strip())
+    except Exception: return 0
+def save_offset(o):
+    os.makedirs(os.path.dirname(OFFSET_FILE), exist_ok=True); open(OFFSET_FILE, "w").write(str(o))
+
+# ---- command execution: local (argv) or remote (ssh shell string) ----------
+# Registry values only → building a remote shell string is safe (no user text).
+def _run(argv, timeout=30):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout + r.stderr)
+    except subprocess.TimeoutExpired: return 124, "(timed out)"
+    except Exception as e: return 1, f"(error: {e})"
+
+def run_on(host, cmd, timeout=30):
+    """cmd: a shell command string. Runs locally (bash -c) or via ssh <alias>.
+    The remote shell evaluates $(id -u)/$HOME — needed for gui/<uid> + plist paths."""
+    if host == "local":
+        return _run(["bash", "-lc", cmd], timeout=timeout)
+    return _run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", host, cmd], timeout=timeout)
+
+def _label(agent): return FLEET[agent]["label"]
+def _plist(agent): return f"$HOME/Library/LaunchAgents/{_label(agent)}.plist"
+def _dom(agent):   return f"gui/$(id -u)/{_label(agent)}"
+
+def is_loaded(agent):
+    h = FLEET[agent]["host"]
+    rc, _ = run_on(h, f"launchctl print {_dom(agent)} >/dev/null 2>&1")
+    return rc == 0
+def current_harness(agent):
+    h = FLEET[agent]["host"]; slug = FLEET[agent]["slug"]
+    rc, out = run_on(h, f"cat \"$HOME/Library/Application Support/bubble-ops-loop/harness-{slug}\" 2>/dev/null")
+    v = (out or "").strip()
+    return v if v in ("claude", "hermes") else "claude"
+def running_harness(agent):
+    """The harness actually running in the agent's tmux pane (pane-scoped).
+    tmux path varies across the fleet (M5 ~/.local/bin, M1/Joris /opt/homebrew) —
+    resolve via PATH; any tmux client reaches the same per-uid server socket."""
+    h = FLEET[agent]["host"]; slug = FLEET[agent]["slug"]
+    cmd = (f'export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"; '
+           f'T="$(command -v tmux 2>/dev/null || echo "$HOME/.local/bin/tmux")"; '
+           f'S=ops-loop-{slug}; "$T" has-session -t "$S" 2>/dev/null || {{ echo none; exit 0; }}; '
+           f'PP="$("$T" list-panes -t "$S" -F "#{{pane_pid}}" 2>/dev/null | head -1)"; '
+           f'[ -n "$PP" ] || {{ echo none; exit 0; }}; C="$(ps -p "$PP" -o command= 2>/dev/null)"; '
+           f'echo "$C" | grep -Eq "hermes.*gateway|hermes-agent/hermes" && {{ echo hermes; exit 0; }}; '
+           f'echo "$C" | grep -Eq "(^|/|[[:space:]])claude([[:space:]]|$)" && {{ echo claude; exit 0; }}; echo other')
+    rc, out = run_on(h, cmd, timeout=20)
+    v = (out or "").strip().splitlines()[-1] if out.strip() else "?"
+    return v if v in ("claude", "hermes", "none", "other") else "?"
+
+def do_launchctl(agent, verb):
+    """verb: on|off|restart -> launchctl bootstrap|bootout|kickstart."""
+    if agent not in FLEET: return f"❌ unknown agent {html.escape(agent)}"
+    if not FLEET[agent]["controllable"]: return f"🚫 <b>{agent}</b> is status-only (not controllable)"
+    h = FLEET[agent]["host"]
+    if verb == "on":
+        cmd = f"launchctl bootstrap gui/$(id -u) {_plist(agent)}"
+    elif verb == "off":
+        cmd = f"launchctl bootout {_dom(agent)}"
+    else:  # restart
+        cmd = f"launchctl kickstart -k {_dom(agent)}"
+    rc, out = run_on(h, cmd, timeout=60)
+    time.sleep(3)
+    loaded = "loaded" if is_loaded(agent) else "unloaded"
+    return (f"{'✅' if rc==0 else '❌'} <b>{agent}</b> {verb} ({h}): {loaded}"
+            f" · harness={running_harness(agent)}"
+            + ("" if rc == 0 else f"\n<code>{html.escape((out or '').strip()[-180:])}</code>"))
+
+def status_all():
+    lines = ["📊 <b>Mac fleet status</b>"]
+    for a in AGENTS:
+        h = FLEET[a]["host"]; loc = "local" if h == "local" else h
+        loaded = "loaded" if is_loaded(a) else "unloaded"
+        rh = running_harness(a); sel = current_harness(a)
+        tags = (" 🔀" if FLEET[a]["switchable"] else "") + ("" if FLEET[a]["controllable"] else " 🔒status-only")
+        lines.append(f"• <b>{a}</b> ({loc}): {loaded} · harness={rh} (sel={sel}){tags}")
+    return "\n".join(lines)
+
+# ---- keyboards ----
+def menu_kb():
+    return {"inline_keyboard": [
+        [{"text": "📊 Status", "callback_data": "nav:status"},
+         {"text": "🔀 Harness", "callback_data": "nav:harness"}],
+        [{"text": "▶️ On", "callback_data": "nav:on"},
+         {"text": "⏹️ Off", "callback_data": "nav:off"},
+         {"text": "🔄 Restart", "callback_data": "nav:restart"}],
+        [{"text": "🔄 Restart All", "callback_data": "nav:restart_all"}],
+    ]}
+def agents_kb(action, agents=None):
+    ags = agents or controllable()
+    rows, row = [], []
+    for a in ags:
+        row.append({"text": a, "callback_data": f"{action}:{a}"})
+        if len(row) == 3: rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([{"text": "← Menu", "callback_data": "nav:menu"}])
+    return {"inline_keyboard": rows}
+def harness_target_kb(agent):
+    return {"inline_keyboard": [[
+        {"text": f"{agent} → claude", "callback_data": f"hset:{agent}:claude"},
+        {"text": f"{agent} → hermes", "callback_data": f"hset:{agent}:hermes"}],
+        [{"text": "← Menu", "callback_data": "nav:menu"}]]}
+def confirm_kb(nonce):
+    return {"inline_keyboard": [[
+        {"text": "✅ Confirm", "callback_data": f"ok:{nonce}"},
+        {"text": "✖ Cancel", "callback_data": f"no:{nonce}"}]]}
+def back_kb():
+    return {"inline_keyboard": [[{"text": "← Menu", "callback_data": "nav:menu"}]]}
+
+MENU = "🕹 <b>Mac Agent Commander</b> — choose an action:"
+
+# ---- confirm plumbing ----
+def stage(kind, agent, arg=""):
+    n = secrets.token_hex(3); PENDING[n] = (kind, agent, arg, time.time()); return n
+
+def run_confirmed(chat, mid, kind, agent, arg):
+    if kind == "harness":
+        h = FLEET[agent]["host"]
+        edit(chat, mid, f"⏳ Switching <b>{agent}</b> → <b>{arg}</b> ({h}: fence → import/handoff → readiness)…")
+        cmd = f"bubble-switch-harness-mac {shlex.quote(agent)} {shlex.quote(arg)} tg"
+        rc, out = run_on(h, cmd, timeout=210)
+        line = next((l for l in out.splitlines() if l.startswith("SWITCH_RESULT=")), (out or "").strip()[-250:])
+        ok = "SWITCH_RESULT=ready" in out
+        edit(chat, mid, (f"✅ <b>{agent}</b> now on <b>{arg}</b>\n<code>{html.escape(line)}</code>" if ok
+                         else f"❌ switch failed/rolled back\n<code>{html.escape(line)}</code>"), back_kb())
+    else:  # launchctl verb
+        edit(chat, mid, f"⏳ {kind} <b>{agent}</b>…")
+        edit(chat, mid, do_launchctl(agent, kind), back_kb())
+
+# ---- routers ----
+def handle_text(chat, text):
+    cmd = text.split()[0].lower().lstrip("/").split("@")[0]
+    if cmd in ("start", "menu", "help"):
+        send(chat, MENU, menu_kb())
+    elif cmd == "status":
+        send(chat, status_all(), back_kb())
+    else:
+        send(chat, "🤖 Use the buttons 👇\n" + MENU, menu_kb())
+
+def handle_cb(chat, cid, mid, data):
+    pfx, _, val = data.partition(":")
+    if pfx == "nav":
+        acb(cid)
+        if val == "menu": edit(chat, mid, MENU, menu_kb())
+        elif val == "status": edit(chat, mid, status_all(), menu_kb())
+        elif val == "restart_all":
+            n = stage("restart", "all")
+            edit(chat, mid, "⚠️ Restart <b>ALL</b> controllable Mac agents? This bounces every dept (except Rick).", confirm_kb(n))
+        elif val in ("on", "off", "restart"):
+            labels = {"on":"▶️ Start which agent?","off":"⏹️ Stop which agent?","restart":"🔄 Restart which agent?"}
+            edit(chat, mid, labels[val], agents_kb(val))
+        elif val == "harness":
+            edit(chat, mid, "🔀 Switch harness for which agent?", agents_kb("hpick", switchable()))
+        return
+    if pfx == "hpick":
+        acb(cid); edit(chat, mid, f"🔀 <b>{val}</b> is on <b>{running_harness(val)}</b>. Switch to:", harness_target_kb(val)); return
+    if pfx == "hset":
+        agent, _, target = val.partition(":"); acb(cid)
+        if target not in ("claude", "hermes"): edit(chat, mid, "❌ bad target", back_kb()); return
+        if agent not in switchable(): edit(chat, mid, f"❌ {agent} not switchable", back_kb()); return
+        if current_harness(agent) == target: edit(chat, mid, f"✅ {agent} already on {target}", back_kb()); return
+        n = stage("harness", agent, target)
+        edit(chat, mid, f"⚠️ Switch <b>{agent}</b> {current_harness(agent)} → <b>{target}</b>? (restart, fence-then-start)", confirm_kb(n)); return
+    if pfx == "on":                          # low-risk (no confirm) but still THREADED
+        acb(cid, "starting…")                # so the ~100s launchctl chain can't block the poll loop
+        if val not in controllable(): edit(chat, mid, f"🚫 {val} is not controllable", back_kb()); return
+        if val in BUSY: edit(chat, mid, f"⏳ {val} already has an action in progress — wait.", back_kb()); return
+        BUSY.add(val)
+        def _on(agent=val):
+            try:
+                edit(chat, mid, f"⏳ starting <b>{agent}</b>…")
+                edit(chat, mid, do_launchctl(agent, "on"), back_kb())
+            except Exception as e:
+                print(f"[work] {e}", flush=True)
+                edit(chat, mid, f"❌ error: {html.escape(str(e))[:200]}", back_kb())
+            finally:
+                BUSY.discard(agent)
+        threading.Thread(target=_on, daemon=True).start(); return
+    if pfx in ("off", "restart"):
+        acb(cid)
+        n = stage(pfx, val)
+        edit(chat, mid, f"⚠️ {pfx} <b>{val}</b>? (this {'stops' if pfx=='off' else 'restarts'} the agent)", confirm_kb(n)); return
+    if pfx in ("ok", "no"):
+        acb(cid, "ok" if pfx == "ok" else "cancelled")
+        ent = PENDING.pop(val, None)
+        if not ent or time.time()-ent[3] > 120: edit(chat, mid, "⌛ expired — reopen /menu", back_kb()); return
+        kind, agent, arg, _ = ent
+        if pfx == "no": edit(chat, mid, "✖ cancelled", back_kb()); return
+        # Lock the affected agent(s). "all" locks every controllable agent so a
+        # concurrent per-agent action can't double-fire on one of them mid-batch.
+        locked = controllable() if agent == "all" else [agent]
+        clash = [a for a in locked if a in BUSY]
+        if clash:
+            edit(chat, mid, f"⏳ {', '.join(clash)} already has an action in progress — wait for it.", back_kb()); return
+        for a in locked: BUSY.add(a)
+        def _work():
+            try:
+                if kind == "restart" and agent == "all":
+                    edit(chat, mid, "⏳ restarting all controllable agents…")
+                    out = "\n".join(do_launchctl(a, "restart") for a in controllable())
+                    edit(chat, mid, out, back_kb())
+                else:
+                    run_confirmed(chat, mid, kind, agent, arg)
+            except Exception as e:
+                print(f"[work] {e}", flush=True)
+                edit(chat, mid, f"❌ error: {html.escape(str(e))[:200]}", back_kb())
+            finally:
+                for a in locked: BUSY.discard(a)
+        threading.Thread(target=_work, daemon=True).start()
+        return
+
+def main():
+    if not TOKEN: print("FATAL: no TELEGRAM_BOT_TOKEN", flush=True); sys.exit(1)
+    me = _api("getMe", {})
+    uname = me.get('result',{}).get('username','?')
+    print(f"[commander-mac] up as @{uname} agents={AGENTS} switchable={switchable()}", flush=True)
+    for c in ALLOWED_CHATS:
+        send(c, f"🕹 Mac Agent Commander online (@{uname}). Send /menu.")
+    offset = load_offset()
+    while True:
+        resp = _api("getUpdates", {"offset": offset, "timeout": 25})  # <urllib 40s to avoid read-timeout re-delivery
+        for u in resp.get("result", []):
+            try:
+                offset = u["update_id"] + 1; save_offset(offset)  # inside try: a malformed update / save error can't kill the loop
+                if "message" in u and "text" in u["message"]:
+                    c = u["message"]["chat"]["id"]
+                    print(f"[rx] msg chat={c} text={u['message']['text'][:40]!r} allowed={c in ALLOWED_CHATS}", flush=True)
+                    if c in ALLOWED_CHATS: handle_text(c, u["message"]["text"])
+                elif "callback_query" in u:
+                    q = u["callback_query"]; c = q["message"]["chat"]["id"]; mid = q["message"]["message_id"]
+                    print(f"[rx] cb chat={c} data={q.get('data','')!r} allowed={c in ALLOWED_CHATS}", flush=True)
+                    if c in ALLOWED_CHATS: handle_cb(c, q["id"], mid, q.get("data",""))
+            except Exception as e:
+                print(f"[loop] {e}", flush=True)
+        if not resp.get("ok", False): time.sleep(3)
+
+if __name__ == "__main__":
+    main()
