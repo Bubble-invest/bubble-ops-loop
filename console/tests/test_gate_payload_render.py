@@ -95,6 +95,25 @@ def test_payload_gate_renders_content_inline(client, ben_root):
     assert "<strong>1/</strong>" in r.text or "<h1>" in r.text
 
 
+def test_draft_path_gate_renders_content_inline(client, ben_root):
+    """Board #1185: newer content gates (codex-write `publish_proposal`) reference
+    the artifact via a bare `draft_path` instead of `approval_bridge`. The body
+    must still surface — before the fix the operator saw only the raw YAML."""
+    _write_payload_md(
+        ben_root, "2026-09-07", "2", "linkedin-post.md",
+        "# Post\n\n**Salesforce** accepte de perdre le guichet.\n",
+    )
+    _add_gate(ben_root, "draft-path-1", {
+        "draft_path": "outputs/2026-09-07/2/linkedin-post.md",
+    })
+    r = client.get("/gate/fixture/draft-path-1")
+    assert r.status_code == 200, r.text
+    assert "Contenu à valider" in r.text
+    assert "Salesforce" in r.text
+    # markdown was actually rendered, not shown as raw text
+    assert "<strong>Salesforce</strong>" in r.text or "<h1>" in r.text
+
+
 def test_payload_gate_sanitizes_script_tags(client, ben_root):
     _write_payload_md(
         ben_root, "2026-07-16", "2", "x-thread.md",
