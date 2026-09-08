@@ -23,37 +23,51 @@ rebuilt or a new tenant box is provisioned.
 | 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. (Script filename kept as-is; see script for VPS-specific config.) |
 | 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
 | 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
-| 8 | **`/loop` boot re-arm (telegram plugin)** | **`scripts/install-boot-rearm.sh`** | **yes** | **Patches the telegram channel plugin so a dept's `/loop` re-arms on poller startup after ANY restart (synthetic boot turn via MCP channel notification — supersedes `bubble-loop-reinit.sh`). Re-run after every deploy / plugin update (the plugin cache is volatile). Source-of-truth in `deploy/telegram-plugin/`. Restart depts after to load the patched plugin. Requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>` in the unit (in the template for new depts; drop-in for existing ones — see below). See `tests/test_boot_rearm_install.sh`. The LIVE boot-rearm path in production is actually the template's second `ExecStartPost` (inject-file write, not the MCP notification) — board #461 generalized that SAME turn to also re-arm any dept-declared `config/crons.yaml` durable cron (mail-brief, etc.), not just `/loop`. See `docs/durable-cron-manifest.md`.** |
+| 8 | **`/loop` boot re-arm** | **Claude:** `scripts/install-boot-rearm.sh`; **Hermes:** `scripts/wake_hermes_gateway.py` called by `bubble-vps-platform`'s lifecycle helper | **yes** | **Claude keeps the Telegram-plugin/inject path. A Hermes-selected unit has no Claude/Bun poller, so its `ExecStartPost` drops to the department UID and arms one one-shot LoopManager row through the live Hermes control socket. Install source without restarting; prove the path on one separately approved service lifecycle. Claude requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>`; Hermes requires the root-owned `hermes` selector plus the rendered `BUBBLE_AGENT_BOOT_MESSAGE`. See `tests/test_boot_rearm_install.sh` and `scripts/tests/test_606_hermes_wake.py`.** |
 | 9 | **On-box helper scripts** (`/usr/local/bin/`) | **`deploy/bin/*`** (see `deploy/bin/README.md`) — **except `guard-stale-credentials.sh`, which lives at `scripts/guard-stale-credentials.sh`** (board #1150; same `scripts/`-tree convention as `install-boot-rearm.sh`/`install-channel-patches.sh`, so a root-owned `/opt/bubble-ops-loop` checkout + `bubble-safe-install` can source it) | operator | **Token minters (`bubble-board-token{,-refresh}.sh`), pre-auth git/gh wrappers (`bubble-git`, `bubble-gh`), the structural-push guard (`bubble-is-structural-push.py`), the L4 canary (`bubble-layer4-canary.sh`), the watchdog resume drop-in installer (`bubble-watchdog-resume-dropin`), the stale-credentials shadow guard (`guard-stale-credentials.sh`, board #294 / #1150), and the secrets lifecycle tools (`bubble-rotate-dept-secret`, `bubble-secrets` add/rotate/apply, board #676). Copy each into `/usr/local/bin/`; per-script env / sudoers wiring documented in `deploy/bin/README.md`. Operator-specific values are env-driven — never hardcoded.** |
 
-## /loop boot re-arm (step 8) — env for existing depts
+## /loop boot re-arm (step 8) — existing departments
 
-NEW depts inherit the boot-rearm env automatically: it is rendered into the
+New departments inherit the boot message and Claude-plugin env automatically;
+they are rendered into the
 canonical `bubble-agent@<slug>.service.d/<slug>.conf` drop-in by
 `bubble-vps-platform/scripts/render-agent-units.py`
 (`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`),
 consumed by `scripts/deploy-to-morty.sh` and
 `console/services/eclosure_launcher.py`.
 
-EXISTING live depts (tony, maya, cgp, claudette, …) were provisioned before
-this env existed, so their installed units lack it. Two ways to add it (Rick
-applies to live units; this installer never touches live units):
+Existing live departments may predate those fields. Prefer re-rendering and
+reinstalling the canonical unit. A surgical systemd drop-in is appropriate for
+the Claude-plugin env only; a Hermes department also needs its root-owned
+selector and rendered boot message. Installing source or unit text does not
+authorize a restart.
 
 - **Re-render + reinstall the canonical unit** (preferred):
   `scripts/deploy-to-morty.sh --slug=<dept> --tenant-yaml=<path>` renders the
   platform template + instance drop-in, then performs the ordered cutover.
 - **systemd drop-in** (surgical, no full re-render):
 
-      sudo systemctl edit ops-loop-<dept>.service
+      sudo systemctl edit bubble-agent@<dept>.service
       # add under [Service]:
       #   Environment=OPS_LOOP_BOOT_REARM=1
       #   Environment=OPS_LOOP_DEPT=<dept>
       sudo systemctl daemon-reload
-      sudo systemctl restart ops-loop-<dept>.service
+      # restart bubble-agent@<dept>.service only during a separately approved lifecycle
 
-The env alone does nothing until the plugin is patched
-(`scripts/install-boot-rearm.sh`) AND the dept is restarted so the patched
-plugin code loads.
+For a Claude-selected department, the env alone does nothing until the plugin
+is patched (`scripts/install-boot-rearm.sh`) and the department later starts
+with that patch. Those two variables do not drive the Hermes branch. For a
+Hermes-selected department, the canonical `bubble-agent-prepare boot` branch
+is selected by `/etc/bubble-harness/<slug>` and passes the rendered
+`BUBBLE_AGENT_BOOT_MESSAGE` to
+`scripts/wake_hermes_gateway.py` as the department UID. The helper verifies the
+live control socket and exact Telegram home session, then arms one persisted
+LoopManager row; it never starts a second gateway or model process.
+
+Install both helpers from reviewed source without restarting a department.
+Live acceptance is a separate, one-service lifecycle action: preserve the
+session and queues, require one consumed loop row and one fresh normal
+heartbeat, and stop after the first unexplained failure.
 
 ## Loop layer FLOOR (step 4) — what it is
 

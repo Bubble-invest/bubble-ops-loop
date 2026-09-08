@@ -657,34 +657,44 @@ via the CLAUDE.md PR, not a runtime push):
 > already does); my live loop is for responsiveness, the floor for guaranteed
 > minimum cadence.
 
-#### Check H — /loop boot re-arm (telegram plugin — auto-inherited, but VERIFY)
+#### Check H — /loop boot re-arm (harness-specific — auto-inherited, but VERIFY)
 
-New depts inherit `/loop` **boot re-arm automatically**: the unit template
-(`deploy/templates/ops-loop-dept.service.template`) bakes in
-`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`,
-substituted per-dept at deploy time. On poller startup the telegram channel
-plugin injects ONE synthetic "boot" turn straight into Claude via an MCP channel
-notification (bypassing Telegram), so the dept re-runs session-start + re-arms
-its `/loop` after ANY restart. This supersedes `bubble-loop-reinit.sh` (a bot's
-own outbound Telegram message never returns as an inbound update, so that never
-worked). The env does nothing until the plugin is patched on the box
-(`scripts/install-boot-rearm.sh`, INSTALL.md step 8) — a box-level install Rick
-runs once, not per-dept.
+New depts inherit `/loop` **boot re-arm automatically**. The unit carries the
+rendered boot message and the Claude-plugin variables
+`Environment=OPS_LOOP_BOOT_REARM=1` + `Environment=OPS_LOOP_DEPT=<slug>`.
+Delivery follows the root-owned `/etc/bubble-harness/<slug>` selector:
+
+- **Claude:** the Telegram channel plugin injects one synthetic boot turn into
+  the existing Claude session. This supersedes `bubble-loop-reinit.sh` (a bot's
+  own outbound Telegram message never returns as an inbound update).
+- **Hermes:** there is no Claude/Bun poller and its `inject` file is inert. The
+  platform lifecycle helper drops to the department UID and passes the same
+  boot payload to `scripts/wake_hermes_gateway.py`. That helper verifies the
+  live profile control socket and exact Telegram home session, then arms one
+  `times=1` LoopManager row for the existing gateway. It never launches a
+  second gateway or model process.
+
+The Claude path needs the box-level plugin patch
+(`scripts/install-boot-rearm.sh`, INSTALL.md step 8). The Hermes path needs the
+reviewed framework wake helper installed before the reviewed platform lifecycle
+helper. Installing either source is restart-free; live proof happens only on a
+separately approved service lifecycle.
 
 Verify the new dept's unit carries the env (read-only):
 
 ```bash
-systemctl show ops-loop-<slug>.service -p Environment | tr ' ' '\n' \
+systemctl show bubble-agent@<slug>.service -p Environment | tr ' ' '\n' \
   | grep -E 'OPS_LOOP_BOOT_REARM=1|OPS_LOOP_DEPT=<slug>'
 ```
-Both lines must print. If they don't, the unit predates the env — re-render via
+Both lines must print for a Claude-selected department. A Hermes-selected
+department also requires a non-empty rendered `BUBBLE_AGENT_BOOT_MESSAGE` and
+an exact `hermes` selector. If the expected fields are absent, re-render via
 `scripts/deploy-to-morty.sh --slug=<slug>` or add a `systemctl edit` drop-in
-(INSTALL.md step 8), then restart. The plugin must also be boot-rearm-patched
-(`grep -q bootRearmNotification` in the live `server.ts`); if not, run
-`scripts/install-boot-rearm.sh` and restart the dept.
-
-> Boot re-arm is "env in the unit + one box-level plugin patch" by design — do
-> **not** add per-dept re-arm scripting. Inheritance is the whole point.
+(INSTALL.md step 8). For Claude, verify the live `server.ts` carries
+`bootRearmNotification`. For Hermes, verify the framework wake helper and the
+platform lifecycle helper match reviewed source. Do not restart merely to
+install either change, and do not add per-department re-arm scripts; the shared
+lifecycle branch is the inheritance boundary.
 
 #### Check F — Service-start prerequisites (MANDATORY for a MANUAL deploy)
 
