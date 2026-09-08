@@ -1,0 +1,24 @@
+# /etc/sudoers.d/bubble-broker-mint-agent-<slug>
+# #1182: per-dept-agent settings_pr broker-mint grant.
+#
+# After the #1120 per-dept-OS-user migration, each dept agent runs as its own
+# `agent-<slug>` user instead of the shared `claude` account. The runtime-write
+# grant was re-issued per user (bubble-cred-agent-<slug> ->
+# bubble-gh-credential-helper.sh), but the settings_pr broker-mint grant
+# (bubble-broker-mint, claude-only, dated 2026-06-02) was NOT. Result:
+# `propose-settings-pr`'s guarded push ran `sudo -n
+# bubble-broker-mint-settings-root.sh`, found no matching NOPASSWD rule for
+# agent-<slug>, and failed with "sudo: a password is required" -> EVERY
+# structural PR (dept.yaml / CLAUDE.md / skills / tools / policies) silently
+# died at push, forcing the operator to hand-edit. This drop-in closes that gap.
+#
+# Scope is intentionally minimal and mirrors the runtime grant
+# (bubble-cred-agent-<slug>) EXACTLY: ONE exact root-owned wrapper, no args
+# wildcard, no environment passthrough. The wrapper itself hard-pins
+# --action=settings_pr and allow-lists --dept/--repo/--paths, so even with this
+# grant agent-<slug> cannot mint an arbitrary token.
+#
+# Deploy one file per dept-agent user (0440 root:root), substituting <slug>.
+# Live as of #1182 (2026-09-08): ben, maya, tony, morty. Validate with
+# `visudo -cf <file>` before install and `visudo -c` after.
+agent-<slug> ALL=(root) NOPASSWD: /usr/local/bin/bubble-broker-mint-settings-root.sh

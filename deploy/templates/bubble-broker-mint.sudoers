@@ -10,4 +10,16 @@
 # environment passthrough. The wrapper itself hard-pins --action=settings_pr,
 # allow-lists --dept/--action/--repo/--paths, and refuses anything else — so
 # even with this grant the claude user cannot mint an arbitrary token.
+#
+# #1120 / #1182 NOTE: after the per-dept-OS-user migration (#1120), dept agents
+# no longer run as the shared `claude` account — each runs as `agent-<slug>`.
+# The runtime-write grant was re-granted per user (bubble-cred-agent-<slug> ->
+# bubble-gh-credential-helper.sh) but THIS settings_pr grant was not, so
+# `propose-settings-pr`'s guarded push failed at `sudo -n
+# bubble-broker-mint-settings-root.sh` with "a password is required" (#1182) —
+# every structural PR silently died at push. Fix: the same grant is re-issued
+# per dept-agent user as a drop-in `/etc/sudoers.d/bubble-broker-mint-agent-<slug>`
+# rendered from bubble-broker-mint-agent.sudoers (this dir), exactly mirroring
+# the per-user bubble-cred-agent-<slug> files. This `claude` grant is retained
+# for the shared account's own direct propose-settings-pr use.
 claude ALL=(root) NOPASSWD: /usr/local/bin/bubble-broker-mint-settings-root.sh
