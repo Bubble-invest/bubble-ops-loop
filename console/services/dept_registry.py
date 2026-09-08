@@ -12,6 +12,7 @@ Each dept is classified by its onboarding/STATE.yaml::status:
 
 Concierges are always "Live" — they're persistent agents without layers.
 """
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,3 +187,22 @@ def repo_path(slug: str) -> Optional[Path]:
     if concierge.exists():
         return concierge.resolve()
     return None
+
+
+def runtime_repo_path(slug: str) -> Optional[Path]:
+    """Return the canonical per-user workdir for read-only runtime views.
+
+    Post-isolation agents run from ``/srv/agents/<slug>`` while the cockpit's
+    approval/write paths still intentionally use the legacy disk root.  Report
+    rendering is read-only, so it may prefer the canonical workdir without
+    moving gate writes or the rest of the console to a different permission
+    boundary.  ``CANONICAL_AGENTS_ROOT`` exists for tests and non-production
+    layouts; production defaults to ``/srv/agents``.
+    """
+    if not re.fullmatch(r"[\w.-]+", slug):
+        return None
+    canonical_root = Path(os.environ.get("CANONICAL_AGENTS_ROOT", "/srv/agents"))
+    canonical = canonical_root / slug
+    if canonical.is_dir():
+        return canonical.resolve()
+    return repo_path(slug)
