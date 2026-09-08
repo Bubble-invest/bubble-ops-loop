@@ -170,7 +170,7 @@
      Maya names the body field differently (post_body for news_post,
      draft_message for prospect_dm/followup) — `post_text` normalizes across
      all three so the body always renders formatted, never as a YAML blob. #}
-  {% set content_kinds = ('social_post', 'content_publish',
+  {% set content_kinds = ('social_post', 'content_publish', 'publish_proposal',
                           'news_post', 'news_post_task',
                           'prospect_dm', 'followup_draft', 'draft_task') %}
   {% set post_text = gate.draft_body or gate.post_body or gate.draft_message %}

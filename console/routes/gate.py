@@ -90,7 +90,17 @@ def _attach_payload_rendered(slug: str, gate: dict) -> dict:
     bridge = gate.get("approval_bridge")
     gate["payload_rendered"] = None
     if not isinstance(bridge, dict):
-        return gate
+        # Newer content gates (codex-write `publish_proposal`, 2026-09) reference
+        # the artifact via a bare `draft_path` instead of an approval_bridge, so
+        # the post body stopped surfacing here — the operator saw only raw YAML
+        # (board #1185). A draft_path is the same shape as a source=payload
+        # item_ref (a repo-relative outputs/*.md), so treat it as one. Same
+        # allowlist+containment guard downstream (read_gate_payload_text).
+        draft_path = gate.get("draft_path")
+        if isinstance(draft_path, str) and draft_path:
+            bridge = {"source": "payload", "item_ref": draft_path}
+        else:
+            return gate
     source = bridge.get("source")
     item_ref = bridge.get("item_ref")
     if not item_ref or not isinstance(item_ref, str):
