@@ -11,7 +11,10 @@ lock that propagation in.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,7 +84,7 @@ def test_scaffold_settings_json_valid_and_scoped(scaffolded):
     for key in ("permissions", "enabledPlugins", "enabledSkills", "model", "env", "hooks"):
         assert key in data, f"settings.json missing {key}"
     assert data["env"]["BUBBLE_DEPT"] == "newdept"
-    assert data["env"]["BUBBLE_DEPT_ROOT"] == "/home/claude/agents/bubble-ops-newdept"
+    assert data["env"]["BUBBLE_DEPT_ROOT"] == "/srv/agents/newdept"
     assert data["env"]["BUBBLE_DEPT_LEVEL"] == "management"
     assert data["model"] == "claude-opus-4-8[1m]"
     # Fleet-standard skills (e.g. plan-executor, board #911 part 2) are added
@@ -103,8 +106,32 @@ def test_scaffold_settings_deny_isolates_other_depts(scaffolded):
 def test_scaffold_settings_hook_wired(scaffolded):
     dept_root, _ = scaffolded
     data = json.loads((dept_root / ".claude" / "settings.json").read_text())
-    cmd = data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    assert cmd == "/home/claude/agents/bubble-ops-newdept/.claude/hooks/session-start.sh"
+    handler = data["hooks"]["SessionStart"][0]["hooks"][0]
+    assert handler["command"] == "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"
+    assert handler["args"] == []
+    relocated = dept_root.parent / "relocated newdept workspace"
+    shutil.copytree(dept_root, relocated)
+    resolved = handler["command"].replace("${CLAUDE_PROJECT_DIR}", str(relocated))
+    assert Path(resolved) == relocated / ".claude" / "hooks" / "session-start.sh"
+    synthetic_home = dept_root.parent / "empty home"
+    synthetic_home.mkdir()
+    env = os.environ.copy()
+    env.update(HOME=str(synthetic_home), CLAUDE_PROJECT_DIR=str(relocated))
+    result = subprocess.run(
+        [resolved], cwd=relocated, env=env, text=True, capture_output=True, check=True,
+    )
+    payload = json.loads(result.stdout)
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert str(relocated) in context
+    assert "/run/bubble-agent-newdept/env" in context
+
+
+def test_scaffold_telegram_state_uses_isolated_agent_home(scaffolded):
+    dept_root, _ = scaffolded
+    data = json.loads((dept_root / ".claude" / "settings.json").read_text())
+    assert data["env"]["BUBBLE_DEPT_ROOT"] == "/srv/agents/newdept"
+    assert data["env"]["TELEGRAM_STATE_DIR"] == \
+        "/home/agent-newdept/.claude/channels/telegram-newdept"
 
 
 # -------------------------------------------------------------------------

@@ -57,9 +57,11 @@ def test_flip_installs_operating_hook_at_canonical_path(tmp_path):
     assert hook.stat().st_mode & 0o111, "hook must be executable"
     body = hook.read_text(encoding="utf-8")
     assert "SessionStart" in body and "outputs/" in body
-    assert f"bubble-ops-{slug}" in body, "hook must use the bubble-ops- path"
+    assert 'DEPT_ROOT="${CLAUDE_PROJECT_DIR}"' in body
+    assert "/home/claude/agents/" not in body
+    assert f"/run/bubble-agent-{slug}/env" in body
 
-    # settings.json SessionStart points at the canonical bubble-ops path,
+    # settings.json SessionStart follows the current project after relocation,
     # and the onboarding announce_current_step hook is gone.
     data = json.loads((repo / ".claude" / "settings.json").read_text())
     cmds = [
@@ -67,10 +69,9 @@ def test_flip_installs_operating_hook_at_canonical_path(tmp_path):
         for entry in data["hooks"]["SessionStart"]
         for h in entry.get("hooks", [])
     ]
-    assert any(
-        c == f"/home/claude/agents/bubble-ops-{slug}/.claude/hooks/session-start.sh"
-        for c in cmds
-    ), f"SessionStart must point at the canonical bubble-ops path; got {cmds}"
+    assert cmds == ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"]
+    handler = data["hooks"]["SessionStart"][0]["hooks"][0]
+    assert handler["args"] == []
     assert not any("announce_current_step" in c for c in cmds), \
         "onboarding hook must be stripped"
     assert not any(f"/agents/{slug}/" in c for c in cmds), \
