@@ -12,6 +12,7 @@
 # Exit: 0 for updated/current/active-primary deferrals; 2 when operator review is
 # required for preserved Git state; 1 for operational failures.
 set -uo pipefail
+ORIGINAL_ARGS=("$@")
 
 SOURCE_INFRA_DIR="${BUBBLE_DEPLOY_SOURCE_INFRA_DIR:-/opt/bubble-ops-loop}"
 CONSOLE_INFRA_DIR="${BUBBLE_DEPLOY_CONSOLE_INFRA_DIR:-/home/claude/bubble-ops-loop}"
@@ -19,7 +20,7 @@ AGENTS_ROOT="${BUBBLE_DEPLOY_AGENTS_ROOT:-/srv/agents}"
 LEGACY_AGENTS_ROOT="${BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT:-/home/claude/agents}"
 UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
 LEGACY_UNIT_PREFIX="${BUBBLE_DEPLOY_LEGACY_UNIT_PREFIX:-ops-loop-}"
-LOCK_FILE="${BUBBLE_DEPLOY_LOCK_FILE:-/run/lock/bubble-deploy.lock}"
+LOCK_FILE="${BUBBLE_DEPLOY_LOCK_FILE:-/run/bubble-deploy.lock}"
 DRY_RUN=0
 INFRA_ONLY=0
 ONE_DEPT=""
@@ -50,10 +51,88 @@ FAILED=0
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [deploy] $*"; }
 
-mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
-exec 9>"$LOCK_FILE" || { log "FAIL cannot open deploy lock"; exit 1; }
+# Bash redirection follows symlinks and truncates before metadata checks. Use a
+# tiny stdlib-only launcher to open without following links, verify the inode,
+# lock its open-file description, then exec this same script with fd 9 held.
+if [[ "${BUBBLE_DEPLOY_LOCK_REEXEC:-}" != "1" ]]; then
+    exec python3 - "$LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+import fcntl
+import os
+import stat
+import sys
+
+path, script, *args = sys.argv[1:]
+default_path = path == "/run/bubble-deploy.lock"
+parent = os.path.dirname(path) or "."
+try:
+    parent_stat = os.stat(parent, follow_symlinks=False)
+    if default_path and (
+        not stat.S_ISDIR(parent_stat.st_mode)
+        or parent_stat.st_uid != 0
+        or parent_stat.st_mode & 0o022
+    ):
+        raise RuntimeError("unsafe default lock parent")
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    file_stat = os.fstat(fd)
+    expected_uid = 0 if default_path else os.geteuid()
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != expected_uid
+        or file_stat.st_nlink != 1
+        or file_stat.st_mode & 0o077
+    ):
+        raise RuntimeError("unsafe deploy lock inode")
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if fd != 9:
+        os.dup2(fd, 9)
+        os.close(fd)
+    os.set_inheritable(9, True)
+    env = dict(os.environ)
+    env["BUBBLE_DEPLOY_LOCK_REEXEC"] = "1"
+    os.execve("/bin/bash", ["bash", script, *args], env)
+except BlockingIOError:
+    print("[deploy] FAIL another deploy process holds the lock", file=sys.stderr)
+except Exception as exc:
+    print(
+        "[deploy] FAIL secure deploy lock unavailable (" + type(exc).__name__ + ")",
+        file=sys.stderr,
+    )
+sys.exit(1)
+PY
+fi
+unset BUBBLE_DEPLOY_LOCK_REEXEC
+if ! python3 - "$LOCK_FILE" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    locked = os.fstat(9)
+    named = os.stat(path, follow_symlinks=False)
+    expected_uid = 0 if path == "/run/bubble-deploy.lock" else os.geteuid()
+    valid = (
+        stat.S_ISREG(locked.st_mode)
+        and stat.S_ISREG(named.st_mode)
+        and (locked.st_dev, locked.st_ino) == (named.st_dev, named.st_ino)
+        and locked.st_uid == expected_uid
+        and locked.st_nlink == 1
+        and not locked.st_mode & 0o077
+    )
+except Exception:
+    valid = False
+sys.exit(0 if valid else 1)
+PY
+then
+    log "FAIL inherited secure deploy lock metadata is invalid"
+    exit 1
+fi
 if ! flock -n 9; then
-    log "FAIL another deploy process holds $LOCK_FILE"
+    log "FAIL inherited secure deploy lock is unavailable"
     exit 1
 fi
 
