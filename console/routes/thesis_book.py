@@ -51,7 +51,7 @@ def _latest_review_html(slug: str) -> str:
     (outputs/<date>/portfolio-review-artifact.html — self-contained, #pr-root
     scoped so it cannot collide with the thesis-book styles). Read the most
     recent one on disk; empty string if none (the tab then hides itself)."""
-    root = dept_registry.repo_path(slug)
+    root = dept_registry.runtime_repo_path(slug)
     if root is None:
         return ""
     for i in range(7):
@@ -72,7 +72,7 @@ def _latest_maps_html(slug: str) -> str:
     collide with the thesis-book styles). Same read pattern as the Portfolio
     Review artifact; empty string if none (the 3rd tab then hides itself). This
     is board #1078 (Ben's design), replacing an earlier link-to-sub-page tab."""
-    root = dept_registry.repo_path(slug)
+    root = dept_registry.runtime_repo_path(slug)
     if root is None:
         return ""
     for i in range(7):
@@ -109,7 +109,7 @@ def chart_file(slug: str, name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
     if not re.match(r"^[\w.-]+$", name):
         raise HTTPException(status_code=400, detail="Invalid chart name")
-    root = dept_registry.repo_path(slug)
+    root = dept_registry.runtime_repo_path(slug)
     if root is None:
         raise HTTPException(status_code=404)
     today = date.today().isoformat()

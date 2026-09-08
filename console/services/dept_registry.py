@@ -2,8 +2,8 @@
 """
 dept_registry.py — enumerate live vs a-eclore departments + concierges.
 
-In disk mode: scans READ_FROM_DISK for legacy `bubble-ops-*` department dirs,
-canonical per-user `<slug>` department dirs, and unprefixed concierges.
+In disk mode: scans READ_FROM_DISK for `bubble-ops-*` subdirs (departments)
+and unprefixed agent dirs (concierges: morty, claudette).
 
 Each dept is classified by its onboarding/STATE.yaml::status:
   - "Live"                        -> live_departments
@@ -12,6 +12,7 @@ Each dept is classified by its onboarding/STATE.yaml::status:
 
 Concierges are always "Live" — they're persistent agents without layers.
 """
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,51 +69,40 @@ def list_departments() -> List[DeptSummary]:
     if not root.exists():
         return []
 
-    out: Dict[str, DeptSummary] = {}
+    out: List[DeptSummary] = []
     for child in sorted(root.iterdir()):
         if not child.is_dir():
             continue
-        # ── Departments (legacy bubble-ops-* or canonical <slug>) ──
+        # ── Departments (bubble-ops-* prefix) ──
         if child.name.startswith("bubble-ops-"):
             slug = child.name[len("bubble-ops-"):]
+            # Decommissioned — not part of the active team ({{OPERATOR}} 2026-06-09)
+            if slug in ("cgp",):
+                continue
+            state = read_state_for_repo(child)
+            if state is None:
+                out.append(DeptSummary(
+                    slug=slug, display_name=slug, status="Idea",
+                    validated_steps=[]))
+                continue
+            out.append(DeptSummary(
+                slug=state.get("slug", slug),
+                display_name=state.get("display_name", slug),
+                status=state.get("status", "Idea"),
+                validated_steps=list(state.get("validated_steps", [])),
+                # Hybrid local/VPS agent (2026-06-11): absent → "vps" (back-compat).
+                host=state.get("host", "vps"),
+            ))
         # ── Concierges (unprefixed, always Live) ──
         elif _is_concierge_dir(child.name):
             slug = child.name
-            out[slug] = DeptSummary(
+            out.append(DeptSummary(
                 slug=slug,
                 display_name=KNOWN_CONCIERGE_SLUGS[slug],
                 status="Live",
                 validated_steps=list(KNOWN_CONCIERGE_SLUGS.keys()),
-            )
-            continue
-        # #1120 canonical isolated layout: /srv/agents/<slug>.  Requiring a
-        # department marker avoids treating arbitrary sibling directories as
-        # agents.  Compatibility symlinks named bubble-ops-<slug> may coexist;
-        # the slug-keyed map intentionally de-duplicates them.
-        elif (child / "dept.yaml").exists() or (child / "onboarding" / "STATE.yaml").exists():
-            slug = child.name
-        else:
-            continue
-
-        # Decommissioned — not part of the active team ({{OPERATOR}} 2026-06-09)
-        if slug in ("cgp",):
-            continue
-        state = read_state_for_repo(child)
-        if state is None:
-            out[slug] = DeptSummary(
-                slug=slug, display_name=slug, status="Idea",
-                validated_steps=[])
-            continue
-        summary_slug = state.get("slug", slug)
-        out[summary_slug] = DeptSummary(
-            slug=summary_slug,
-            display_name=state.get("display_name", slug),
-            status=state.get("status", "Idea"),
-            validated_steps=list(state.get("validated_steps", [])),
-            # Hybrid local/VPS agent (2026-06-11): absent → "vps" (back-compat).
-            host=state.get("host", "vps"),
-        )
-    return sorted(out.values(), key=lambda d: d.slug)
+            ))
+    return out
 
 
 def live_departments() -> List[DeptSummary]:
@@ -197,3 +187,22 @@ def repo_path(slug: str) -> Optional[Path]:
     if concierge.exists():
         return concierge.resolve()
     return None
+
+
+def runtime_repo_path(slug: str) -> Optional[Path]:
+    """Return the canonical per-user workdir for read-only runtime views.
+
+    Post-isolation agents run from ``/srv/agents/<slug>`` while the cockpit's
+    approval/write paths still intentionally use the legacy disk root.  Report
+    rendering is read-only, so it may prefer the canonical workdir without
+    moving gate writes or the rest of the console to a different permission
+    boundary.  ``CANONICAL_AGENTS_ROOT`` exists for tests and non-production
+    layouts; production defaults to ``/srv/agents``.
+    """
+    if not re.fullmatch(r"[\w.-]+", slug):
+        return None
+    canonical_root = Path(os.environ.get("CANONICAL_AGENTS_ROOT", "/srv/agents"))
+    canonical = canonical_root / slug
+    if canonical.is_dir():
+        return canonical.resolve()
+    return repo_path(slug)

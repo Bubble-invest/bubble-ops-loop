@@ -18,7 +18,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from console.services.dept_registry import repo_path
+from console.services.dept_registry import runtime_repo_path
 
 _log = logging.getLogger(__name__)
 
@@ -573,7 +573,7 @@ def build_thesis_data(slug: str) -> dict:
     if cached is not None:
         return cached
 
-    root = repo_path(slug)
+    root = runtime_repo_path(slug)
     if root is None:
         return normalize_thesis_data({}, slug)
 
@@ -646,7 +646,7 @@ def build_thesis_data(slug: str) -> dict:
 
 def chart_path(slug: str, name: str) -> Optional[Path]:
     """Return the filesystem path for a named chart PNG, or None."""
-    root = repo_path(slug)
+    root = runtime_repo_path(slug)
     if root is None:
         return None
     today = _today()
