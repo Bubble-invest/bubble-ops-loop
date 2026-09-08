@@ -150,6 +150,7 @@ MAP=(
 
 vendored=0
 deferred=0
+deferred_rels="|"
 for pair in "${MAP[@]}"; do
   # shellcheck disable=SC2086
   set -- $pair
@@ -172,6 +173,7 @@ for pair in "${MAP[@]}"; do
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
     if ! permit_vendor_refresh "$src" "$dst" "$2"; then
       deferred=$((deferred+1))
+      deferred_rels="${deferred_rels}${2}|"
       continue
     fi
     # -T: dst is always a normal file target (never "copy into directory").
@@ -215,6 +217,7 @@ for pair in "${KANBAN_MAP[@]}"; do
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
     if ! permit_vendor_refresh "$src" "$dst" "$2"; then
       deferred=$((deferred+1))
+      deferred_rels="${deferred_rels}${2}|"
       continue
     fi
     if copy_canonical_file "$src" "$dst"; then
@@ -240,11 +243,26 @@ for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
   set -- $pair
   dst="$DEPT/$2"
   [[ -f "$dst" ]] || continue
+  was_deferred=0
+  case "$deferred_rels" in
+    *"|$2|"*) was_deferred=1 ;;
+  esac
   if git -C "$DEPT" ls-files --error-unmatch "$2" >/dev/null 2>&1; then
-    # TRACKED → tell git to ignore the framework-overwrite in the worktree.
-    git -C "$DEPT" update-index --skip-worktree "$2" 2>/dev/null \
-      && log "skip-worktree set on $2" || true
+    if [[ "$was_deferred" == 1 ]]; then
+      # A preserved fork must stay visible to status/audit.  Clear any legacy
+      # hide bit rather than reintroducing the drift that #1124 exposed.
+      git -C "$DEPT" update-index --no-skip-worktree "$2" 2>/dev/null \
+        && log "deferred tracked $2 remains visible (skip-worktree cleared)" || true
+    else
+      # Managed canonical files retain the existing anti-autocommit behavior.
+      git -C "$DEPT" update-index --skip-worktree "$2" 2>/dev/null \
+        && log "skip-worktree set on $2" || true
+    fi
   else
+    [[ "$was_deferred" == 1 ]] && {
+      log "deferred untracked $2 remains visible (not added to local exclude)"
+      continue
+    }
     # UNTRACKED → add to .git/info/exclude (local, uncommitted) so `git add`
     # never stages the vendored file into a runtime commit.
     excl="$DEPT/.git/info/exclude"

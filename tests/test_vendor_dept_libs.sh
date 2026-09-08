@@ -281,20 +281,22 @@ chk_eq "T10a changed destination remains in place" \
 chk_contains "T10b changed destination reports DEFERRED" \
   "DEFERRED: scripts/lib/dispatch_helpers.py changed since last vendor" "$out10"
 chk_contains "T10c caller summary distinguishes deferred" "1 deferred" "$out10"
+flag10="$(git -C "$DEPT10" ls-files -v scripts/lib/dispatch_helpers.py | cut -c1)"
+chk_eq "T10d deferred tracked fork is visible, not skip-worktree" "H" "$flag10"
 
 # Restore the still-recorded v1 bytes: canonical v2 may now update normally.
 echo "# canonical dispatch_helpers" > "$DEPT10/scripts/lib/dispatch_helpers.py"
 out10b="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
-chk_eq "T10d unchanged managed destination receives canonical v2" \
+chk_eq "T10e unchanged managed destination receives canonical v2" \
   "# canonical dispatch_helpers v2" "$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
-chk_contains "T10e normal managed update reports no defer" "0 deferred" "$out10b"
+chk_contains "T10f normal managed update reports no defer" "0 deferred" "$out10b"
 
 # A second ordinary source upgrade remains managed and idempotent.
 echo "# canonical dispatch_helpers v3" > "$FW10/scripts/lib/dispatch_helpers.py"
 out10c="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
-chk_eq "T10f subsequent managed update receives canonical v3" \
+chk_eq "T10g subsequent managed update receives canonical v3" \
   "# canonical dispatch_helpers v3" "$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
-chk_contains "T10g subsequent update reports no defer" "0 deferred" "$out10c"
+chk_contains "T10h subsequent update reports no defer" "0 deferred" "$out10c"
 
 # =============================================================================
 # T11: existing different bytes with no baseline are unknown ownership -> defer
@@ -313,11 +315,13 @@ chk "T11a daemon preflight continues after defer" 0 "$rc11"
 chk_eq "T11b exact Accountant-class existing fork remains unchanged" "$before11" "$after11"
 chk_contains "T11c no-baseline fork reports DEFERRED" "no trusted last-vendored baseline" "$out11"
 chk_contains "T11d caller summary reports one defer" "1 deferred" "$out11"
+flag11="$(git -C "$DEPT11" ls-files -v scripts/lib/dispatch_helpers.py | cut -c1)"
+chk_eq "T11e no-baseline tracked fork remains visible" "H" "$flag11"
 last11="$DEPT11/.git/vendor-dept-libs/scripts/lib/dispatch_helpers.py"
 if [[ ! -e "$last11" ]]; then
-  echo "  PASS: T11e deferred unknown bytes are not adopted as baseline ($ACCOUNTANT_FORK_SHA256)"; PASS=$((PASS+1))
+  echo "  PASS: T11f deferred unknown bytes are not adopted as baseline ($ACCOUNTANT_FORK_SHA256)"; PASS=$((PASS+1))
 else
-  echo "  FAIL: T11e deferred bytes were incorrectly recorded as managed"; FAIL=$((FAIL+1))
+  echo "  FAIL: T11f deferred bytes were incorrectly recorded as managed"; FAIL=$((FAIL+1))
 fi
 
 # =============================================================================
