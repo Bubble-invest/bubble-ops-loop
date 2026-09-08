@@ -211,4 +211,39 @@ set -e
 [[ "$(cat "$hardlink_victim")" == 'SYNTHETIC-HARDLINK-BYTES' ]]
 grep -q 'secure deploy lock unavailable' "$WORK/hardlink.err"
 
-echo "PASS: 10 safe deploy contract cases"
+echo "T11 #1187: known fleet-artifact litter (AGENTS.md, *.pre-vendor-*, HARNESS_HANDOFF.md) never defers"
+new_pair "$WORK/agents/artifactdept"
+# scripts/lib/foo.py is a TRACKED file (committed to the seed, then pulled
+# down like any real dept checkout) so the *.pre-vendor-* backup vendoring
+# drops beside it shows up as an individual untracked "??" line, not folded
+# into a whole-directory line the way a brand-new untracked directory would be.
+mkdir -p "$WORK/agents/artifactdept-seed/scripts/lib"
+echo lib >"$WORK/agents/artifactdept-seed/scripts/lib/foo.py"
+git -C "$WORK/agents/artifactdept-seed" add scripts/lib/foo.py
+git -C "$WORK/agents/artifactdept-seed" commit -qm "add tracked lib file"
+git -C "$WORK/agents/artifactdept-seed" push -q origin main
+git -C "$WORK/agents/artifactdept" pull -q --ff-only origin main
+push_upstream "$WORK/agents/artifactdept"
+echo alias >"$WORK/agents/artifactdept/AGENTS.md"
+echo note >"$WORK/agents/artifactdept/HARNESS_HANDOFF.md"
+echo backup >"$WORK/agents/artifactdept/scripts/lib/foo.py.pre-vendor-20260101T000000Z"
+run_case artifact_only inactive --dept artifactdept
+[[ $CASE_RC -eq 0 ]]
+[[ "$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)" == "$(git -C "$WORK/agents/artifactdept" rev-parse origin/main)" ]]
+grep -q 'UPDATED artifactdept' "$WORK/artifact_only.out"
+! grep -q 'DEFER_REVIEW' "$WORK/artifact_only.out"
+[[ -f "$WORK/agents/artifactdept/AGENTS.md" ]]
+[[ -f "$WORK/agents/artifactdept/HARNESS_HANDOFF.md" ]]
+[[ -f "$WORK/agents/artifactdept/scripts/lib/foo.py.pre-vendor-20260101T000000Z" ]]
+
+echo "T12 #1187: genuine untracked dirt still defers even alongside known artifacts"
+push_upstream "$WORK/agents/artifactdept"
+echo unexpected >"$WORK/agents/artifactdept/unexpected.tmp"
+head_before=$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)
+run_case artifact_plus_real inactive --dept artifactdept
+[[ $CASE_RC -eq 2 && "$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)" == "$head_before" ]]
+grep -q 'DEFER_REVIEW artifactdept: 1 dirty paths' "$WORK/artifact_plus_real.out"
+[[ -f "$WORK/agents/artifactdept/unexpected.tmp" ]]
+[[ -f "$WORK/agents/artifactdept/AGENTS.md" ]]
+
+echo "PASS: 12 safe deploy contract cases"
