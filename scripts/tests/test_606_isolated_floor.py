@@ -21,7 +21,8 @@ def test_each_layer_has_per_department_service_and_timer_contract():
         assert "BUBBLE_BACKUP_LOG=/srv/agents/%i/state/loop-backup.jsonl" in service
         assert "BUBBLE_DISPATCH_DIRECTIVES=remote" in service
         assert "BUBBLE_AUTORESTART=0" in service
-        assert "BUBBLE_BACKUP_INJECT_ONLY_DEPTS=maya" in service
+        assert "BUBBLE_BACKUP_PRIMARY_WAKE_ONLY=1" in service
+        assert "BUBBLE_BACKUP_HERMES_DEPTS=maya" in service
         assert f"--layer {layer} --dept %i" in service
         assert "User=root" not in service
         assert "sudo" not in service
@@ -42,7 +43,10 @@ def test_runner_never_shell_loads_dotenv_or_hardcodes_shared_identity():
     assert "--remote-delivery" in RUNNER
     assert "wake_hermes_gateway.py" in RUNNER
     assert "one-shot /loop control" in RUNNER
-    assert "competing headless CLI forbidden" in RUNNER
+    assert '[[ "$ISOLATED_FLOOR" == "1" ]] && PRIMARY_WAKE_ONLY=1' in RUNNER
+    assert "headless fallback disabled" in RUNNER
+    assert "from scripts.lib.dispatch_helpers import paris_today" in RUNNER
+    assert 'outputs/${today}/heartbeat.log' in RUNNER
     assert 'state_dir="${HOME}/.claude/channels/telegram-${slug}"' in RUNNER
     assert 'sys.path.insert(0, "/home/claude/bubble-ops-loop")' not in RUNNER
 

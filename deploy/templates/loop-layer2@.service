@@ -18,8 +18,10 @@ Environment=BUBBLE_BACKUP_LOG=/srv/agents/%i/state/loop-backup.jsonl
 Environment=BUBBLE_BACKUP_DEPTS=%i
 Environment=BUBBLE_BACKUP_STALE_SEC=5400
 Environment=BUBBLE_BACKUP_MODEL=sonnet
-# Maya currently runs Hermes; never launch a competing headless Claude CLI.
-Environment=BUBBLE_BACKUP_INJECT_ONLY_DEPTS=maya
+# Production floor wakes the existing primary only; a failed wake is deferred
+# visibly and never falls through to a competing headless model.
+Environment=BUBBLE_BACKUP_PRIMARY_WAKE_ONLY=1
+Environment=BUBBLE_BACKUP_HERMES_DEPTS=maya
 Environment=BUBBLE_BACKUP_BUDGET_USD=3.00
 # Tony alone relays operator-approved directives via private remote clones;
 # every other department delegates without touching queue state.
