@@ -92,6 +92,25 @@ record_last_vendored() {
     log "WARN: cannot record last-vendored copy for $rel"
 }
 
+copy_canonical_file() {
+  local src="$1" dst="$2" dst_dir
+  # GNU cp is the reviewed VPS/root path: -T refuses directory-target
+  # reinterpretation and --no-dereference refuses a source symlink.
+  if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
+    return 0
+  fi
+  # macOS ships BSD cp without those flags.  The host:local vendor runs as
+  # the same UID that owns the dept tree, never as a privileged cross-user
+  # writer.  Keep the fallback Darwin-only and require that ownership before
+  # using plain BSD cp; a root/foreign-owned destination continues to fail open.
+  [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || return 1
+  [[ ! -L "$src" && -f "$src" && ! -L "$dst" ]] || return 1
+  [[ ! -e "$dst" || -f "$dst" ]] || return 1
+  dst_dir="$(dirname "$dst")"
+  [[ "$(stat -f %u "$dst_dir" 2>/dev/null)" == "$(id -u)" ]] || return 1
+  cp -f "$src" "$dst" 2>/dev/null
+}
+
 protect_hand_patch() {
   local src="$1" dst="$2" rel="$3" last backup ts
   [[ -e "$dst" || -L "$dst" ]] || return 0
@@ -153,7 +172,7 @@ for pair in "${MAP[@]}"; do
     protect_hand_patch "$src" "$dst" "$2" || continue
     # -T: dst is always a normal file target (never "copy into directory").
     # --no-dereference: never follow a symlink SRC either (defense in depth).
-    if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
+    if copy_canonical_file "$src" "$dst"; then
       chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
       log "re-vendored $2 (was stale/missing)"
@@ -191,7 +210,7 @@ for pair in "${KANBAN_MAP[@]}"; do
   fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
     protect_hand_patch "$src" "$dst" "$2" || continue
-    if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
+    if copy_canonical_file "$src" "$dst"; then
       chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
       chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
