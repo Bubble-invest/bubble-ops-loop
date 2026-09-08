@@ -1,263 +1,296 @@
 #!/usr/bin/env bash
-# =============================================================================
-# bubble-deploy.sh — sync merged GitHub main into the live VPS.
+# Sync merged main branches into idle, clean VPS checkouts without rewriting work.
 #
-# THE GAP IT CLOSES: merging a PR on GitHub does NOT update the box. The
-# layer-floor tick runs $INFRA_DIR/scripts/*, and each dept
-# runs from $AGENTS_ROOT/bubble-ops-<slug>/ — all git clones that only
-# advance when pulled. This makes "deploy" one explicit, idempotent command.
+# Safety contract:
+# - Git always runs as the repository directory owner. No safe.directory changes.
+# - Only a clean, exact `main`, zero-ahead checkout may fast-forward.
+# - Dirty, ahead, detached, or non-main checkouts are preserved and deferred.
+# - Active/activating/deactivating primary agents are never changed on disk here;
+#   their existing loop owns its self-pull.
+# - This script never stashes, resets, rolls back, stops, starts, or restarts.
 #
-# WHAT IT DOES (idempotent, safe to re-run):
-#   1. bubble-ops-loop (shared infra: loop-backup.sh, dispatch_directives.py,
-#      skills, templates) → fetch + reset --hard origin/main.
-#   2. Each dept clone under agents/bubble-ops-* → fetch; ff to origin/main.
-#      Dept loops also self-pull at tick start, but a live loop RACES a ff on the
-#      working tree, so we STOP the loop, ff, restart (loop re-arms on start).
-#      Skipped cleanly if a dept is ahead (unpushed work) — never clobbers.
-#      After restart: verify is-active + an import-smoke of the dept entrypoint;
-#      on failure, roll back to the pre-ff SHA and restart again.
-#
-# CONFIG (no hardcoded company facts — override via env for another org/client):
-#   BUBBLE_DEPLOY_INFRA_DIR     default: /home/claude/bubble-ops-loop
-#   BUBBLE_DEPLOY_AGENTS_ROOT   default: /home/claude/agents
-#   BUBBLE_DEPLOY_DEPT_PREFIX   default: bubble-ops-   (dept dir/unit naming prefix)
-#   BUBBLE_DEPLOY_UNIT_PREFIX   default: bubble-agent@ (systemd unit naming prefix)
-#   BUBBLE_DEPLOY_ENTRYPOINT    default: main.py       (relative path probed for
-#                                import-smoke; skipped if not found — not every
-#                                dept/client entrypoint is a plain script)
-#
-# EXIT CODE: 0 only if every infra/dept operation that was attempted succeeded
-# or was a clean no-op skip (already current, or ahead with unpushed work).
-# Any fetch failure, ff failure, or failed health-check-and-rollback → exit 1.
-# A oneshot systemd unit's reported success is only meaningful if this contract
-# holds (agent-native-infra-doctrine: silence must never read as success).
-#
-# Usage:
-#   bubble-deploy.sh                 # deploy everything
-#   bubble-deploy.sh --infra-only    # just bubble-ops-loop (no dept restarts)
-#   bubble-deploy.sh --dept <slug>   # one dept + infra
-#   bubble-deploy.sh --dry-run       # report what WOULD sync, change nothing
-# =============================================================================
+# Exit: 0 for updated/current/active-primary deferrals; 2 when operator review is
+# required for preserved Git state; 1 for operational failures.
 set -uo pipefail
 
-INFRA_DIR="${BUBBLE_DEPLOY_INFRA_DIR:-/home/claude/bubble-ops-loop}"
-AGENTS_ROOT="${BUBBLE_DEPLOY_AGENTS_ROOT:-/home/claude/agents}"
-DEPT_PREFIX="${BUBBLE_DEPLOY_DEPT_PREFIX:-bubble-ops-}"
+SOURCE_INFRA_DIR="${BUBBLE_DEPLOY_SOURCE_INFRA_DIR:-/opt/bubble-ops-loop}"
+CONSOLE_INFRA_DIR="${BUBBLE_DEPLOY_CONSOLE_INFRA_DIR:-/home/claude/bubble-ops-loop}"
+AGENTS_ROOT="${BUBBLE_DEPLOY_AGENTS_ROOT:-/srv/agents}"
+LEGACY_AGENTS_ROOT="${BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT:-/home/claude/agents}"
 UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
-ENTRYPOINT="${BUBBLE_DEPLOY_ENTRYPOINT:-main.py}"
-DRY_RUN=0; INFRA_ONLY=0; ONE_DEPT=""
-for a in "$@"; do case "$a" in
-  --dry-run) DRY_RUN=1 ;;
-  --infra-only) INFRA_ONLY=1 ;;
-  --dept) ONE_DEPT="__next__" ;;
-  *) [[ "$ONE_DEPT" == "__next__" ]] && ONE_DEPT="$a" ;;
-esac; done
+LEGACY_UNIT_PREFIX="${BUBBLE_DEPLOY_LEGACY_UNIT_PREFIX:-ops-loop-}"
+LOCK_FILE="${BUBBLE_DEPLOY_LOCK_FILE:-/run/lock/bubble-deploy.lock}"
+DRY_RUN=0
+INFRA_ONLY=0
+ONE_DEPT=""
 
-# Tracks whether ANY real failure occurred across the whole run. A clean skip
-# (already current / ahead-with-unpushed-work) never sets this. Everything
-# else that isn't a plain success does.
+while (($#)); do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --infra-only) INFRA_ONLY=1; shift ;;
+        --dept)
+            [[ $# -ge 2 && "$2" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+                echo "usage: $0 [--dry-run] [--infra-only] [--dept slug]" >&2
+                exit 2
+            }
+            ONE_DEPT="$2"; shift 2 ;;
+        *)
+            echo "usage: $0 [--dry-run] [--infra-only] [--dept slug]" >&2
+            exit 2 ;;
+    esac
+done
+
+UPDATED=0
+WOULD_UPDATE=0
+CURRENT=0
+DEFERRED_ACTIVE=0
+DEFERRED_REVIEW=0
+SKIPPED=0
 FAILED=0
 
-log(){ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [deploy] $*"; }
-g(){ sudo -u claude git -C "$1" "${@:2}"; }
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [deploy] $*"; }
 
-# git_fetch_retry $dir — fetch origin/main with a bounded retry. A SINGLE
-# transient blip must not fail the whole 2-hourly deploy: the credential helper
-# mints a GitHub App token via one un-retried curl, so an occasional GitHub 5xx /
-# rate-limit / network hiccup yields an empty token → git falls through to
-# unauthenticated → a PRIVATE repo answers 404 "Repository not found". Retrying
-# rides that out. A genuine, persistent failure still returns non-zero after the
-# attempts, so real breakage is still surfaced (behaviour preserved). 3 tries,
-# 2s+4s backoff (~6s worst case ≪ the 2h cadence).
-git_fetch_retry(){
-  local d="$1" n=0
-  until g "$d" fetch origin main --quiet; do
-    n=$((n+1)); [[ $n -ge 3 ]] && return 1
-    log "retry fetch $d (attempt $n failed, likely a transient token/network blip)"
-    sleep $((n*2))
-  done
-  return 0
-}
-
-sync_repo_reset(){ # $1=dir  — hard-reset to origin/main (infra: no local work expected)
-  local d="$1"
-  g "$d" config --global --get-all safe.directory 2>/dev/null | grep -qx "$d" \
-    || g "$d" config --global --add safe.directory "$d" 2>/dev/null || true
-  git_fetch_retry "$d" || { log "FAIL fetch $d (after 3 attempts)"; return 1; }
-  local behind; behind=$(g "$d" rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
-  local ahead;  ahead=$(g "$d" rev-list --count origin/main..HEAD 2>/dev/null || echo "?")
-  if [[ "$ahead" != "0" ]]; then log "WARN $d is $ahead AHEAD — has local commits; reset would lose them. SKIPPING."; return 2; fi
-  if [[ "$behind" == "0" ]]; then log "$d already current"; return 0; fi
-  if [[ "$DRY_RUN" == "1" ]]; then log "[dry-run] would reset $d ($behind behind)"; return 0; fi
-  # #1122: this repo isn't SUPPOSED to carry local edits, but "not supposed
-  # to" is not a guarantee — a human mid-edit on the VPS infra checkout when
-  # the 2h cron fires must never lose it. Same never-silently-discard pattern
-  # as sync_dept_ff below: stash (recoverable) before the hard reset instead
-  # of resetting straight over a dirty tree.
-  if [[ -n "$(g "$d" status --porcelain 2>/dev/null)" ]]; then
-    local infra_stash_msg
-    infra_stash_msg="bubble-deploy-infra-autostash-$(date -u +%Y%m%dT%H%M%SZ)"
-    if g "$d" stash push -u -m "$infra_stash_msg" >/dev/null 2>&1; then
-      log "WARN $d: dirty tree (unexpected for infra) — stashed as '$infra_stash_msg' before reset — RECOVERABLE via git stash pop"
-    else
-      log "FAIL $d: dirty tree but stash failed — refusing reset --hard (would discard uncommitted work); needs human"
-      return 1
-    fi
-  fi
-  if g "$d" reset --hard origin/main >/dev/null; then
-    log "$d reset to origin/main ($behind applied)"
-    return 0
-  else
-    log "FAIL $d: git reset --hard origin/main failed"
-    return 1
-  fi
-}
-
-# health_check_dept $slug $dir $unit — is-active + a python import-smoke of the
-# dept entrypoint. Mirrors the verify pattern in deploy-to-morty.sh (systemctl
-# is-active check post-start). Returns 0 healthy, 1 unhealthy.
-health_check_dept(){
-  local slug="$1" d="$2" unit="$3"
-  local active; active=$(systemctl is-active "$unit" 2>/dev/null || echo inactive)
-  if [[ "$active" != "active" ]]; then
-    log "HEALTH FAIL $slug: unit not active ($active)"
-    return 1
-  fi
-  if [[ -f "$d/$ENTRYPOINT" ]]; then
-    if ! sudo -u claude python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$d/$ENTRYPOINT" 2>/dev/null; then
-      log "HEALTH FAIL $slug: import-smoke (ast parse) failed on $ENTRYPOINT"
-      return 1
-    fi
-  fi
-  log "$slug healthy (unit active, entrypoint smoke ok)"
-  return 0
-}
-
-sync_dept_ff(){ # $1=slug — stop loop, ff, restart (avoids the live-loop race)
-  local slug="$1"
-  local d="$AGENTS_ROOT/${DEPT_PREFIX}${slug}" unit="${UNIT_PREFIX}${slug}.service"
-  [[ -d "$d/.git" ]] || { log "skip $slug (no clone)"; return 0; }
-  g "$d" config --global --get-all safe.directory 2>/dev/null | grep -qx "$d" \
-    || g "$d" config --global --add safe.directory "$d" 2>/dev/null || true
-  git_fetch_retry "$d" || { log "FAIL fetch $slug (after 3 attempts)"; FAILED=1; return 1; }
-  local behind ahead; behind=$(g "$d" rev-list --count HEAD..origin/main 2>/dev/null||echo "?")
-  ahead=$(g "$d" rev-list --count origin/main..HEAD 2>/dev/null||echo "?")
-  if [[ "$ahead" != "0" ]]; then log "$slug: $ahead ahead (unpushed) — loop will pull itself; not forcing"; return 0; fi
-  if [[ "$behind" == "0" ]]; then log "$slug already current"; return 0; fi
-  if [[ "$DRY_RUN" == "1" ]]; then log "[dry-run] would stop/ff/restart $slug ($behind behind)"; return 0; fi
-
-  local pre_sha; pre_sha=$(g "$d" rev-parse HEAD 2>/dev/null)
-  local was_active; was_active=$(systemctl is-active "$unit" 2>/dev/null||echo inactive)
-  [[ "$was_active" == "active" ]] && systemctl stop "$unit"
-
-  # Working tree may be dirty (live agent work-in-progress). NEVER discard it
-  # silently — stash it (recoverable) before attempting the ff. If the ff
-  # can't proceed even after stashing, restore the stash and leave the dept
-  # for the loop's own pull (unchanged prior behaviour, just no data loss).
-  local stash_ref="" dirty=0
-  if [[ -n "$(g "$d" status --porcelain 2>/dev/null)" ]]; then
-    dirty=1
-    local stash_msg
-    stash_msg="bubble-deploy-autostash-$(date -u +%Y%m%dT%H%M%SZ)"
-    if g "$d" stash push -u -m "$stash_msg" >/dev/null 2>&1; then
-      stash_ref=$(g "$d" stash list 2>/dev/null | grep -F "$stash_msg" | head -1 | cut -d: -f1)
-      log "$slug: dirty tree — stashed uncommitted work as '$stash_msg' ($stash_ref) — RECOVERABLE via git stash pop"
-    else
-      log "WARN $slug: dirty tree but stash failed — leaving for the loop's own pull (no ff attempted)"
-      [[ "$was_active" == "active" ]] && { systemctl start "$unit"; log "$slug loop restarted"; }
-      return 0
-    fi
-  fi
-
-  local ff_ok=0
-  if g "$d" merge --ff-only origin/main >/dev/null 2>&1; then
-    ff_ok=1
-    log "$slug ff to origin/main ($behind applied)"
-  else
-    log "WARN $slug ff blocked; leaving for the loop's own pull"
-    [[ -n "$stash_ref" ]] && { g "$d" stash pop >/dev/null 2>&1 && log "$slug: restored stashed work after blocked ff"; }
-  fi
-
-  if [[ "$ff_ok" == "1" && "$dirty" == "1" && -n "$stash_ref" ]]; then
-    if g "$d" stash pop >/dev/null 2>&1; then
-      log "$slug: restored stashed work on top of ff'd HEAD"
-    else
-      log "WARN $slug: stash pop conflicted after ff — stash left in place ($stash_ref); needs manual reconciliation"
-      FAILED=1
-    fi
-  fi
-
-  if [[ "$was_active" == "active" ]]; then
-    systemctl start "$unit"
-    log "$slug loop restarted"
-    if [[ "$ff_ok" == "1" ]]; then
-      sleep 2
-      if ! health_check_dept "$slug" "$d" "$unit"; then
-        log "$slug: health check failed post-deploy — rolling back to pre-ff SHA $pre_sha"
-        systemctl stop "$unit" 2>/dev/null || true
-        # #1122: the stash restored above (line ~166) is now just plain
-        # uncommitted edits on the ff'd HEAD — it is NOT tracked by any
-        # stash entry anymore. A bare `reset --hard $pre_sha` here would
-        # silently wipe that work with nothing left to recover it from
-        # (the exact regression: PR #265 taught this function to
-        # stash-not-discard on the FF path, but the ROLLBACK path re-earned
-        # the same bug 20 lines later). Re-stash any current dirtiness
-        # before the rollback reset so it survives, recoverable via
-        # `git stash pop` — never auto-popped back here, since popping
-        # onto the OLD pre_sha tree (a different base than it was stashed
-        # from) risks a spurious conflict; leaving it stashed for manual
-        # reconciliation is the same safe posture this function already
-        # uses for a conflicted post-ff pop above.
-        if [[ -n "$(g "$d" status --porcelain 2>/dev/null)" ]]; then
-          local rb_stash_msg
-          rb_stash_msg="bubble-deploy-rollback-autostash-$(date -u +%Y%m%dT%H%M%SZ)"
-          if g "$d" stash push -u -m "$rb_stash_msg" >/dev/null 2>&1; then
-            log "$slug: dirty tree before rollback reset — re-stashed as '$rb_stash_msg' — RECOVERABLE via git stash pop"
-          else
-            log "FAIL $slug: dirty tree before rollback reset but re-stash FAILED — refusing reset --hard $pre_sha (would discard uncommitted work); needs human"
-            [[ "$was_active" == "active" ]] && systemctl start "$unit" 2>/dev/null || true
-            FAILED=1
-            return 1
-          fi
-        fi
-        if g "$d" reset --hard "$pre_sha" >/dev/null 2>&1; then
-          systemctl start "$unit"
-          sleep 2
-          if health_check_dept "$slug" "$d" "$unit"; then
-            log "$slug: ROLLED BACK to $pre_sha and restarted — now healthy again"
-          else
-            log "FAIL $slug: still unhealthy after rollback to $pre_sha — needs human"
-          fi
-        else
-          log "FAIL $slug: rollback reset to $pre_sha failed — needs human"
-        fi
-        FAILED=1
-        return 1
-      fi
-    fi
-  fi
-}
-
-log "=== bubble-deploy START (dry_run=$DRY_RUN infra_only=$INFRA_ONLY dept=${ONE_DEPT:-all}) ==="
-
-# 1. shared infra
-sync_repo_reset "$INFRA_DIR"; INFRA_RC=$?
-[[ "$INFRA_RC" == "1" ]] && FAILED=1   # rc=2 (ahead/skip) is a clean no-op, not a failure
-
-# 2. depts
-if [[ "$INFRA_ONLY" != "1" ]]; then
-  if [[ -n "$ONE_DEPT" ]]; then
-    sync_dept_ff "$ONE_DEPT"
-  else
-    for dd in "$AGENTS_ROOT"/"${DEPT_PREFIX}"*; do
-      [[ -d "$dd" ]] || continue
-      slug=$(basename "$dd"); slug=${slug#"$DEPT_PREFIX"}
-      # only depts with a live loop unit
-      systemctl cat "${UNIT_PREFIX}${slug}.service" >/dev/null 2>&1 && sync_dept_ff "$slug"
-    done
-  fi
+mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+exec 9>"$LOCK_FILE" || { log "FAIL cannot open deploy lock"; exit 1; }
+if ! flock -n 9; then
+    log "FAIL another deploy process holds $LOCK_FILE"
+    exit 1
 fi
 
-log "=== bubble-deploy DONE (failed=$FAILED) ==="
-[[ "$FAILED" == "1" ]] && exit 1
+repo_owner() {
+    local owner
+    owner=$(stat -c '%U' -- "$1" 2>/dev/null) || return 1
+    [[ "$owner" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 1
+    printf '%s\n' "$owner"
+}
+
+g() {
+    local dir="$1" owner="$2"
+    shift 2
+    if [[ "$EUID" == "0" ]]; then
+        if [[ "$owner" == "root" ]]; then
+            git -C "$dir" "$@"
+        else
+            runuser -u "$owner" -- git -C "$dir" "$@"
+        fi
+    else
+        [[ "$(id -un)" == "$owner" ]] || return 126
+        git -C "$dir" "$@"
+    fi
+}
+
+git_fetch_retry() {
+    local dir="$1" owner="$2" attempt=1
+    while ! g "$dir" "$owner" fetch origin main --quiet; do
+        if ((attempt >= 3)); then
+            return 1
+        fi
+        log "retry fetch after attempt $attempt"
+        sleep $((attempt * 2))
+        attempt=$((attempt + 1))
+    done
+}
+
+primary_state() {
+    local unit="$1" load state
+    [[ -n "$unit" ]] || { printf 'none\n'; return; }
+    load=$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)
+    [[ "$load" == "loaded" ]] || { printf 'none\n'; return; }
+    state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    printf '%s\n' "${state:-unknown}"
+}
+
+unit_is_loaded() {
+    [[ -n "$1" ]] || return 1
+    [[ "$(systemctl show "$1" -p LoadState --value 2>/dev/null || true)" == "loaded" ]]
+}
+
+defer_review() {
+    DEFERRED_REVIEW=$((DEFERRED_REVIEW + 1))
+    log "DEFER_REVIEW $1: $2; preserved exactly"
+}
+
+inspect_repo_state() {
+    local dir="$1" owner="$2" branch dirty ahead behind porcelain
+    branch=$(g "$dir" "$owner" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [[ "$branch" == "main" ]] || { printf 'non-main:%s\n' "${branch:-detached}"; return; }
+    porcelain=$(g "$dir" "$owner" status --porcelain=v1 --untracked-files=normal 2>/dev/null) \
+        || { printf 'invalid\n'; return; }
+    if [[ -n "$porcelain" ]]; then
+        dirty=$(printf '%s\n' "$porcelain" | awk 'END { print NR+0 }')
+    else
+        dirty=0
+    fi
+    [[ "$dirty" == "0" ]] || { printf 'dirty:%s\n' "$dirty"; return; }
+    ahead=$(g "$dir" "$owner" rev-list --count origin/main..HEAD 2>/dev/null || echo invalid)
+    behind=$(g "$dir" "$owner" rev-list --count HEAD..origin/main 2>/dev/null || echo invalid)
+    [[ "$ahead" =~ ^[0-9]+$ && "$behind" =~ ^[0-9]+$ ]] || { printf 'invalid\n'; return; }
+    ((ahead == 0)) || { printf 'ahead:%s\n' "$ahead"; return; }
+    printf 'safe:%s\n' "$behind"
+}
+
+sync_repo_safe_ff() {
+    local label="$1" dir="$2" unit="${3:-}" owner root state behind check final_head target
+    if [[ -L "$dir" || ! -e "$dir/.git" ]]; then
+        SKIPPED=$((SKIPPED + 1))
+        log "SKIP $label: no direct Git checkout at $dir"
+        return 0
+    fi
+    owner=$(repo_owner "$dir") || {
+        FAILED=$((FAILED + 1)); log "FAIL $label: cannot resolve repository owner"; return 1;
+    }
+    root=$(g "$dir" "$owner" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ "$(readlink -f -- "$root" 2>/dev/null)" != "$(readlink -f -- "$dir" 2>/dev/null)" ]]; then
+        FAILED=$((FAILED + 1)); log "FAIL $label: checkout root mismatch"; return 1
+    fi
+
+    # Preserve local state before even changing remote-tracking references.
+    check=$(inspect_repo_state "$dir" "$owner")
+    case "$check" in
+        non-main:*) defer_review "$label" "branch ${check#non-main:}"; return 0 ;;
+        dirty:*) defer_review "$label" "${check#dirty:} dirty paths"; return 0 ;;
+        ahead:*) defer_review "$label" "${check#ahead:} commits ahead"; return 0 ;;
+        invalid) FAILED=$((FAILED + 1)); log "FAIL $label: unreadable Git state"; return 1 ;;
+    esac
+
+    # Do not even update remote-tracking refs under a running primary. Its
+    # existing self-pull path owns both fetch and worktree advancement.
+    state=$(primary_state "$unit")
+    case "$state" in
+        active|activating|reloading|deactivating)
+            DEFERRED_ACTIVE=$((DEFERRED_ACTIVE + 1))
+            log "DEFER_ACTIVE $label: primary $unit is $state; self-pull retains fetch and update ownership"
+            return 0 ;;
+        inactive|failed|none) ;;
+        *)
+            FAILED=$((FAILED + 1))
+            log "FAIL $label: cannot prove primary $unit is inactive (state=$state)"
+            return 1 ;;
+    esac
+
+    if ! git_fetch_retry "$dir" "$owner"; then
+        FAILED=$((FAILED + 1)); log "FAIL $label: fetch origin/main failed after 3 attempts"; return 1
+    fi
+    check=$(inspect_repo_state "$dir" "$owner")
+    case "$check" in
+        non-main:*) defer_review "$label" "branch changed to ${check#non-main:}"; return 0 ;;
+        dirty:*) defer_review "$label" "${check#dirty:} dirty paths appeared"; return 0 ;;
+        ahead:*) defer_review "$label" "${check#ahead:} commits ahead"; return 0 ;;
+        invalid) FAILED=$((FAILED + 1)); log "FAIL $label: unreadable Git state after fetch"; return 1 ;;
+        safe:*) behind=${check#safe:} ;;
+    esac
+    if ((behind == 0)); then
+        CURRENT=$((CURRENT + 1)); log "CURRENT $label"; return 0
+    fi
+
+    state=$(primary_state "$unit")
+    case "$state" in
+        active|activating|reloading|deactivating)
+            DEFERRED_ACTIVE=$((DEFERRED_ACTIVE + 1))
+            log "DEFER_ACTIVE $label: primary $unit is $state; self-pull retains ownership ($behind behind)"
+            return 0 ;;
+        inactive|failed|none) ;;
+        *)
+            FAILED=$((FAILED + 1))
+            log "FAIL $label: cannot prove primary $unit is inactive (state=$state)"
+            return 1 ;;
+    esac
+    if [[ "$DRY_RUN" == "1" ]]; then
+        WOULD_UPDATE=$((WOULD_UPDATE + 1))
+        log "DRY_RUN $label: would fast-forward $behind commits as $owner; primary state=$state"
+        return 0
+    fi
+
+    # Recheck immediately before the only worktree mutation. merge --ff-only
+    # provides the final ancestry guard; there is deliberately no rollback.
+    check=$(inspect_repo_state "$dir" "$owner")
+    [[ "$check" == "safe:$behind" ]] || {
+        defer_review "$label" "Git state changed before fast-forward"; return 0;
+    }
+    if [[ -n "$unit" ]]; then
+        state=$(primary_state "$unit")
+        case "$state" in
+            active|activating|reloading|deactivating)
+                DEFERRED_ACTIVE=$((DEFERRED_ACTIVE + 1))
+                log "DEFER_ACTIVE $label: primary became $state before fast-forward"
+                return 0 ;;
+            inactive|failed) ;;
+            *)
+                FAILED=$((FAILED + 1))
+                log "FAIL $label: primary state became unprovable before fast-forward ($state)"
+                return 1 ;;
+        esac
+    fi
+    target=$(g "$dir" "$owner" rev-parse origin/main 2>/dev/null || true)
+    if ! g "$dir" "$owner" merge --ff-only origin/main >/dev/null 2>&1; then
+        FAILED=$((FAILED + 1)); log "FAIL $label: fast-forward refused; no rollback attempted"; return 1
+    fi
+    final_head=$(g "$dir" "$owner" rev-parse HEAD 2>/dev/null || true)
+    check=$(inspect_repo_state "$dir" "$owner")
+    if [[ "$final_head" != "$target" || "$check" != "safe:0" ]]; then
+        FAILED=$((FAILED + 1)); log "FAIL $label: post-fast-forward verification failed"; return 1
+    fi
+    UPDATED=$((UPDATED + 1))
+    log "UPDATED $label: fast-forwarded $behind commits as $owner; primary state=$state"
+}
+
+resolve_one_dept() {
+    local slug="$1" dir unit
+    if [[ -e "$AGENTS_ROOT/$slug/.git" ]]; then
+        dir="$AGENTS_ROOT/$slug"; unit="${UNIT_PREFIX}${slug}.service"
+    elif [[ -e "$AGENTS_ROOT/bubble-ops-$slug/.git" ]]; then
+        dir="$AGENTS_ROOT/bubble-ops-$slug"; unit="${UNIT_PREFIX}${slug}.service"
+    elif [[ -e "$LEGACY_AGENTS_ROOT/bubble-ops-$slug/.git" ]]; then
+        dir="$LEGACY_AGENTS_ROOT/bubble-ops-$slug"; unit="${LEGACY_UNIT_PREFIX}${slug}.service"
+    else
+        SKIPPED=$((SKIPPED + 1)); log "SKIP $slug: no canonical or legacy checkout"
+        return
+    fi
+    if ! unit_is_loaded "$unit"; then
+        SKIPPED=$((SKIPPED + 1)); log "SKIP $slug: no loaded primary unit $unit"
+        return
+    fi
+    sync_repo_safe_ff "$slug" "$dir" "$unit"
+}
+
+log "START dry_run=$DRY_RUN infra_only=$INFRA_ONLY dept=${ONE_DEPT:-all}"
+if [[ -n "${BUBBLE_DEPLOY_INFRA_DIR+x}" ]]; then
+    # Explicit override retains the historical one-checkout contract.
+    sync_repo_safe_ff "framework" "$BUBBLE_DEPLOY_INFRA_DIR" ""
+else
+    # The source checkout feeds timers/floors. The console checkout is the
+    # current interactive working directory. Updating its files on disk does
+    # not claim that an already-running console has hot-reloaded them.
+    sync_repo_safe_ff "framework-source" "$SOURCE_INFRA_DIR" ""
+    sync_repo_safe_ff "framework-console-disk" "$CONSOLE_INFRA_DIR" ""
+fi
+
+if [[ "$INFRA_ONLY" != "1" ]]; then
+    if [[ -n "$ONE_DEPT" ]]; then
+        resolve_one_dept "$ONE_DEPT"
+    else
+        declare -A seen=()
+        for dir in "$AGENTS_ROOT"/*; do
+            [[ -d "$dir" && ! -L "$dir" && -e "$dir/.git" ]] || continue
+            slug=$(basename "$dir")
+            slug=${slug#bubble-ops-}
+            [[ "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || continue
+            [[ -z "${seen[$slug]:-}" ]] || continue
+            seen[$slug]=1
+            resolve_one_dept "$slug"
+        done
+        for dir in "$LEGACY_AGENTS_ROOT"/bubble-ops-*; do
+            [[ -d "$dir" && ! -L "$dir" && -e "$dir/.git" ]] || continue
+            slug=$(basename "$dir"); slug=${slug#bubble-ops-}
+            [[ "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || continue
+            [[ -z "${seen[$slug]:-}" ]] || continue
+            seen[$slug]=1
+            resolve_one_dept "$slug"
+        done
+    fi
+fi
+
+log "DONE updated=$UPDATED would_update=$WOULD_UPDATE current=$CURRENT deferred_active=$DEFERRED_ACTIVE deferred_review=$DEFERRED_REVIEW skipped=$SKIPPED failed=$FAILED"
+((FAILED == 0)) || exit 1
+((DEFERRED_REVIEW == 0)) || exit 2
 exit 0
