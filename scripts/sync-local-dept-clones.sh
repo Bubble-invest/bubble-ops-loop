@@ -351,6 +351,19 @@ clear_merge_debris() {
 resolve_canonical_branch() {
     local dir="$1"
     local ref=""
+    # Refresh the cached default from origin FIRST (board: accountant strand,
+    # 2026-09-08). The clone-time refs/remotes/origin/HEAD goes STALE if the
+    # repo's default branch changes AFTER clone — e.g. a dept graduating from
+    # onboarding/<slug> to main. The previous logic only re-queried origin when
+    # the cache was *missing*, so a PRESENT-but-outdated cache (accountant's
+    # HEAD still pointing at onboarding/accountant while origin's default had
+    # moved to main) was trusted verbatim and stranded the read-mirror on the
+    # old branch — invisible to the CEO's fleet check. A `set-head --auto` is a
+    # lightweight ls-remote against origin; the sync already hits origin to
+    # fetch, so this adds no meaningful cost and is 100% local to the clone
+    # (never pushes / never touches origin's branches). Best-effort: if it
+    # fails (offline/transport), we fall through to the cached value below.
+    git -C "$dir" remote set-head origin --auto >/dev/null 2>&1 || true
     ref="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     ref="${ref#origin/}"
     if [[ -z "$ref" ]]; then

@@ -1212,6 +1212,57 @@ else
   echo "  FAIL: T20e untracked file was NOT quarantined on the converge path — silently wiped by git clean -fd (board #1096 regression)"; FAIL=$((FAIL+1))
 fi
 
+# -----------------------------------------------------------------------------
+# T21: accountant strand (2026-09-08). A clone whose cached
+#      refs/remotes/origin/HEAD is STALE — it was set at clone time to the
+#      repo's THEN-default branch (onboarding/<slug>), but origin's default has
+#      since MOVED to main (the dept graduated onboarding -> live). The clone is
+#      still checked out on the OLD default with a valid upstream.
+#      resolve_canonical_branch() used to trust the PRESENT-but-outdated cache
+#      and strand the mirror there — exactly what left Géraldine's accountant
+#      mirror on onboarding/accountant, 54 commits behind main, invisible to the
+#      CEO fleet check. The fix refreshes the cache from origin (set-head
+#      --auto) BEFORE reading it, so the mirror self-heals to the CURRENT
+#      default 'main'. Without the fix, T21b fails (mirror stays on the stale
+#      branch).
+# -----------------------------------------------------------------------------
+REALGIT_AGENTS21="$WORK/agents-real21"; rm -rf "$REALGIT_AGENTS21"; mkdir -p "$REALGIT_AGENTS21"
+ORIGIN21="$WORK/origin-stalehead.git"
+WORKTREE21="$WORK/seed-stalehead"
+"${real_git_env[@]}" git init -q --bare "$ORIGIN21"
+"${real_git_env[@]}" git clone -q "$ORIGIN21" "$WORKTREE21" 2>/dev/null
+mkdir -p "$WORKTREE21/onboarding"
+printf 'v: 1\n' > "$WORKTREE21/framework.txt"
+printf 'slug: stalehead\nstatus: Live\nhost: local\n' > "$WORKTREE21/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$WORKTREE21" add -A
+"${real_git_env[@]}" git -C "$WORKTREE21" commit -qm "seed21"
+# push the ORIGINAL default branch (onboarding/stalehead) and make it origin's HEAD
+"${real_git_env[@]}" git -C "$WORKTREE21" push -q origin HEAD:onboarding/stalehead
+"${real_git_env[@]}" git -C "$ORIGIN21" symbolic-ref HEAD refs/heads/onboarding/stalehead
+# clone the mirror NOW -> its cached origin/HEAD = origin/onboarding/stalehead
+MIRROR21="$REALGIT_AGENTS21/bubble-ops-stalehead"
+"${real_git_env[@]}" git clone -q "$ORIGIN21" "$MIRROR21"
+# origin's default MOVES to main (dept graduates): push main + repoint origin HEAD
+printf 'v: 2\n' > "$WORKTREE21/framework.txt"
+"${real_git_env[@]}" git -C "$WORKTREE21" commit -qam "advance21 (now on main)"
+"${real_git_env[@]}" git -C "$WORKTREE21" push -q origin HEAD:main
+"${real_git_env[@]}" git -C "$ORIGIN21" symbolic-ref HEAD refs/heads/main
+origin_head21="$("${real_git_env[@]}" git -C "$WORKTREE21" rev-parse HEAD)"
+# the mirror has NOT refetched -> its cached origin/HEAD is STALE at onboarding/stalehead
+stalehead21="$("${real_git_env[@]}" git -C "$MIRROR21" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo NONE)"
+branch_before21="$("${real_git_env[@]}" git -C "$MIRROR21" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+
+"${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS21" >"$WORK/run-real21.log" 2>&1
+rc21=$?
+after_branch21="$("${real_git_env[@]}" git -C "$MIRROR21" symbolic-ref --short HEAD 2>/dev/null || echo "")"
+after_head21="$("${real_git_env[@]}" git -C "$MIRROR21" rev-parse HEAD)"
+
+chk_eq "T21 precondition: mirror's cached origin/HEAD is STALE (onboarding/stalehead)" "origin/onboarding/stalehead" "$stalehead21"
+chk_eq "T21 precondition: mirror started on the stale default branch" "onboarding/stalehead" "$branch_before21"
+chk "T21a real-git run exits 0" 0 "$rc21"
+chk_eq "T21b mirror self-healed to origin's CURRENT default 'main' (stale origin/HEAD refreshed)" "main" "$after_branch21"
+chk_eq "T21c mirror converged to origin/main HEAD" "$origin_head21" "$after_head21"
+
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1
