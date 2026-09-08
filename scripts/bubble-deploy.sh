@@ -189,14 +189,45 @@ defer_review() {
     log "DEFER_REVIEW $1: $2; preserved exactly"
 }
 
+# is_known_fleet_artifact $path — true for the handful of UNTRACKED files the
+# fleet itself scatters into every dept checkout as a side effect of routine
+# ops (not real work): a generated CLAUDE.md alias, vendoring's own backup
+# files, and a runtime harness-switch note. #1187: these three patterns are
+# the ONLY thing this predicate matches — anything else (including a tracked
+# modification to one of these very files) still counts as genuine dirt below.
+is_known_fleet_artifact() {
+    local path="$1" base="${1##*/}"
+    case "$base" in
+        AGENTS.md|HARNESS_HANDOFF.md) return 0 ;;
+        *.pre-vendor-*) return 0 ;;
+    esac
+    return 1
+}
+
 inspect_repo_state() {
-    local dir="$1" owner="$2" branch dirty ahead behind porcelain
+    local dir="$1" owner="$2" branch dirty ahead behind porcelain filtered
     branch=$(g "$dir" "$owner" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     [[ "$branch" == "main" ]] || { printf 'non-main:%s\n' "${branch:-detached}"; return; }
     porcelain=$(g "$dir" "$owner" status --porcelain=v1 --untracked-files=normal 2>/dev/null) \
         || { printf 'invalid\n'; return; }
     if [[ -n "$porcelain" ]]; then
-        dirty=$(printf '%s\n' "$porcelain" | awk 'END { print NR+0 }')
+        # #1187: known, harmless, UNTRACKED fleet artifacts (AGENTS.md,
+        # *.pre-vendor-*, HARNESS_HANDOFF.md) never count as dirt — every
+        # other porcelain line (any tracked change, or any other untracked
+        # file) still does, so genuine unexpected dirt still defers exactly
+        # as before.
+        filtered=$(printf '%s\n' "$porcelain" | while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            if [[ "${line:0:2}" == "??" ]] && is_known_fleet_artifact "${line:3}"; then
+                continue
+            fi
+            printf '%s\n' "$line"
+        done)
+        if [[ -n "$filtered" ]]; then
+            dirty=$(printf '%s\n' "$filtered" | awk 'END { print NR+0 }')
+        else
+            dirty=0
+        fi
     else
         dirty=0
     fi
