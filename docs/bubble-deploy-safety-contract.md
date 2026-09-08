@@ -12,6 +12,8 @@ The script never stops, starts, restarts, resets, stashes, rolls back, or rewrit
 
 Dry-run summaries count eligible changes as `would_update`; they never report them as completed updates.
 
+The production lock lives at `/run/bubble-deploy.lock`, whose `/run` parent is root-owned and not writable by unprivileged users. A stdlib Python launcher opens it with `O_NOFOLLOW` and without truncation, requires a regular root-owned private inode with one link, takes a nonblocking `flock`, and passes the locked descriptor into the deploy script. Explicit test lock paths use the same checks with the invoking UID as owner. A pre-positioned symlink is rejected before its target can be changed.
+
 Tests:
 
 ```bash

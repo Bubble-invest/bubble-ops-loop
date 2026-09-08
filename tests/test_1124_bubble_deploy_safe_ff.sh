@@ -170,4 +170,45 @@ BUBBLE_DEPLOY_LOCK_FILE="$WORK/defaults.lock" \
 grep -q 'UPDATED framework-source' "$WORK/defaults.out"
 grep -q 'UPDATED framework-console-disk' "$WORK/defaults.out"
 
-echo "PASS: 8 safe deploy contract cases"
+echo "T9 a symlink lock is rejected before victim bytes can be changed"
+victim="$WORK/lock-victim"
+printf 'SYNTHETIC-VICTIM-BYTES\n' >"$victim"
+ln -s "$victim" "$WORK/symlink.lock"
+set +e
+PATH="$BIN:$PATH" \
+TEST_GIT_LOG="$WORK/symlink.gitlog" \
+TEST_RUNUSER_LOG="$WORK/symlink.runuser" \
+TEST_SYSTEMCTL_LOG="$WORK/symlink.systemctl" \
+BUBBLE_DEPLOY_INFRA_DIR="$WORK/infra" \
+BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/empty-agents" \
+BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/empty-legacy" \
+BUBBLE_DEPLOY_LOCK_FILE="$WORK/symlink.lock" \
+    bash "$SCRIPT" --infra-only >"$WORK/symlink.out" 2>"$WORK/symlink.err"
+symlink_rc=$?
+set -e
+[[ $symlink_rc -eq 1 ]]
+[[ "$(cat "$victim")" == 'SYNTHETIC-VICTIM-BYTES' ]]
+grep -q 'secure deploy lock unavailable' "$WORK/symlink.err"
+
+echo "T10 a multiply-linked lock is rejected without changing its bytes"
+hardlink_victim="$WORK/hardlink-victim"
+printf 'SYNTHETIC-HARDLINK-BYTES\n' >"$hardlink_victim"
+chmod 0600 "$hardlink_victim"
+ln "$hardlink_victim" "$WORK/hardlink.lock"
+set +e
+PATH="$BIN:$PATH" \
+TEST_GIT_LOG="$WORK/hardlink.gitlog" \
+TEST_RUNUSER_LOG="$WORK/hardlink.runuser" \
+TEST_SYSTEMCTL_LOG="$WORK/hardlink.systemctl" \
+BUBBLE_DEPLOY_INFRA_DIR="$WORK/infra" \
+BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/empty-agents" \
+BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/empty-legacy" \
+BUBBLE_DEPLOY_LOCK_FILE="$WORK/hardlink.lock" \
+    bash "$SCRIPT" --infra-only >"$WORK/hardlink.out" 2>"$WORK/hardlink.err"
+hardlink_rc=$?
+set -e
+[[ $hardlink_rc -eq 1 ]]
+[[ "$(cat "$hardlink_victim")" == 'SYNTHETIC-HARDLINK-BYTES' ]]
+grep -q 'secure deploy lock unavailable' "$WORK/hardlink.err"
+
+echo "PASS: 10 safe deploy contract cases"
