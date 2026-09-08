@@ -251,8 +251,10 @@ for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
     if [[ "$was_deferred" == 1 ]]; then
       # A preserved fork must stay visible to status/audit.  Clear any legacy
       # hide bit rather than reintroducing the drift that #1124 exposed.
-      git -C "$DEPT" update-index --no-skip-worktree "$2" 2>/dev/null \
-        && log "deferred tracked $2 remains visible (skip-worktree cleared)" || true
+      if git -C "$DEPT" update-index --no-skip-worktree "$2" 2>/dev/null \
+          && git -C "$DEPT" update-index --no-assume-unchanged "$2" 2>/dev/null; then
+        log "deferred tracked $2 remains visible (index hide flags cleared)"
+      fi
     else
       # Managed canonical files retain the existing anti-autocommit behavior.
       git -C "$DEPT" update-index --skip-worktree "$2" 2>/dev/null \
@@ -260,7 +262,7 @@ for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
     fi
   else
     [[ "$was_deferred" == 1 ]] && {
-      log "deferred untracked $2 remains visible (not added to local exclude)"
+      log "deferred untracked $2 preserved (not newly added to local exclude)"
       continue
     }
     # UNTRACKED → add to .git/info/exclude (local, uncommitted) so `git add`
