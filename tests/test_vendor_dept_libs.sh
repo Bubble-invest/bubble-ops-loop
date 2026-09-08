@@ -16,12 +16,13 @@
 #       write /home/claude on a Mac, so there is no fixture simulation here.
 #   T4  fail-open: no framework anywhere → exits 0, logs WARN, nothing copied.
 #   T5  missing dept dir → exits 0 (fail-open), nothing copied.
-#   T6  end-to-end copy: stale lib in dept is refreshed from framework.
+#   T6  end-to-end copy: a missing lib is installed from framework.
 #   T7  idempotency: second run makes no new copies (cmp -s matches → skip).
 #   T8  root-owned /opt framework checkout takes priority.
 #   T9  symlink destinations are refused without touching their targets.
-#   T10 a destination changed since the last vendor run is backed up + warned;
-#       an ordinary canonical-source upgrade is not misclassified.
+#   T10 a destination changed since the last vendor run is deferred in place;
+#       an unchanged managed destination receives normal source upgrades.
+#   T11 a different existing destination with no baseline is deferred unchanged.
 # =============================================================================
 set -uo pipefail
 
@@ -91,6 +92,7 @@ echo "== T1: env override wins =="
 FW_OVERRIDE="$FIX/fw-override"; make_framework "$FW_OVERRIDE"
 FW_SIBLING="$FIX/parent1/bubble-ops-loop"; make_framework "$FW_SIBLING"
 DEPT1="$FIX/parent1/bubble-ops-miranda"; make_dept "$DEPT1"
+rm -f "$DEPT1/scripts/lib/dispatch_helpers.py"
 out1="$(BUBBLE_FRAMEWORK_ROOT="$FW_OVERRIDE" \
          "$SCRIPT_UNDER_TEST" "$DEPT1" 2>&1)"
 rc=$?; chk "T1 exits 0" 0 "$rc"
@@ -106,6 +108,7 @@ echo "== T2: sibling (Mac host:local) resolution =="
 PARENT2="$FIX/parent2"
 FW_SIB2="$PARENT2/bubble-ops-loop"; make_framework "$FW_SIB2"
 DEPT2="$PARENT2/bubble-ops-miranda";  make_dept "$DEPT2"
+rm -f "$DEPT2/scripts/lib/dispatch_helpers.py"
 out2="$(unset BUBBLE_FRAMEWORK_ROOT; \
          "$SCRIPT_UNDER_TEST" "$DEPT2" 2>&1)"
 rc=$?; chk "T2 exits 0" 0 "$rc"
@@ -164,19 +167,22 @@ rc=$?; chk "T5 exits 0" 0 "$rc"
 chk_contains "T5 logs WARN about missing dept" "WARN" "$out5"
 
 # =============================================================================
-# T6: end-to-end copy — stale lib gets refreshed
+# T6: end-to-end copy — missing lib is installed
 # =============================================================================
-echo "== T6: stale lib is refreshed from framework =="
+echo "== T6: missing lib is installed from framework =="
 PARENT6="$FIX/parent6"
 FW6="$PARENT6/bubble-ops-loop"; make_framework "$FW6"
 DEPT6="$PARENT6/bubble-ops-miranda"; make_dept "$DEPT6"
-# Confirm stale before:
-PRE6="$(cat "$DEPT6/scripts/lib/dispatch_helpers.py")"
-chk_eq "T6 pre-run: dept has stale copy" "# stale dispatch_helpers" "$PRE6"
+rm -f "$DEPT6/scripts/lib/dispatch_helpers.py"
+if [[ ! -e "$DEPT6/scripts/lib/dispatch_helpers.py" ]]; then
+  echo "  PASS: T6 pre-run: dept copy is missing"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T6 pre-run copy still exists"; FAIL=$((FAIL+1))
+fi
 unset BUBBLE_FRAMEWORK_ROOT
 "$SCRIPT_UNDER_TEST" "$DEPT6" >/dev/null 2>&1
 POST6="$(cat "$DEPT6/scripts/lib/dispatch_helpers.py")"
-chk_eq "T6 post-run: dept has canonical copy" "# canonical dispatch_helpers" "$POST6"
+chk_eq "T6 post-run: missing copy installed from canonical" "# canonical dispatch_helpers" "$POST6"
 
 # =============================================================================
 # T7: idempotency — second run does not re-copy (cmp -s matches)
@@ -185,6 +191,7 @@ echo "== T7: idempotency — second run skips already-synced files =="
 PARENT7="$FIX/parent7"
 FW7="$PARENT7/bubble-ops-loop"; make_framework "$FW7"
 DEPT7="$PARENT7/bubble-ops-miranda"; make_dept "$DEPT7"
+rm -f "$DEPT7/scripts/lib/dispatch_helpers.py"
 unset BUBBLE_FRAMEWORK_ROOT
 "$SCRIPT_UNDER_TEST" "$DEPT7" >/dev/null 2>&1   # first run (sync)
 out7="$("$SCRIPT_UNDER_TEST" "$DEPT7" 2>&1)"      # second run (idempotent)
@@ -255,43 +262,68 @@ else
 fi
 
 # =============================================================================
-# T10: three-way hand-patch detection and recoverable pre-vendor backup
+# T10: managed baseline permits normal update; local change is deferred
 # =============================================================================
-echo "== T10: hand-patch is backed up, ordinary stale copy is not =="
+echo "== T10: managed update and changed-destination defer =="
 PARENT10="$FIX/parent10"
 FW10="$PARENT10/bubble-ops-loop"; make_framework "$FW10"
 DEPT10="$PARENT10/bubble-ops-miranda"; make_dept "$DEPT10"
+rm -f "$DEPT10/scripts/lib/dispatch_helpers.py"
 unset BUBBLE_FRAMEWORK_ROOT
-"$SCRIPT_UNDER_TEST" "$DEPT10" >/dev/null 2>&1  # establish last-vendored v1
-rm -f "$DEPT10"/scripts/lib/dispatch_helpers.py.pre-vendor-*
+"$SCRIPT_UNDER_TEST" "$DEPT10" >/dev/null 2>&1  # install + baseline v1
 
-# Both ends move: framework v2, plus a distinct hand-patch in the dept.
-echo "# canonical dispatch_helpers v2" > "$FW10/scripts/lib/dispatch_helpers.py"
+# A local fork after baseline must remain active even when canonical advances.
 echo "# local hand-patch — preserve me" > "$DEPT10/scripts/lib/dispatch_helpers.py"
-out10="$($SCRIPT_UNDER_TEST "$DEPT10" 2>&1)"
-GOT10="$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
-chk_eq "T10a destination receives canonical v2" "# canonical dispatch_helpers v2" "$GOT10"
-chk_contains "T10b hand-patch refresh emits WARN" "WARN: scripts/lib/dispatch_helpers.py differs" "$out10"
-backup10="$(find "$DEPT10/scripts/lib" -maxdepth 1 -type f -name 'dispatch_helpers.py.pre-vendor-*' -print -quit)"
-if [[ -n "$backup10" ]]; then
-  chk_eq "T10c pre-vendor backup contains the hand-patch" \
-    "# local hand-patch — preserve me" "$(cat "$backup10")"
-else
-  echo "  FAIL: T10c no pre-vendor backup was created"; FAIL=$((FAIL+1))
-fi
+# Simulate both legacy index hide mechanisms; defer must clear both.
+git -C "$DEPT10" update-index --assume-unchanged scripts/lib/dispatch_helpers.py
+echo "# canonical dispatch_helpers v2" > "$FW10/scripts/lib/dispatch_helpers.py"
+out10="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
+chk_eq "T10a changed destination remains in place" \
+  "# local hand-patch — preserve me" "$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
+chk_contains "T10b changed destination reports DEFERRED" \
+  "DEFERRED: scripts/lib/dispatch_helpers.py changed since last vendor" "$out10"
+chk_contains "T10c caller summary distinguishes deferred" "1 deferred" "$out10"
+flag10="$(git -C "$DEPT10" ls-files -v scripts/lib/dispatch_helpers.py | cut -c1)"
+chk_eq "T10d deferred tracked fork is visible, not skip-worktree" "H" "$flag10"
 
-# Only canonical moves now; dst still equals the recorded v2 baseline.  This
-# is ordinary staleness, not a local patch, so no second backup/no WARN.
-rm -f "$DEPT10"/scripts/lib/dispatch_helpers.py.pre-vendor-*
+# Restore the still-recorded v1 bytes: canonical v2 may now update normally.
+echo "# canonical dispatch_helpers" > "$DEPT10/scripts/lib/dispatch_helpers.py"
+out10b="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
+chk_eq "T10e unchanged managed destination receives canonical v2" \
+  "# canonical dispatch_helpers v2" "$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
+chk_contains "T10f normal managed update reports no defer" "0 deferred" "$out10b"
+
+# A second ordinary source upgrade remains managed and idempotent.
 echo "# canonical dispatch_helpers v3" > "$FW10/scripts/lib/dispatch_helpers.py"
-out10b="$($SCRIPT_UNDER_TEST "$DEPT10" 2>&1)"
-GOT10B="$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
-chk_eq "T10d ordinary source upgrade receives canonical v3" \
-  "# canonical dispatch_helpers v3" "$GOT10B"
-if find "$DEPT10/scripts/lib" -maxdepth 1 -type f -name 'dispatch_helpers.py.pre-vendor-*' | grep -q .; then
-  echo "  FAIL: T10e ordinary source upgrade created a hand-patch backup"; FAIL=$((FAIL+1))
+out10c="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
+chk_eq "T10g subsequent managed update receives canonical v3" \
+  "# canonical dispatch_helpers v3" "$(cat "$DEPT10/scripts/lib/dispatch_helpers.py")"
+chk_contains "T10h subsequent update reports no defer" "0 deferred" "$out10c"
+
+# =============================================================================
+# T11: existing different bytes with no baseline are unknown ownership -> defer
+# =============================================================================
+echo "== T11: no-baseline fork is preserved and deferred =="
+PARENT11="$FIX/parent11"
+FW11="$PARENT11/bubble-ops-loop"; make_framework "$FW11"
+DEPT11="$PARENT11/bubble-ops-accountant"; make_dept "$DEPT11"
+# This label binds the regression to the exact live M5 fork observed during #606.
+ACCOUNTANT_FORK_SHA256="3a9be727ae85fce0de3c01f79660fbe7ee0477ea6121037369a8a88f6324a5a8"
+before11="$(cat "$DEPT11/scripts/lib/dispatch_helpers.py")"
+out11="$(BUBBLE_FRAMEWORK_ROOT="$FW11" "$SCRIPT_UNDER_TEST" "$DEPT11" 2>&1)"
+rc11=$?
+after11="$(cat "$DEPT11/scripts/lib/dispatch_helpers.py")"
+chk "T11a daemon preflight continues after defer" 0 "$rc11"
+chk_eq "T11b exact Accountant-class existing fork remains unchanged" "$before11" "$after11"
+chk_contains "T11c no-baseline fork reports DEFERRED" "no trusted last-vendored baseline" "$out11"
+chk_contains "T11d caller summary reports one defer" "1 deferred" "$out11"
+flag11="$(git -C "$DEPT11" ls-files -v scripts/lib/dispatch_helpers.py | cut -c1)"
+chk_eq "T11e no-baseline tracked fork remains visible" "H" "$flag11"
+last11="$DEPT11/.git/vendor-dept-libs/scripts/lib/dispatch_helpers.py"
+if [[ ! -e "$last11" ]]; then
+  echo "  PASS: T11f deferred unknown bytes are not adopted as baseline ($ACCOUNTANT_FORK_SHA256)"; PASS=$((PASS+1))
 else
-  echo "  PASS: T10e ordinary source upgrade creates no backup/no false alarm"; PASS=$((PASS+1))
+  echo "  FAIL: T11f deferred bytes were incorrectly recorded as managed"; FAIL=$((FAIL+1))
 fi
 
 # =============================================================================
