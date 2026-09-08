@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import fcntl
+import hashlib
 import os
 import re
 import subprocess
@@ -92,6 +93,7 @@ _CRED_HELPER = "/usr/local/bin/bubble-gh-credential-helper.sh"
 _GH_ORG = "Bubble-invest"
 _SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _DIRECTIVE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_TRANSPORT_FIELDS = {"status", "dispatched_at", "delivered_at", "delivery_digest"}
 
 
 def _log(msg: str) -> None:
@@ -126,7 +128,24 @@ def _try_lock_dept(lock_dir: Path, slug: str):
     return fh
 
 
-def _verify_committed(repo_dir: Path, rel_path: str) -> bool:
+def _normalized_payload(data: dict, manager: str) -> dict:
+    """Directive semantics with transport bookkeeping removed."""
+    payload = {key: value for key, value in data.items() if key not in _TRANSPORT_FIELDS}
+    payload.setdefault("from", manager)
+    return payload
+
+
+def _payload_digest(payload: dict) -> str:
+    canonical = yaml.safe_dump(payload, sort_keys=True, allow_unicode=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _verify_committed(
+    repo_dir: Path,
+    rel_path: str,
+    expected_digest: "str | None" = None,
+    manager: str = "tony",
+) -> bool:
     """True iff rel_path is actually present in repo_dir's HEAD commit right
     now. board #1123: `_push_repo` reporting (True, 'nothing to commit') or
     (True, 'pushed') is NOT proof the delivered file landed — a concurrent
@@ -135,7 +154,20 @@ def _verify_committed(repo_dir: Path, rel_path: str) -> bool:
     working tree look clean before our own status/add/commit ever runs, so
     a real commit is the only thing worth trusting."""
     r = _run(["git", "-C", str(repo_dir), "show", f"HEAD:{rel_path}"])
-    return r.returncode == 0
+    if r.returncode != 0:
+        return False
+    if expected_digest is None:
+        return True
+    try:
+        committed = yaml.safe_load(r.stdout)
+    except Exception:
+        return False
+    if not isinstance(committed, dict):
+        return False
+    declared = committed.get("delivery_digest")
+    if declared is not None and declared != expected_digest:
+        return False
+    return _payload_digest(_normalized_payload(committed, manager)) == expected_digest
 
 
 def _now_iso() -> str:
@@ -301,7 +333,7 @@ def dispatch(
     manager_dirty = False
     manager_dirty_paths: list[str] = []
     manager_push_failed = False
-    remote_delivered: list[tuple[Path, str]] = []
+    remote_delivered: list[tuple[Path, str, str]] = []
 
     remote_tmp = tempfile.TemporaryDirectory(prefix="bubble-directives-") if remote_delivery else None
     remote_root = Path(remote_tmp.name) if remote_tmp else None
@@ -375,12 +407,28 @@ def dispatch(
             inbox.mkdir(parents=True, exist_ok=True)
             dest = inbox / f"directive-{did}.yaml"
 
-            # The delivered file is the directive payload, minus dispatcher bookkeeping.
-            payload = {k: v for k, v in d.items() if k not in ("status",)}
+            # Bind the child write and manager acknowledgement to the same
+            # immutable semantic snapshot. Delivery timestamps/status are
+            # transport bookkeeping and intentionally excluded from the hash.
+            payload = _normalized_payload(d, manager)
+            expected_digest = _payload_digest(payload)
             payload["delivered_at"] = _now_iso()
-            payload.setdefault("from", manager)
+            payload["delivery_digest"] = expected_digest
 
             if dest.exists():
+                existing = _load_yaml(dest)
+                if (
+                    not isinstance(existing, dict)
+                    or _payload_digest(_normalized_payload(existing, manager))
+                    != expected_digest
+                    or existing.get("delivery_digest") not in {None, expected_digest}
+                ):
+                    _log(
+                        f"FAIL {draft.name}: existing {target} directive payload "
+                        "does not match approved source"
+                    )
+                    failed += 1
+                    continue
                 _log(f"NO-OP {draft.name}: already present in {target} inbox")
             else:
                 if dry_run:
@@ -399,7 +447,9 @@ def dispatch(
             # into a commit. Only trust `git show HEAD:<path>`.
             if ok and not dry_run:
                 rel = str(dest.relative_to(child_repo))
-                if not _verify_committed(child_repo, rel):
+                if not _verify_committed(
+                    child_repo, rel, expected_digest, manager=manager
+                ):
                     ok = False
                     detail = (
                         f"{detail!r} but git show HEAD:{rel} could not confirm "
@@ -428,7 +478,7 @@ def dispatch(
             # target push succeeds. If that manager push fails, the live
             # source remains approved and the next floor run retries; the
             # target-side file is idempotent and verified from its commit.
-            remote_delivered.append((draft, did))
+            remote_delivered.append((draft, did, expected_digest))
         elif not dry_run:
             d["status"] = "dispatched"
             d["dispatched_at"] = _now_iso()
@@ -448,7 +498,7 @@ def dispatch(
             manager_push_failed = True
         else:
             remote_paths: list[str] = []
-            for live_draft, did in remote_delivered:
+            for live_draft, did, expected_digest in remote_delivered:
                 rel = live_draft.relative_to(manager_repo)
                 remote_draft = manager_clone / rel
                 remote_data = _load_yaml(remote_draft)
@@ -462,14 +512,17 @@ def dispatch(
                     or remote_id != did
                     or remote_data.get("approved_by") != "operator"
                     or remote_data.get("status") not in {"approved", "dispatched"}
+                    or _payload_digest(_normalized_payload(remote_data, manager))
+                    != expected_digest
                 ):
-                    _log(f"WARN manager status source invalid/missing: {rel}")
+                    _log(f"WARN manager status source invalid, missing, or changed: {rel}")
                     manager_push_failed = True
                     continue
                 if remote_data["status"] == "dispatched":
                     continue
                 remote_data["status"] = "dispatched"
                 remote_data["dispatched_at"] = _now_iso()
+                remote_data["delivery_digest"] = expected_digest
                 remote_draft.write_text(
                     yaml.safe_dump(remote_data, sort_keys=False), encoding="utf-8"
                 )

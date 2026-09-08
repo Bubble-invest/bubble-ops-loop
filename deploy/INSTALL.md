@@ -81,7 +81,9 @@ the existing gateway idle watcher injects it into the home Telegram session. No
 second model process starts. Paused, busy, missing, or ambiguous sessions defer
 visibly. Tony relays operator-approved directives and publishes manager status
 through private remote clones, so a manager-push failure leaves the live source
-approved and retryable.
+approved and retryable. A normalized SHA-256 snapshot binds the child commit to
+the manager acknowledgement; a same-ID child payload or remotely edited source
+with different directive semantics fails visibly instead of being acknowledged.
 
 Install or stage for review:
 ```bash
