@@ -45,15 +45,28 @@ Usage:
 Defaults: --agents-root /home/claude/agents, --manager tony.
 Exit 0 always (delivery errors are per-directive, logged, non-fatal) unless a
 structural precondition fails (manager repo missing) → exit 1.
+
+ISOLATED FLOOR MODE (#606)
+--------------------------
+`--remote-delivery --agents-root /srv/agents` runs only from Tony's own
+`agent-tony` floor instance. It reads Tony's local outbound queue, clones the
+fixed target repo into a mode-0700 temporary directory, and pushes only the
+approved `queues/management/directive-<id>.yaml` path through the existing
+credential helper. It never writes another agent UID's live checkout. A target
+clone/push failure leaves the source approved and returns nonzero so the floor
+cannot report all green. Dry-run performs no clone/network operation.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
 import fcntl
+import hashlib
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -78,6 +91,9 @@ _OUTBOUND_REL = "queues/management/outbound"
 _INBOX_REL = "queues/management"
 _CRED_HELPER = "/usr/local/bin/bubble-gh-credential-helper.sh"
 _GH_ORG = "Bubble-invest"
+_SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
+_DIRECTIVE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_TRANSPORT_FIELDS = {"status", "dispatched_at", "delivered_at", "delivery_digest"}
 
 
 def _log(msg: str) -> None:
@@ -112,7 +128,24 @@ def _try_lock_dept(lock_dir: Path, slug: str):
     return fh
 
 
-def _verify_committed(repo_dir: Path, rel_path: str) -> bool:
+def _normalized_payload(data: dict, manager: str) -> dict:
+    """Directive semantics with transport bookkeeping removed."""
+    payload = {key: value for key, value in data.items() if key not in _TRANSPORT_FIELDS}
+    payload.setdefault("from", manager)
+    return payload
+
+
+def _payload_digest(payload: dict) -> str:
+    canonical = yaml.safe_dump(payload, sort_keys=True, allow_unicode=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _verify_committed(
+    repo_dir: Path,
+    rel_path: str,
+    expected_digest: "str | None" = None,
+    manager: str = "tony",
+) -> bool:
     """True iff rel_path is actually present in repo_dir's HEAD commit right
     now. board #1123: `_push_repo` reporting (True, 'nothing to commit') or
     (True, 'pushed') is NOT proof the delivered file landed — a concurrent
@@ -121,7 +154,20 @@ def _verify_committed(repo_dir: Path, rel_path: str) -> bool:
     working tree look clean before our own status/add/commit ever runs, so
     a real commit is the only thing worth trusting."""
     r = _run(["git", "-C", str(repo_dir), "show", f"HEAD:{rel_path}"])
-    return r.returncode == 0
+    if r.returncode != 0:
+        return False
+    if expected_digest is None:
+        return True
+    try:
+        committed = yaml.safe_load(r.stdout)
+    except Exception:
+        return False
+    if not isinstance(committed, dict):
+        return False
+    declared = committed.get("delivery_digest")
+    if declared is not None and declared != expected_digest:
+        return False
+    return _payload_digest(_normalized_payload(committed, manager)) == expected_digest
 
 
 def _now_iso() -> str:
@@ -141,13 +187,14 @@ def _run(
     )
 
 
-def _mint_token(repo_name: str) -> "str | None":
+def _mint_token(repo_name: str, repo_dir: "Path | None" = None) -> "str | None":
     """Mint a short-lived GitHub App token for Bubble-invest/<repo_name> via the
     sudo-wrapped credential helper. Returns the ghs_ token or None on failure.
     The helper resolves the installation from path=org/repo and mints
     contents:write for a non-structural delta (queues/** is non-structural)."""
     res = _run(
         ["sudo", "-n", _CRED_HELPER, "get"],
+        cwd=repo_dir,
         stdin=(
             "protocol=https\nhost=github.com\n"
             f"path={_GH_ORG}/{repo_name}.git\n\n"
@@ -194,7 +241,7 @@ def _push_repo(
         if "nothing to commit" in out:
             return True, "nothing to commit"
         return False, f"git commit failed: {(commit.stderr or commit.stdout).strip()[:160]}"
-    token = _mint_token(repo_name)
+    token = _mint_token(repo_name, repo_dir)
     if not token:
         return False, f"could not mint token for {repo_name}"
     # #923 (same class as #921): token travels via env (GIT_CONFIG_*
@@ -219,6 +266,33 @@ def _push_repo(
     return True, "pushed"
 
 
+def _clone_remote_repo(destination: Path, repo_name: str) -> tuple[bool, str]:
+    """Clone one target into a private temporary tree using the existing
+    credential-helper capability. The token stays in environment headers,
+    never argv/logs. A rejected clone leaves the directive approved+pending."""
+    token = _mint_token(repo_name)
+    if not token:
+        return False, "could not mint target token"
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    clone_env = _env_with_bearer_auth_header(os.environ.copy(), token)
+    token = ""  # do not retain the credential longer than the clone setup
+    result = _run(
+        [
+            "git", "-c", "credential.helper=", "clone", "--quiet", "--depth", "1",
+            f"https://github.com/{_GH_ORG}/{repo_name}.git", str(destination),
+        ],
+        env=clone_env,
+    )
+    if result.returncode != 0:
+        return False, "target clone failed"
+    return True, "cloned"
+
+
+class _NoopLock:
+    def close(self) -> None:
+        pass
+
+
 def _load_yaml(p: Path) -> "dict | None":
     try:
         with p.open() as fh:
@@ -232,10 +306,14 @@ def _load_yaml(p: Path) -> "dict | None":
 def dispatch(
     agents_root: Path, manager: str, dry_run: bool,
     lock_dir: "Path | None" = None,
+    remote_delivery: bool = False,
 ) -> int:
     if lock_dir is None:
         lock_dir = Path(os.environ.get("BUBBLE_BACKUP_LOCK_DIR", "/run/lock"))
-    manager_repo = agents_root / f"bubble-ops-{manager}"
+    if not _SLUG_RE.fullmatch(manager):
+        _log("FATAL: invalid fixed manager slug")
+        return 1
+    manager_repo = agents_root / manager if remote_delivery else agents_root / f"bubble-ops-{manager}"
     if not (manager_repo / ".git").is_dir():
         _log(f"FATAL: manager repo not a git tree: {manager_repo}")
         return 1
@@ -254,13 +332,20 @@ def dispatch(
     failed = 0
     manager_dirty = False
     manager_dirty_paths: list[str] = []
+    manager_push_failed = False
+    remote_delivered: list[tuple[Path, str, str]] = []
+
+    remote_tmp = tempfile.TemporaryDirectory(prefix="bubble-directives-") if remote_delivery else None
+    remote_root = Path(remote_tmp.name) if remote_tmp else None
+    if remote_root:
+        remote_root.chmod(0o700)
 
     for draft in drafts:
         d = _load_yaml(draft)
         if d is None:
             skipped += 1
             continue
-        did = str(d.get("directive_id") or draft.stem.replace("directive-", ""))
+        did_raw = d.get("directive_id") or draft.stem.replace("directive-", "")
         target = d.get("target_dept")
         approved_by = d.get("approved_by")
         status = d.get("status")
@@ -273,16 +358,35 @@ def dispatch(
                  f"(approved_by={approved_by!r} status={status!r}) — {{OPERATOR}} must approve")
             skipped += 1
             continue
-        if not target or not isinstance(target, str):
+        if not isinstance(did_raw, str) or not _DIRECTIVE_ID_RE.fullmatch(did_raw):
+            _log(f"SKIP {draft.name}: missing/invalid directive_id")
+            skipped += 1
+            continue
+        did = did_raw
+        if not isinstance(target, str) or not _SLUG_RE.fullmatch(target):
             _log(f"SKIP {draft.name}: missing/invalid target_dept")
             skipped += 1
             continue
 
-        child_repo = agents_root / f"bubble-ops-{target}"
-        if not (child_repo / ".git").is_dir():
-            _log(f"FAIL {draft.name}: target child repo missing: {child_repo}")
-            failed += 1
+        if remote_delivery and dry_run:
+            _log(f"[dry-run] would deliver {draft.name} through a private remote clone")
+            skipped += 1
             continue
+
+        if remote_delivery:
+            child_repo = remote_root / f"bubble-ops-{target}"  # type: ignore[operator]
+            if not (child_repo / ".git").is_dir():
+                ok, detail = _clone_remote_repo(child_repo, f"bubble-ops-{target}")
+                if not ok:
+                    _log(f"FAIL {draft.name}: remote target unavailable ({detail})")
+                    failed += 1
+                    continue
+        else:
+            child_repo = agents_root / f"bubble-ops-{target}"
+            if not (child_repo / ".git").is_dir():
+                _log(f"FAIL {draft.name}: target child repo missing: {child_repo}")
+                failed += 1
+                continue
 
         # ── DELIVER into child queues/management/ ──────────────────────
         # board #1123: hold the child's OWN tick lock for the whole
@@ -292,7 +396,7 @@ def dispatch(
         # the outbound queue — idempotent, retried next tick) rather than
         # write into a tree that dept's own safe_pull can stash out from
         # under us in the same window.
-        child_lock = _try_lock_dept(lock_dir, target)
+        child_lock = _NoopLock() if remote_delivery else _try_lock_dept(lock_dir, target)
         if child_lock is None:
             _log(f"SKIP {draft.name}: {target}'s tick lock is held (its own "
                  f"loop/backup tick is running) — will retry next tick")
@@ -303,12 +407,28 @@ def dispatch(
             inbox.mkdir(parents=True, exist_ok=True)
             dest = inbox / f"directive-{did}.yaml"
 
-            # The delivered file is the directive payload, minus dispatcher bookkeeping.
-            payload = {k: v for k, v in d.items() if k not in ("status",)}
+            # Bind the child write and manager acknowledgement to the same
+            # immutable semantic snapshot. Delivery timestamps/status are
+            # transport bookkeeping and intentionally excluded from the hash.
+            payload = _normalized_payload(d, manager)
+            expected_digest = _payload_digest(payload)
             payload["delivered_at"] = _now_iso()
-            payload.setdefault("from", manager)
+            payload["delivery_digest"] = expected_digest
 
             if dest.exists():
+                existing = _load_yaml(dest)
+                if (
+                    not isinstance(existing, dict)
+                    or _payload_digest(_normalized_payload(existing, manager))
+                    != expected_digest
+                    or existing.get("delivery_digest") not in {None, expected_digest}
+                ):
+                    _log(
+                        f"FAIL {draft.name}: existing {target} directive payload "
+                        "does not match approved source"
+                    )
+                    failed += 1
+                    continue
                 _log(f"NO-OP {draft.name}: already present in {target} inbox")
             else:
                 if dry_run:
@@ -327,7 +447,9 @@ def dispatch(
             # into a commit. Only trust `git show HEAD:<path>`.
             if ok and not dry_run:
                 rel = str(dest.relative_to(child_repo))
-                if not _verify_committed(child_repo, rel):
+                if not _verify_committed(
+                    child_repo, rel, expected_digest, manager=manager
+                ):
                     ok = False
                     detail = (
                         f"{detail!r} but git show HEAD:{rel} could not confirm "
@@ -350,14 +472,76 @@ def dispatch(
         delivered += 1
 
         # ── MARK source dispatched (in Tony's repo) ────────────────────
-        if not dry_run:
+        if remote_delivery:
+            # Never publish a status transition from Tony's live checkout.
+            # A private clone of Tony's remote is updated only after every
+            # target push succeeds. If that manager push fails, the live
+            # source remains approved and the next floor run retries; the
+            # target-side file is idempotent and verified from its commit.
+            remote_delivered.append((draft, did, expected_digest))
+        elif not dry_run:
             d["status"] = "dispatched"
             d["dispatched_at"] = _now_iso()
             draft.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
             manager_dirty = True
             manager_dirty_paths.append(str(draft))
 
-    # Push Tony's repo once if any source was marked dispatched.
+    # Remote delivery updates Tony's durable status through a private clone,
+    # never through the live manager worktree. This makes target-push success
+    # + manager-push failure retryable: the source stays approved locally and
+    # the already-committed child file is a verified no-op on the next run.
+    if remote_delivery and remote_delivered:
+        manager_clone = remote_root / f"manager-bubble-ops-{manager}"  # type: ignore[operator]
+        ok, detail = _clone_remote_repo(manager_clone, f"bubble-ops-{manager}")
+        if not ok:
+            _log(f"WARN manager status clone: {detail}")
+            manager_push_failed = True
+        else:
+            remote_paths: list[str] = []
+            for live_draft, did, expected_digest in remote_delivered:
+                rel = live_draft.relative_to(manager_repo)
+                remote_draft = manager_clone / rel
+                remote_data = _load_yaml(remote_draft)
+                remote_id = None
+                if isinstance(remote_data, dict):
+                    remote_id = remote_data.get("directive_id") or remote_draft.stem.replace(
+                        "directive-", ""
+                    )
+                if (
+                    not isinstance(remote_data, dict)
+                    or remote_id != did
+                    or remote_data.get("approved_by") != "operator"
+                    or remote_data.get("status") not in {"approved", "dispatched"}
+                    or _payload_digest(_normalized_payload(remote_data, manager))
+                    != expected_digest
+                ):
+                    _log(f"WARN manager status source invalid, missing, or changed: {rel}")
+                    manager_push_failed = True
+                    continue
+                if remote_data["status"] == "dispatched":
+                    continue
+                remote_data["status"] = "dispatched"
+                remote_data["dispatched_at"] = _now_iso()
+                remote_data["delivery_digest"] = expected_digest
+                remote_draft.write_text(
+                    yaml.safe_dump(remote_data, sort_keys=False), encoding="utf-8"
+                )
+                remote_paths.append(str(remote_draft))
+            if not manager_push_failed and remote_paths:
+                ok, detail = _push_repo(
+                    manager_clone,
+                    f"bubble-ops-{manager}",
+                    f"directive: mark {len(remote_paths)} dispatched",
+                    dry_run=False,
+                    paths=remote_paths,
+                )
+                _log(
+                    f"manager status push: {detail}"
+                    if ok else f"WARN manager push: {detail}"
+                )
+                manager_push_failed = not ok
+
+    # Legacy shared-UID delivery retains its existing local status push.
     if manager_dirty:
         ok, detail = _push_repo(
             manager_repo, f"bubble-ops-{manager}",
@@ -365,9 +549,12 @@ def dispatch(
             paths=manager_dirty_paths,
         )
         _log(f"manager status push: {detail}" if ok else f"WARN manager push: {detail}")
+        manager_push_failed = not ok
 
     _log(f"done: delivered={delivered} skipped={skipped} failed={failed}")
-    return 0
+    if remote_tmp:
+        remote_tmp.cleanup()
+    return 1 if remote_delivery and (failed or manager_push_failed) else 0
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -382,10 +569,16 @@ def main(argv: "list[str] | None" = None) -> int:
         "--lock-dir",
         default=os.environ.get("BUBBLE_BACKUP_LOCK_DIR", "/run/lock"),
     )
+    ap.add_argument(
+        "--remote-delivery",
+        action="store_true",
+        help="read manager locally but deliver through private target clones",
+    )
     args = ap.parse_args(argv)
     return dispatch(
         Path(args.agents_root), args.manager, args.dry_run,
         lock_dir=Path(args.lock_dir),
+        remote_delivery=args.remote_delivery,
     )
 
 

@@ -1,0 +1,33 @@
+[Unit]
+Description=ops-loop Layer 4 FLOOR for %i
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+After=network-online.target bubble-agent@%i.service
+ConditionPathIsDirectory=/srv/agents/%i
+
+[Service]
+Type=oneshot
+User=agent-%i
+Group=agent-%i
+WorkingDirectory=/srv/agents/%i
+Environment=HOME=/home/agent-%i
+Environment=PATH=/opt/bubble-token-broker/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+Environment=BUBBLE_OPS_LOOP_ROOT=/opt/bubble-ops-loop
+Environment=BUBBLE_BACKUP_SRV_AGENTS_ROOT=/srv/agents
+Environment=BUBBLE_BACKUP_LOCK_DIR=/run/bubble-agent-%i
+Environment=BUBBLE_BACKUP_LOG=/srv/agents/%i/state/loop-backup.jsonl
+Environment=BUBBLE_BACKUP_DEPTS=%i
+Environment=BUBBLE_BACKUP_STALE_SEC=5400
+Environment=BUBBLE_BACKUP_MODEL=sonnet
+# Maya currently runs Hermes; never launch a competing headless Claude CLI.
+Environment=BUBBLE_BACKUP_INJECT_ONLY_DEPTS=maya
+Environment=BUBBLE_BACKUP_BUDGET_USD=3.00
+# Tony alone relays operator-approved directives via private remote clones;
+# every other department delegates without touching queue state.
+Environment=BUBBLE_DISPATCH_DIRECTIVES=remote
+# Per-agent UIDs have no service-control privilege. systemd restart policy and
+# the reviewed watchdog remain the recovery path.
+Environment=BUBBLE_AUTORESTART=0
+# Parsed literally by systemd. The runner never source/eval loads dotenv text.
+EnvironmentFile=-/run/bubble-agent-%i/env
+ExecStart=/opt/bubble-ops-loop/scripts/loop-backup.sh --layer 4 --dept %i
+TimeoutStartSec=1800

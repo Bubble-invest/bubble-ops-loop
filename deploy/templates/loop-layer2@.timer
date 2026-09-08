@@ -1,0 +1,12 @@
+[Unit]
+Description=Fire ops-loop Layer 2 (Orient) floor for %i
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+Unit=loop-layer2@%i.service
+OnCalendar=*-*-* 14:00:00 Europe/Paris
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
