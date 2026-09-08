@@ -13,7 +13,8 @@
 # required for preserved Git state; 1 for operational failures.
 set -uo pipefail
 
-INFRA_DIR="${BUBBLE_DEPLOY_INFRA_DIR:-/opt/bubble-ops-loop}"
+SOURCE_INFRA_DIR="${BUBBLE_DEPLOY_SOURCE_INFRA_DIR:-/opt/bubble-ops-loop}"
+CONSOLE_INFRA_DIR="${BUBBLE_DEPLOY_CONSOLE_INFRA_DIR:-/home/claude/bubble-ops-loop}"
 AGENTS_ROOT="${BUBBLE_DEPLOY_AGENTS_ROOT:-/srv/agents}"
 LEGACY_AGENTS_ROOT="${BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT:-/home/claude/agents}"
 UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
@@ -253,7 +254,16 @@ resolve_one_dept() {
 }
 
 log "START dry_run=$DRY_RUN infra_only=$INFRA_ONLY dept=${ONE_DEPT:-all}"
-sync_repo_safe_ff "framework" "$INFRA_DIR" ""
+if [[ -n "${BUBBLE_DEPLOY_INFRA_DIR+x}" ]]; then
+    # Explicit override retains the historical one-checkout contract.
+    sync_repo_safe_ff "framework" "$BUBBLE_DEPLOY_INFRA_DIR" ""
+else
+    # The source checkout feeds timers/floors. The console checkout is the
+    # current interactive working directory. Updating its files on disk does
+    # not claim that an already-running console has hot-reloaded them.
+    sync_repo_safe_ff "framework-source" "$SOURCE_INFRA_DIR" ""
+    sync_repo_safe_ff "framework-console-disk" "$CONSOLE_INFRA_DIR" ""
+fi
 
 if [[ "$INFRA_ONLY" != "1" ]]; then
     if [[ -n "$ONE_DEPT" ]]; then

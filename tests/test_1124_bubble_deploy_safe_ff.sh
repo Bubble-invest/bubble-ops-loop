@@ -148,4 +148,26 @@ run_case unknown query-fail --dept maya
 [[ $CASE_RC -eq 1 && "$(git -C "$WORK/agents/maya" rev-parse HEAD)" == "$dept_before" ]]
 grep -q 'cannot prove primary' "$WORK/unknown.out"
 
-echo "PASS: 7 safe deploy contract cases"
+echo "T8 default mode advances the exact source and console framework checkouts"
+new_pair "$WORK/framework-source"
+new_pair "$WORK/framework-console"
+push_upstream "$WORK/framework-source"
+push_upstream "$WORK/framework-console"
+: >"$WORK/defaults.gitlog"; : >"$WORK/defaults.runuser"; : >"$WORK/defaults.systemctl"
+PATH="$BIN:$PATH" \
+TEST_GIT_LOG="$WORK/defaults.gitlog" \
+TEST_RUNUSER_LOG="$WORK/defaults.runuser" \
+TEST_SYSTEMCTL_LOG="$WORK/defaults.systemctl" \
+TEST_UNIT_STATE=inactive \
+BUBBLE_DEPLOY_SOURCE_INFRA_DIR="$WORK/framework-source" \
+BUBBLE_DEPLOY_CONSOLE_INFRA_DIR="$WORK/framework-console" \
+BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/empty-agents" \
+BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/empty-legacy" \
+BUBBLE_DEPLOY_LOCK_FILE="$WORK/defaults.lock" \
+    env -u BUBBLE_DEPLOY_INFRA_DIR bash "$SCRIPT" --infra-only >"$WORK/defaults.out" 2>"$WORK/defaults.err"
+[[ "$(git -C "$WORK/framework-source" rev-parse HEAD)" == "$(git -C "$WORK/framework-source" rev-parse origin/main)" ]]
+[[ "$(git -C "$WORK/framework-console" rev-parse HEAD)" == "$(git -C "$WORK/framework-console" rev-parse origin/main)" ]]
+grep -q 'UPDATED framework-source' "$WORK/defaults.out"
+grep -q 'UPDATED framework-console-disk' "$WORK/defaults.out"
+
+echo "PASS: 8 safe deploy contract cases"

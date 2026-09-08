@@ -2,6 +2,8 @@
 
 `scripts/bubble-deploy.sh` advances reviewed `origin/main` only when the target checkout is an exact, clean `main` branch with no local commits. Git runs as the checkout directory owner, so the deployer does not modify global `safe.directory` trust.
 
+By default, both known framework checkouts are managed: `/opt/bubble-ops-loop` supplies timers and floor scripts, while `/home/claude/bubble-ops-loop` is the console working directory. The latter is logged as a disk update; an already-running console keeps its loaded code until its normal lifecycle advances it. Setting `BUBBLE_DEPLOY_INFRA_DIR` explicitly retains the one-checkout override contract. `BUBBLE_DEPLOY_SOURCE_INFRA_DIR` and `BUBBLE_DEPLOY_CONSOLE_INFRA_DIR` allow the two exact default roles to be relocated in tests or another installation.
+
 The current layout is `/opt/bubble-ops-loop` plus `/srv/agents/<slug>` and `bubble-agent@<slug>.service`. `/home/claude/agents/bubble-ops-<slug>` and `ops-loop-<slug>.service` remain discovery fallbacks for hosts that have not migrated. Department discovery requires its paired primary unit to be loaded, so abandoned clones and aliases are not treated as live departments.
 
 The deployer leaves dirty, ahead, detached, and non-main checkouts byte-for-byte in place and exits 2 so systemd reports that operator review is required. It never stashes or resets them. An active, activating, reloading, or deactivating primary agent owns its own pull, so the deployer reports that deferral without fetching or changing the checkout. Inactive and operator-stopped agents may receive a clean fast-forward, but the deployer does not start them.
