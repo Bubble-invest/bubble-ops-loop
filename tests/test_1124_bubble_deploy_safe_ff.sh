@@ -140,6 +140,7 @@ dept_before=$(git -C "$WORK/agents/maya" rev-parse HEAD)
 run_case dry inactive --dry-run --dept maya
 [[ $CASE_RC -eq 0 && "$(git -C "$WORK/agents/maya" rev-parse HEAD)" == "$dept_before" ]]
 grep -q 'DRY_RUN maya' "$WORK/dry.out"
+grep -q 'updated=0 would_update=1' "$WORK/dry.out"
 
 echo "T7 an unreadable primary state fails closed without changing HEAD"
 run_case unknown query-fail --dept maya

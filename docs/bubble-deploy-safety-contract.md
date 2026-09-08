@@ -8,6 +8,8 @@ The deployer leaves dirty, ahead, detached, and non-main checkouts byte-for-byte
 
 The script never stops, starts, restarts, resets, stashes, rolls back, or rewrites Git history. A failed fast-forward stays visible for review; it is not followed by a destructive rollback.
 
+Dry-run summaries count eligible changes as `would_update`; they never report them as completed updates.
+
 Tests:
 
 ```bash

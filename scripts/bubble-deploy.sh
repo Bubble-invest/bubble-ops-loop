@@ -40,6 +40,7 @@ while (($#)); do
 done
 
 UPDATED=0
+WOULD_UPDATE=0
 CURRENT=0
 DEFERRED_ACTIVE=0
 DEFERRED_REVIEW=0
@@ -179,7 +180,7 @@ sync_repo_safe_ff() {
             return 1 ;;
     esac
     if [[ "$DRY_RUN" == "1" ]]; then
-        UPDATED=$((UPDATED + 1))
+        WOULD_UPDATE=$((WOULD_UPDATE + 1))
         log "DRY_RUN $label: would fast-forward $behind commits as $owner; primary state=$state"
         return 0
     fi
@@ -264,7 +265,7 @@ if [[ "$INFRA_ONLY" != "1" ]]; then
     fi
 fi
 
-log "DONE updated=$UPDATED current=$CURRENT deferred_active=$DEFERRED_ACTIVE deferred_review=$DEFERRED_REVIEW skipped=$SKIPPED failed=$FAILED"
+log "DONE updated=$UPDATED would_update=$WOULD_UPDATE current=$CURRENT deferred_active=$DEFERRED_ACTIVE deferred_review=$DEFERRED_REVIEW skipped=$SKIPPED failed=$FAILED"
 ((FAILED == 0)) || exit 1
 ((DEFERRED_REVIEW == 0)) || exit 2
 exit 0
