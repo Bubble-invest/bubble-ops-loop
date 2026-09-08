@@ -4,7 +4,7 @@
 
 The current layout is `/opt/bubble-ops-loop` plus `/srv/agents/<slug>` and `bubble-agent@<slug>.service`. `/home/claude/agents/bubble-ops-<slug>` and `ops-loop-<slug>.service` remain discovery fallbacks for hosts that have not migrated. Department discovery requires its paired primary unit to be loaded, so abandoned clones and aliases are not treated as live departments.
 
-The deployer leaves dirty, ahead, detached, and non-main checkouts byte-for-byte in place and exits 2 so systemd reports that operator review is required. It never stashes or resets them. An active, activating, reloading, or deactivating primary agent owns its own pull, so the deployer reports that deferral without changing the checkout. Inactive and operator-stopped agents may receive a clean fast-forward, but the deployer does not start them.
+The deployer leaves dirty, ahead, detached, and non-main checkouts byte-for-byte in place and exits 2 so systemd reports that operator review is required. It never stashes or resets them. An active, activating, reloading, or deactivating primary agent owns its own pull, so the deployer reports that deferral without fetching or changing the checkout. Inactive and operator-stopped agents may receive a clean fast-forward, but the deployer does not start them.
 
 The script never stops, starts, restarts, resets, stashes, rolls back, or rewrites Git history. A failed fast-forward stays visible for review; it is not followed by a destructive rollback.
 

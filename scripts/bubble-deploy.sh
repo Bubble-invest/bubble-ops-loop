@@ -152,6 +152,21 @@ sync_repo_safe_ff() {
         invalid) FAILED=$((FAILED + 1)); log "FAIL $label: unreadable Git state"; return 1 ;;
     esac
 
+    # Do not even update remote-tracking refs under a running primary. Its
+    # existing self-pull path owns both fetch and worktree advancement.
+    state=$(primary_state "$unit")
+    case "$state" in
+        active|activating|reloading|deactivating)
+            DEFERRED_ACTIVE=$((DEFERRED_ACTIVE + 1))
+            log "DEFER_ACTIVE $label: primary $unit is $state; self-pull retains fetch and update ownership"
+            return 0 ;;
+        inactive|failed|none) ;;
+        *)
+            FAILED=$((FAILED + 1))
+            log "FAIL $label: cannot prove primary $unit is inactive (state=$state)"
+            return 1 ;;
+    esac
+
     if ! git_fetch_retry "$dir" "$owner"; then
         FAILED=$((FAILED + 1)); log "FAIL $label: fetch origin/main failed after 3 attempts"; return 1
     fi

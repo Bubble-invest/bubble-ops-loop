@@ -116,6 +116,7 @@ dept_before=$(git -C "$WORK/agents/maya" rev-parse HEAD)
 run_case active active --dept maya
 [[ $CASE_RC -eq 0 && "$(git -C "$WORK/agents/maya" rev-parse HEAD)" == "$dept_before" ]]
 grep -q 'DEFER_ACTIVE maya' "$WORK/active.out"
+! grep -q ' fetch origin main ' "$WORK/active.gitlog"
 ! grep -Eq '^(start|stop|restart|try-restart) ' "$WORK/active.systemctl"
 
 echo "T4 inactive primary fast-forwards without being started"
