@@ -127,10 +127,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOOT_REARM_INSTALLER="$SCRIPT_DIR/install-boot-rearm.sh"
 INJECT_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/bubble-inject.block.ts"
+PEER_ENSURE="$SCRIPT_DIR/ensure-agent-message-watcher.py"
 
 PLUGIN_GLOB="${CHANNEL_PATCHES_PLUGIN_GLOB:-$HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/}"
 BUN_BIN="${CHANNEL_PATCHES_BUN:-$HOME/.bun/bin/bun}"
-[[ -x "$BUN_BIN" ]] || BUN_BIN="$(command -v bun 2>/dev/null || true)"
 
 LOCK_TIMEOUT_SEC="${CHANNEL_PATCHES_LOCK_TIMEOUT_SEC:-30}"
 LOCK_STALE_SEC="${CHANNEL_PATCHES_LOCK_STALE_SEC:-120}"
@@ -147,6 +147,23 @@ done
 
 log() { logger -t install-channel-patches "$*" 2>/dev/null || true; echo "[install-channel-patches] $*" >&2; }
 
+peer_watcher_digest() {
+  python3 - "$SERVER_TS" <<'PY'
+import hashlib, sys
+from pathlib import Path
+s = Path(sys.argv[1]).read_text(encoding="utf-8")
+begin = "// BUBBLE-AGENT-MESSAGE-WATCHER-v1"
+end = "// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1"
+if begin not in s and end not in s:
+    print("absent")
+    raise SystemExit(0)
+if s.count(begin) != 1 or s.count(end) != 1 or s.index(begin) >= s.index(end):
+    raise SystemExit(1)
+block = s[s.index(begin):s.index(end) + len(end)]
+print(hashlib.sha256(block.encode()).hexdigest())
+PY
+}
+
 finish() {
   # Fail-open contract: only surface a nonzero exit when explicitly asked
   # (--strict). A pre-launch hook must never keep a dept from starting because
@@ -157,6 +174,88 @@ finish() {
   fi
   exit 0
 }
+
+# systemd's privileged `ExecStartPre=+... bubble-agent-prepare start` invokes
+# this installer as root while HOME points at the isolated tenant. Root must not
+# read or execute anything from that mutable home. Validate the explicitly
+# rendered OS-user/home pair against passwd, then re-exec the ENTIRE patch
+# lifecycle as that UID with a minimal environment. No identity is inferred
+# from HOME, plugin paths, or config contents.
+drop_root_to_declared_agent() {
+  [[ "$EUID" == "0" ]] || return 0
+  [[ "${CHANNEL_PATCHES_PRIVDROP_DONE:-0}" != "1" ]] || {
+    echo "install-channel-patches.sh: privilege-drop marker still running as root" >&2
+    return 1
+  }
+  local declared_user="${BUBBLE_AGENT_OS_USER:-}"
+  local declared_home="${BUBBLE_AGENT_HOME:-}"
+  [[ "$declared_user" =~ ^[a-z_][a-z0-9_-]*$ && "$declared_home" == /* ]] || {
+    echo "install-channel-patches.sh: root invocation requires declared OS user/home" >&2
+    return 1
+  }
+  [[ "${HOME:-}" == "$declared_home" ]] || {
+    echo "install-channel-patches.sh: HOME differs from declared agent home" >&2
+    return 1
+  }
+  local passwd_entry pw_name pw_uid pw_gid pw_home _pw
+  passwd_entry="$(getent passwd "$declared_user")" || return 1
+  IFS=: read -r pw_name _pw pw_uid pw_gid _pw pw_home _pw <<<"$passwd_entry"
+  [[ "$pw_name" == "$declared_user" && "$pw_uid" =~ ^[0-9]+$ && "$pw_uid" != "0" \
+      && "$pw_home" == "$declared_home" ]] || {
+    echo "install-channel-patches.sh: declared user/home does not match passwd" >&2
+    return 1
+  }
+  local home_meta home_mode script_real script_meta script_mode
+  home_meta="$(stat -Lc '%u:%a:%F' -- "$declared_home" 2>/dev/null || true)"
+  [[ "$home_meta" == "$pw_uid:"*":directory" ]] || {
+    echo "install-channel-patches.sh: declared home has unsafe owner/type" >&2
+    return 1
+  }
+  home_mode="${home_meta#*:}"; home_mode="${home_mode%%:*}"
+  (( (8#$home_mode & 0022) == 0 )) || {
+    echo "install-channel-patches.sh: declared home is writable by peers" >&2
+    return 1
+  }
+  script_real="$(readlink -f -- "${BASH_SOURCE[0]}")" || return 1
+  script_meta="$(stat -Lc '%u:%a:%F' -- "$script_real" 2>/dev/null || true)"
+  [[ "$script_meta" == "0:"*":regular file" ]] || {
+    echo "install-channel-patches.sh: root entrypoint is not protected" >&2
+    return 1
+  }
+  script_mode="${script_meta#*:}"; script_mode="${script_mode%%:*}"
+  (( (8#$script_mode & 0022) == 0 )) || {
+    echo "install-channel-patches.sh: root entrypoint is writable by non-root" >&2
+    return 1
+  }
+  local safe_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  local forwarded=(
+    "HOME=$declared_home" "USER=$declared_user" "LOGNAME=$declared_user"
+    "PATH=$safe_path" "BUBBLE_AGENT_OS_USER=$declared_user"
+    "BUBBLE_AGENT_HOME=$declared_home" "CHANNEL_PATCHES_PRIVDROP_DONE=1"
+    "CHANNEL_PATCHES_PLUGIN_GLOB=$PLUGIN_GLOB" "CHANNEL_PATCHES_BUN=$BUN_BIN"
+  )
+  local name
+  for name in CHANNEL_PATCHES_LOCK_PATH CHANNEL_PATCHES_LOCK_TIMEOUT_SEC \
+      CHANNEL_PATCHES_LOCK_STALE_SEC AGENT_MESSAGE_CONFIG \
+      AGENT_MESSAGE_WATCHER_CONFIG AGENT_MESSAGE_WATCHER_INSTALLER; do
+    declare -p "$name" >/dev/null 2>&1 && forwarded+=("$name=${!name}")
+  done
+  echo "[install-channel-patches] dropping root prestart to declared uid $declared_user" >&2
+  exec /usr/sbin/runuser -u "$declared_user" -- /usr/bin/env -i \
+    "${forwarded[@]}" /bin/bash "$script_real" "$@"
+}
+
+drop_root_to_declared_agent "$@" || finish 1
+
+if [[ "${CHANNEL_PATCHES_PRIVDROP_DONE:-0}" == "1" ]]; then
+  [[ "$(id -un)" == "${BUBBLE_AGENT_OS_USER:-}" && "${HOME:-}" == "${BUBBLE_AGENT_HOME:-}" ]] || {
+    echo "install-channel-patches.sh: privilege-drop identity mismatch" >&2
+    finish 1
+  }
+fi
+
+# Resolve user-home/runtime paths only after the root prestart has dropped.
+[[ -x "$BUN_BIN" ]] || BUN_BIN="$(command -v bun 2>/dev/null || true)"
 
 # ── resolve the newest telegram plugin dir (version-bump-proof) ─────────────
 PLUGIN_DIR=""
@@ -183,6 +282,73 @@ log "plugin dir: $PLUGIN_DIR"
 # subshell, whose variable writes would NOT be visible to the parent shell).
 run_critical_section() {
   local section_rc=0
+  local peer_before peer_after peer_protected peer_result="skipped" combined_backup=""
+  local peer_backup_preexisting=0
+  [[ -e "${SERVER_TS}.bak-agent-message" ]] && peer_backup_preexisting=1
+  peer_before="$(peer_watcher_digest)" || {
+    log "agent-message watcher markers malformed — refusing combined patch"
+    return 1
+  }
+  if [[ "$DRY" != "1" ]]; then
+    combined_backup="$(mktemp "${SERVER_TS}.pre-channel-patches.XXXXXX")" || return 1
+    cp "$SERVER_TS" "$combined_backup" || { rm -f "$combined_backup"; return 1; }
+    chmod "$(stat -f %Lp "$SERVER_TS" 2>/dev/null || stat -c %a "$SERVER_TS")" "$combined_backup" 2>/dev/null || true
+  fi
+
+  # ── 0. fixed-peer watcher — only for an already-provisioned local route ──
+  # The sender config + canonical installed package are the enablement signal.
+  # No config/package means no watcher and no identity is invented here. On the
+  # first run with an existing watcher, persist its already-approved fixed route
+  # in a private descriptor so a later fresh plugin cache can be reconstructed.
+  local peer_installer="${AGENT_MESSAGE_WATCHER_INSTALLER:-}"
+  if [[ -z "$peer_installer" ]]; then
+    if [[ "$(uname -s)" == "Linux" && -f /usr/local/lib/bubble-agent-message/install_inject_watcher.py ]]; then
+      peer_installer="/usr/local/lib/bubble-agent-message/install_inject_watcher.py"
+    else
+      peer_installer="$HOME/.local/share/bubble-agent-message/install_inject_watcher.py"
+    fi
+  fi
+  local peer_args=(
+    --server "$SERVER_TS"
+    --sender-config "${AGENT_MESSAGE_CONFIG:-$HOME/.config/bubble-agent-message/config.json}"
+    --watcher-config "${AGENT_MESSAGE_WATCHER_CONFIG:-$HOME/.config/bubble-agent-message/watcher.json}"
+    --installer "$peer_installer"
+  )
+  [[ "$DRY" == "1" ]] && peer_args+=(--dry-run)
+  if [[ -x "$PEER_ENSURE" ]]; then
+    local peer_out
+    if peer_out="$(python3 "$PEER_ENSURE" "${peer_args[@]}" 2>&1)"; then
+      peer_result="${peer_out##*peer-watcher: }"
+      case "$peer_result" in
+        skipped|verified|restored|would-persist|would-restore) log "agent-message watcher: $peer_result" ;;
+        *) log "agent-message watcher: invalid coordinator result"; peer_result="invalid" ;;
+      esac
+      if [[ "$peer_result" == "invalid" ]]; then
+        [[ -n "$combined_backup" && -f "$combined_backup" ]] && cp "$combined_backup" "$SERVER_TS"
+        [[ -n "$combined_backup" ]] && rm -f "$combined_backup"
+        return 1
+      fi
+    else
+      log "agent-message watcher: FAILED — $peer_out"
+      [[ -n "$combined_backup" && -f "$combined_backup" ]] && cp "$combined_backup" "$SERVER_TS"
+      [[ "$peer_result" == "restored" && "$peer_backup_preexisting" == "0" ]] && rm -f "${SERVER_TS}.bak-agent-message"
+      [[ -n "$combined_backup" ]] && rm -f "$combined_backup"
+      return 1
+    fi
+  else
+    log "agent-message watcher coordinator missing — refusing incomplete self-heal"
+    [[ -n "$combined_backup" ]] && rm -f "$combined_backup"
+    return 1
+  fi
+  peer_after="$(peer_watcher_digest)" || peer_after="malformed"
+  if [[ "$peer_before" != "absent" && "$peer_after" != "$peer_before" ]]; then
+    log "existing agent-message watcher changed during self-heal — restoring combined backup"
+    [[ -n "$combined_backup" && -f "$combined_backup" ]] && cp "$combined_backup" "$SERVER_TS"
+    [[ "$peer_result" == "restored" && "$peer_backup_preexisting" == "0" ]] && rm -f "${SERVER_TS}.bak-agent-message"
+    [[ -n "$combined_backup" ]] && rm -f "$combined_backup"
+    return 1
+  fi
+  peer_protected="$peer_after"
 
   # Test-only hook: widen the race window deterministically so the
   # concurrency test doesn't depend on real scheduling luck. Unset in normal
@@ -227,6 +393,42 @@ run_critical_section() {
   apply_bubble_inject
   local inject_rc=$?
   [[ "$inject_rc" != "0" ]] && section_rc=1
+
+  peer_after="$(peer_watcher_digest)" || peer_after="malformed"
+  if [[ "$peer_after" != "$peer_protected" ]]; then
+    log "agent-message watcher changed during channel patch — restoring combined backup"
+    if [[ -n "$combined_backup" && -f "$combined_backup" ]]; then
+      cp "$combined_backup" "$SERVER_TS"
+    fi
+    section_rc=1
+  fi
+
+  # When the peer watcher was the only missing patch, neither idempotent
+  # standard patch necessarily built the resulting file. Validate the complete
+  # three-consumer server explicitly before accepting a restored watcher.
+  if [[ "$peer_result" == "restored" && "$section_rc" == "0" ]]; then
+    local peer_build_dir peer_build_log
+    peer_build_dir="$(mktemp -d 2>/dev/null || true)"
+    peer_build_log="$(mktemp "${TMPDIR:-/tmp}/install-channel-patches-peer-build.XXXXXX" 2>/dev/null || true)"
+    if [[ -z "$peer_build_dir" || -z "$peer_build_log" || -z "$BUN_BIN" || ! -x "$BUN_BIN" ]] || ! (
+      cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$peer_build_dir"
+    ) >"${peer_build_log:-/dev/null}" 2>&1; then
+      log "combined peer/maintenance plugin build FAILED — restoring combined backup"
+      [[ -n "$combined_backup" && -f "$combined_backup" ]] && cp "$combined_backup" "$SERVER_TS"
+      [[ "$peer_backup_preexisting" == "0" ]] && rm -f "${SERVER_TS}.bak-agent-message"
+      section_rc=1
+    else
+      log "combined peer/maintenance plugin build OK"
+    fi
+    [[ -n "$peer_build_dir" ]] && rm -rf "$peer_build_dir"
+    [[ -n "$peer_build_log" ]] && rm -f "$peer_build_log"
+  fi
+  if [[ "$peer_result" == "restored" && "$section_rc" != "0" ]]; then
+    log "combined channel self-heal incomplete — restoring pre-run plugin"
+    [[ -n "$combined_backup" && -f "$combined_backup" ]] && cp "$combined_backup" "$SERVER_TS"
+    [[ "$peer_backup_preexisting" == "0" ]] && rm -f "${SERVER_TS}.bak-agent-message"
+  fi
+  [[ -n "$combined_backup" ]] && rm -f "$combined_backup"
 
   return "$section_rc"
 }

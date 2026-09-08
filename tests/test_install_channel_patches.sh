@@ -121,6 +121,11 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Keep the baseline suite hermetic even on a host that has a real fixed-peer
+# route. Section K opts into its own synthetic existing config explicitly.
+export AGENT_MESSAGE_CONFIG="$WORK/no-peer/config.json"
+export AGENT_MESSAGE_WATCHER_CONFIG="$WORK/no-peer/watcher.json"
+export AGENT_MESSAGE_WATCHER_INSTALLER="$WORK/no-peer/install_inject_watcher.py"
 
 # make_fixture <root> [pristine|boot_rearm_only] -> echoes the plugin dir path.
 # "boot_rearm_only" pre-wires boot_rearm (via install-boot-rearm.sh itself,
@@ -143,7 +148,10 @@ make_fixture() {
 run_installer() {
   # usage: run_installer <glob> [extra args...]; sets RC + OUT
   local glob="$1"; shift || true
-  OUT="$(CHANNEL_PATCHES_PLUGIN_GLOB="$glob" CHANNEL_PATCHES_BUN="$BUN_BIN" bash "$INSTALLER" "$@" 2>&1)"
+  OUT="$(AGENT_MESSAGE_CONFIG="${RUN_PEER_CONFIG:-$WORK/no-peer/config.json}" \
+    AGENT_MESSAGE_WATCHER_CONFIG="${RUN_PEER_WATCHER_CONFIG:-$WORK/no-peer/watcher.json}" \
+    AGENT_MESSAGE_WATCHER_INSTALLER="${RUN_PEER_INSTALLER:-$WORK/no-peer/install_inject_watcher.py}" \
+    CHANNEL_PATCHES_PLUGIN_GLOB="$glob" CHANNEL_PATCHES_BUN="$BUN_BIN" bash "$INSTALLER" "$@" 2>&1)"
   RC=$?
   [[ "$VERBOSE" == "1" ]] && { echo "---- installer output ----"; echo "$OUT"; echo "--------------------------"; }
 }
@@ -162,6 +170,7 @@ run_installer "$GLOB_A"
 [[ "$RC" == "0" ]] && ok "installer exits 0 (default/hook mode)" || bad "installer exit was $RC"
 [[ "$(grep -c bootRearmNotification "$TGT_A/server.ts")" == "2" ]] && ok "boot_rearm wired (import + call site)" || bad "boot_rearm not wired"
 grep -q "bubble-inject" "$TGT_A/server.ts" && ok "bubble-inject marker present" || bad "bubble-inject marker missing"
+[[ "$(grep -c 'BUBBLE-AGENT-MESSAGE-WATCHER-v1' "$TGT_A/server.ts" || true)" == "0" ]] && ok "no peer config means no peer identity/watcher is created" || bad "peer watcher invented without config"
 [[ -f "$TGT_A/boot_rearm.ts" ]] && ok "boot_rearm.ts copied" || bad "boot_rearm.ts not copied"
 [[ "$(ls "$TGT_A"/server.ts.bak-boot-rearm-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "one boot_rearm backup" || bad "expected exactly one boot_rearm backup"
 [[ "$(ls "$TGT_A"/server.ts.bak-bubble-inject-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "one bubble-inject backup" || bad "expected exactly one bubble-inject backup"
@@ -432,6 +441,103 @@ echo "$CONC_OUT" | grep -qiE "boot_rearm: FAILED|boot_rearm: mktemp failed" \
   || ok "I3c: no boot_rearm failure/mktemp-guard line"
 echo "$CONC_OUT" | grep -q "bubble-inject: already present — no-op" && ok "I3d: bubble-inject still reports its own clean no-op" || bad "I3d: bubble-inject no-op line missing"
 [[ "$(grep -c bootRearmNotification "$TGT_I/server.ts")" == "2" ]] && ok "I3e: boot_rearm wiring unchanged (still exactly once)" || bad "I3e: boot_rearm wiring was touched/corrupted"
+
+# J. The independent Ben<->Miranda peer-message watcher must survive the
+# standard maintenance patch byte-for-byte. Never merge identities/transports.
+echo "J. standard channel patches preserve the independent peer watcher"
+ROOT_J="$WORK/j"; TGT_J="$(make_fixture "$ROOT_J")"; GLOB_J="$ROOT_J/claude-plugins-official/telegram/*/"
+python3 - "$TGT_J/server.ts" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text(); anchor='await mcp.connect(new StdioServerTransport())'
+block="""// BUBBLE-AGENT-MESSAGE-WATCHER-v1
+{ const peerWatcherSentinel = 'fixed-peer-only'; void peerWatcherSentinel }
+// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1
+"""
+assert s.count(anchor)==1
+p.write_text(s.replace(anchor,block+anchor,1))
+PY
+PEER_BEFORE="$(python3 - "$TGT_J/server.ts" <<'PY'
+from pathlib import Path
+import hashlib,sys
+s=Path(sys.argv[1]).read_text(); a='// BUBBLE-AGENT-MESSAGE-WATCHER-v1'; b='// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1'
+print(hashlib.sha256(s[s.index(a):s.index(b)+len(b)].encode()).hexdigest())
+PY
+)"
+run_installer "$GLOB_J" --strict
+PEER_AFTER="$(python3 - "$TGT_J/server.ts" <<'PY'
+from pathlib import Path
+import hashlib,sys
+s=Path(sys.argv[1]).read_text(); a='// BUBBLE-AGENT-MESSAGE-WATCHER-v1'; b='// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1'
+print(hashlib.sha256(s[s.index(a):s.index(b)+len(b)].encode()).hexdigest())
+PY
+)"
+[[ "$RC" == "0" ]] && ok "J1: coexistence patch exits 0" || bad "J1: coexistence patch exit $RC"
+[[ "$PEER_BEFORE" == "$PEER_AFTER" ]] && ok "J2: peer watcher block byte-identical" || bad "J2: peer watcher changed"
+grep -q "bubble-inject" "$TGT_J/server.ts" && ok "J3: maintenance inject added" || bad "J3: maintenance inject missing"
+[[ "$(grep -c 'BUBBLE-AGENT-MESSAGE-WATCHER-v1' "$TGT_J/server.ts")" == "2" ]] && ok "J4: peer markers remain exactly one pair" || bad "J4: peer watcher duplicated/removed"
+
+# Malformed peer markers must fail before either standard patch writes. This is
+# the fail-closed half of the coexistence contract, not just a happy-path hash.
+ROOT_J2="$WORK/j2"; TGT_J2="$(make_fixture "$ROOT_J2")"; GLOB_J2="$ROOT_J2/claude-plugins-official/telegram/*/"
+printf '\n// BUBBLE-AGENT-MESSAGE-WATCHER-v1\n' >> "$TGT_J2/server.ts"
+J2_BEFORE="$(shasum -a 256 "$TGT_J2/server.ts" | awk '{print $1}')"
+run_installer "$GLOB_J2" --strict
+J2_AFTER="$(shasum -a 256 "$TGT_J2/server.ts" | awk '{print $1}')"
+[[ "$RC" != "0" ]] && ok "J5: malformed peer watcher makes strict install fail" || bad "J5: malformed watcher was accepted"
+[[ "$J2_BEFORE" == "$J2_AFTER" ]] && ok "J6: malformed peer watcher fixture remains byte-identical" || bad "J6: malformed fixture was modified"
+[[ ! -e "$TGT_J2/boot_rearm.ts" ]] && ok "J7: malformed peer watcher blocks all patch side effects" || bad "J7: patch side effect occurred before rejection"
+
+# K. A cache refresh removes every plugin patch. If and only if this account's
+# existing fixed-peer config, durable route descriptor, and canonical package
+# are present, the combined lifecycle must restore the peer watcher too.
+echo "K. fresh plugin cache restores an already-configured fixed-peer watcher"
+ROOT_K="$WORK/k"; TGT_K="$(make_fixture "$ROOT_K")"; GLOB_K="$ROOT_K/claude-plugins-official/telegram/*/"
+PEER_K="$WORK/peer-config"; mkdir -p "$PEER_K/inbox"; chmod 700 "$PEER_K" "$PEER_K/inbox"
+cat > "$PEER_K/config.json" <<EOF
+{"self":"miranda","peer":"ben","host":"peer.invalid","user":"ben","identity_file":"$PEER_K/id","known_hosts_file":"$PEER_K/known_hosts"}
+EOF
+cat > "$PEER_K/watcher.json" <<EOF
+{"chat_id":"123","inbox":"$PEER_K/inbox","recipient":"miranda","sender":"ben"}
+EOF
+chmod 600 "$PEER_K/config.json" "$PEER_K/watcher.json"
+RUN_PEER_CONFIG="$PEER_K/config.json"
+RUN_PEER_WATCHER_CONFIG="$PEER_K/watcher.json"
+RUN_PEER_INSTALLER="$REPO_ROOT/tools/agent-message/install_inject_watcher.py"
+run_installer "$GLOB_K" --strict
+K_FIRST_SHA="$(shasum -a 256 "$TGT_K/server.ts" | awk '{print $1}')"
+[[ "$RC" == "0" ]] && ok "K1: configured fresh-cache self-heal exits 0" || bad "K1: configured self-heal exit $RC"
+[[ "$(grep -c 'BUBBLE-AGENT-MESSAGE-WATCHER-v1' "$TGT_K/server.ts")" == "2" ]] && ok "K2: fixed-peer watcher restored exactly once" || bad "K2: peer watcher missing or duplicated"
+grep -q "bubble-inject" "$TGT_K/server.ts" && ok "K3: maintenance consumer coexists" || bad "K3: maintenance consumer missing"
+[[ "$(grep -c bootRearmNotification "$TGT_K/server.ts")" == "2" ]] && ok "K4: boot rearm coexists" || bad "K4: boot rearm missing"
+echo "$OUT" | grep -q "combined peer/maintenance plugin build OK" && ok "K5: combined restored plugin was Bun-built" || bad "K5: combined build proof missing"
+( cd "$TGT_K" && "$BUN_BIN" build server.ts --target=node --outdir="$WORK/k-independent-build" ) >/dev/null 2>&1
+[[ "$?" == "0" ]] && ok "K6: independent Bun build passes with all consumers" || bad "K6: independent combined Bun build failed"
+run_installer "$GLOB_K" --strict
+[[ "$RC" == "0" && "$(shasum -a 256 "$TGT_K/server.ts" | awk '{print $1}')" == "$K_FIRST_SHA" ]] && ok "K7: configured rerun is byte-idempotent" || bad "K7: configured rerun changed the plugin"
+
+# Current-live adoption begins with the canonical watcher but no durable
+# descriptor. Persist only that exact embedded route and preserve its bytes.
+rm -f "$PEER_K/watcher.json"
+K_WATCHER_BEFORE="$(python3 - "$TGT_K/server.ts" <<'PY'
+from pathlib import Path
+import hashlib,sys
+s=Path(sys.argv[1]).read_text(); a='// BUBBLE-AGENT-MESSAGE-WATCHER-v1'; b='// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1'
+print(hashlib.sha256(s[s.index(a):s.index(b)+len(b)].encode()).hexdigest())
+PY
+)"
+run_installer "$GLOB_K" --strict
+K_WATCHER_AFTER="$(python3 - "$TGT_K/server.ts" <<'PY'
+from pathlib import Path
+import hashlib,sys
+s=Path(sys.argv[1]).read_text(); a='// BUBBLE-AGENT-MESSAGE-WATCHER-v1'; b='// END-BUBBLE-AGENT-MESSAGE-WATCHER-v1'
+print(hashlib.sha256(s[s.index(a):s.index(b)+len(b)].encode()).hexdigest())
+PY
+)"
+[[ "$RC" == "0" && "$K_WATCHER_BEFORE" == "$K_WATCHER_AFTER" ]] && ok "K8: existing watcher bytes preserved while adopting lifecycle" || bad "K8: existing watcher changed"
+K_MODE="$(stat -f %Lp "$PEER_K/watcher.json" 2>/dev/null || stat -c %a "$PEER_K/watcher.json" 2>/dev/null || true)"
+[[ -f "$PEER_K/watcher.json" && "$K_MODE" == "600" ]] && ok "K9: durable descriptor persisted privately" || bad "K9: descriptor missing or not mode 600"
+unset RUN_PEER_CONFIG RUN_PEER_WATCHER_CONFIG RUN_PEER_INSTALLER
 
 echo ""
 echo "== RESULT: $PASS passed, $FAIL failed =="
