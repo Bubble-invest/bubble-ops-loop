@@ -34,7 +34,7 @@ Everything between here and "## SYNTHESIS MODE" is the **compile** path.
 
 # COMPILE MODE
 
-## THREE TRANSCRIPT SOURCES
+## TRANSCRIPT SOURCES (Claude Code + Hermes)
 
 You mine transcripts from three origins, all under `/home/claude/.claude/projects/`:
 
@@ -45,6 +45,10 @@ You mine transcripts from three origins, all under `/home/claude/.claude/project
    the claude-readable `_vps-<slug>/` cache. **The old `-home-claude-agents-<dir>/`
    dirs are FROZEN at the #1120 cutover (~Sep 5) — historical only, do NOT mine
    them for current activity.**
+   **Hermes conversations** are included separately in
+   `_vps-<slug>-hermes/{default,<slug>}/*.jsonl` by the same root timer (#1181).
+   Mine BOTH caches regardless of the dept's current harness: switching harness
+   must not hide either history. Hermes-only depts need no Claude source dir.
 2. **Joris's Mac** — `_mac-joris/-Users-joris-claude-workspaces-<WS>/*.jsonl` (rsync'd in every 15 min by the Mac push job).
 3. **Jade's Mac** — `_mac-jade/-Users-...-claude-workspaces-<WS>/*.jsonl` (same, when her Mac is on the tailnet).
 
@@ -60,16 +64,54 @@ also has a local workspace for them). Merge all sources for a given folder.
 
 | wiki folder       | VPS-native session dir                    | Joris-Mac cache dir                                              | Jade-Mac cache dir (same WS names) |
 |-------------------|-------------------------------------------|-----------------------------------------------------------------|------------------------------------|
-| `tony_ceo`        | `_vps-tony/-srv-agents-tony` (post-#1120; legacy `-home-claude-agents-bubble-ops-tony` frozen ~Sep 5) | *(none — see `tonio_extrnd` below)*                              | *(none)*                           |
+| `tony_ceo`        | `_vps-tony/-srv-agents-tony` + `_vps-tony-hermes/` (post-#1120; legacy `-home-claude-agents-bubble-ops-tony` frozen ~Sep 5) | *(none — see `tonio_extrnd` below)*                              | *(none)*                           |
 | `tonio_extrnd`    | *(none — Tonio is Mac-only, not a VPS-native agent)* | `_mac-joris/-Users-joris-claude-workspaces-Tony-CEO`  | *(none — Tonio runs on Joris's Mac only)* |
-| `maya_sales`      | `_vps-maya/-srv-agents-maya` (post-#1120; legacy frozen ~Sep 5) | *(none — Maya is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-28)* | *(none — never existed; phantom ref)* |
-| `claudette`       | `_vps-claudette/-srv-agents-claudette` (post-#1120; legacy frozen ~Sep 5) | *(none — Claudette is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-19)* | *(none — never existed; phantom ref)* |
-| `morty`           | `_vps-morty/-srv-agents-morty` (post-#1120; legacy frozen ~Sep 5) | *(none — VPS-only concierge)*                                   | *(none)*                           |
+| `maya_sales`      | `_vps-maya/-srv-agents-maya` + `_vps-maya-hermes/` (post-#1120; legacy frozen ~Sep 5) | *(none — Maya is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-28)* | *(none — never existed; phantom ref)* |
+| `claudette`       | `_vps-claudette/-srv-agents-claudette` + `_vps-claudette-hermes/` (post-#1120; legacy frozen ~Sep 5) | *(none — Claudette is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-19)* | *(none — never existed; phantom ref)* |
+| `morty`           | `_vps-morty/-srv-agents-morty` + `_vps-morty-hermes/` (post-#1120; legacy frozen ~Sep 5) | *(none — VPS-only concierge)*                                   | *(none)*                           |
 | `rick_rnd`        | *(none — Lab runs on the Mac)*            | `_mac-joris/-Users-joris-claude-workspaces-Rick-RnD`<br>`_mac-joris/-Users-joris-claude-workspaces-Rick-RnD-prototypes-deepseek-session` | `_mac-jade/...-Rick-RnD`           |
-| `ben_fund`        | `_vps-ben/-srv-agents-ben` (post-#1120; legacy frozen ~Sep 5) | *(none — Ben is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-07)* | *(none — never existed; phantom ref)* |
+| `ben_fund`        | `_vps-ben/-srv-agents-ben` + `_vps-ben-hermes/` (post-#1120; legacy frozen ~Sep 5) | *(none — Ben is VPS-only; Joris-Mac copy is a dead fossil, newest jsonl 2026-06-07)* | *(none — never existed; phantom ref)* |
 | `miranda_socials` | *(none)*                                  | *(none — moved to Jade Mac M1)*                                  | `_mac-jade/...-bubble-ops-content` |
 | `ellie_assistant` | *(none — Jade's assistant, Jade-Mac only)* | *(none)*                                                       | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-ellie` |
 | `geraldine_accounting` | *(none — moved to Jade Mac M5, 2026-07-02)* | *(none)*                                                    | `_mac-jade/-Users-jade-thi-viet-lanhoang-claude-workspaces-bubble-ops-accountant` |
+
+### Hermes format and normalization (#1181)
+
+Verified on the VPS (2026-09-08): named dept profiles live at
+`/home/agent-<slug>/.hermes/profiles/<slug>/state.db`; the default profile may
+also have `/home/agent-<slug>/.hermes/state.db`. Dept attribution comes from
+that isolated home + same-slug profile, not `cwd` (real sessions include
+`/root` and null cwd). Custom HERMES_HOME paths or differently named profiles
+need an explicit sync mapping; do not scan other homes/profiles by guesswork.
+
+The store is **SQLite**, with `sessions.id` and `messages.session_id`;
+`messages` has `id`, `role`, `content` (text or JSON-encoded content blocks),
+and `timestamp` (Unix seconds, REAL). `sessions/*.json` can be request/error
+dumps, not conversation transcripts — never mine those or profile configs.
+The root-installed `/usr/local/bin/wiki-hermes-export.py` normalizes only
+user/assistant text into the existing Claude JSONL shape:
+
+```json
+{"type":"assistant","timestamp":"2026-09-06T15:04:52.149586Z","sessionId":"<redacted>","uuid":"hermes:<redacted>:<message-id>","message":{"role":"assistant","content":"<redacted text>"}}
+```
+
+Each filename is a hash of the original session ID, under its source profile
+subdirectory. No system/tool rows, tool arguments/results, reasoning fields,
+request dumps, or auth/config files are exported. Conversation text itself may
+still contain sensitive information: apply the usual wiki curation rules.
+Text blocks are retained; image/non-text blocks are discarded. The compile
+reads only this cache using the SAME parser below, never isolated homes or
+SQLite directly. Both nightly extraction and weekly skill-gap mining must
+include the Hermes source paths. Imported conversations may overlap Claude
+history: merge duplicate knowledge and do not count imported copies as distinct
+recurrence evidence without confirming they are separate conversations.
+
+The exporter copies DB + WAL bytes into a private temporary directory, retries
+if either changes during copying, and parses only that copy. It never opens the
+live source with SQLite or changes home permissions. A missing store is normal
+for a dept that has never run Hermes; an unstable/invalid store fails the sync
+and retains its previous export. Output mtimes reflect the latest exported
+turn, NOT the timer tick, so the 30-hour filter remains meaningful.
 
 **Ignore** these VPS dirs entirely: `-home-claude-agents-fixture` (test),
 `-home-claude-agents-ricky` (legacy/empty), `-home-claude-agents-morty-workspace-*`
@@ -99,10 +141,10 @@ cat ~/.claude/agent-memory/shared-wiki/index.md 2>/dev/null | head -60
 Understand what pages exist and per-agent counts. If the index looks stale
 (old date), don't fail — STEP 9 regenerates it from disk.
 
-## STEP 2 — Freshness sanity on the Mac caches (log-only)
+## STEP 2 — Freshness sanity on all caches (log-only)
 
 ```bash
-for c in _mac-joris _mac-jade _vps-tony _vps-maya _vps-ben _vps-claudette _vps-morty; do
+for c in _mac-joris _mac-jade _vps-tony _vps-maya _vps-ben _vps-claudette _vps-morty _vps-tony-hermes _vps-maya-hermes _vps-ben-hermes _vps-claudette-hermes _vps-morty-hermes; do
   d=/home/claude/.claude/projects/$c
   if [ -d "$d" ]; then
     newest=$(find "$d" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -nr | head -1)
@@ -113,7 +155,7 @@ for c in _mac-joris _mac-jade _vps-tony _vps-maya _vps-ben _vps-claudette _vps-m
       echo "$c: present but no transcripts"
     fi
   else
-    echo "$c: ABSENT (Mac asleep = normal; a _vps-* absent = wiki-transcript-sync.timer stalled — check it)"
+    echo "$c: ABSENT (Mac asleep or unused harness = normal; unexpectedly missing VPS history = check wiki-transcript-sync.timer)"
   fi
 done
 ```
@@ -175,7 +217,7 @@ YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
 
    MANDATORY FALLBACK — if that returns empty for ALL source dirs:
      For each SD, take the single most recent file:
-       ls -t "$SD"/*.jsonl 2>/dev/null | head -1
+       find "$SD" -type f -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-
      Check its tail for ISO timestamps from $TODAY or $YESTERDAY:
        tail -50 "$LATEST" | python3 -c "
        import json,sys
