@@ -74,12 +74,15 @@ timers only for workspaces with `dept.yaml` and the matching layer prompt.
 Concierges are skipped.
 
 Systemd loads `/run/bubble-agent-<slug>/env` literally before dropping to the
-agent UID. The runner never shell-sources dotenv text. Live and floor ticks use
-the same department-private runtime lock. Maya's Hermes floor first verifies the
-live profile through `gateway.sock`, then arms a one-shot persisted `/loop` row;
-the existing gateway idle watcher injects it into the home Telegram session. No
-second model process starts. Paused, busy, missing, or ambiguous sessions defer
-visibly. Tony relays operator-approved directives and publishes manager status
+agent UID. The runner never shell-sources dotenv text. The isolated production
+floor is primary-wake-only: Ben and Tony receive their normal tick through the
+existing channel injection path, while Maya's Hermes floor verifies the live
+profile through `gateway.sock` and arms a one-shot persisted `/loop` row. No
+second model process starts. A missing, busy, failed, or ambiguous primary wake
+returns nonzero, records a visible deferred event, and leaves heartbeat and
+mission completion evidence untouched. Independent headless failover is
+disabled until the primary/floor mutex can be enforced outside the primary's
+instruction-following loop. Tony relays operator-approved directives and publishes manager status
 through private remote clones, so a manager-push failure leaves the live source
 approved and retryable. A normalized SHA-256 snapshot binds the child commit to
 the manager acknowledgement; a same-ID child payload or remotely edited source

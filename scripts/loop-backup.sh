@@ -21,9 +21,12 @@
 #      picks the layer, almost always L1) for each stale dept. Kept for
 #      backward-compat / a pure "loop fully dead" net.
 #
-# In BOTH modes, for each dept it either
-#   - SKIPS (the live loop is healthy — recent heartbeat → no double-tick), or
-#   - runs ONE tick via `claude -p` (the loop is dead/parked).
+# In BOTH modes, for each dept it first SKIPS when the primary loop is fresh.
+# The isolated production form (`--dept <slug>` as agent-<slug>) otherwise
+# wakes that existing primary and waits for its real heartbeat. A missing,
+# busy, or failed primary wake is DEFERRED visibly and returns non-zero; it
+# never falls through to a competing headless model. Legacy/manual callers
+# can still use the old one-shot `claude -p` fallback outside isolated mode.
 #
 # It is NOT a second loop and NOT a re-arm. One tick, then exit. A flock
 # mutex guarantees the backup tick never overlaps a live tick, so the
@@ -113,6 +116,17 @@ if [[ "$ISOLATED_FLOOR" == "1" ]]; then
     HOME="/home/agent-${PINNED_DEPT}"
     export HOME
 fi
+# The isolated production floor is a PRIMARY WAKE floor. It may enqueue a
+# normal tick in the existing department runtime, but it must never create a
+# competing headless model when that runtime is missing, busy, or wedged.
+# This is forced on for --dept/agent-<slug> production units; an environment
+# flag keeps the same behavior testable and available to legacy callers.
+PRIMARY_WAKE_ONLY=0
+case "${BUBBLE_BACKUP_PRIMARY_WAKE_ONLY:-0}" in
+    1|true|yes|on) PRIMARY_WAKE_ONLY=1 ;;
+esac
+[[ "$ISOLATED_FLOOR" == "1" ]] && PRIMARY_WAKE_ONLY=1
+HERMES_DEPTS="${BUBBLE_BACKUP_HERMES_DEPTS:-maya}"
 export BUBBLE_OPS_LOOP_ROOT="$REPO_ROOT"
 PY="${REPO_ROOT}/venv/bin/python"
 
@@ -906,13 +920,35 @@ PROMPT
 # by a bun poller in the dept's systemd cgroup (same signal the watchdog uses),
 # then drop "run your loop" into <state_dir>/inject (the bubble-inject patch
 # delivers it as a message from {{OPERATOR}}). We confirm it actually ticked by watching
-# the heartbeat.log mtime advance; if not (session wedged/dead), the caller falls
-# back to a `claude -p` backup tick.
+# the heartbeat.log mtime advance. Isolated production callers defer visibly if
+# it does not advance; only legacy/manual callers may use the old `claude -p`
+# fallback.
 mtime_epoch() {
     local path="$1" value
     value=$(stat -c %Y "$path" 2>/dev/null) && { printf '%s\n' "$value"; return; }
     value=$(stat -f %m "$path" 2>/dev/null) && { printf '%s\n' "$value"; return; }
     printf '0\n'
+}
+
+# Use the dispatcher's single Paris-day convention (#1083) for the heartbeat
+# path the primary itself writes. At 22:00-24:00 UTC during summer (and
+# 23:00-24:00 UTC during winter), `date -u +%F` names the previous day and
+# would falsely report a successful primary wake as failed.
+primary_paris_day() {
+    local test_now=""
+    if [[ "${BUBBLE_BACKUP_TEST_UID_OK:-0}" == "1" ]]; then
+        test_now="${BUBBLE_BACKUP_TEST_NOW_UTC:-}"
+    fi
+    "$PY" - "$REPO_ROOT" "$test_now" <<'PYEOF'
+from datetime import datetime
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from scripts.lib.dispatch_helpers import paris_today
+
+now = datetime.fromisoformat(sys.argv[2]) if sys.argv[2] else None
+print(paris_today(now))
+PYEOF
 }
 
 inject_live_loop() {
@@ -922,15 +958,22 @@ inject_live_loop() {
     local main_pid; main_pid=$("$SYSTEMCTL" show "$svc" -p MainPID --value 2>/dev/null || echo 0)
     [[ "$main_pid" =~ ^[0-9]+$ ]] && (( main_pid > 0 )) || return 1
     local alive=1 pid
-    for pid in $(pgrep -x bun 2>/dev/null); do
-        grep -qs "$svc" "/proc/$pid/cgroup" 2>/dev/null && { alive=0; break; }
-    done
+    if [[ "${BUBBLE_BACKUP_TEST_UID_OK:-0}" == "1" \
+          && "${BUBBLE_BACKUP_TEST_LIVE_POLLER_OK:-0}" == "1" ]]; then
+        alive=0
+    else
+        for pid in $(pgrep -x bun 2>/dev/null); do
+            grep -qs "$svc" "/proc/$pid/cgroup" 2>/dev/null && { alive=0; break; }
+        done
+    fi
     (( alive == 0 )) || return 1   # no live poller → can't inject
 
     local state_dir="${HOME}/.claude/channels/telegram-${slug}"
     local inject="${state_dir}/inject"
     [[ -d "$state_dir" ]] || return 1
-    local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    local today hb
+    today="$(primary_paris_day)" || return 1
+    hb="$(_dept_workdir "$slug")/outputs/${today}/heartbeat.log"
     local before; before=$(mtime_epoch "$hb")
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
@@ -941,12 +984,18 @@ inject_live_loop() {
     # couple minutes to wake + run a tick (esp. opus depts), so the floor fell back
     # to -p even when the inject would have worked ({{OPERATOR}} 2026-06-08, all 3 depts).
     local i after
-    for i in $(seq 1 48); do
-        sleep 5
+    local wait_iterations="${BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS:-48}"
+    local wait_seconds="${BUBBLE_BACKUP_WAKE_WAIT_SECONDS:-5}"
+    if [[ "$ISOLATED_FLOOR" == "1" ]]; then
+        wait_iterations=48
+        wait_seconds=5
+    fi
+    for i in $(seq 1 "$wait_iterations"); do
+        sleep "$wait_seconds"
         after=$(mtime_epoch "$hb")
         (( after > before )) && { log "$slug: live session ticked from inject (heartbeat advanced)"; return 0; }
     done
-    log "$slug: inject sent but no tick within window — falling back to backup -p"
+    log "$slug: inject sent but no tick within window"
     return 1
 }
 
@@ -957,9 +1006,10 @@ inject_live_loop() {
 # The helper only mutates scheduler state; it never starts another model.
 wake_hermes_loop() {
     local slug="$1"
-    local workdir hb before i after
+    local workdir today hb before i after
     workdir="$(_dept_workdir "$slug")"
-    hb="${workdir}/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
+    today="$(primary_paris_day)" || return 1
+    hb="${workdir}/outputs/${today}/heartbeat.log"
     before=$(mtime_epoch "$hb")
 
     local hermes_root="${BUBBLE_BACKUP_HERMES_ROOT:-/opt/hermes/hermes-agent}"
@@ -1420,21 +1470,40 @@ PYEOF2
     fi
 
     # Prefer waking the LIVE session ONCE per dept (cheaper, keeps context) when
-    # it's alive and this isn't a degraded-L4 (which needs its own headless
-    # prompt). This is a per-DEPT decision, not per-mission — the live session's
+    # it is available and this is not a degraded-L4. Isolated production is
+    # primary-wake-only, so a degraded L4 or failed wake defers instead of
+    # starting a competing model. This is a per-DEPT decision, not per-mission — the live session's
     # own /loop protocol (STEP C, mission-centric per scaffold.py's canonical
     # dispatch) will pick up every pending mission itself once woken, so we must
     # NOT also spawn N headless mission ticks on top of it.
-    _inject_only=0
-    for _harness_slug in ${BUBBLE_BACKUP_INJECT_ONLY_DEPTS:-} maya; do
-        [[ "$_harness_slug" == "$slug" ]] && _inject_only=1
+    _primary_wake_only="$PRIMARY_WAKE_ONLY"
+    _legacy_hermes=0
+    for _harness_slug in ${BUBBLE_BACKUP_INJECT_ONLY_DEPTS:-}; do
+        if [[ "$_harness_slug" == "$slug" ]]; then
+            _primary_wake_only=1
+            _legacy_hermes=1
+        fi
     done
-    if [[ "$_inject_only" == "1" ]]; then
-        if [[ "${DEGRADED_L4:-0}" != "1" ]] && wake_hermes_loop "$slug"; then
-            emit_event "$slug" "run" "live Hermes gateway woken — $reason" "$age" 0
+    _is_hermes="$_legacy_hermes"
+    for _hermes_slug in $HERMES_DEPTS; do
+        [[ "$_hermes_slug" == "$slug" ]] && _is_hermes=1
+    done
+    if [[ "$_primary_wake_only" == "1" ]]; then
+        _wake_ok=1
+        if [[ "${DEGRADED_L4:-0}" != "1" ]]; then
+            if [[ "$_is_hermes" == "1" ]]; then
+                wake_hermes_loop "$slug" && _wake_ok=0
+            else
+                inject_live_loop "$slug" && _wake_ok=0
+            fi
+        fi
+        if [[ "$_wake_ok" == "0" ]]; then
+            emit_event "$slug" "run" "existing primary runtime woken — $reason" "$age" 0
         else
-            log "$slug: DEFERRED — Hermes gateway wake unavailable; competing headless CLI forbidden"
-            emit_event "$slug" "deferred" "Hermes gateway floor wake unavailable" "$age"
+            _wake_label="primary runtime"
+            [[ "$_is_hermes" == "1" ]] && _wake_label="Hermes gateway"
+            log "$slug: DEFERRED — ${_wake_label} wake unavailable; headless fallback disabled"
+            emit_event "$slug" "deferred" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
             OVERALL=1
         fi
         continue
