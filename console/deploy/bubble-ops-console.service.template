@@ -40,7 +40,7 @@ ExecStartPre=+/bin/chown claude:claude /run/bubble-ops-console/env
 
 Environment="PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 EnvironmentFile=-/run/bubble-ops-console/env
-Environment="READ_FROM_DISK=/home/claude/agents"
+Environment="READ_FROM_DISK=/srv/agents"
 Environment="CONSOLE_BIND_HOST=127.0.0.1"
 Environment="CONSOLE_BIND_PORT=8642"
 Environment="PYTHONPATH=/home/claude/bubble-ops-loop"

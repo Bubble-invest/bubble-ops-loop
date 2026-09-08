@@ -16,7 +16,7 @@ Then open `http://127.0.0.1:8642/login` and sign in with a user from
 `CONSOLE_LOGIN_USERS`. The legacy `?token=<bearer>` browser bootstrap is no
 longer accepted. `Authorization: Bearer` remains available to API/CI callers.
 
-The console reads any subdir matching `bubble-ops-*` under `READ_FROM_DISK`. Each subdir must follow the on-disk shape from Notion v5 lines 751-762 (`dept.yaml`(.draft), `onboarding/STATE.yaml`, `queues/gates/*.yaml`, etc.).
+The console reads legacy `bubble-ops-*` subdirs and canonical per-user `<slug>` subdirs under `READ_FROM_DISK`. Each department must follow the on-disk shape from Notion v5 lines 751-762 (`dept.yaml`(.draft), `onboarding/STATE.yaml`, `queues/gates/*.yaml`, etc.). Production uses `/srv/agents`; compatibility symlinks are de-duplicated by department slug.
 
 ## Expose via Tailscale (operator phone)
 
