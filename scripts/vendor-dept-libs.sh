@@ -70,10 +70,13 @@ log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*
 [[ -d "$FRAMEWORK" ]] || { log "WARN: framework '$FRAMEWORK' missing — skip (fail-open)"; exit 0; }
 
 # Keep the exact bytes last installed by this script under .git, away from the
-# dept worktree and its `git add`/clean flows.  That gives the next run a
-# three-way comparison: canonical source vs current destination vs the prior
-# vendored baseline.  A destination that matches neither is a hand-patch (or
-# otherwise unexpected local edit) and must be made recoverable before refresh.
+# dept worktree and its `git add`/clean flows.  The ownership hierarchy is:
+#   1. missing destination: copy canonical and record the baseline;
+#   2. identical destination: record it as the baseline without rewriting;
+#   3. destination == recorded baseline: update from canonical;
+#   4. no baseline, or destination changed since baseline: DEFER and preserve.
+# A backup followed by overwrite is not safe for a required fork: the daemon
+# must keep running the reviewed working bytes while an operator reconciles it.
 GIT_DIR="$(git -C "$DEPT" rev-parse --absolute-git-dir 2>/dev/null || true)"
 VENDOR_STATE_DIR="${GIT_DIR:+${GIT_DIR}/vendor-dept-libs}"
 
@@ -111,29 +114,26 @@ copy_canonical_file() {
   cp -f "$src" "$dst" 2>/dev/null
 }
 
-protect_hand_patch() {
-  local src="$1" dst="$2" rel="$3" last backup ts
+permit_vendor_refresh() {
+  local src="$1" dst="$2" rel="$3" last
+  # A missing destination is safe to create from canonical source.
   [[ -e "$dst" || -L "$dst" ]] || return 0
+  # Identical existing bytes need no copy; the caller records them as the
+  # managed baseline in its idempotent branch.
   cmp -s "$dst" "$src" 2>/dev/null && return 0
   last="${VENDOR_STATE_DIR:+${VENDOR_STATE_DIR}/$rel}"
-  # Safe stale copy: it still equals exactly what our prior successful run
-  # installed.  No backup/no warning is needed for a routine source upgrade.
-  if [[ -n "$last" && -f "$last" ]] && cmp -s "$dst" "$last" 2>/dev/null; then
+  # No baseline means ownership is unknown.  Preserve the live file in place:
+  # a backup followed by overwrite is still an outage when the fork is required.
+  if [[ -z "$last" || ! -f "$last" || -L "$last" ]]; then
+    log "DEFERRED: $rel differs from canonical with no trusted last-vendored baseline — preserved destination"
+    return 1
+  fi
+  # Only bytes still equal to our own prior successful publication are managed
+  # and eligible for a routine canonical source update.
+  if cmp -s "$dst" "$last" 2>/dev/null; then
     return 0
   fi
-  # The caller already established dst != src.  If it also differs from the
-  # last-vendored bytes (or no baseline exists yet), preserve it before cp -f.
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  backup="${dst}.pre-vendor-${ts}"
-  if [[ -e "$backup" ]]; then
-    backup="${backup}-$$"
-  fi
-  if cp -p "$dst" "$backup" 2>/dev/null; then
-    chown claude:claude "$backup" 2>/dev/null || true
-    log "WARN: $rel differs from canonical and last-vendored copy — backed up hand-patch to $backup"
-    return 0
-  fi
-  log "WARN: $rel differs from canonical and last-vendored copy, but backup to $backup FAILED — preserving destination (not overwritten)"
+  log "DEFERRED: $rel changed since last vendor — preserved destination"
   return 1
 }
 
@@ -149,6 +149,7 @@ MAP=(
 )
 
 vendored=0
+deferred=0
 for pair in "${MAP[@]}"; do
   # shellcheck disable=SC2086
   set -- $pair
@@ -169,7 +170,10 @@ for pair in "${MAP[@]}"; do
     continue
   fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
-    protect_hand_patch "$src" "$dst" "$2" || continue
+    if ! permit_vendor_refresh "$src" "$dst" "$2"; then
+      deferred=$((deferred+1))
+      continue
+    fi
     # -T: dst is always a normal file target (never "copy into directory").
     # --no-dereference: never follow a symlink SRC either (defense in depth).
     if copy_canonical_file "$src" "$dst"; then
@@ -209,7 +213,10 @@ for pair in "${KANBAN_MAP[@]}"; do
     continue
   fi
   if ! cmp -s "$src" "$dst" 2>/dev/null; then
-    protect_hand_patch "$src" "$dst" "$2" || continue
+    if ! permit_vendor_refresh "$src" "$dst" "$2"; then
+      deferred=$((deferred+1))
+      continue
+    fi
     if copy_canonical_file "$src" "$dst"; then
       chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
       chown claude:claude "$dst" 2>/dev/null || true
@@ -247,5 +254,5 @@ for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
   fi
 done
 
-log "done — $vendored file(s) refreshed for $(basename "$DEPT")"
+log "done — $vendored file(s) refreshed, $deferred deferred for $(basename "$DEPT")"
 exit 0
