@@ -1410,9 +1410,9 @@ def _write_local_hide_marker(slug: str, gate_id: str, decision: Dict[str, Any]
             return  # no on-disk mirror (pure local dept) — nothing to mark
         decisions_dir = root / "inbox" / "decisions"
         decisions_dir.mkdir(parents=True, exist_ok=True)
-        (decisions_dir / f"{gate_id}.yaml").write_text(
-            yaml.safe_dump(decision, sort_keys=False, allow_unicode=True),
-            encoding="utf-8")
+        _atomic_write_text(
+            decisions_dir / f"{gate_id}.yaml",
+            yaml.safe_dump(decision, sort_keys=False, allow_unicode=True))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).warning(
             "local hide-marker write failed for %s/%s: %s", slug, gate_id, exc)
