@@ -274,6 +274,8 @@ unset BUBBLE_FRAMEWORK_ROOT
 
 # A local fork after baseline must remain active even when canonical advances.
 echo "# local hand-patch — preserve me" > "$DEPT10/scripts/lib/dispatch_helpers.py"
+# Simulate both legacy index hide mechanisms; defer must clear both.
+git -C "$DEPT10" update-index --assume-unchanged scripts/lib/dispatch_helpers.py
 echo "# canonical dispatch_helpers v2" > "$FW10/scripts/lib/dispatch_helpers.py"
 out10="$("$SCRIPT_UNDER_TEST" "$DEPT10" 2>&1)"
 chk_eq "T10a changed destination remains in place" \
