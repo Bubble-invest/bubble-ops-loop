@@ -26,6 +26,17 @@ from console import settings
 from console.services import nav_history
 
 
+@pytest.fixture(autouse=True)
+def _isolate_canonical_agents_root(monkeypatch, tmp_path):
+    """nav_history now resolves via runtime_repo_path() (#1209), which defaults
+    CANONICAL_AGENTS_ROOT to /srv/agents — a dir that EXISTS on the production
+    box, so without isolation these tests would read the live fund db instead of
+    their tmp fixture. Point it at an absent dir so runtime_repo_path() falls
+    back to repo_path() (the READ_FROM_DISK fixture). Tests that specifically
+    exercise the canonical root set their own CANONICAL_AGENTS_ROOT, which wins."""
+    monkeypatch.setenv("CANONICAL_AGENTS_ROOT", str(tmp_path / "no-canonical-root"))
+
+
 @pytest.fixture
 def disk_root(monkeypatch, tmp_path):
     """Point the services' disk-mode reader at a temp root (mirrors
