@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from console.services.dept_registry import repo_path, runtime_repo_path
+from console.services.dept_registry import repo_path
 
 _log = logging.getLogger(__name__)
 
@@ -369,9 +369,7 @@ def load_whiteboard_series(slug: str) -> List[MetricSeries]:
     output history. Empty list if no history yet (graceful — the template
     shows an "appears after a few cycles" empty state).
     """
-    # Prefer the runtime workdir (fresh outputs history) over the stale
-    # deployed mirror — same #1209 alignment fix as nav_history/thesis_book.
-    root = runtime_repo_path(slug) or repo_path(slug)
+    root = repo_path(slug)
     if root is None:
         return []
 
