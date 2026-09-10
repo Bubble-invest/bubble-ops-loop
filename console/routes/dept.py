@@ -135,6 +135,26 @@ def dept_detail(
     # Per-dept whiteboard — agent-surfaced KPIs/metrics for {{OPERATOR}}
     # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
+    # #1209 — ONE NAV on the page. The canonical headline above owns THE NAV; a
+    # separately-authored "NAV" card in the whiteboard KPIs is redundant and
+    # drifts (Ben's was a day-stale 09-09 mark next to the audited 09-10
+    # headline). Drop a NAV-labelled whiteboard KPI whenever the canonical
+    # headline is present, so the page never shows two different NAVs. The
+    # distinctive risk KPIs (Sharpe, info ratio, excess, cash, drawdown…) stay.
+    if (
+        isinstance(whiteboard, dict)
+        and isinstance(whiteboard.get("kpis"), list)
+        and nav_headline.get("nav") is not None
+    ):
+        whiteboard = dict(whiteboard)
+        whiteboard["kpis"] = [
+            k
+            for k in whiteboard["kpis"]
+            if not (
+                isinstance(k, dict)
+                and str(k.get("label", "")).strip().casefold() == "nav"
+            )
+        ]
     # `notes` is documented as free-text but some depts (Ben) author it as a
     # YAML list of dated entries — Jinja was rendering that list via Python
     # repr() into an unreadable `['...', '...']` wall (card #507).
