@@ -36,7 +36,6 @@ from console.services.github_reader import (
     resolve_kanban_attachment_path,
 )
 from console.services.cockpit_comment_author import annotate_comment_authors
-from console.services.recent_messages import fetch_recent_messages
 
 from console import settings
 
@@ -1231,7 +1230,6 @@ def kanban_board(request: Request):
     generated_at = ""
     error: str | None = None
     counts: dict = {}
-    recent_messages, recent_messages_error = fetch_recent_messages()
 
     issues, fetch_error = _fetch_issues()
     if fetch_error:
@@ -1307,6 +1305,4 @@ def kanban_board(request: Request):
         "error":        error,
         "generated_at": generated_at,
         "counts":       counts,
-        "recent_messages": recent_messages,
-        "recent_messages_error": recent_messages_error,
     })

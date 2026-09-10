@@ -262,26 +262,6 @@
 </div>
 {% endif %}
 
-<section class="cabinet-section m4-section" aria-labelledby="recent-messages-title"
-         style="padding:18px; margin-bottom:24px;">
-  <h2 id="recent-messages-title" style="margin-top:0;">Messages récents</h2>
-  {% if recent_messages_error %}
-    <p class="muted-italic">{{ recent_messages_error }}</p>
-  {% elif recent_messages %}
-    <div style="overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">
-        <thead><tr><th>Message</th><th>Type</th><th>Statut</th><th>Envoi</th><th>Compte</th><th>Validé par</th></tr></thead>
-        <tbody>{% for message in recent_messages %}<tr>
-          <td>{{ message.title }}</td><td>{{ message.type }}</td><td>{{ message.status }}</td>
-          <td>{{ message.sent_at }}</td><td>{{ message.account }}</td><td>{{ message.validated_by }}</td>
-        </tr>{% endfor %}</tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="muted-italic">Aucun message enregistré.</p>
-  {% endif %}
-</section>
-
 {# ── Jinja macros ─────────────────────────────────────────────────── #}
 
 {# Priority chip helper — called with a card dict.
