@@ -258,7 +258,7 @@ def test_portfolio_page_shows_stale_banner_when_artifacts_predate_today(
     resp = client.get("/dept/fixture/portfolio")
     assert resp.status_code == 200
     body = resp.text
-    assert "pf-stale" in body, "stale banner must render when artifacts predate today"
+    assert 'class="pf-stale"' in body, "stale banner element must render when artifacts predate today"
     assert stale_day in body, "the as-of date must be shown in the banner"
     assert "not current" in body, "the banner must state the data is not current"
 
@@ -269,5 +269,5 @@ def test_portfolio_page_no_stale_banner_when_artifacts_are_today(portfolio_clien
     resp = portfolio_client.get("/dept/fixture/portfolio")
     assert resp.status_code == 200
     body = resp.text
-    assert "pf-stale" not in body, "no stale banner when the artifacts are today's"
+    assert 'class="pf-stale"' not in body, "no stale banner element when the artifacts are today's"
     assert 'class="pf-asof"' in body, "today's build should still stamp an 'As of' line"
