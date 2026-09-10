@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import date
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -13,6 +14,7 @@ from fastapi.responses import HTMLResponse
 
 from console.services import (
     backup_history,
+    canonical_nav as canonical_nav_service,
     dept_registry,
     github_reader,
     loop_history,
@@ -121,6 +123,15 @@ def dept_detail(
         n: github_reader.load_recent_layer_output(slug, n)
         for n in layers
     }
+    # Canonical NAV headline (#1209) — the ONE audited, frozen morning mark,
+    # read from the PUSHED graph-data.json (mirrors the latest verified
+    # kpi_snapshots row). This SUPERSEDES the whiteboard's live
+    # `consolidated_nav_usd` (an un-audited broker-sum that drifts every
+    # refresh) as the Dashboard headline number, so the Dashboard, Thesis Book,
+    # Portfolio Review and Risk-KPIs panels all show the SAME NAV + as-of. Empty
+    # (all-None) for any dept with no graph-data.json → the template renders
+    # nothing and the page is unchanged for non-Ben depts.
+    nav_headline = canonical_nav_service.canonical_nav(slug)
     # Per-dept whiteboard — agent-surfaced KPIs/metrics for {{OPERATOR}}
     # ({{OPERATOR}} msg 1073, 2026-05-28).
     whiteboard = github_reader.load_whiteboard(slug)
@@ -276,6 +287,8 @@ def dept_detail(
             "layer_prompts": layer_prompts,
             "mandate_md": mandate_md,
             "layer_recent_outputs": layer_recent_outputs,
+            "nav_headline": nav_headline,
+            "today_iso": date.today().isoformat(),
             "whiteboard": whiteboard,
             "whiteboard_notes_rendered": whiteboard_notes_rendered,
             "whiteboard_freeform": whiteboard_freeform,
@@ -423,6 +436,17 @@ def management_view(slug: str, request: Request):
         )
 
     aggregated = github_reader.load_management_exports(slug)
+    # Canonical NAV headline per child (#1209) — same audited, pushed
+    # graph-data.json source as the Dashboard + Thesis Book, so the
+    # management view's NAV matches them instead of surfacing the stale
+    # `consolidated_nav_usd_true` buried in each child's risk-kpis. Empty
+    # (all-None) for any child with no graph-data.json → the template shows
+    # nothing extra and the child's risk-KPIs render as before.
+    children = aggregated.get("children", []) or []
+    for child in children:
+        if isinstance(child, dict) and child.get("slug"):
+            child["canonical_nav"] = canonical_nav_service.canonical_nav(
+                child["slug"])
     return request.app.state.templates.TemplateResponse(
         "management_view.html",
         {
@@ -430,7 +454,8 @@ def management_view(slug: str, request: Request):
             "dept": d,
             "dept_yaml": dept_yaml,
             "aggregated": aggregated,
-            "children": aggregated.get("children", []),
+            "children": children,
+            "today_iso": date.today().isoformat(),
             "total_open_gates": aggregated.get("total_open_gates", 0),
             "stale_children": aggregated.get("stale_children", []),
         },

@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Vue management — {{ dept.display_name }}{% endblock %}
 
+{% block head_extra %}
+<style>
+/* #1209 — canonical NAV headline + stale banner (reuses the Thesis Book
+   pf-stale visual pattern). */
+.nav-headline-block { margin:0 0 10px; }
+.nav-headline { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+  font-size:14px; }
+.nav-headline .nav-value { font-size:18px; font-weight:700; }
+.nav-headline .nav-return { font-weight:600; }
+.nav-headline .nav-asof { font-size:11px; color:#7a7a7a; }
+.pf-stale { padding:6px 10px; font-size:11px; font-weight:600; color:#7a2e00;
+  background:#fff4e5; border:1px solid #f0c890; border-radius:5px;
+  margin:0 0 6px; }
+.nav-live-tick { font-size:11px; color:#8a8a8a; font-style:italic; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="management-view">
   <h1 class="page-title">Vue management — {{ dept.display_name }}</h1>
@@ -28,6 +45,32 @@
 
       <div class="kanban-body">
 
+        {# ─── Canonical NAV headline (#1209) ───────────────────────────────
+           The ONE audited, frozen morning mark, from the PUSHED graph-data.json
+           (mirrors the latest VERIFIED kpi_snapshots row) — the SAME source as
+           the Dashboard + Thesis Book, so this matches them to the cent. This
+           REPLACES the stale `consolidated_nav_usd_true` (an un-audited live
+           tick) as the NAV headline; that key, if present in the risk-KPIs
+           below, is relabelled as the drifting live figure, not the headline.
+           Renders only when the child's graph-data.json carries a NAV. #}
+        {% if child.canonical_nav and child.canonical_nav.nav is not none %}
+        <div class="nav-headline-block">
+          {% if child.canonical_nav.is_stale %}
+          <div class="pf-stale" role="alert">⚠ NAV auditée au {{ child.canonical_nav.as_of }} — pas rafraîchie aujourd'hui ({{ today_iso }}). Dernier instantané vérifié, pas une valeur courante.</div>
+          {% endif %}
+          <div class="nav-headline">
+            <strong>NAV auditée :</strong>
+            <span class="nav-value">${{ '{:,.0f}'.format(child.canonical_nav.nav) }}</span>
+            {% if child.canonical_nav.since_rebase_pct is not none %}
+            <span class="nav-return">({{ '+' if child.canonical_nav.since_rebase_pct >= 0 else '' }}{{ '%.2f'|format(child.canonical_nav.since_rebase_pct) }}% depuis rebase)</span>
+            {% endif %}
+            {% if child.canonical_nav.as_of %}
+            <span class="nav-asof">au {{ child.canonical_nav.as_of }}</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+
         {# Management export status block #}
         {% if child.management_export %}
         <div class="kpi-block status-{{ child.management_export.get('status', 'unknown') }}">
@@ -49,7 +92,14 @@
           <ul class="kpi-list">
             {% for k, v in child.risk_kpis.items() %}
             {% if k not in ('dept', 'date') %}
+            {% if 'consolidated_nav' in k %}
+            {# #1209 — this is the live intraday tick, NOT the NAV headline. The
+               audited headline is shown above from graph-data.json. #}
+            <li><code>{{ k }}</code> : {{ v }}
+              <span class="nav-live-tick">— tick live intraday (non audité) — dérive vs la marque auditée</span></li>
+            {% else %}
             <li><code>{{ k }}</code> : {{ v }}</li>
+            {% endif %}
             {% endif %}
             {% endfor %}
           </ul>

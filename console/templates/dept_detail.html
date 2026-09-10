@@ -24,6 +24,19 @@
 .feed-md.md-render table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
 .feed-md.md-render th, .feed-md.md-render td { border: 1px solid var(--line); padding: 3px 7px; }
 .feed-md.md-render a { color: #b06a2c; }
+/* #1209 — canonical NAV headline + as-of / stale banner (reuses the Thesis
+   Book pf-stale / pf-asof visual pattern from thesis_book.html). */
+.nav-headline { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+  margin:6px 0 2px; }
+.nav-headline .nav-value { font-size:26px; font-weight:700; color:var(--ink); }
+.nav-headline .nav-return { font-size:14px; font-weight:600; }
+.nav-headline .nav-return.up { color:#1a7f37; }
+.nav-headline .nav-return.down { color:#b02a1a; }
+.nav-asof { font-size:12px; color:var(--muted, #7a7a7a); }
+.pf-stale { padding:8px 14px; font-size:12px; font-weight:600; color:#7a2e00;
+  background:#fff4e5; border:1px solid #f0c890; border-radius:6px;
+  margin:6px 0 2px; }
+.nav-live-tick { font-size:11px; color:var(--muted, #8a8a8a); font-style:italic; }
 </style>
 <script>
 // Shared: markdown-render every .md-render[data-md] (used by the session feed).
@@ -349,6 +362,33 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
       <span class="section-sub">màj {{ whiteboard.updated_at }}</span>
     {% endif %}
   </div>
+
+  {# ─── Canonical NAV headline (#1209) ─────────────────────────────────────
+     The ONE audited, frozen morning mark — read from the PUSHED graph-data.json
+     (mirrors the latest VERIFIED kpi_snapshots row), so this headline matches
+     the Thesis Book / Portfolio Review / Risk-KPIs to the cent and does NOT
+     wander on refresh. The live `consolidated_nav_usd` in whiteboard.yaml is an
+     un-audited intraday tick; if it still surfaces below as a KPI tile it is the
+     drifting live number, NOT this headline. Renders only for depts whose
+     graph-data.json carries a NAV (Ben today); nav_headline.nav is None for
+     everyone else → nothing shown, page unchanged. #}
+  {% if nav_headline and nav_headline.nav is not none %}
+    {% if nav_headline.is_stale %}
+    <div class="pf-stale" role="alert">⚠ NAV as of {{ nav_headline.as_of }} — the audited morning mark has not been refreshed yet today ({{ today_iso }}). This is the last verified snapshot, not a current figure.</div>
+    {% endif %}
+    <div class="nav-headline">
+      <span class="nav-value">${{ '{:,.0f}'.format(nav_headline.nav) }}</span>
+      {% if nav_headline.since_rebase_pct is not none %}
+      <span class="nav-return {{ 'up' if nav_headline.since_rebase_pct >= 0 else 'down' }}">
+        {{ '+' if nav_headline.since_rebase_pct >= 0 else '' }}{{ '%.2f'|format(nav_headline.since_rebase_pct) }}% depuis rebase
+      </span>
+      {% endif %}
+      {% if nav_headline.as_of and not nav_headline.is_stale %}
+      <span class="nav-asof">NAV auditée · au {{ nav_headline.as_of }}</span>
+      {% endif %}
+    </div>
+    <p class="nav-live-tick">NAV auditée figée (source : graph-data.json poussé). Toute valeur « consolidated_nav » ci-dessous est un tick live intraday (non audité) qui dérive à chaque rafraîchissement.</p>
+  {% endif %}
 
   {# NAV-over-time chart (#364, PR-A) — only meaningful for depts with a
      fund DB (Ben today); nav_chart.has_chart is False (graceful no-op) for
