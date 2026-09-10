@@ -879,18 +879,34 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
             # Marker absent → any non-consumed note is considered new
             return True
 
-        # Parse created_at; fail-open on missing or unparseable timestamp.
+        # Effective timestamp: prefer created_at; when it is absent or
+        # unparseable, FALL BACK TO THE FILE MTIME instead of failing open
+        # forever (#1197). The old fail-open-on-undated path meant any ancient
+        # yaml with no created_at (delivered management-exports, resolved
+        # directives, market_wrapup drafts that were never archived) counted as
+        # "unconsumed" on EVERY scan, so once a dept's research queue emptied,
+        # C.mgmt re-fired layer_1 every quiet tick fleet-wide regardless of the
+        # .last-mgmt-scan marker. With the mtime fallback, an undated note older
+        # than the marker (mtime <= since) is treated as already-seen; only a
+        # note NEWER than the marker (by created_at, or by mtime when undated)
+        # retriggers L1. Keep console/services/mgmt_note_state.py in sync.
         raw_ts = data.get("created_at")
-        if raw_ts is None:
-            return True  # no timestamp → treat as unconsumed
-        try:
-            note_ts = _parse_iso(str(raw_ts))
-            if note_ts.tzinfo is None:
-                note_ts = note_ts.replace(tzinfo=timezone.utc)
-            if note_ts > since:
+        note_ts = None
+        if raw_ts is not None:
+            try:
+                note_ts = _parse_iso(str(raw_ts))
+                if note_ts.tzinfo is None:
+                    note_ts = note_ts.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                note_ts = None
+        if note_ts is None:
+            try:
+                note_ts = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                # Can't even stat the file → conservative one-shot fail-open.
                 return True
-        except (ValueError, TypeError):
-            return True  # unparseable timestamp → treat as unconsumed
+        if note_ts > since:
+            return True
 
     return False
 

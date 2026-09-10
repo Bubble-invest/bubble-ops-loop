@@ -247,19 +247,30 @@ def scan_mgmt_inbox(
             consumed_count += 1
             continue
 
-        # Rule 5 vs. rule 4: watermark comparison, fail-open on bad/missing ts.
+        # Rule 5 vs. rule 4: watermark comparison. When created_at is missing or
+        # unparseable, FALL BACK TO FILE MTIME instead of failing open forever
+        # (#1197) — mirrors dispatch_helpers._scan_mgmt_notes so the cockpit's
+        # pending count matches the dispatcher's L1 trigger exactly. An undated
+        # note older than the watermark (mtime <= watermark) is already-seen; one
+        # newer than it (by created_at, or by mtime when undated) is pending.
         pending = True
-        if watermark is not None and created_at:
-            try:
-                ts = _parse_iso(created_at)
-                if ts.tzinfo is None:
-                    from datetime import timezone
-                    ts = ts.replace(tzinfo=timezone.utc)
-                pending = ts > watermark
-            except (ValueError, TypeError):
-                pending = True  # unparseable → fail-open (rule 4)
+        if watermark is not None:
+            from datetime import timezone, datetime as _dt
+            ts = None
+            if created_at:
+                try:
+                    ts = _parse_iso(created_at)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    ts = None
+            if ts is None:
+                try:
+                    ts = _dt.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                except OSError:
+                    ts = None
+            pending = True if ts is None else ts > watermark
         # watermark is None → never scanned → pending stays True (rule 5)
-        # created_at missing → pending stays True (rule 4)
 
         if not pending:
             consumed_count += 1
