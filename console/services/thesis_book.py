@@ -585,20 +585,41 @@ def build_thesis_data(slug: str) -> dict:
                      "object — falling back to defaults", slug, type(base).__name__)
         base = {}
 
-    # B: live portfolio state
+    # B: live portfolio state — header NAV/overview.
+    # #1207: the console may read an UNPUSHED / stale fund.sqlite (Ben pushes
+    # graph-data.json each L1 but the DB is not a pushed artifact), so the
+    # DB-derived overview can show NAV $0 or a days-stale figure — which is what
+    # put the Thesis Book header at $0 while the pushed data said $266k. The
+    # PUSHED outputs/<date>/graph-data.json carries Ben's CANONICAL, complete,
+    # current portfolio_overview (nav, return, date, sharpe, brokers…), so prefer
+    # it for the header; fall back to the DB overview only when the pushed one
+    # lacks a real (> 0) NAV, and NEVER let a zero/missing DB NAV override a good
+    # pushed one. (Loaded once here + reused for the macro fallback below.)
     db_path = root / "db" / "fund.sqlite"
-    po = _build_portfolio_overview(db_path, root)
+    po_db = _build_portfolio_overview(db_path, root)
+    pushed = _load_latest_graph_data(root)
+    if not isinstance(pushed, dict):
+        pushed = {}
+    po_pushed = pushed.get("portfolio_overview")
+
+    def _nav_of(p) -> float:
+        try:
+            return float((p or {}).get("nav") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Canonical header = the pushed graph-data PO when it has a real NAV; else DB.
+    po = po_pushed if (isinstance(po_pushed, dict) and _nav_of(po_pushed) > 0) else po_db
     if po:
         base["portfolio_overview"] = po
-        if po.get("nav"):
+        if _nav_of(po) > 0:
             base["nav"] = po["nav"]
         if po.get("since_rebase_pct") is not None:
             base["since_rebase_pct"] = po["since_rebase_pct"]
 
-    # Macro/global_macro: fall back to latest on-disk graph-data
-    fallback = _load_latest_graph_data(root)
-    if not isinstance(fallback, dict):
-        fallback = {}
+    # Macro/global_macro: fall back to latest on-disk graph-data (reuse the
+    # `pushed` copy already loaded above for the #1207 header source).
+    fallback = pushed
     for key in ("macro", "global_macro", "vs_acwi_pct", "acwi_return_pct"):
         if key not in base or not base.get(key):
             if key in fallback and fallback[key]:
