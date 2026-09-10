@@ -309,6 +309,40 @@ def test_dept_page_no_nav_chart_for_dept_without_fund_db(client, fixture_root):
     assert "nav-chart-card" not in r.text
 
 
+def test_dept_page_drops_redundant_whiteboard_nav_kpi(client, fixture_root):
+    """#1209 — the canonical headline owns THE NAV, so a separately-authored
+    'NAV' card in the whiteboard KPIs (which drifts — Ben's was a day-stale
+    09-09 mark next to the audited 09-10 headline) must be dropped, leaving the
+    page with exactly one NAV. Distinct risk KPIs stay."""
+    import json
+    repo = _build_ben_repo(fixture_root)
+    _write_dept_yaml(repo, "ben")
+    con = _make_db(repo)
+    _insert(con, "2026-09-10T05:15:00+00:00", 266108.0)
+    con.close()
+    day = repo / "outputs" / "2026-09-10"
+    day.mkdir(parents=True, exist_ok=True)
+    (day / "graph-data.json").write_text(json.dumps({
+        "nav": 266108.0, "since_rebase_pct": 7.03,
+        "portfolio_overview": {"nav": 266108.0, "nav_date": "2026-09-10",
+                               "since_rebase_pct": 7.03},
+        "generated_at": "2026-09-10T05:15:00Z",
+    }), encoding="utf-8")
+    (repo / "whiteboard.yaml").write_text(yaml.safe_dump({
+        "updated_at": "2026-09-10T06:16:00Z",
+        "kpis": [
+            {"label": "NAV", "value": "$268.2k", "note": "verified 09-09 L1 mark"},
+            {"label": "Sharpe ITD", "value": "0.51"},
+        ],
+    }, sort_keys=False), encoding="utf-8")
+
+    r = client.get("/dept/ben")
+    assert r.status_code == 200
+    assert "$268.2k" not in r.text          # redundant NAV card dropped
+    assert "Sharpe ITD" in r.text           # distinct risk KPI kept
+    assert "266,108" in r.text              # canonical headline present
+
+
 def test_dept_page_range_toggle_query_param(client, fixture_root):
     repo = _build_ben_repo(fixture_root)
     _write_dept_yaml(repo, "ben")
