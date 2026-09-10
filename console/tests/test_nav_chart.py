@@ -315,6 +315,7 @@ def test_dept_page_drops_redundant_whiteboard_nav_kpi(client, fixture_root):
     09-09 mark next to the audited 09-10 headline) must be dropped, leaving the
     page with exactly one NAV. Distinct risk KPIs stay."""
     import json
+    import yaml
     repo = _build_ben_repo(fixture_root)
     _write_dept_yaml(repo, "ben")
     con = _make_db(repo)
