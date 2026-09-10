@@ -493,9 +493,21 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
    cockpit endpoint. `srcdoc` is intentionally NOT marked `| safe` — Jinja's
    default HTML-ATTRIBUTE escaping (&, <, >, ", ') is exactly what a
    srcdoc="..." attribute value needs; the browser un-escapes it back to
-   the literal HTML string before using it as the iframe document. #}
+   the literal HTML string before using it as the iframe document.
+
+   MAPS EXCEPTION (board #1203, 2026-09-10): the Value-Chain Maps panel builds
+   its dropdown + map body at runtime from an inline `window.__VCM_DATA__` blob,
+   so it needs JS — under the fully-empty sandbox it rendered only the static
+   shell (blank tab). The maps iframe therefore carries `sandbox="allow-scripts"`
+   and NOTHING else — critically NO `allow-same-origin`. With srcdoc + no
+   allow-same-origin the frame stays an OPAQUE ("null") origin, so scripts run
+   but STILL cannot read/write cockpit cookies, touch the parent DOM, or submit
+   a form to any cockpit endpoint — the #1116 containment (no session theft, no
+   same-origin pivot) is fully preserved; only in-frame script execution is
+   re-enabled. The review panel is static (server-rendered SVG sparklines, no
+   JS) so it keeps the strictest `sandbox=""`. #}
 <div id="pane-review" class="pf-pane" hidden><iframe class="pf-embed" sandbox="" srcdoc="{{ review_html }}"></iframe></div>
-{% if maps_html %}<div id="pane-maps" class="pf-pane" hidden><iframe class="pf-embed" sandbox="" srcdoc="{{ maps_html }}"></iframe></div>{% endif %}
+{% if maps_html %}<div id="pane-maps" class="pf-pane" hidden><iframe class="pf-embed" sandbox="allow-scripts" srcdoc="{{ maps_html }}"></iframe></div>{% endif %}
 
 <script>
 (function(){
