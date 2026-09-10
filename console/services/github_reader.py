@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from console import settings
-from console.services.dept_registry import repo_path
+from console.services.dept_registry import repo_path, runtime_repo_path
 from console.services.humanize import humanize_queue_item
 
 _log = logging.getLogger("console.github_reader")
@@ -1829,7 +1829,11 @@ def load_whiteboard(slug: str) -> Optional[Dict[str, Any]]:
     regardless of the authored shape. The original `notes` key is left
     untouched for any other consumer.
     """
-    root = repo_path(slug)
+    # #1209: prefer the runtime workdir so the whiteboard (its `updated_at`
+    # "màj" stamp, KPI tiles and notes) reflects the dept's live file, not the
+    # deployed console's stale read-only mirror (Ben's mirror froze at 09-05
+    # while the runtime whiteboard.yaml is refreshed each morning).
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return None
 

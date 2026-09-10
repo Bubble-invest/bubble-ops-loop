@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from console.services.dept_registry import repo_path
+from console.services.dept_registry import repo_path, runtime_repo_path
 
 _log = logging.getLogger(__name__)
 
@@ -255,7 +255,13 @@ def load_nav_history(slug: str, range_key: str = DEFAULT_RANGE) -> NavHistory:
     """
     if range_key not in RANGE_DAYS:
         range_key = DEFAULT_RANGE
-    root = repo_path(slug)
+    # Prefer the RUNTIME repo (the dept's live workdir, e.g. /srv/agents/ben)
+    # over the deployed console's stale read-only mirror. For Ben the mirror's
+    # db/fund.sqlite froze at the last L1 push (#1209: it showed a 5-day-stale
+    # $267,684 next to the audited $266,108 headline); the runtime db has the
+    # fresh verified kpi_snapshots. Mirrors the #1207 fix for thesis_book.
+    # Falls back to repo_path when runtime is unavailable (non-vps depts).
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return NavHistory(range_key=range_key)
 
