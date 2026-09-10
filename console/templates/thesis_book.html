@@ -384,8 +384,20 @@ footer{ border-top:1px solid var(--border); padding:26px 0 50px; margin-top:40px
    own content — an accepted UX trade-off for the security property.
    Same origin-isolation intent as .pf-pane, kept separate for clarity. */
 .pf-embed{display:block;width:100%;height:82vh;border:0;background:var(--bg);}
+/* board #1203 — as-of / silent-staleness banner */
+.pf-asof{padding:6px 16px;font-size:12px;color:var(--text-muted);background:var(--bg);border-bottom:1px solid var(--border);}
+.pf-stale{padding:10px 16px;font-size:13px;font-weight:600;color:#7a2e00;background:#fff4e5;border-bottom:1px solid #f0c890;}
 </style>
 
+{# board #1203 — kill silent staleness: if the newest pre-rendered tab is older
+   than today, L1 hasn't regenerated this morning; say so loudly instead of
+   passing a stale snapshot off as current. is_stale/as_of/today_iso come from
+   the route (thesis_book.py). #}
+{% if is_stale %}
+<div class="pf-stale" role="alert">⚠ Data as of {{ as_of }} — the daily rebuild has not run yet today ({{ today_iso }}). The figures below are the last verified snapshot, not current.</div>
+{% elif as_of %}
+<div class="pf-asof">As of {{ as_of }}</div>
+{% endif %}
 <div class="pf-tabbar" role="tablist">
   <button class="pf-tab" data-pane="thesis" role="tab" aria-selected="true">Thesis Book</button>
   <button class="pf-tab" data-pane="review" role="tab" aria-selected="false">Portfolio Review</button>

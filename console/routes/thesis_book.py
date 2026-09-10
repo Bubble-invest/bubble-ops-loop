@@ -46,44 +46,27 @@ def _json_for_inline_script(data) -> str:
     )
 
 
-def _latest_review_html(slug: str) -> str:
-    """Ben's line-by-line Portfolio Review, pre-rendered by his L1 tool
-    (outputs/<date>/portfolio-review-artifact.html — self-contained, #pr-root
-    scoped so it cannot collide with the thesis-book styles). Read the most
-    recent one on disk; empty string if none (the tab then hides itself)."""
+def _latest_artifact(slug: str, filename: str) -> tuple[str, str | None]:
+    """Read the most-recent `outputs/<date>/<filename>` for a dept, walking back
+    up to 7 days. Returns (html, day-it-was-found) — the day lets the page stamp
+    an 'as-of' and warn on SILENT STALENESS (board #1203): L1 skips its whole
+    regen on a degraded / weekend / broker-cold morning, and this most-recent-
+    wins read would otherwise serve the prior day's copy with nothing telling the
+    reader it isn't today's. Returns ("", None) when nothing is on disk within
+    the window (the tab then hides itself)."""
     root = dept_registry.runtime_repo_path(slug)
     if root is None:
-        return ""
+        return "", None
     for i in range(7):
         day = (date.today() - timedelta(days=i)).isoformat()
-        p = root / "outputs" / day / "portfolio-review-artifact.html"
+        p = root / "outputs" / day / filename
         if p.exists():
             html = p.read_text(errors="replace")
             # drop the fragment's leading doc-level tags (harmless but tidy)
             html = re.sub(r"^\s*<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
             html = re.sub(r"^\s*(?:<meta\b[^>]*>\s*)+", "", html, count=1, flags=re.I)
-            return html
-    return ""
-
-
-def _latest_maps_html(slug: str) -> str:
-    """Ben's self-contained Value-Chain Maps panel, pre-rendered by his L1 tool
-    (outputs/<date>/value-chain-maps-panel.html — #vcm-root-scoped so it cannot
-    collide with the thesis-book styles). Same read pattern as the Portfolio
-    Review artifact; empty string if none (the 3rd tab then hides itself). This
-    is board #1078 (Ben's design), replacing an earlier link-to-sub-page tab."""
-    root = dept_registry.runtime_repo_path(slug)
-    if root is None:
-        return ""
-    for i in range(7):
-        day = (date.today() - timedelta(days=i)).isoformat()
-        p = root / "outputs" / day / "value-chain-maps-panel.html"
-        if p.exists():
-            html = p.read_text(errors="replace")
-            html = re.sub(r"^\s*<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
-            html = re.sub(r"^\s*(?:<meta\b[^>]*>\s*)+", "", html, count=1, flags=re.I)
-            return html
-    return ""
+            return html, day
+    return "", None
 
 
 @router.get("/dept/{slug}/portfolio", response_class=HTMLResponse)
@@ -93,11 +76,23 @@ def thesis_book_page(slug: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
     data = thesis_book_service.build_thesis_data(slug)
     data_json = _json_for_inline_script(data)
+    review_html, review_day = _latest_artifact(slug, "portfolio-review-artifact.html")
+    maps_html, maps_day = _latest_artifact(slug, "value-chain-maps-panel.html")
+    # Kill silent staleness (board #1203): the report is only as fresh as its
+    # STALEST pre-rendered tab. If any present tab's artifact is older than today
+    # — L1 didn't regenerate this morning (degraded/weekend/broker-cold) — stamp
+    # the page with the as-of date and a visible banner, rather than passing the
+    # prior day's copy off as current. The Thesis tab self-generates on demand
+    # (always today), so only the file-based Review + Maps tabs can go stale.
+    today_iso = date.today().isoformat()
+    present_days = [dy for dy in (review_day, maps_day) if dy]
+    as_of = min(present_days) if present_days else None
+    is_stale = bool(present_days) and as_of < today_iso
     return request.app.state.templates.TemplateResponse(
         "thesis_book.html",
         {"request": request, "dept": d, "data_json": data_json,
-         "review_html": _latest_review_html(slug),
-         "maps_html": _latest_maps_html(slug)},
+         "review_html": review_html, "maps_html": maps_html,
+         "as_of": as_of, "today_iso": today_iso, "is_stale": is_stale},
     )
 
 

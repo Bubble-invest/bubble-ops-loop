@@ -96,6 +96,13 @@ def _write_review_artifacts(repo_root: Path, review_html: str, maps_html: str) -
     (d / "value-chain-maps-panel.html").write_text(maps_html, encoding="utf-8")
 
 
+def _write_review_artifacts_dated(repo_root: Path, day: str, review_html: str, maps_html: str) -> None:
+    d = repo_root / "outputs" / day
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "portfolio-review-artifact.html").write_text(review_html, encoding="utf-8")
+    (d / "value-chain-maps-panel.html").write_text(maps_html, encoding="utf-8")
+
+
 @pytest.fixture
 def malicious_payload():
     return {
@@ -226,3 +233,41 @@ def test_portfolio_page_iframe_sandbox_has_no_escape_hatches(portfolio_client):
             f"iframe sandbox may only be '' or 'allow-scripts', found: "
             f"sandbox=\"{val}\""
         )
+
+
+# ── board #1203: kill silent staleness ───────────────────────────────────────
+def test_portfolio_page_shows_stale_banner_when_artifacts_predate_today(
+    client, fixture_root, monkeypatch
+):
+    """If the newest pre-rendered Review/Maps artifacts are older than today —
+    L1 skipped its regen this morning (degraded/weekend/broker-cold) — the page
+    must render a LOUD stale banner stamped with the as-of date, never pass the
+    prior day's copy off as current (board #1203)."""
+    from datetime import date, timedelta
+
+    stale_day = (date.today() - timedelta(days=2)).isoformat()
+    repo = fixture_root / "bubble-ops-fixture"
+    _write_review_artifacts_dated(
+        repo, stale_day,
+        "<div id='pr-root'><p>old review</p></div>",
+        "<div id='vcm-root'><p>old maps</p></div>",
+    )
+    from console.services import thesis_book as tbs
+    monkeypatch.setattr(tbs, "build_thesis_data", lambda slug: {"themes": []})
+
+    resp = client.get("/dept/fixture/portfolio")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "pf-stale" in body, "stale banner must render when artifacts predate today"
+    assert stale_day in body, "the as-of date must be shown in the banner"
+    assert "not current" in body, "the banner must state the data is not current"
+
+
+def test_portfolio_page_no_stale_banner_when_artifacts_are_today(portfolio_client):
+    """Fresh (today's) artifacts → no loud stale banner; a subtle 'As of' line
+    is fine, but never the amber pf-stale alert."""
+    resp = portfolio_client.get("/dept/fixture/portfolio")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "pf-stale" not in body, "no stale banner when the artifacts are today's"
+    assert 'class="pf-asof"' in body, "today's build should still stamp an 'As of' line"
