@@ -166,8 +166,16 @@ def test_portfolio_page_review_html_isolated_in_sandboxed_iframe(portfolio_clien
     # The dangerous bits must NEVER appear as live, parseable HTML/JS outside
     # an attribute string — i.e. no un-attributed <script> tag from the
     # artifact, no bare onerror= handler outside quotes.
-    assert 'sandbox=""' in body, "review/maps iframes must carry an empty sandbox attribute"
-    assert body.count('sandbox=""') == 2, "expected exactly 2 sandboxed iframes (review + maps)"
+    # review iframe = fully sandboxed (static server-rendered SVG sparklines, no
+    # JS). maps iframe = sandbox="allow-scripts" ONLY — it builds its dropdown +
+    # map body at runtime from window.__VCM_DATA__ (board #1203) — and CRUCIALLY
+    # no allow-same-origin, so with srcdoc it stays an opaque origin: scripts run
+    # but still cannot read cockpit cookies, touch the parent DOM, or submit a
+    # cockpit form (the #1116 containment holds — see the no-escape-hatches test).
+    assert 'sandbox=""' in body, "the static review iframe must keep the empty sandbox"
+    assert body.count('sandbox=""') == 1, "exactly one fully-sandboxed iframe (review)"
+    assert 'sandbox="allow-scripts"' in body, "the maps iframe must allow scripts (JS-built panel)"
+    assert body.count('sandbox="allow-scripts"') == 1, "exactly one allow-scripts iframe (maps)"
 
     # Extract the srcdoc attribute values and confirm they are HTML-escaped
     # (i.e. the literal, un-escaped payload markup does NOT appear directly
@@ -193,14 +201,28 @@ def test_portfolio_page_review_html_isolated_in_sandboxed_iframe(portfolio_clien
 
 
 def test_portfolio_page_iframe_sandbox_has_no_escape_hatches(portfolio_client):
-    """The sandbox attribute must be present with NO allow-* tokens — any
-    `allow-scripts`/`allow-same-origin`/`allow-forms`/`allow-top-navigation`
-    would reopen the exact exploit this fix closes."""
+    """The security-critical invariant (board #1116 + #1203): the ONLY sandbox
+    token any embedded-artifact iframe may carry is `allow-scripts` (needed by
+    the JS-built maps panel). It must NEVER carry `allow-same-origin` (which,
+    combined with allow-scripts, would let a payload read cockpit cookies / pivot
+    same-origin — the exact exploit #1116 closes), nor `allow-forms` /
+    `allow-top-navigation` / `allow-popups` / `allow-modals`. `allow-scripts`
+    alone keeps the frame an opaque origin, so in-frame JS runs fully isolated."""
     resp = portfolio_client.get("/dept/fixture/portfolio")
     body = resp.text
     import re
-    for m in re.finditer(r'<iframe[^>]*\bsandbox="([^"]*)"', body):
-        assert m.group(1) == "", (
-            f"iframe sandbox attribute must be empty (maximally restrictive), "
-            f"found: sandbox=\"{m.group(1)}\""
+    _ALLOWED = {"", "allow-scripts"}
+    _FORBIDDEN = ("allow-same-origin", "allow-forms", "allow-top-navigation",
+                  "allow-popups", "allow-modals")
+    found = re.findall(r'<iframe[^>]*\bsandbox="([^"]*)"', body)
+    assert found, "expected the embedded-artifact iframes to be present"
+    for val in found:
+        for bad in _FORBIDDEN:
+            assert bad not in val, (
+                f"iframe sandbox must never contain {bad!r} (reopens the #1116 "
+                f"XSS exploit), found: sandbox=\"{val}\""
+            )
+        assert val in _ALLOWED, (
+            f"iframe sandbox may only be '' or 'allow-scripts', found: "
+            f"sandbox=\"{val}\""
         )
