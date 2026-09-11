@@ -234,6 +234,90 @@ for pair in "${KANBAN_MAP[@]}"; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Wire .claude/skills/<name> -> ../../skills/<name> so Claude Code can actually
+# DISCOVER the dept's skills (board #1224).
+#
+# WHY: Claude Code auto-discovers project-scoped skills ONLY from
+# `<cwd>/.claude/skills/`. The dept's own skill SOURCES (and the fleet-shared
+# emit-kanban-task we vendor above) live under `<dept>/skills/` — invisible to
+# Claude Code unless each is linked into `.claude/skills/`. Working depts (ben,
+# maya, …) got these symlinks by hand at onboarding; morty + claudette were
+# missed, so they loaded ZERO SKILL.md skills — not even emit-kanban-task. The
+# onboarding scaffold now generates these links too (isolation_scaffold.py
+# scaffold_repo_skill_links), but re-asserting here at EVERY service start makes
+# the wiring self-heal for existing depts and any that slip through, exactly like
+# the vendored libs above. Same-uid, intra-repo, relative link → no cross-user
+# (board #1120) issue. We only CREATE/repoint symlinks; we never write file
+# content through a link, so this stays safe under the root ExecStartPre run.
+#
+# Idempotent + fail-open: an already-correct link is left alone; a real
+# (non-symlink) dir/file at the dest is preserved and logged (never clobbered);
+# any error logs a warning and continues.
+CLAUDE_DIR="$DEPT/.claude"
+SKILLS_SRC_DIR="$DEPT/skills"
+if [[ -d "$CLAUDE_DIR" && -d "$SKILLS_SRC_DIR" ]]; then
+  # Match the .claude dir's owner so root-created links/dirs stay owned by the
+  # dept uid (robust across the pre/post-#1120 ownership models).
+  claude_owner="$(stat -c '%u:%g' "$CLAUDE_DIR" 2>/dev/null \
+                  || stat -f '%u:%g' "$CLAUDE_DIR" 2>/dev/null || true)"
+  skills_link_dir="$CLAUDE_DIR/skills"
+  if [[ ! -e "$skills_link_dir" ]]; then
+    if mkdir -p "$skills_link_dir" 2>/dev/null; then
+      [[ -n "$claude_owner" ]] && chown "$claude_owner" "$skills_link_dir" 2>/dev/null || true
+    else
+      log "WARN: cannot create $skills_link_dir — skip skill wiring (fail-open)"
+    fi
+  fi
+  # Keep an untracked link out of the loop's `git add -A` autocommit (mirrors
+  # the KANBAN untracked-file handling above): a runtime discovery link must
+  # never be staged into a dept commit (→ push 403 / churn). A link already
+  # TRACKED in the dept repo (e.g. a deliberately committed one) is left alone.
+  exclude_untracked_link() {
+    local rel="$1" excl
+    git -C "$DEPT" ls-files --error-unmatch "$rel" >/dev/null 2>&1 && return 0
+    excl="$DEPT/.git/info/exclude"
+    [[ -f "$excl" ]] || return 0
+    grep -qxF "$rel" "$excl" 2>/dev/null && return 0
+    printf '%s\n' "$rel" >> "$excl" 2>/dev/null \
+      && log "git-excluded untracked skill link $rel" || true
+  }
+  wired=0
+  if [[ -d "$skills_link_dir" ]]; then
+    for skdir in "$SKILLS_SRC_DIR"/*/; do
+      [[ -d "$skdir" ]] || continue
+      name="$(basename "$skdir")"
+      # Only wire real skills — a dir with a SKILL.md manifest.
+      [[ -f "$skdir/SKILL.md" ]] || continue
+      link="$skills_link_dir/$name"
+      rel=".claude/skills/$name"
+      target="../../skills/$name"
+      if [[ -L "$link" ]]; then
+        # Already a symlink — repoint only if it aims elsewhere.
+        if [[ "$(readlink "$link" 2>/dev/null)" == "$target" ]]; then
+          exclude_untracked_link "$rel"
+          continue
+        fi
+        ln -sfn "$target" "$link" 2>/dev/null \
+          && { [[ -n "$claude_owner" ]] && chown -h "$claude_owner" "$link" 2>/dev/null || true; \
+               exclude_untracked_link "$rel"; \
+               log "re-pointed $rel -> $target"; wired=$((wired+1)); } \
+          || log "WARN: could not repoint $rel (fail-open)"
+      elif [[ -e "$link" ]]; then
+        # A real dir/file already occupies the slot — never clobber it.
+        log "DEFERRED: $rel exists as a non-symlink — preserved"
+      else
+        ln -s "$target" "$link" 2>/dev/null \
+          && { [[ -n "$claude_owner" ]] && chown -h "$claude_owner" "$link" 2>/dev/null || true; \
+               exclude_untracked_link "$rel"; \
+               log "wired $rel -> $target"; wired=$((wired+1)); } \
+          || log "WARN: could not wire $rel (fail-open)"
+      fi
+    done
+    [[ "$wired" -gt 0 ]] && log "skill wiring: $wired link(s) (re)created for $(basename "$DEPT")"
+  fi
+fi
+
 # skip-worktree the vendored TRACKED files so the loop's git add never picks up
 # the framework-overwrite (else it commits structural libs → push 403; Tony
 # 2026-06-07). Best-effort, fail-open. Covers BOTH the core libs and the

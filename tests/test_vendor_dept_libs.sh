@@ -23,6 +23,10 @@
 #   T10 a destination changed since the last vendor run is deferred in place;
 #       an unchanged managed destination receives normal source upgrades.
 #   T11 a different existing destination with no baseline is deferred unchanged.
+#   T12 .claude/skills/<name> symlink wiring (board #1224): the vendored
+#       emit-kanban-task AND the dept's own repo skills are linked into
+#       .claude/skills/ (relative), idempotently, without clobbering a real dir,
+#       and a dept lacking .claude/ is skipped fail-open.
 # =============================================================================
 set -uo pipefail
 
@@ -325,6 +329,71 @@ if [[ ! -e "$last11" ]]; then
 else
   echo "  FAIL: T11f deferred bytes were incorrectly recorded as managed"; FAIL=$((FAIL+1))
 fi
+
+# =============================================================================
+# T12: board #1224 — .claude/skills/<name> symlink wiring.
+#   The vendored emit-kanban-task AND the dept's own repo skills are linked into
+#   .claude/skills/ (relative ../../skills/<name>) so Claude Code can discover
+#   them. morty + claudette loaded ZERO skills for want of these links.
+# =============================================================================
+echo "== T12: .claude/skills symlink wiring =="
+PARENT12="$FIX/parent12"
+FW12="$PARENT12/bubble-ops-loop"; make_framework "$FW12"
+DEPT12="$PARENT12/bubble-ops-skillwire"; make_dept "$DEPT12"
+mkdir -p "$DEPT12/.claude"
+# a dept-OWN skill (committed in the repo, present before boot)
+mkdir -p "$DEPT12/skills/codex-write"
+echo "# codex-write" > "$DEPT12/skills/codex-write/SKILL.md"
+out12="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12" 2>&1)"
+rc12=$?
+chk "T12 exits 0" 0 "$rc12"
+# the fleet-shared emit-kanban-task is vendored then wired
+if [[ -L "$DEPT12/.claude/skills/emit-kanban-task" ]]; then
+  echo "  PASS: T12a emit-kanban-task wired as symlink"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T12a emit-kanban-task not a symlink in .claude/skills"; FAIL=$((FAIL+1))
+fi
+chk_eq "T12b emit-kanban-task link is relative ../../skills/…" \
+  "../../skills/emit-kanban-task" "$(readlink "$DEPT12/.claude/skills/emit-kanban-task" 2>/dev/null)"
+# the dept's own skill is wired too
+if [[ -L "$DEPT12/.claude/skills/codex-write" ]]; then
+  echo "  PASS: T12c dept-own codex-write wired as symlink"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T12c dept-own codex-write not wired"; FAIL=$((FAIL+1))
+fi
+# link resolves to the source SKILL.md
+if [[ -f "$DEPT12/.claude/skills/codex-write/SKILL.md" ]]; then
+  echo "  PASS: T12d codex-write link resolves to its SKILL.md"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T12d codex-write link does not resolve"; FAIL=$((FAIL+1))
+fi
+# idempotent rerun — still a correct symlink, no error
+out12b="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12" 2>&1)"
+chk "T12e idempotent rerun exits 0" 0 "$?"
+chk_eq "T12f link unchanged after rerun" \
+  "../../skills/codex-write" "$(readlink "$DEPT12/.claude/skills/codex-write" 2>/dev/null)"
+# a real (non-symlink) dir in the slot is preserved, never clobbered
+DEPT12B="$PARENT12/bubble-ops-realdir"; make_dept "$DEPT12B"
+mkdir -p "$DEPT12B/.claude/skills/codex-write" "$DEPT12B/skills/codex-write"
+echo "# override" > "$DEPT12B/.claude/skills/codex-write/SKILL.md"
+echo "# src"      > "$DEPT12B/skills/codex-write/SKILL.md"
+out12c="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12B" 2>&1)"
+if [[ ! -L "$DEPT12B/.claude/skills/codex-write" && -d "$DEPT12B/.claude/skills/codex-write" ]]; then
+  echo "  PASS: T12g pre-existing real dir preserved (not clobbered)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T12g pre-existing real dir was replaced"; FAIL=$((FAIL+1))
+fi
+chk_contains "T12h defer of real dir is logged" "DEFERRED: .claude/skills/codex-write" "$out12c"
+# the untracked link is git-excluded so the loop's autocommit never stages it
+if grep -qxF ".claude/skills/codex-write" "$DEPT12/.git/info/exclude" 2>/dev/null; then
+  echo "  PASS: T12j untracked skill link added to .git/info/exclude"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T12j skill link not git-excluded"; FAIL=$((FAIL+1))
+fi
+# a dept WITHOUT a .claude/ dir is left untouched (fail-open, no crash)
+DEPT12C="$PARENT12/bubble-ops-noclaude"; make_dept "$DEPT12C"
+out12d="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12C" 2>&1)"
+chk "T12i dept without .claude/ still exits 0" 0 "$?"
 
 # =============================================================================
 echo

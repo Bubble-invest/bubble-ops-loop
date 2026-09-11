@@ -417,3 +417,94 @@ def test_scaffold_emits_anti_regression_test(scaffolded):
     assert "test_dry_run_does_not_mutate_repo" in src
     # Parameterised slug landed in the DRY_RUN repo target.
     assert "bubble-ops-newdept" in src
+
+
+# -------------------------------------------------------------------------
+# 6) board #1224 — the dept's OWN repo skills are wired into .claude/skills/
+#    as relative symlinks so Claude Code can discover them. morty + claudette
+#    loaded ZERO skills because these links were never created.
+# -------------------------------------------------------------------------
+def _make_repo_skill(dept_root, name):
+    d = dept_root / "skills" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    return d
+
+
+def test_scaffold_wires_repo_skills_as_relative_symlinks(tmp_path):
+    dept_root = tmp_path / "bubble-ops-skillwire"
+    dept_root.mkdir()
+    _make_repo_skill(dept_root, "emit-kanban-task")
+    _make_repo_skill(dept_root, "codex-write")
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="skillwire",
+        display_name="SkillWire",
+        level="ops",
+        enabled_skills=["emit-kanban-task", "codex-write"],
+        all_dept_slugs=["skillwire", "ben"],
+    )
+    for name in ("emit-kanban-task", "codex-write"):
+        link = dept_root / ".claude" / "skills" / name
+        assert link.is_symlink(), f".claude/skills/{name} must be a symlink"
+        assert os.readlink(link) == os.path.join("..", "..", "skills", name), (
+            f".claude/skills/{name} must point to ../../skills/{name} (relative)"
+        )
+        # The link must actually resolve to the source SKILL.md.
+        assert (link / "SKILL.md").is_file()
+
+
+def test_scaffold_skill_links_skip_missing_source(tmp_path):
+    """No dangling links: a declared skill with no skills/<name>/ dir on disk
+    is left unlinked (the boot-time vendor self-heal picks it up later)."""
+    dept_root = tmp_path / "bubble-ops-missing"
+    dept_root.mkdir()
+    _make_repo_skill(dept_root, "present-skill")
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="missing",
+        display_name="Missing",
+        level="ops",
+        enabled_skills=["present-skill", "absent-skill"],
+        all_dept_slugs=["missing", "ben"],
+    )
+    assert (dept_root / ".claude" / "skills" / "present-skill").is_symlink()
+    assert not (dept_root / ".claude" / "skills" / "absent-skill").exists()
+
+
+def test_scaffold_skill_links_idempotent_and_preserve_real_dirs(tmp_path):
+    dept_root = tmp_path / "bubble-ops-idem"
+    dept_root.mkdir()
+    _make_repo_skill(dept_root, "emit-kanban-task")
+    kwargs = dict(
+        slug="idem",
+        display_name="Idem",
+        level="ops",
+        enabled_skills=["emit-kanban-task"],
+        all_dept_slugs=["idem", "ben"],
+    )
+    iso.scaffold_isolation_surface(dept_root, **kwargs)
+    link = dept_root / ".claude" / "skills" / "emit-kanban-task"
+    assert link.is_symlink()
+    # rerun is a no-op (still a correct symlink, no exception)
+    iso.scaffold_isolation_surface(dept_root, **kwargs)
+    assert link.is_symlink()
+    assert os.readlink(link) == os.path.join("..", "..", "skills", "emit-kanban-task")
+
+    # A real (non-symlink) dir already in the slot is never clobbered.
+    dept2 = tmp_path / "bubble-ops-realdir"
+    dept2.mkdir()
+    _make_repo_skill(dept2, "emit-kanban-task")
+    real = dept2 / ".claude" / "skills" / "emit-kanban-task"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("# local override\n", encoding="utf-8")
+    iso.scaffold_isolation_surface(
+        dept2,
+        slug="realdir",
+        display_name="RealDir",
+        level="ops",
+        enabled_skills=["emit-kanban-task"],
+        all_dept_slugs=["realdir", "ben"],
+    )
+    assert real.is_dir() and not real.is_symlink()
+    assert (real / "SKILL.md").read_text() == "# local override\n"
