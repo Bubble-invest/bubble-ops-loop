@@ -17,7 +17,10 @@ EnvironmentFile=-/run/claude-agent/env
 # Bun on PATH (Telegram MCP / plugins) + standard bins. Same as other claude crons.
 Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/claude/scripts/cloud-wiki-compile.sh %i
-# Generous timeout — a full compile spawns 9 extraction subagents + 1 synthesis.
-TimeoutStartSec=2700
+# Generous timeout — a full compile spawns 10 knowledge-extraction subagents +
+# 1 synthesis, plus piggyback audit passes on the same feed (claimed-vs-done
+# nightly; skill-gap + intent-drift + compliance-drift on Sunday). Bumped 2700→
+# 3600 for the 4 extra Sunday passes (one does external WebFetch to the docs).
+TimeoutStartSec=3600
 StandardOutput=journal
 StandardError=journal
