@@ -1082,29 +1082,47 @@ pruning so counts are correct. Telegram only if you archived something notable.
 
 ## PRUNING STEP — private agent-memory hygiene (run the notifier)
 
-The steps above prune the SHARED wiki. Agents ALSO keep PRIVATE memory
-(`~/.claude/agent-memory/<agent>/MEMORY.md` + reference files) that nothing else
-grooms. We do NOT prune it centrally — only the owning agent knows which entries
-are still load-bearing, so a blind cap would delete memory it relies on. Instead
-we DETECT clutter and NUDGE the owning agent to groom its own memory (it stays
-"in the agent's consciousness flow"). This is mechanical detection — just run the
-tool; it never edits anyone's memory:
+The steps above prune the SHARED wiki. Agents ALSO keep PRIVATE memory that
+nothing else grooms — two stores, each watched against its LIVE file:
+- `MEMORY.md` — the private memory INDEX (+ its reference files).
+- `WORKING_MEMORY.md` — the agent's live scratch/working state, which grows
+  unbounded (this coverage closed a zero-scan gap, #1223).
+
+We do NOT prune either centrally — only the owning agent knows which entries are
+still load-bearing, so a blind cap would delete memory it relies on ("agentic not
+deterministic", #103). Instead the tool COLLECTS mechanical evidence and NUDGES
+the owning agent to groom its own memory (it stays "in the agent's consciousness
+flow"). It never edits anyone's memory and never hard-deletes — the nudge asks the
+agent to ARCHIVE (move-only) stale material. Just run it:
 
 ```bash
 sudo -u claude python3 /home/claude/scripts/memory_hygiene_notify.py
 ```
 
-What it does (no judgment needed from you — it's deterministic):
-- Scans each agent's canonical MEMORY.md (the Mac caches synced up by
-  mac-transcript-sync + VPS-native memory; largest copy wins).
-- For any over budget (~24KB / many over-long index lines / many dup slugs):
-  - VPS-native depts (ben/maya/tony/accountant) → injects a grooming nudge
-    straight into their live session.
-  - Mac-resident agents (content/rnd/claudette/security) → queues the nudge in
-    that Mac's outbox; the Mac's own sync run injects it locally (trust arrow is
-    laptop→cloud only, so the VPS can't inject into a laptop directly).
-- A per-agent 6-day cooldown stamp prevents re-nudging weekly before the agent
-  has groomed. Healthy memories are silently skipped.
+What it does (no judgment needed from you — it only collects evidence + nudges):
+- MEMORY.md pass: scans each agent's canonical index. VPS-native depts resolve to
+  their LIVE `projects/-home-claude-agents-bubble-ops-<dept>/memory/MEMORY.md`
+  (authoritative — never a frozen Mac cache, the #874 fix); Mac-resident agents
+  from the synced caches. Triggers: over budget (~24KB) / many over-long index
+  lines / many dup slugs.
+- WORKING_MEMORY.md pass: scans each agent's LIVE workspace-root scratchpad under
+  `/srv/agents/<slug>/WORKING_MEMORY.md` (newest mtime wins; the stale
+  `/home/claude/agents/bubble-ops-<slug>/` mirrors are deliberately NOT scanned —
+  same frozen-mirror trap as #874). Triggers: over soft budget (~64KB) OR stale
+  (untouched ≥45d while non-trivial). The nudge asks the agent to move completed/
+  stale sections into a `WORKING_MEMORY.archive.md` (move, never delete).
+- Delivery per agent: VPS-native depts (ben/maya/tony/accountant) → inject the
+  nudge into their live session; Mac-resident agents (content/rnd/claudette/
+  security) → queue in that Mac's outbox; the Mac's own sync run injects locally
+  (trust arrow is laptop→cloud only, so the VPS can't inject into a laptop).
+- A per-(agent,store) 6-day cooldown stamp prevents weekly re-nudging before the
+  agent has groomed; each stamp records the size, so a later nudge on a file that
+  hasn't shrunk since the last one is ESCALATED (closed-loop feedback). Healthy
+  memories are silently skipped.
+
+Note: an agent home with a `750` mode (e.g. claudette) is not traversable by the
+`claude` user this runs as, so its WORKING_MEMORY.md is skipped — grant group-read
+on that home, or run the WM pass as root, to close that gap.
 
 Just run it and note its one-line-per-agent output in your final report. Do not
 edit any agent's private memory yourself.
