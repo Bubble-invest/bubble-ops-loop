@@ -6,6 +6,7 @@ allowed-tools:
 - Read
 - Skill
 - Task
+- WebFetch
 ---
 # Cloud Wiki Compiler — single always-on VPS compiler
 
@@ -264,7 +265,16 @@ YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
    Format: - **YYYY-MM-DD** — <summary> — see [[namespace/page-name]]
    Also set HOT_MD_DATE = $TODAY.
 
-Return ONLY structured entries + HOT_MD_CONTENT + HOT_MD_DATE. No preamble.
+7. RESEARCH_SEED (optional, zero or more) — if the reading surfaces something
+   that would be valuable INPUT for {WIKI_FOLDER}'s NEXT research / L2 mission
+   (an open question left hanging, a lead worth investigating, an assumption
+   that went stale, an explicit "we should look into X later"), return:
+     RESEARCH_SEED: <one-line lead for {WIKI_FOLDER}'s next research tick>
+   These are LEADS for FUTURE research — NOT knowledge facts (those are the
+   structured entries above) and NOT skill gaps (that's STEP 4.6). Omit if none.
+
+Return ONLY structured entries + HOT_MD_CONTENT + HOT_MD_DATE + any
+RESEARCH_SEED lines. No preamble.
 If nothing significant: "NO_NEW_KNOWLEDGE".
 ```
 
@@ -435,6 +445,391 @@ confidence-bar gate, no `emit-kanban-task` call — Rick triages
 
 Note the one-line summary in your final compile report (STEP 10).
 
+## STEP 4.7 — Claimed-vs-done / follow-through accountability detector (NIGHTLY)
+
+Runs on EVERY nightly compile (fresh completion claims are cheapest to verify
+same-day — board #1225). This is a **THIRD extractor reading the SAME
+reduced-text feed** STEP 4 already computed — piggyback, not a new scan. Do NOT
+re-`find`/re-parse the transcripts; reuse STEP 4's per-folder reduced text (or,
+if those subagents already freed their context, re-run only STEP 4's read/parse
+commands — never add a new discovery mechanism, and never grep/regex the
+transcripts for keywords — see RULE below).
+
+**Its distinct job — FOLLOW-THROUGH / truthfulness of completion claims.** The
+system now reads the one transcript pass through four non-overlapping lenses:
+
+- **STEP 4 = KNOWLEDGE** (facts/decisions → wiki)
+- **STEP 4.6 = KNOW-HOW gaps** (a capability was MISSING → skill candidates)
+- **STEP 4.7 = FOLLOW-THROUGH** (a capability/task was CLAIMED done but the
+  evidence is absent → verification cards)
+- **STEP 4.8 = INTENT ALIGNMENT** (below) · **STEP 4.9 = DOC COMPLIANCE** (below)
+
+4.7 surfaces things an agent SAID it did / fixed / deployed / promised where the
+transcript evidence does not show it actually happened. (Live-relevant: agents in
+this fleet have over-claimed — "#1179 called done-then-not", the "4 NAVs aligned"
+misses.) This is DISTINCT from 4.6 (missing tooling) and from 4.8 (operator
+intent, not the agent's own claim).
+
+**Agentic reading judgment, NOT a keyword miner.** A grep for "done" / "I did" /
+"deployed" is ~all false positives — only a reading agent can tell a real
+concrete claim ("pushed PR #N", "deployed X", "installed the drop-in") from
+narration or an unstarted plan. Do NOT write, or ask a subagent to write, a
+regex/keyword pass here.
+
+Spawn **ONE Task subagent, model sonnet** (fleet-wide accountability judgment,
+same tier justification as STEP 4/4.6). Give it the full set of reduced-text
+slices across ALL wiki folders.
+
+### Claimed-vs-done extractor prompt template:
+
+```
+You are a follow-through / claimed-but-not-done auditor reading real agent
+session transcripts (the same reduced user/assistant text turns already parsed
+for wiki knowledge extraction this run). Your job is READING JUDGMENT, not
+keyword matching — surface CONCRETE completion claims an agent made whose own
+transcript gives NO corroborating evidence they actually happened.
+
+TRANSCRIPT_SLICES = {full set of reduced text turns from ALL wiki folders this run}
+
+## What counts as a candidate (read for MEANING)
+A HIGH-signal candidate is ONE of:
+- a NAMED deliverable claimed DONE (a PR/commit pushed, a file written, a
+  service deployed/restarted, a config/drop-in installed, a card closed, a
+  number "aligned/fixed") where nothing in the same OR adjacent turns shows the
+  action actually executed (no tool call, no output, no confirmation); OR
+- an explicit PROMISED follow-up ("I'll do X next", "next I will deploy Y")
+  that never recurs anywhere later in the feed.
+
+## EXCLUDE (not candidates even though they sound like claims)
+1. Claims WITH corroborating evidence in the same/adjacent turns (a shown
+   command + its output, a PR URL, a confirming read-back). The evidence being
+   present is exactly what you check for — if it's there, DROP it.
+2. Routine narration of trivial reads ("I read the file", "I checked status").
+3. Plans/proposals explicitly framed as NOT-yet-done ("the plan is to…",
+   "we should…") — an unstarted plan is not an over-claim.
+4. Claims about work done OUTSIDE this transcript window (a reference to an
+   earlier day's shipped work) — you cannot see that evidence, so do NOT flag it.
+
+## Evidence-quote rule (mandatory, no exceptions)
+Every candidate MUST carry the VERBATIM claim quote copied exactly from the
+transcript — the sentence where the agent asserted completion. No quote = not a
+candidate.
+
+## De-dup against the board — BOTH open AND closed
+A claim already carded/verified must not be re-surfaced. For each candidate run:
+  gh issue list --repo Bubble-invest/bubble-ops-board --state open \
+    --search "<distinctive terms>" --limit 20
+  gh issue list --repo Bubble-invest/bubble-ops-board --state closed \
+    --search "<distinctive terms>" --limit 20
+Use the deliverable's distinctive terms (PR#, file path, service name, card #).
+If either returns a card clearly covering the same claim, DROP it. If `gh` is
+unavailable, say so explicitly rather than silently skipping de-dup.
+
+## Output — RETURN to the parent (do NOT create cards yourself)
+For each surviving candidate, one block:
+
+### <agent slug> — <short deliverable>
+CLAIM: "<verbatim quote>" (<session file basename>, <date>)
+WHY_UNBACKED: <1-2 sentences — what corroboration is absent>
+SUGGESTED_CARD_TITLE: verify: <agent> claimed <deliverable> done <date> — confirm it shipped
+DEPT: <the dept/owner slug for this folder — rnd|ben|maya|tony|content|security|accountant|morty|claudette>
+BOARD_CHECK: open+closed terms used: "<terms>" — no match
+
+Also RETURN one compact summary line:
+"claimed_vs_done: N verification candidates, M dropped as already-carded, K
+dropped as evidence-backed/narration".
+If zero survive, return ONLY that line with N=0. Do NOT pad.
+```
+
+Then the **PARENT** emits ONE verification card per surviving candidate — card
+creation (a board mutation) stays in the parent, exactly as STEP 4.6 keeps its
+file-write in the parent:
+
+```bash
+EMIT=/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh
+# for each returned candidate block:
+"$EMIT" task=wiki-claim-audit \
+  title="<SUGGESTED_CARD_TITLE>" \
+  body="<CLAIM quote + WHY_UNBACKED + session ref>" \
+  type=findings owner="<DEPT>" priority=normal budget=2
+```
+
+(Omit `host=` — let the owner map set the dept's natural host label: rnd/content/
+claudette default `host:local`, ben/maya/tony/accountant/morty default `host:vps`.
+Hardcoding `host=vps` would mislabel a Mac-resident dept's card.)
+
+`emit_kanban_item.sh` dedups on task+title for OPEN cards, so a claim that
+re-appears in tomorrow's overlapping 30h window collapses to the same card (the
+subagent's open+closed board search covers the already-CLOSED case).
+`type=findings` → `type:research` + `status:triage`, so a human/agent triages the
+verification cheaply. **These cards are the durable output — they are emitted
+even on a wiki-quiet night** (independent of the STEP 10 Telegram report).
+
+Note the one-line summary in your STEP 10 report.
+
+**Cadence knob:** nightly by default (#1225 — fresh claims are cheapest to verify
+same-day). Joris may make it Sunday-only by adding the same Sunday-guard STEP 4.6
+uses; leave nightly unless he says otherwise.
+
+## STEP 4.8 — Intent-drift (map-vs-territory) detector (WEEKLY, Sunday)
+
+**Only runs when today (UTC) is Sunday** (same reasoning as STEP 4.6 — intent
+drift is a slow signal that accrues over a week; a daily re-read adds noise, not
+signal). Piggyback the SAME reduced-text feed (reuse STEP 4's slices; if freed,
+re-run ONLY STEP 4's read/parse commands — no new scan, no keyword pass).
+
+**Its distinct job — INTENT ALIGNMENT (map vs territory).** STEP 4.7 checks
+whether an agent did what IT claimed; THIS checks whether the fleet built/planned
+what **Joris (the operator)** actually asked for and intended. Different subject
+(operator intent vs agent self-claim), so it never double-reports with 4.7. It
+(a) infers the operator intents visible in the feed, (b) compares them to what
+depts actually built / are building, (c) surfaces DRIFT where execution diverged
+from intent, (d) can ASK Joris to CLARIFY an ambiguous intent (a `needs:human`
+card) rather than guessing, and (e) proposes changes to a dept's mission/mandate
+file where the drift is really a stale mandate.
+
+It writes into the **operator-intents wiki collection** (`shared/operator-intents/`)
+— a durable, browsable record where inferred AND Joris-confirmed intents
+accumulate over time (see "OPERATOR-INTENTS WIKI COLLECTION" below).
+
+**Agentic judgment, not keyword.** What Joris "intended" is never a keyword — it
+is read from what he asked, corrected, praised, or rejected across the feed.
+**Never auto-EDIT a live dept mission/mandate file** — those are push-guarded
+live-agent files; a mandate change is a PROPOSED card for Joris/Rick to apply.
+
+Spawn **ONE Task subagent, model sonnet**. Give it the full reduced feed across
+ALL folders (intent is cross-cutting) PLUS the current operator-intents
+collection so it UPDATES rather than duplicates — the parent `cat`s
+`shared/operator-intents/*.md` into the prompt (or passes "EMPTY (first run)").
+
+### Intent-drift extractor prompt template:
+
+```
+You are a map-vs-territory / intent-alignment auditor. You read real agent
+session transcripts (the same reduced turns already parsed this run) and judge
+whether what the fleet BUILT or is BUILDING matches what JORIS (the operator)
+actually asked for and intended. This is READING JUDGMENT — operator intent is
+inferred from what Joris asked, corrected, approved, or rejected, never from a
+keyword.
+
+TRANSCRIPT_SLICES = {full reduced turns from ALL wiki folders this run}
+EXISTING_OPERATOR_INTENTS = {current contents of shared/operator-intents/*.md,
+                             or "EMPTY (first run)"}
+
+## Produce THREE kinds of output
+
+### A. OPERATOR_INTENTS (to accumulate in the wiki collection)
+For each distinct, DURABLE operator intent you can read from the feed — a thing
+Joris wants the fleet/a dept to be or do (a goal, a constraint, a priority, a
+"stop doing X / always do Y"). One block each:
+INTENT_ID: <stable-kebab-slug>   (REUSE the existing slug if updating one)
+DEPT: <wiki folder / dept slug the intent is about, or "fleet">
+STATUS: inferred | confirmed
+  - confirmed ONLY if Joris explicitly stated/clarified it in THIS feed (e.g.
+    answered a prior clarify-question, or stated it directly). Else inferred.
+INTENT: <1-2 sentence statement of what Joris wants>
+EVIDENCE: "<verbatim quote from the feed>" (<agent/session, date>)
+FIRST_SEEN: <date>   LAST_SEEN: <date>
+Return an intent as UPDATE (reusing its slug) only when you have NEW evidence — a
+re-statement, a refinement, or a confirmation that flips inferred → confirmed.
+
+### B. DRIFT findings (map vs territory)
+Where execution diverged from an intent (a dept built something else, kept doing
+a thing Joris said to stop, or a mission/mandate file now contradicts a confirmed
+intent). One block each:
+DRIFT: <what was intended vs what was built/done>
+INTENT_REF: <INTENT_ID>
+EVIDENCE: "<verbatim intent quote>" vs "<verbatim divergence quote>"
+PROPOSED: <a concrete fix — e.g. "update dept X MANDATE.md: …", or the card>
+SEVERITY: low | medium | high
+
+### C. CLARIFY questions (needs:human)
+Where an intent is genuinely AMBIGUOUS and you must NOT guess — a specific
+question only Joris can answer. One block each:
+QUESTION: <one precise question for Joris>
+WHY: <why it's ambiguous — the two competing readings>
+INTENT_REF: <INTENT_ID or "new">
+DEPT: <dept slug the question is about, or rnd>
+
+## Rules
+- Evidence-quote mandatory for every intent, drift, and clarify item (verbatim).
+- De-dup drift/clarify against the board (open+closed) as the other extractors
+  do; drop already-carded. Say so if `gh` is unavailable.
+- Do NOT invent intents from thin narration — a durable intent needs a real
+  operator signal (Joris asked/corrected/approved), not an agent's own idea.
+- NEVER propose silently auto-editing a live mission/mandate file — a mandate
+  change is a PROPOSED card for Joris/Rick to apply.
+
+RETURN all A/B/C blocks + one compact summary line:
+"intent_drift: I intents (Xc/Yi), D drift findings, C clarify-questions, M
+dropped as already-carded".
+```
+
+Then the **PARENT**:
+
+1. Writes/updates the operator-intents collection from the returned **A** blocks
+   (see recipe below) — parent-written so it is robust to the STEP 4.5 quiet-gate
+   (it does not depend on the synthesis subagent running).
+2. Emits ONE card per **B** DRIFT finding:
+   `"$EMIT" task=wiki-intent-drift title="drift: <…>" body="<intent vs built + PROPOSED>" type=findings owner="<DEPT>" priority=normal budget=2`
+   (for a proposed mandate change, put the exact proposed edit in the body).
+3. Emits ONE `needs:human` card per **C** CLARIFY question:
+   `"$EMIT" task=wiki-intent-clarify title="clarify: <…>" body="<QUESTION + the two readings>" type=decision owner="<DEPT>" priority=normal budget=2`
+   (`type=decision` → `needs:human` routing — this is the "ask Joris to clarify"
+   path; the specific question rides in the card body/comment).
+
+Card mutations stay in the parent (like 4.6/4.7). Note the summary line in STEP 10.
+
+### OPERATOR-INTENTS WIKI COLLECTION (`shared/operator-intents/`)
+
+A durable, consultable record of what Joris wants — inferred by STEP 4.8 and
+marked `confirmed` when Joris clarifies. **One page per dept (+ a `fleet` page)**
+so it stays capped by dept and `wiki_search` finds it by dept. The parent writes
+it (Edit/Write inside the wiki — allowed; the HARD RULE only forbids `git push`).
+It materializes on the first Sunday compile run.
+
+On first run, create the README index (idempotent):
+
+```bash
+WIKI=/home/claude/.claude/agent-memory/shared-wiki
+TODAY=$(date -u +%Y-%m-%d)
+DIR="$WIKI/shared/operator-intents"; mkdir -p "$DIR"
+if [ ! -f "$DIR/README.md" ]; then
+  cat > "$DIR/README.md" <<MD
+---
+title: Operator Intents — what Joris wants (inferred + confirmed)
+type: operational
+owner: cloud-wiki-compile
+last_verified: ${TODAY}
+tags: [operator-intents, alignment, map-vs-territory]
+---
+
+# Operator Intents
+
+A durable, consultable record of operator (Joris) intent, accumulated weekly by
+the wiki-compile intent-drift pass (STEP 4.8). Each dept page lists intents with
+\`status: inferred\` (read from transcripts) or \`status: confirmed\` (Joris
+stated or clarified it directly). Consult this before building — it is the map
+the fleet's territory is measured against.
+
+One page per dept: \`shared/operator-intents/<dept>.md\` (+ \`fleet.md\`).
+MD
+fi
+```
+
+For each returned **INTENT** block, append/update the dept page
+`shared/operator-intents/<DEPT>.md` (Read it first; create with frontmatter —
+`title`, `type: operational`, `owner: cloud-wiki-compile`, `last_verified`,
+`tags: [operator-intents, <dept>]` — if absent). Each intent is a section keyed
+by `INTENT_ID`, so an UPDATE rewrites that section in place and a confirmation
+flips its status. **Never delete an intent — append-or-update only:**
+
+```
+## <INTENT_ID>
+- **status:** inferred | confirmed
+- **intent:** <statement>
+- **evidence:** "<verbatim quote>" — <agent/session, date>
+- **first_seen:** <date> · **last_seen:** <date>
+```
+
+A `status: inferred` entry becomes `confirmed` when a later run returns it with
+STATUS=confirmed (Joris answered the clarify card, or stated it directly). STEP 9
+adds `operator-intents` to the index so `wiki_search` surfaces it.
+
+## STEP 4.9 — Compliance-drift-to-Anthropic-docs detector (WEEKLY, Sunday)
+
+**Only runs on Sunday.** Piggyback the same reduced feed for the "what we
+actually do" side; fetch the "what is current best practice" side from the live
+Anthropic / Claude Code docs.
+
+**Its distinct job — EXTERNAL best-practice drift.** STEP 4.8 measures drift from
+the OPERATOR's intent (internal reference frame); THIS measures drift from
+**Anthropic's documented guidance** (external reference frame) — skills,
+subagents, hooks, memory, model policy, MCP, etc. Different reference frame, so it
+never double-reports with 4.7/4.8.
+
+**Boundary with STEP 4.6 (both Sunday, both write to `skill-updates/`).** 4.6 is
+INTERNAL-friction signal — *our own transcripts* show a capability was missing and
+got hand-rolled → propose a skill. 4.9 is EXTERNAL-doc signal — *the docs* show a
+current/better/supported way we aren't using (whether or not anyone hand-rolled a
+workaround). They can legitimately fire on the SAME incident (a hand-rolled
+workaround that a documented feature would remove). To avoid two files reporting
+the same fix the same week, 4.9 DEFERS to 4.6: it reads this week's 4.6
+`candidates.md` (if already written this run — 4.6 runs first) and DROPS any
+finding 4.6 already captured, noting "already in 4.6 candidates.md" in its report
+so Rick cross-checks the two files together. 4.9 keeps only findings 4.6 did not
+(and would not) surface — i.e. drift the transcripts alone can't reveal because it
+requires reading the docs.
+
+**Agentic judgment:** reading current docs and deciding whether our practice
+meaningfully diverges is reasoning, not a diff. Do not reduce it to keyword
+matching.
+
+Spawn **ONE Task subagent, model sonnet, WITH WebFetch**. Give it the reduced
+feed (our practice) and have it fetch the current docs.
+
+### Compliance-drift extractor prompt template:
+
+```
+You audit whether the fleet's PRACTICE has drifted from CURRENT Anthropic /
+Claude Code documentation & best practices. Reading judgment, not a keyword diff.
+
+OUR_PRACTICE = {reduced turns from ALL wiki folders this run — how agents
+actually use skills/subagents/hooks/memory/models/MCP} PLUS, where useful, the
+live config you can read on this box (~/.claude/skills, settings.json, agent
+.md files).
+DOCS = fetch the current pages with WebFetch, e.g.:
+  https://docs.anthropic.com/en/docs/claude-code   (+ its skills / subagents /
+  hooks / memory / settings subpages)
+  https://code.claude.com/docs
+Fetch ONLY what you need to substantiate a specific finding. If WebFetch fails,
+say so and report only findings you can ground without it — do NOT invent doc
+claims.
+SKILL_GAP_FILE = this week's STEP 4.6 report, i.e.
+  /home/claude/monitoring/skill-updates/{YEAR}-W{WK}-workaround-candidates.md
+  (read it if it exists — 4.6 runs before you this run; treat "absent" as empty).
+
+## What counts as a finding
+A concrete, CURRENT documented recommendation OR capability that our practice
+contradicts or misses in a way that MATTERS: a deprecated pattern we still use,
+a supported feature that would remove a hand-rolled workaround, a config that
+diverges from documented guidance. NOT stylistic nitpicks; NOT things that are
+deliberate local policy (e.g. our model-pinning doctrine, our push-guard).
+
+## Rules
+- Every finding cites (a) a VERBATIM practice quote OR a config path, AND (b) the
+  specific doc URL + what it says. No doc citation = not a finding.
+- De-dup against the board (open+closed); drop already-carded.
+- DEFER to STEP 4.6: if a finding is already captured in SKILL_GAP_FILE (same
+  underlying workaround/gap), DROP it and note "already in 4.6 candidates.md".
+  Keep only doc-driven findings 4.6 did not (and could not) surface from the
+  transcripts alone.
+- Rank by impact; do not pad.
+
+RETURN a markdown report, one block per finding:
+
+### <short title> — <axis: skills|subagents|hooks|memory|models|mcp|other>
+PRACTICE: "<quote or config path>"
+DOC: <url> — "<what current docs say>"
+DRIFT: <how we diverge + why it matters>
+PROPOSED: <the change>
+
+Plus one compact summary line:
+"compliance_drift: F findings, M dropped as already-carded (report-only)".
+```
+
+Then the **PARENT** writes the report — **report-only**, Rick triages weekly
+(matching STEP 4.6's conservative "no auto-card, Rick cards the real ones" idiom,
+because doc-interpretation is fuzzy and auto-carding it would be noisy):
+
+```
+/home/claude/monitoring/skill-updates/{YEAR}-W{WK}-compliance-drift.md
+```
+
+(`{WK}` = ISO week from `date -u +%G-W%V`, same convention as STEP 4.6's
+`candidates.md`.) It is NOT the wiki and NOT a board card. Note the summary line
+in STEP 10.
+
 ## STEP 4.5 — Quiet-gate
 
 If ALL spawned extractors returned `NO_NEW_KNOWLEDGE`:
@@ -458,10 +853,13 @@ done
 
 3. Jump to STEP 9 (index) → STEP 10 (report). Skip 5-8. **Stay silent on Telegram** (quiet night).
 
-(Note: if STEP 4.6 ran because today is Sunday, its `candidates.md` was
-already written before this gate — the wiki-knowledge quiet-gate and the
-skill-gap miner are independent; a quiet wiki night can still have a
-non-empty workaround report, and vice versa.)
+(Note: STEPS 4.6–4.9 run BEFORE this gate and are INDEPENDENT of it — the
+wiki-knowledge quiet-gate only governs the knowledge/synthesis path. A quiet
+wiki night can still have: 4.7 verification cards emitted (nightly), and — on
+Sunday — a non-empty 4.6 `candidates.md`, 4.8 operator-intent writes +
+drift/clarify cards, and a 4.9 `compliance-drift.md`. Their outputs (board
+cards, the operator-intents collection, the report files) are the durable
+signal; the STEP 10 Telegram message stays silent on a quiet night regardless.)
 
 Otherwise proceed to STEP 5.
 
@@ -473,7 +871,7 @@ frontmatter — but it's writing into the fleet's shared memory, so it runs on
 Sonnet rather than Haiku to keep the write quality at the same tier as the
 nightly extraction. The deep weekly thesis is a separate Opus pass — see
 SYNTHESIS MODE. Joris 2026-06-19). Pass it all structured entries + per-agent caps +
-HOT_MD_CONTENT blocks. It does the entire Edit/Write loop in its own context and
+HOT_MD_CONTENT blocks + any RESEARCH_SEED lines from STEP 4. It does the entire Edit/Write loop in its own context and
 returns a one-paragraph summary. (Keeps the parent's context tiny — this is the
 cost-control architecture.)
 
@@ -489,6 +887,7 @@ PER_AGENT_CAPS = {folder: X/30, ...}
 STRUCTURED_ENTRIES (one per line): {DESTINATION/PAGE/ACTION/CONTENT}
 HOT_MD_CONTENT_BY_AGENT: {AGENT, bullets, HOT_MD_DATE}
 DECISIONS_TO_LOG: {title+body for DESTINATION=shared/decisions}
+RESEARCH_SEEDS_BY_AGENT: {AGENT: [one-line lead, ...]} (from STEP 4's RESEARCH_SEED lines; may be empty)
 NEW_PAGES_LIMIT = 5 (across all agents combined)
 
 RULES:
@@ -513,10 +912,17 @@ RULES:
 6. Wikilinks always [[path/page]], never markdown links.
 7. Do NOT rewrite index.md (parent regenerates it).
 8. Do NOT read pages not in STRUCTURED_ENTRIES.
-9. Stop after applying — don't verify/lint. Return summary and exit.
+9. RESEARCH_SEEDS_BY_AGENT: for each agent with seeds, append them to
+   shared/research-seeds/{agent}.md (create with frontmatter — title,
+   type: operational, owner: cloud-wiki-compile, last_verified=TODAY,
+   tags: [research-seeds, {agent}] — if absent). Append as dated bullets
+   ("- **TODAY** — <lead>"); NEVER rewrite prior seeds. This is the dept's
+   consultable backlog of leads for its next L2/research mission. Skip agents
+   with no seeds. shared/research-seeds/ is uncapped (like shared/).
+10. Stop after applying — don't verify/lint. Return summary and exit.
 
 RETURN (one compact line): "pages_updated=N pages_created=M decisions_appended=K
-hot_md_written=H skipped_at_cap=[...] skipped_over_limit=[...]"
+hot_md_written=H research_seeds_appended=S skipped_at_cap=[...] skipped_over_limit=[...]"
 ```
 
 Wait for it. Capture the summary string.
@@ -533,7 +939,7 @@ from datetime import datetime, timezone
 WIKI = pathlib.Path('/home/claude/.claude/agent-memory/shared-wiki')
 TODAY = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 AGENTS = ['tony_ceo','tonio_extrnd','maya_sales','claudette','morty','rick_rnd','ben_fund','miranda_socials','ellie_assistant','geraldine_accounting']
-SHARED_SUBS = ['systems','decisions','concepts','people','templates','meta','archive']
+SHARED_SUBS = ['systems','decisions','concepts','people','templates','meta','archive','operator-intents','research-seeds']
 
 def list_md(d, exclude=()):
     if not d.exists(): return []
@@ -579,7 +985,12 @@ wrote nothing. Otherwise post ONE concise summary to Joris via the bot token in
 `/run/claude-agent/env`. If STEP 4.6 ran (Sunday) and wrote a non-empty
 `candidates.md`, append its one-line summary (candidate count + dropped
 counts) to this same message rather than sending a second Telegram message —
-this stays a report-only artifact, never its own alert:
+this stays a report-only artifact, never its own alert. **Likewise append the
+one-line summaries from STEP 4.7 (claimed_vs_done), and — on Sunday — STEP 4.8
+(intent_drift) and STEP 4.9 (compliance_drift)** to this same message when it
+fires. Do NOT raise a Telegram message on a quiet night just because 4.7 emitted
+verification cards — the cards themselves are the signal; append their count only
+when the message is already firing for real knowledge:
 
 ```bash
 ENV_FILE=/run/claude-agent/env
@@ -588,7 +999,7 @@ JORIS_TG=6532205130
 if [ -n "${BOT_TOKEN:-}" ]; then
   curl -s --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     -d chat_id="$JORIS_TG" \
-    -d text="🧠 wiki compile $(date -u +%Y-%m-%d): <your one-line summary from the synthesis string><, on Sunday: + skill-gap: N candidates (M already-carded dropped)>" >/dev/null 2>&1
+    -d text="🧠 wiki compile $(date -u +%Y-%m-%d): <synthesis summary> · <claimed_vs_done line><, on Sunday: + skill-gap: N candidates (M dropped) · intent_drift line · compliance_drift line>" >/dev/null 2>&1
 fi
 unset BOT_TOKEN
 ```
