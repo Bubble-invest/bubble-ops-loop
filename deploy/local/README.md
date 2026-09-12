@@ -23,7 +23,7 @@ pushes via the operator's own **`gh`/git credential**.
 | File | Role |
 |------|------|
 | `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
-| `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`). The VPS loop-backup twin, for one local dept. |
+| `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
 | `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → cooldown-limited wake injection into the existing tmux session. It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
 
@@ -80,6 +80,12 @@ deploy/local/install-local-loop-backup.sh \
 # When ready, activate (loads the launchd agents):
 deploy/local/install-local-loop.sh        --dept-dir ... --slug content ... --activate
 deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --telegram-state-dir ... --session-name ... --tmux-bin ... --activate
+
+# ALSO install the wake-catch agent (same args + --wake-catch): catches a stale
+# loop promptly after the Mac wakes, not only at the 3h floor window. Default
+# interval is 5m; it shares the runner + cooldown marker with the floor, so it
+# can never double-tick a healthy loop.
+deploy/local/install-local-loop-backup.sh --dept-dir ... --slug content --telegram-state-dir ... --session-name ... --tmux-bin ... --wake-catch --activate
 ```
 
 The backup installer renders and lints a private candidate before atomically
@@ -113,10 +119,11 @@ deploy/local/install-local-loop.sh \
 Note: the accountant wrapper also exports `PYTHONPATH` for the
 `department-onboarding-guide` skill — preserve it when re-rendering.
 
-## Mac-asleep catch-up — no special code
+## Mac-asleep catch-up — StartInterval + wake-catch
 
-When the Mac is closed/asleep through one or more scheduled windows and is then
-reopened:
+The Macs are laptops that spend long stretches asleep (M5 especially), so the
+floor must survive sleep. When the Mac is closed/asleep through one or more
+scheduled windows and is then reopened:
 
 - the **main runner** (KeepAlive) is relaunched on wake (RunAtLoad + KeepAlive),
   so the persistent `/loop` session comes back up;
@@ -127,6 +134,21 @@ reopened:
   once on wake." → the backstop always gets a tick shortly after the Mac reopens.
 - `StartCalendarInterval` = "run at this wall-clock time." → a window that passed
   while asleep is **silently missed**. We deliberately avoid it.
+
+### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
+
+launchd's coalesce-on-wake fires the missed `StartInterval` only **once** on wake
+and its timing can **lag**, so on the 3h floor a loop that is stale at wake could
+wait a long time for its catch-up tick. The **wake-catch** agent
+(`install-local-loop-backup.sh --wake-catch`, default 5m interval) closes that
+gap: it runs the **same** `local-loop-backup-runner.sh` (same staleness guard,
+same shared cooldown marker), so after wake a stale loop gets a real `/loop`
+inject within one short interval, and a still-wedged loop keeps getting re-caught
+each interval while awake — while a fresh or recently-injected loop is an instant
+no-op. This is a **native launchd** mechanism (no `sleepwatcher` / third-party
+dep; the unified-log `Wake reason` predicate is version-fragile and was empty in
+testing, so it is deliberately not used). The `pmset -g log` "Wake" line is the
+authoritative record if you need to correlate a wake with a wake-catch fire.
 
 On wake the dept's existing `/loop` protocol does the catch-up itself —
 **no catch-up code is needed here**:

@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 # Render/install the Mac existing-session injection floor. Activation is explicit.
+#
+# Two roles, ONE runner + ONE render path (they share the cooldown marker, so
+# they can never double-tick a loop):
+#   default        the SCHEDULED floor  com.bubble.ops-loop-backup-<slug>
+#                  (StartInterval, default 3h) — the periodic safety net.
+#   --wake-catch   the WAKE-CATCH agent com.bubble.ops-loop-wake-<slug>
+#                  (StartInterval, default 5m) — a stale loop is caught PROMPTLY
+#                  after the Mac wakes, not only at the next 3h window. Relies on
+#                  the same launchd coalesce-on-wake as the floor (a missed
+#                  StartInterval fires once on wake), but the short interval
+#                  bounds the coalesce lag AND keeps re-checking a still-wedged
+#                  loop every interval while awake. Native launchd; no
+#                  sleepwatcher / third-party dep. See deploy/local/README.md.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/local_loop_lib.sh
@@ -14,6 +27,12 @@ LAUNCH_AGENTS_DIR="${LOCAL_LOOP_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOCAL_LOOP_LOG_DIR:-$HOME/Library/Logs/bubble-ops-loop}"
 RUNNER="${LOCAL_LOOP_BACKUP_RUNNER:-$SCRIPT_DIR/local-loop-backup-runner.sh}"
 ACTIVATE=0; UNINSTALL=0
+WAKE_CATCH=0            # --wake-catch: render the prompt wake-catch agent
+INTERVAL_SET=0         # did the caller pass --interval explicitly?
+# Default interval for the wake-catch agent (5m) — short enough to catch a stale
+# loop promptly after wake, cheap because a fresh/recently-injected loop is an
+# instant no-op (staleness guard + shared cooldown marker).
+WAKE_CATCH_INTERVAL_DEFAULT="${LOCAL_LOOP_WAKE_CATCH_INTERVAL:-300}"
 
 die() { echo "ERR: $*" >&2; exit 2; }
 say() { echo "[install-local-loop-backup] $*"; }
@@ -25,7 +44,8 @@ while [[ $# -gt 0 ]]; do
         --session-name) SESSION_NAME="${2:?}"; shift 2;; --session-name=*) SESSION_NAME="${1#*=}"; shift;;
         --harness-selector) HARNESS_SELECTOR="${2:?}"; shift 2;; --harness-selector=*) HARNESS_SELECTOR="${1#*=}"; shift;;
         --tmux-bin) TMUX_BIN="${2:?}"; shift 2;; --tmux-bin=*) TMUX_BIN="${1#*=}"; shift;;
-        --interval) INTERVAL="${2:?}"; shift 2;; --interval=*) INTERVAL="${1#*=}"; shift;;
+        --interval) INTERVAL="${2:?}"; INTERVAL_SET=1; shift 2;; --interval=*) INTERVAL="${1#*=}"; INTERVAL_SET=1; shift;;
+        --wake-catch) WAKE_CATCH=1; shift;;
         --stale-sec) STALE_SEC="${2:?}"; shift 2;; --stale-sec=*) STALE_SEC="${1#*=}"; shift;;
         --cooldown-sec) COOLDOWN_SEC="${2:?}"; shift 2;; --cooldown-sec=*) COOLDOWN_SEC="${1#*=}"; shift;;
         --launch-agents-dir) LAUNCH_AGENTS_DIR="${2:?}"; shift 2;; --launch-agents-dir=*) LAUNCH_AGENTS_DIR="${1#*=}"; shift;;
@@ -37,7 +57,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ "$SLUG" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die "invalid --slug"
-LABEL="com.bubble.ops-loop-backup-${SLUG}"
+if [[ "$WAKE_CATCH" == 1 ]]; then
+    LABEL="com.bubble.ops-loop-wake-${SLUG}"
+    [[ "$INTERVAL_SET" == 1 ]] || INTERVAL="$WAKE_CATCH_INTERVAL_DEFAULT"
+else
+    LABEL="com.bubble.ops-loop-backup-${SLUG}"
+fi
 PLIST_PATH="${LAUNCH_AGENTS_DIR%/}/${LABEL}.plist"
 
 if [[ "$UNINSTALL" == 1 ]]; then
