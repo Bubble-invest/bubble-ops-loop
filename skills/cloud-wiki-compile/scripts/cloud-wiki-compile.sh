@@ -47,33 +47,49 @@ if [ -r "${ENV_FILE}" ]; then
     fi
 fi
 
+# Mode is passed as $1: compile (nightly, default) | synthesis (weekly) |
+# pruning (weekly) | skillsmith (weekly). One script, four systemd units, four
+# SKILL entrypoints — keeps the launcher DRY while honouring Joris's "one compile
+# job" for the nightly mining (synthesis + pruning are maintenance; skillsmith is
+# the #1222 KNOW-HOW authoring/pruning pass — a DIFFERENT skill, see below).
+MODE="${1:-compile}"
+
+# Per-mode SKILL to load. The wiki modes load cloud-wiki-compile (KNOWLEDGE);
+# skillsmith loads the separate skill-authoring skill (KNOW-HOW) — the doctrine
+# boundary Joris drew (#1222): wiki=knowledge is cloud-wiki-compile's job,
+# skills=know-how is skill-authoring's job, complementary NOT overlapping. We
+# reuse this launcher/service/timer machinery (the "reuse the weekly slot" ask),
+# not the wiki-compile skill's steps.
+case "$MODE" in
+    skillsmith) SKILL_NAME=skill-authoring ;;
+    *)          SKILL_NAME=cloud-wiki-compile ;;
+esac
+
 # Skill location (synced from Mac source of truth — Lab owns it).
-SKILL_DIR=/home/claude/.claude/skills/cloud-wiki-compile
+SKILL_DIR=/home/claude/.claude/skills/${SKILL_NAME}
 if [ ! -f "${SKILL_DIR}/SKILL.md" ]; then
     log "FATAL: ${SKILL_DIR}/SKILL.md missing."
     exit 1
 fi
 
-# Wiki must be a git clone (cloud-wiki-sync keeps it synced).
+# Wiki must be a git clone (cloud-wiki-sync keeps it synced) — required only for
+# the wiki modes. skillsmith does not touch the shared wiki (it works the skill
+# registry + the centralized transcript corpus), so its git presence is optional.
 WIKI_DIR=/home/claude/.claude/agent-memory/shared-wiki
-if [ ! -d "${WIKI_DIR}/.git" ]; then
+if [ "$MODE" != "skillsmith" ] && [ ! -d "${WIKI_DIR}/.git" ]; then
     log "FATAL: ${WIKI_DIR} is not a git repo — cannot compile."
     exit 1
 fi
 
-# Mode is passed as $1: compile (nightly, default) | synthesis (weekly) |
-# pruning (weekly). One script, three systemd units, three SKILL entrypoints —
-# keeps the launcher DRY while honouring Joris's "one compile job" for the
-# nightly mining (synthesis + pruning are maintenance, not compilation).
-MODE="${1:-compile}"
 case "$MODE" in
-    compile)   TASK="Run the cloud-wiki-compile skill in COMPILE mode (nightly): mine today's transcripts from the 6 VPS agents plus both Mac caches (_mac-joris, _mac-jade) and update the shared wiki." ;;
-    synthesis) TASK="Run the cloud-wiki-compile skill in SYNTHESIS mode (weekly): read the week's wiki git diffs and write the weekly synthesis meta-document." ;;
-    pruning)   TASK="Run the cloud-wiki-compile skill in PRUNING mode (weekly): TTL-based staleness review, archive what's stale, enforce per-agent page caps." ;;
-    *) log "FATAL: unknown mode '$MODE' (expected compile|synthesis|pruning)"; exit 1 ;;
+    compile)    TASK="Run the cloud-wiki-compile skill in COMPILE mode (nightly): mine today's transcripts from the 6 VPS agents plus both Mac caches (_mac-joris, _mac-jade) and update the shared wiki." ;;
+    synthesis)  TASK="Run the cloud-wiki-compile skill in SYNTHESIS mode (weekly): read the week's wiki git diffs and write the weekly synthesis meta-document." ;;
+    pruning)    TASK="Run the cloud-wiki-compile skill in PRUNING mode (weekly): TTL-based staleness review, archive what's stale, enforce per-agent page caps." ;;
+    skillsmith) TASK="Run the skill-authoring skill (weekly, #1222): ARM A CREATE — consume THIS week's STEP 4.6 skill-gap candidates.md (do NOT re-mine transcripts), dedupe against existing skills, draft survivors, eval WITH vs WITHOUT, and only author what demonstrably helps; ARM B PRUNE — count actual Skill usage across the centralized transcript corpus and judge genuinely-dead vs rare-but-critical skills, flagging (never auto-removing) dead ones. File via emit-kanban-task, nudge owning agents, gate critical changes needs:human." ;;
+    *) log "FATAL: unknown mode '$MODE' (expected compile|synthesis|pruning|skillsmith)"; exit 1 ;;
 esac
 
-PROMPT="${TASK} Follow the skill step-by-step, end-to-end. Today is ${DATE_STAMP} (UTC). At the end, post the Telegram report ONLY if real knowledge was written (silent on quiet runs)."
+PROMPT="${TASK} Follow the skill step-by-step, end-to-end. Today is ${DATE_STAMP} (UTC). At the end, post the Telegram report ONLY if the SKILL's reporting rule says to (silent on quiet runs)."
 
 cd /home/claude || exit 1
 
@@ -83,9 +99,16 @@ cd /home/claude || exit 1
 # synthesis is the deep, judgment-forming "what did the system learn" thesis over
 # the fleet's shared memory — that runs ONCE A WEEK, so it gets Opus (worth the
 # strongest model; cost is bounded by frequency). Pruning is maintenance → Sonnet.
+# skillsmith (#1222) must stay CHEAP — it's a weekly anti-bloat pass whose
+# deterministic pre-passes (candidate parse, embed-dedupe, usage counting) burn
+# ~0 model tokens and kill most candidates before any reasoning runs; only the
+# handful of survivors reach the model. Haiku is the right tier (the eval-gate
+# subagents it spawns are Haiku too). Sonnet for wiki compile/pruning; Opus only
+# for the once-weekly synthesis thesis.
 case "$MODE" in
-    synthesis) RUN_MODEL="opus";   RUN_THINKING=20000 ;;
-    *)         RUN_MODEL="sonnet"; RUN_THINKING=8000  ;;
+    synthesis)  RUN_MODEL="opus";   RUN_THINKING=20000 ;;
+    skillsmith) RUN_MODEL="haiku";  RUN_THINKING=6000  ;;
+    *)          RUN_MODEL="sonnet"; RUN_THINKING=8000  ;;
 esac
 
 log "starting mode=${MODE} model=${RUN_MODEL}"
