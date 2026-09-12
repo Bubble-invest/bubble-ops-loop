@@ -16,6 +16,7 @@ What `scaffold_isolation_surface()` writes into a dept root:
   subagents/{data-curator,task-orchestrator,executor,mandate-guardian}.md
   .claude/agents/plan-executor.md          (fleet-standard, board #911 part 2)
   .claude/skills/plan-executor/SKILL.md    (fleet-standard, board #911 part 2)
+  .claude/skills/<name> -> ../../skills/<name>  (own repo skills, board #1224)
   tests/test_anti_regression_coverage.py   (the Part-A triple, dept-agnostic)
 
 All per-dept bits (slug, display_name, level, enabled_skills, model, the sibling
@@ -206,6 +207,56 @@ def scaffold_fleet_agents(dept_root: Path) -> list[Path]:
     return written
 
 
+def scaffold_repo_skill_links(
+    dept_root: Path, enabled_skills: Iterable[str]
+) -> list[Path]:
+    """Wire the dept's OWN repo skills into `.claude/skills/<name>` as relative
+    symlinks (`../../skills/<name>`) so Claude Code can DISCOVER them (board
+    #1224).
+
+    Claude Code auto-discovers project-scoped skills only from
+    `<cwd>/.claude/skills/`. A dept's own skill SOURCES live under
+    `<dept>/skills/<name>/` (committed to the dept repo) and the fleet-shared
+    emit-kanban-task is vendored there at boot — both are invisible to Claude
+    Code unless linked into `.claude/skills/`. Working depts (ben, maya, …) got
+    these links by hand at onboarding; morty + claudette were missed and so
+    loaded ZERO skills. Generating them here means a fresh dept is BORN with the
+    wiring; `scripts/vendor-dept-libs.sh` re-asserts the same links at every
+    service start for existing depts (self-heal).
+
+    Only links a skill whose `skills/<name>/` dir actually exists on disk, so no
+    dangling links are created for skills added later (the boot-time vendor
+    self-heal picks those up). Uses a RELATIVE target so the link survives a
+    repo move/clone. Idempotent: an existing symlink is repointed; a real
+    (non-symlink) dir/file at the slot is preserved (never clobbered).
+
+    Returns the list of link paths (re)created.
+    """
+    dept_root = Path(dept_root)
+    skills_src = dept_root / "skills"
+    links_dir = dept_root / ".claude" / "skills"
+    links_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    for name in dict.fromkeys(enabled_skills):  # dedupe, preserve order
+        src = skills_src / name
+        if not src.is_dir():
+            continue
+        link = links_dir / name
+        target = os.path.join("..", "..", "skills", name)
+        if link.is_symlink():
+            if os.readlink(link) == target:
+                written.append(link)
+                continue
+            link.unlink()
+        elif link.exists():
+            # A real dir/file already occupies the slot — never clobber it.
+            continue
+        os.symlink(target, link)
+        written.append(link)
+    return written
+
+
 def scaffold_isolation_surface(
     dept_root: Path,
     *,
@@ -291,6 +342,13 @@ def scaffold_isolation_surface(
     # .claude/agents/plan-executor.md + .claude/skills/plan-executor/ (board
     # #911 part 2 — fleet-standard agents, static copy, not Jinja-rendered).
     written += scaffold_fleet_agents(dept_root)
+
+    # .claude/skills/<name> -> ../../skills/<name> for the dept's OWN repo skills
+    # (board #1224). Without this, project-scoped skills under `skills/` are
+    # invisible to Claude Code (it discovers only `.claude/skills/`). Uses the
+    # dept-declared enabled_skills (NOT all_enabled_skills — the fleet-standard
+    # names are already materialised as real dirs by scaffold_fleet_agents).
+    written += scaffold_repo_skill_links(dept_root, enabled_skills)
 
     # tests/test_anti_regression_coverage.py (the Part-A triple)
     tests = dept_root / "tests"
