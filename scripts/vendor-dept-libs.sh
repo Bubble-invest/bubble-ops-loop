@@ -236,10 +236,10 @@ done
 
 # ---------------------------------------------------------------------------
 # Wire .claude/skills/<name> -> ../../skills/<name> so Claude Code can actually
-# DISCOVER the dept's skills (board #1224).
+# DISCOVER the dept's DECLARED skills (board #1224).
 #
 # WHY: Claude Code auto-discovers project-scoped skills ONLY from
-# `<cwd>/.claude/skills/`. The dept's own skill SOURCES (and the fleet-shared
+# `<cwd>/.claude/skills/`. A dept's declared skill SOURCES (and the fleet-shared
 # emit-kanban-task we vendor above) live under `<dept>/skills/` — invisible to
 # Claude Code unless each is linked into `.claude/skills/`. Working depts (ben,
 # maya, …) got these symlinks by hand at onboarding; morty + claudette were
@@ -247,17 +247,104 @@ done
 # onboarding scaffold now generates these links too (isolation_scaffold.py
 # scaffold_repo_skill_links), but re-asserting here at EVERY service start makes
 # the wiring self-heal for existing depts and any that slip through, exactly like
-# the vendored libs above. Same-uid, intra-repo, relative link → no cross-user
-# (board #1120) issue. We only CREATE/repoint symlinks; we never write file
-# content through a link, so this stays safe under the root ExecStartPre run.
+# the vendored libs above.
+#
+# CRITICAL — ADDITIVE + NON-DESTRUCTIVE, ENSURE-set only (board #1224 review,
+# corrected). `.claude/skills/` is a gitignored, HAND-CURATED set — NOT the same
+# as the dept.yaml `skills:` block, and it must be preserved exactly. Two hazards
+# to avoid, in BOTH directions:
+#
+#   (a) NEVER link a source just because it exists on disk. A dept's `skills/`
+#       dir is a SUPERSET of what it should load. Ben (the live FUND agent) has
+#       codex-write / fund-analysis-framework / fund-research on disk but
+#       DELIBERATELY unlinked: codex-write has disable-model-invocation:true
+#       (script-invoked, not a discovered skill); fund-analysis-framework is
+#       superseded by fund-research; fund-research is a DRAFT successor loaded by
+#       path from the L2 prompt, intentionally not discoverable. Auto-linking any
+#       of them would materially change how the live fund agent researches.
+#
+#   (b) NEVER REMOVE/unlink an existing `.claude/skills/` entry. Maya declares
+#       `skills: {}` yet has 14 working curated links; Ben declares 10 but has 14
+#       (alpaca / emit-kanban-task / fund-ideas-scout / weekly-audio-report are
+#       linked-but-undeclared and WORKING). Re-deriving the set from dept.yaml
+#       would unlink those. We only ADD, never prune.
+#
+# So we ENSURE-PRESENT (add if missing, link nothing else, remove nothing) the
+# union of:
+#   - FLEET_SHARED_SKILLS — the skill(s) every dept must be able to use
+#     (emit-kanban-task, the one KANBAN_MAP vendors above); Ben hit the gap when
+#     his was missing (2026-06-21). Ensured for EVERY dept, incl. those with no
+#     dept.yaml (morty/claudette → they get emit-kanban-task wired).
+#   - the dept's DECLARED skills from `dept.yaml` `skills:` (flattened across any
+#     layer_N sublists), mirroring scaffold_repo_skill_links(enabled_skills).
+# A source not in this union is never auto-linked; an existing link outside it is
+# never touched. We iterate the ENSURE names (not the on-disk dir listing), so
+# "exists on disk" alone can never wire a skill.
+#
+# Same-uid, intra-repo, relative link → no cross-user (board #1120) issue. This
+# runs via `runuser -u agent-<slug>` (the dept uid, NOT root — see
+# bubble-agent-prepare), and we only CREATE/repoint symlinks (never write file
+# content through a link).
 #
 # Idempotent + fail-open: an already-correct link is left alone; a real
 # (non-symlink) dir/file at the dest is preserved and logged (never clobbered);
-# any error logs a warning and continues.
+# a declared skill with no source on disk is skipped (no dangling link); any
+# error logs a warning and continues.
+
+# Flatten dept.yaml `skills:` into a newline list of declared skill names.
+# Handles nested (`layer_2:`/`layer_3:` sub-lists), flat lists, and `skills: {}`
+# (→ empty). Pure awk (no PyYAML dependency), fail-open to empty on any error.
+declared_skills_from_yaml() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  awk '
+    /^skills:[[:space:]]*/ { in_s=1; next }         # enter the skills: block
+    /^[^[:space:]#]/       { in_s=0 }               # any next top-level key ends it
+    in_s && /^[[:space:]]+-[[:space:]]*/ {          # a "  - name" list item
+      s=$0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", s)      # strip the "- " bullet
+      sub(/[[:space:]]*#.*/, "", s)                 # strip a trailing comment
+      gsub(/["'\'']/, "", s)                        # strip quotes
+      sub(/[[:space:]]+$/, "", s)                   # strip trailing space
+      if (s != "") print s
+    }
+  ' "$f" 2>/dev/null
+}
+
 CLAUDE_DIR="$DEPT/.claude"
 SKILLS_SRC_DIR="$DEPT/skills"
+# A dept with no .claude/ at all is not a Claude-Code project → nothing to wire
+# (fine for morty/claudette, which DO have .claude/; guards a non-CC dept).
+# The fleet-shared skill(s) every dept must be able to use — ensured for EVERY
+# dept regardless of dept.yaml. Keep in sync with KANBAN_MAP above (the skill it
+# vendors into every dept's skills/). Space-separated.
+FLEET_SHARED_SKILLS="emit-kanban-task"
+
 if [[ -d "$CLAUDE_DIR" && -d "$SKILLS_SRC_DIR" ]]; then
-  # Match the .claude dir's owner so root-created links/dirs stay owned by the
+  # Build the ENSURE-PRESENT set = FLEET_SHARED_SKILLS ∪ declared(dept.yaml).
+  # ENSURE_NAMES is a newline list (deduped); ENSURE_SEEN is the pipe-delimited
+  # membership guard — mirrors the deferred_rels pattern above and stays portable
+  # to bash 3.2 (no associative arrays). We iterate these NAMES, never the on-disk
+  # dir listing, so a source that merely exists is never auto-linked.
+  DEPT_YAML="$DEPT/dept.yaml"
+  ENSURE_SEEN="|"
+  ENSURE_NAMES=""
+  ensure_count=0
+  for _sk in $FLEET_SHARED_SKILLS; do
+    case "$ENSURE_SEEN" in *"|$_sk|"*) ;; *) ENSURE_SEEN="${ENSURE_SEEN}${_sk}|"; ENSURE_NAMES="${ENSURE_NAMES}${_sk}"$'\n'; ensure_count=$((ensure_count+1)) ;; esac
+  done
+  declared_count=0
+  if [[ -f "$DEPT_YAML" ]]; then
+    while IFS= read -r _sk; do
+      [[ -n "$_sk" ]] || continue
+      declared_count=$((declared_count+1))
+      case "$ENSURE_SEEN" in *"|$_sk|"*) ;; *) ENSURE_SEEN="${ENSURE_SEEN}${_sk}|"; ENSURE_NAMES="${ENSURE_NAMES}${_sk}"$'\n'; ensure_count=$((ensure_count+1)) ;; esac
+    done < <(declared_skills_from_yaml "$DEPT_YAML")
+    log "skill wiring: ensure fleet-shared + $declared_count declared (dept.yaml)"
+  else
+    log "skill wiring: no dept.yaml — ensure fleet-shared only"
+  fi
+  # Match the .claude dir's owner so any link/dir we create stays owned by the
   # dept uid (robust across the pre/post-#1120 ownership models).
   claude_owner="$(stat -c '%u:%g' "$CLAUDE_DIR" 2>/dev/null \
                   || stat -f '%u:%g' "$CLAUDE_DIR" 2>/dev/null || true)"
@@ -284,11 +371,13 @@ if [[ -d "$CLAUDE_DIR" && -d "$SKILLS_SRC_DIR" ]]; then
   }
   wired=0
   if [[ -d "$skills_link_dir" ]]; then
-    for skdir in "$SKILLS_SRC_DIR"/*/; do
-      [[ -d "$skdir" ]] || continue
-      name="$(basename "$skdir")"
-      # Only wire real skills — a dir with a SKILL.md manifest.
-      [[ -f "$skdir/SKILL.md" ]] || continue
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      skdir="$SKILLS_SRC_DIR/$name"
+      # Ensure ONLY skills whose source actually exists on disk (a real skill dir
+      # with a SKILL.md manifest) — a declared skill with no source is skipped so
+      # we never create a dangling link.
+      [[ -d "$skdir" && -f "$skdir/SKILL.md" ]] || { log "skip $name — no source skills/$name/SKILL.md"; continue; }
       link="$skills_link_dir/$name"
       rel=".claude/skills/$name"
       target="../../skills/$name"
@@ -313,7 +402,7 @@ if [[ -d "$CLAUDE_DIR" && -d "$SKILLS_SRC_DIR" ]]; then
                log "wired $rel -> $target"; wired=$((wired+1)); } \
           || log "WARN: could not wire $rel (fail-open)"
       fi
-    done
+    done <<< "$ENSURE_NAMES"
     [[ "$wired" -gt 0 ]] && log "skill wiring: $wired link(s) (re)created for $(basename "$DEPT")"
   fi
 fi

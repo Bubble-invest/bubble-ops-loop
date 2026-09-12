@@ -23,10 +23,16 @@
 #   T10 a destination changed since the last vendor run is deferred in place;
 #       an unchanged managed destination receives normal source upgrades.
 #   T11 a different existing destination with no baseline is deferred unchanged.
-#   T12 .claude/skills/<name> symlink wiring (board #1224): the vendored
-#       emit-kanban-task AND the dept's own repo skills are linked into
-#       .claude/skills/ (relative), idempotently, without clobbering a real dir,
-#       and a dept lacking .claude/ is skipped fail-open.
+#   T12 .claude/skills/ wiring (board #1224), dept with NO dept.yaml: ensure
+#       fleet-shared ONLY (emit-kanban-task wired; a non-fleet-shared undeclared
+#       on-disk source like codex-write is NOT auto-linked), idempotent, no
+#       real-dir clobber, git-excluded, dept lacking .claude/ skipped fail-open.
+#   T13 additive ensure (board #1224 review, corrected): a dept WITH dept.yaml
+#       ensures fleet-shared ∪ declared — declared wired, fleet-shared
+#       emit-kanban-task wired though undeclared, undeclared/non-fleet-shared
+#       on-disk sources (codex-write/fund-research) NOT linked, a pre-existing
+#       curated link PRESERVED (never removed), empty `skills:{}` adds only
+#       fleet-shared and keeps curated links.
 # =============================================================================
 set -uo pipefail
 
@@ -331,17 +337,20 @@ else
 fi
 
 # =============================================================================
-# T12: board #1224 — .claude/skills/<name> symlink wiring.
-#   The vendored emit-kanban-task AND the dept's own repo skills are linked into
-#   .claude/skills/ (relative ../../skills/<name>) so Claude Code can discover
-#   them. morty + claudette loaded ZERO skills for want of these links.
+# T12: board #1224 — .claude/skills/ wiring for a dept with NO dept.yaml
+#   (legacy pre-scaffold depts morty/claudette). ENSURE fleet-shared ONLY:
+#   emit-kanban-task is wired; a dept-own on-disk source that is NOT fleet-shared
+#   and NOT declared (e.g. codex-write — script-invoked, disable-model-invocation)
+#   is NOT auto-linked. morty + claudette loaded ZERO skills; they now load at
+#   least emit-kanban-task.
 # =============================================================================
-echo "== T12: .claude/skills symlink wiring =="
+echo "== T12: .claude/skills wiring — no dept.yaml (fleet-shared ensured) =="
 PARENT12="$FIX/parent12"
 FW12="$PARENT12/bubble-ops-loop"; make_framework "$FW12"
 DEPT12="$PARENT12/bubble-ops-skillwire"; make_dept "$DEPT12"
 mkdir -p "$DEPT12/.claude"
-# a dept-OWN skill (committed in the repo, present before boot)
+# a dept-OWN, non-fleet-shared, undeclared skill present on disk (like claudette's
+# codex-write) — must NOT be auto-linked.
 mkdir -p "$DEPT12/skills/codex-write"
 echo "# codex-write" > "$DEPT12/skills/codex-write/SKILL.md"
 out12="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12" 2>&1)"
@@ -349,43 +358,42 @@ rc12=$?
 chk "T12 exits 0" 0 "$rc12"
 # the fleet-shared emit-kanban-task is vendored then wired
 if [[ -L "$DEPT12/.claude/skills/emit-kanban-task" ]]; then
-  echo "  PASS: T12a emit-kanban-task wired as symlink"; PASS=$((PASS+1))
+  echo "  PASS: T12a fleet-shared emit-kanban-task wired (no dept.yaml)"; PASS=$((PASS+1))
 else
   echo "  FAIL: T12a emit-kanban-task not a symlink in .claude/skills"; FAIL=$((FAIL+1))
 fi
 chk_eq "T12b emit-kanban-task link is relative ../../skills/…" \
   "../../skills/emit-kanban-task" "$(readlink "$DEPT12/.claude/skills/emit-kanban-task" 2>/dev/null)"
-# the dept's own skill is wired too
-if [[ -L "$DEPT12/.claude/skills/codex-write" ]]; then
-  echo "  PASS: T12c dept-own codex-write wired as symlink"; PASS=$((PASS+1))
+# a non-fleet-shared, undeclared on-disk source is NOT auto-linked
+if [[ ! -e "$DEPT12/.claude/skills/codex-write" ]]; then
+  echo "  PASS: T12c undeclared on-disk codex-write NOT auto-linked"; PASS=$((PASS+1))
 else
-  echo "  FAIL: T12c dept-own codex-write not wired"; FAIL=$((FAIL+1))
+  echo "  FAIL: T12c codex-write auto-linked despite not fleet-shared/declared"; FAIL=$((FAIL+1))
 fi
 # link resolves to the source SKILL.md
-if [[ -f "$DEPT12/.claude/skills/codex-write/SKILL.md" ]]; then
-  echo "  PASS: T12d codex-write link resolves to its SKILL.md"; PASS=$((PASS+1))
+if [[ -f "$DEPT12/.claude/skills/emit-kanban-task/SKILL.md" ]]; then
+  echo "  PASS: T12d emit-kanban-task link resolves to its SKILL.md"; PASS=$((PASS+1))
 else
-  echo "  FAIL: T12d codex-write link does not resolve"; FAIL=$((FAIL+1))
+  echo "  FAIL: T12d emit-kanban-task link does not resolve"; FAIL=$((FAIL+1))
 fi
 # idempotent rerun — still a correct symlink, no error
 out12b="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12" 2>&1)"
 chk "T12e idempotent rerun exits 0" 0 "$?"
 chk_eq "T12f link unchanged after rerun" \
-  "../../skills/codex-write" "$(readlink "$DEPT12/.claude/skills/codex-write" 2>/dev/null)"
+  "../../skills/emit-kanban-task" "$(readlink "$DEPT12/.claude/skills/emit-kanban-task" 2>/dev/null)"
 # a real (non-symlink) dir in the slot is preserved, never clobbered
 DEPT12B="$PARENT12/bubble-ops-realdir"; make_dept "$DEPT12B"
-mkdir -p "$DEPT12B/.claude/skills/codex-write" "$DEPT12B/skills/codex-write"
-echo "# override" > "$DEPT12B/.claude/skills/codex-write/SKILL.md"
-echo "# src"      > "$DEPT12B/skills/codex-write/SKILL.md"
+mkdir -p "$DEPT12B/.claude/skills/emit-kanban-task"
+echo "# override" > "$DEPT12B/.claude/skills/emit-kanban-task/SKILL.md"
 out12c="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12B" 2>&1)"
-if [[ ! -L "$DEPT12B/.claude/skills/codex-write" && -d "$DEPT12B/.claude/skills/codex-write" ]]; then
+if [[ ! -L "$DEPT12B/.claude/skills/emit-kanban-task" && -d "$DEPT12B/.claude/skills/emit-kanban-task" ]]; then
   echo "  PASS: T12g pre-existing real dir preserved (not clobbered)"; PASS=$((PASS+1))
 else
   echo "  FAIL: T12g pre-existing real dir was replaced"; FAIL=$((FAIL+1))
 fi
-chk_contains "T12h defer of real dir is logged" "DEFERRED: .claude/skills/codex-write" "$out12c"
+chk_contains "T12h defer of real dir is logged" "DEFERRED: .claude/skills/emit-kanban-task" "$out12c"
 # the untracked link is git-excluded so the loop's autocommit never stages it
-if grep -qxF ".claude/skills/codex-write" "$DEPT12/.git/info/exclude" 2>/dev/null; then
+if grep -qxF ".claude/skills/emit-kanban-task" "$DEPT12/.git/info/exclude" 2>/dev/null; then
   echo "  PASS: T12j untracked skill link added to .git/info/exclude"; PASS=$((PASS+1))
 else
   echo "  FAIL: T12j skill link not git-excluded"; FAIL=$((FAIL+1))
@@ -394,6 +402,94 @@ fi
 DEPT12C="$PARENT12/bubble-ops-noclaude"; make_dept "$DEPT12C"
 out12d="$(BUBBLE_FRAMEWORK_ROOT="$FW12" "$SCRIPT_UNDER_TEST" "$DEPT12C" 2>&1)"
 chk "T12i dept without .claude/ still exits 0" 0 "$?"
+
+# =============================================================================
+# T13: board #1224 REVIEW (corrected) — ADDITIVE + NON-DESTRUCTIVE ensure for a
+#   dept WITH dept.yaml (Ben-like). ENSURE = fleet-shared ∪ declared:
+#     - declared skills wired (nested layer_N flattened);
+#     - fleet-shared emit-kanban-task wired even though NOT in dept.yaml;
+#     - undeclared, non-fleet-shared on-disk sources (codex-write, fund-research)
+#       NEVER auto-linked (the live-fund-agent hazard);
+#     - a pre-existing curated link is PRESERVED (never removed);
+#     - empty `skills: {}` (Maya) still gets fleet-shared, adds nothing else,
+#       removes nothing.
+# =============================================================================
+echo "== T13: additive ensure — fleet-shared ∪ declared (dept.yaml present) =="
+PARENT13="$FIX/parent13"
+FW13="$PARENT13/bubble-ops-loop"; make_framework "$FW13"
+DEPT13="$PARENT13/bubble-ops-fund"; make_dept "$DEPT13"
+mkdir -p "$DEPT13/.claude/skills"
+# dept.yaml declares a NESTED skills set (layer_N sub-lists), like Ben's —
+# deliberately WITHOUT emit-kanban-task (fleet-shared, added separately).
+cat > "$DEPT13/dept.yaml" <<'YAML'
+department:
+  slug: fund
+skills:
+  layer_2:
+  - fund-thesis-format
+  layer_3:
+  - saxo-trading
+tools: []
+YAML
+# On-disk skills/: two DECLARED + two UNDECLARED (codex-write, fund-research).
+# emit-kanban-task is vendored by the script itself (fleet-shared).
+for s in fund-thesis-format saxo-trading codex-write fund-research; do
+  mkdir -p "$DEPT13/skills/$s"; echo "# $s" > "$DEPT13/skills/$s/SKILL.md"
+done
+# Pre-existing curated link to a linked-but-UNDECLARED skill (like Ben's
+# alpaca/weekly-audio-report) — must survive untouched (non-destructive).
+mkdir -p "$DEPT13/skills/weekly-audio-report"
+echo "# weekly" > "$DEPT13/skills/weekly-audio-report/SKILL.md"
+ln -s ../../skills/weekly-audio-report "$DEPT13/.claude/skills/weekly-audio-report"
+out13="$(BUBBLE_FRAMEWORK_ROOT="$FW13" "$SCRIPT_UNDER_TEST" "$DEPT13" 2>&1)"
+chk "T13 exits 0" 0 "$?"
+# declared skills ARE wired
+if [[ -L "$DEPT13/.claude/skills/fund-thesis-format" && -L "$DEPT13/.claude/skills/saxo-trading" ]]; then
+  echo "  PASS: T13a declared skills (layer_2 + layer_3) are wired"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13a declared skills not wired"; FAIL=$((FAIL+1))
+fi
+# fleet-shared emit-kanban-task IS wired even though undeclared
+if [[ -L "$DEPT13/.claude/skills/emit-kanban-task" ]]; then
+  echo "  PASS: T13b fleet-shared emit-kanban-task wired though undeclared"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13b fleet-shared emit-kanban-task not wired"; FAIL=$((FAIL+1))
+fi
+# UNDECLARED, non-fleet-shared on-disk sources are NOT wired — core regression guard
+if [[ ! -e "$DEPT13/.claude/skills/codex-write" ]]; then
+  echo "  PASS: T13c undeclared codex-write NOT linked"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13c undeclared codex-write was linked (live-agent hazard!)"; FAIL=$((FAIL+1))
+fi
+if [[ ! -e "$DEPT13/.claude/skills/fund-research" ]]; then
+  echo "  PASS: T13d undeclared fund-research NOT linked"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13d undeclared fund-research was linked (live-agent hazard!)"; FAIL=$((FAIL+1))
+fi
+# pre-existing curated (linked-but-undeclared) skill PRESERVED, not removed
+if [[ -L "$DEPT13/.claude/skills/weekly-audio-report" ]]; then
+  echo "  PASS: T13e pre-existing curated link preserved (non-destructive)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13e pre-existing curated link was REMOVED (regression!)"; FAIL=$((FAIL+1))
+fi
+chk_contains "T13f log reports ensure mode" "ensure fleet-shared" "$out13"
+
+# T13g: empty declaration (`skills: {}`, like Maya) → fleet-shared still ensured,
+# nothing else added, an existing curated link preserved.
+DEPT13C="$PARENT13/bubble-ops-empty"; make_dept "$DEPT13C"
+mkdir -p "$DEPT13C/.claude/skills" "$DEPT13C/skills/codex-write" "$DEPT13C/skills/draft-writer"
+echo "# codex-write" > "$DEPT13C/skills/codex-write/SKILL.md"
+echo "# draft"       > "$DEPT13C/skills/draft-writer/SKILL.md"
+ln -s ../../skills/draft-writer "$DEPT13C/.claude/skills/draft-writer"  # pre-existing curated
+printf 'skills: {}\ntools: []\n' > "$DEPT13C/dept.yaml"
+out13c="$(BUBBLE_FRAMEWORK_ROOT="$FW13" "$SCRIPT_UNDER_TEST" "$DEPT13C" 2>&1)"
+if [[ -L "$DEPT13C/.claude/skills/emit-kanban-task" \
+      && ! -e "$DEPT13C/.claude/skills/codex-write" \
+      && -L "$DEPT13C/.claude/skills/draft-writer" ]]; then
+  echo "  PASS: T13h empty skills:{} → fleet-shared added, curated kept, nothing else"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T13h empty-declaration ensure behaved wrong"; FAIL=$((FAIL+1))
+fi
 
 # =============================================================================
 echo

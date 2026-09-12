@@ -508,3 +508,27 @@ def test_scaffold_skill_links_idempotent_and_preserve_real_dirs(tmp_path):
     )
     assert real.is_dir() and not real.is_symlink()
     assert (real / "SKILL.md").read_text() == "# local override\n"
+
+
+def test_scaffold_does_not_link_undeclared_on_disk_skill(tmp_path):
+    """Board #1224 review regression: an on-disk skills/<name>/ dir that is NOT
+    in the dept's declared enabled_skills must NOT be linked into .claude/skills/
+    (the hazard that would have exposed Ben's codex-write/fund-research to the
+    live fund agent). The scaffold path is declaration-driven and the runtime
+    self-heal (vendor-dept-libs.sh) mirrors it."""
+    dept_root = tmp_path / "bubble-ops-undeclared"
+    dept_root.mkdir()
+    _make_repo_skill(dept_root, "declared-skill")
+    _make_repo_skill(dept_root, "undeclared-skill")  # on disk, but not declared
+    iso.scaffold_isolation_surface(
+        dept_root,
+        slug="undeclared",
+        display_name="Undeclared",
+        level="ops",
+        enabled_skills=["declared-skill"],  # only this one is declared
+        all_dept_slugs=["undeclared", "ben"],
+    )
+    assert (dept_root / ".claude" / "skills" / "declared-skill").is_symlink()
+    assert not (dept_root / ".claude" / "skills" / "undeclared-skill").exists(), (
+        "an on-disk skill dir not in enabled_skills must never be auto-linked"
+    )
