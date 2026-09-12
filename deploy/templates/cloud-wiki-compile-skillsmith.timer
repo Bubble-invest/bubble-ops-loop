@@ -1,0 +1,25 @@
+# /etc/systemd/system/cloud-wiki-compile-skillsmith.timer
+# Managed by bubble-vps-platform / Lab. Do not edit by hand.
+#
+# Weekly skill-authoring/pruning pass (#1222) — Sunday 23:30 UTC.
+#
+# TIMING IS LOAD-BEARING (fixed after review): STEP 4.6 (which writes this week's
+# {ISO}-workaround-candidates.md that ARM A consumes) runs INSIDE the nightly
+# compile, whose timer is 22:00 UTC. So on Sunday the real order is
+# synthesis(18:00) → pruning(19:00) → compile+4.6(22:00). We must run AFTER the
+# 22:00 compile — 23:30 gives it margin (service TimeoutStartSec=3600). It must
+# ALSO stay on SUNDAY: ISO weeks roll over at Mon 00:00, and the 4.6 file is
+# stamped with Sunday's ISO week (%G-W%V); a Monday run would compute the NEXT
+# week's stamp and miss the file. Sunday 23:30 keeps the same ISO week AND runs
+# after 4.6 has written it. (list_candidates.py still degrades gracefully if the
+# compile ran long / the file is absent.)
+[Unit]
+Description=Weekly skill-authoring + usage-based skill-pruning (#1222, KNOW-HOW)
+
+[Timer]
+OnCalendar=Sun *-*-* 23:30:00 UTC
+Persistent=true
+Unit=cloud-wiki-compile@skillsmith.service
+
+[Install]
+WantedBy=timers.target
