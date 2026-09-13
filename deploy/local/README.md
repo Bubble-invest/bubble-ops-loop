@@ -168,6 +168,11 @@ framework checkout was clean but behind. Only a clean checkout on the exact
 `main` branch whose HEAD is an ancestor of `origin/main` may fast-forward:
 
 ```sh
+# One fail-stop preflight + dry-render transaction. Any failed branch, dirty-
+# tree, ancestry, fetch, merge, plan, render, or lint check stops this subshell
+# before the later steps run. It never activates a LaunchAgent.
+(
+set -eu
 for repo in "$HOME/claude-workspaces/Rick_RnD" "$HOME/claude-workspaces/bubble-ops-loop"; do
   git -C "$repo" status --short --branch
   git -C "$repo" fetch origin main
@@ -198,6 +203,7 @@ deploy/local/install-local-loop-backup.sh \
 
 plutil -lint "$HOME/Library/LaunchAgents/com.bubble.ops-loop-backup-rnd.plist"
 plutil -lint "$HOME/Library/LaunchAgents/com.bubble.ops-loop-wake-rnd.plist"
+)
 
 # Only after Joris approves activation, rerun those same two renderer commands
 # with --activate appended, then inspect both jobs and their logs:
