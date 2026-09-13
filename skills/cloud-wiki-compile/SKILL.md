@@ -1062,7 +1062,10 @@ RULES:
 6. Wikilinks always [[path/page]], never markdown links.
 7. Do NOT rewrite index.md (parent regenerates it).
 8. Do NOT read pages not in STRUCTURED_ENTRIES, except the existing hot.md
-   files and read-only AVAILABLE_OPERATOR_INTENTS required by rules 3 and 5.
+   files, `shared/decisions/log.md` when DECISIONS_TO_LOG is non-empty, the
+   relevant existing `shared/research-seeds/{agent}.md` pages when that agent
+   has seeds, and read-only AVAILABLE_OPERATOR_INTENTS required by rules 2-5
+   and 9.
 9. RESEARCH_SEEDS_BY_AGENT: for each agent with seeds, read the page and apply
    rule 2's intent check before appending to shared/research-seeds/{agent}.md.
    When creating it, require a supported intent mapping exactly as rule 3;
