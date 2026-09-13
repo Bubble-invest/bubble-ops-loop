@@ -160,9 +160,22 @@ falling back to the old generic wake. The selected `python3` must provide
 PyYAML. These commands do not edit `~/.claude/agents/rnd.md` or Rick's live
 mandate.
 
+The live owner checkouts are not interchangeable with clean deploy clones. At
+the time this note was written, `/Users/joris/claude-workspaces/Rick_RnD` was
+dirty and diverged (ahead 1, behind 29); preserve and reconcile that owner work
+first without stash, reset, checkout-overwrite, or destructive cleanup. The
+framework checkout was clean but behind. Only a clean checkout on the exact
+`main` branch whose HEAD is an ancestor of `origin/main` may fast-forward:
+
 ```sh
-git -C ~/claude-workspaces/Rick_RnD pull --ff-only
-git -C ~/claude-workspaces/bubble-ops-loop pull --ff-only
+for repo in "$HOME/claude-workspaces/Rick_RnD" "$HOME/claude-workspaces/bubble-ops-loop"; do
+  git -C "$repo" status --short --branch
+  git -C "$repo" fetch origin main
+  test "$(git -C "$repo" branch --show-current)" = main
+  test -z "$(git -C "$repo" status --porcelain)"
+  git -C "$repo" merge-base --is-ancestor HEAD origin/main
+  git -C "$repo" merge --ff-only origin/main
+done
 
 # Read-only proof of the currently due set before touching launchd:
 cd ~/claude-workspaces/bubble-ops-loop
@@ -173,13 +186,13 @@ python3 scripts/due_missions.py plan \
 deploy/local/install-local-loop-backup.sh \
   --dept-dir "$HOME/claude-workspaces/Rick_RnD" --slug rnd \
   --telegram-state-dir "$HOME/.claude/channels/telegram-rnd" \
-  --session-name ops-loop-rnd --tmux-bin /opt/homebrew/bin/tmux \
+  --session-name ops-loop-rnd --tmux-bin "$HOME/.local/bin/tmux" \
   --harness-selector "$HOME/Library/Application Support/bubble-ops-loop/harness-rnd" \
   --interval 10800 --stale-sec 5400 --cooldown-sec 900
 deploy/local/install-local-loop-backup.sh \
   --dept-dir "$HOME/claude-workspaces/Rick_RnD" --slug rnd \
   --telegram-state-dir "$HOME/.claude/channels/telegram-rnd" \
-  --session-name ops-loop-rnd --tmux-bin /opt/homebrew/bin/tmux \
+  --session-name ops-loop-rnd --tmux-bin "$HOME/.local/bin/tmux" \
   --harness-selector "$HOME/Library/Application Support/bubble-ops-loop/harness-rnd" \
   --wake-catch --stale-sec 5400 --cooldown-sec 900
 
@@ -196,7 +209,11 @@ tail -n 50 "$HOME/Library/Logs/bubble-ops-loop/com.bubble.ops-loop-"{backup,wake
 Do not pre-populate the watermark. Its absence is the intended first-run state:
 M2-M7 catch up once, while continuous M1/M8 run on every actual tick. The
 watermark advances only when Rick executes a prompt-supplied `COMPLETE` command
-after that mission succeeds.
+after that mission succeeds. Accepted periodic work carries a six-hour pending
+delivery lease so the backup and wake-catch agents cannot duplicate it after
+the shorter inbox cooldown. Pending is not success: an uncompleted mission is
+eligible again when the lease expires, and a failed injection releases its own
+claims immediately.
 
 ## No-sudo tmux (M5 hosts without Homebrew)
 
@@ -241,11 +258,14 @@ For a dept with `loop.due_dispatch`, the wake-time planner then compares each
 allow-listed mission's current local calendar token (day, ISO week, or month)
 with its last-success watermark. A missed period therefore becomes due on the
 first floor invocation after wake (even if M1's heartbeat is fresh); there is
-no fixed clock window to miss. A
-mission already successful in the current period is omitted. Continuous
+no fixed clock window to miss. A mission already successful in the current
+period is omitted. Continuous
 missions remain due on every actual tick. The wake/inbox append writes no
-watermark: the injected turn receives one explicit completion command per due
-mission and advances only the missions that actually succeeded.
+success watermark: the injected turn receives one explicit completion command
+per due mission and advances only the missions that actually succeeded. Before
+append, the floor atomically claims each periodic mission-period for the
+manifest's bounded `pending_lease_seconds`; competing floor agents suppress an
+unexpired claim, and any failed append releases only the caller's claim.
 
 ### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
 

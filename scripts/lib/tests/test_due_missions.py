@@ -5,9 +5,11 @@ import pytest
 
 from scripts.lib.loop_backup import (
     DueMissionConfigError,
+    claim_due_missions,
     due_mission_plan,
     due_period,
     read_due_watermarks,
+    release_due_claims,
     write_due_success,
 )
 
@@ -132,3 +134,55 @@ def test_explicit_success_write_is_atomic_and_idempotent(tmp_path: Path):
     assert second["missions"]["weekly_scan"]["last_success_period"] == "2026-W37"
     assert read_due_watermarks(path) == second
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_pending_claim_suppresses_duplicate_until_expiry(tmp_path: Path):
+    data = manifest(
+        mission("board", "continuous", {"policy": "every_tick"}),
+        mission("weekly_scan", "weekly", {"policy": "calendar_period", "timezone": "Europe/Paris"}),
+    )
+    path = tmp_path / "monitoring" / "due.json"
+    first, claims = claim_due_missions(path, data, NOW, 21600)
+    second, second_claims = claim_due_missions(path, data, NOW + dt.timedelta(seconds=901), 21600)
+    after_expiry, retry_claims = claim_due_missions(
+        path, data, NOW + dt.timedelta(seconds=21601), 21600
+    )
+
+    assert [item["id"] for item in first] == ["board", "weekly_scan"]
+    assert set(claims) == {"weekly_scan"}
+    assert [item["id"] for item in second] == ["board"]
+    assert second_claims == {}
+    assert [item["id"] for item in after_expiry] == ["board", "weekly_scan"]
+    assert set(retry_claims) == {"weekly_scan"}
+    completed = write_due_success(path, "weekly_scan", "2026-W37", NOW + dt.timedelta(seconds=21602))
+    assert "pending" not in completed["missions"]["weekly_scan"]
+    assert completed["missions"]["weekly_scan"]["last_success_period"] == "2026-W37"
+
+
+def test_release_removes_only_the_callers_claim(tmp_path: Path):
+    data = manifest(
+        mission("weekly_scan", "weekly", {"policy": "calendar_period", "timezone": "Europe/Paris"})
+    )
+    path = tmp_path / "monitoring" / "due.json"
+    _, claims = claim_due_missions(path, data, NOW, 21600)
+    release_due_claims(path, {"weekly_scan": "not-the-owner"})
+    assert due_mission_plan(data, read_due_watermarks(path), NOW) == []
+    release_due_claims(path, claims)
+    assert [item["id"] for item in due_mission_plan(data, read_due_watermarks(path), NOW)] == [
+        "weekly_scan"
+    ]
+
+
+def test_delayed_old_period_completion_preserves_new_period_claim(tmp_path: Path):
+    data = manifest(
+        mission("weekly_scan", "weekly", {"policy": "calendar_period", "timezone": "Europe/Paris"})
+    )
+    path = tmp_path / "monitoring" / "due.json"
+    claim_due_missions(path, data, NOW, 21600)
+    next_week = NOW + dt.timedelta(days=7)
+    claim_due_missions(path, data, next_week, 21600)
+
+    state = write_due_success(path, "weekly_scan", "2026-W37", next_week + dt.timedelta(seconds=1))
+    assert state["missions"]["weekly_scan"]["last_success_period"] == "2026-W37"
+    assert state["missions"]["weekly_scan"]["pending"]["period"] == "2026-W38"
+    assert due_mission_plan(data, state, next_week) == []

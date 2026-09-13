@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import json
 import re
@@ -17,9 +18,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.lib.loop_backup import (
     DueMissionConfigError,
+    claim_due_missions,
     due_mission_plan,
     due_watermark_path,
     read_due_watermarks,
+    release_due_claims,
     write_due_success,
 )
 
@@ -98,7 +101,8 @@ def _prompt(plan: list[dict], dept_dir: Path) -> str:
         "self-modification guardrail; never self-merge mission/mandate/loop/agent-def changes. "
         "Mission completion is explicit and per mission: only after that mission actually succeeds, "
         "run its exact command below. Do not run it for failed, blocked, partial, merely dispatched, "
-        "or inbox-accepted work; an unacknowledged mission stays due and retries next tick. "
+        "or inbox-accepted work. A periodic pending lease only prevents duplicate delivery while work "
+        "is in flight; it is not success, and an uncompleted mission retries after lease expiry. "
         + " | ".join(commands)
         + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
     )
@@ -114,6 +118,37 @@ def _validate_completion_period(cadence: str, period: str) -> None:
     pattern = patterns.get(cadence)
     if pattern is None or re.fullmatch(pattern, period) is None:
         raise DueMissionConfigError(f"invalid {cadence!r} completion period: {period!r}")
+
+
+def _lease_seconds(manifest: dict) -> int:
+    loop = manifest.get("loop")
+    config = loop.get("due_dispatch") if isinstance(loop, dict) else None
+    value = config.get("pending_lease_seconds") if isinstance(config, dict) else None
+    if not isinstance(value, int) or not 900 <= value <= 86400:
+        raise DueMissionConfigError("pending_lease_seconds must be between 900 and 86400")
+    return value
+
+
+def _claims_token(claims: dict) -> str:
+    raw = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_claims(token: str) -> dict:
+    try:
+        value = json.loads(base64.b64decode(token.encode("ascii"), altchars=b"-_", validate=True))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DueMissionConfigError("claims token is invalid") from exc
+    if not isinstance(value, dict):
+        raise DueMissionConfigError("claims token must contain a mapping")
+    return value
+
+
+def _runner_output(plan: list[dict], claims: dict, dept_dir: Path) -> str:
+    periodic_due = any(item["cadence"] != "continuous" for item in plan)
+    return "\t".join(
+        (("1" if periodic_due else "0"), _claims_token(claims), _prompt(plan, dept_dir))
+    )
 
 
 def command_plan(args: argparse.Namespace) -> int:
@@ -133,10 +168,27 @@ def command_plan(args: argparse.Namespace) -> int:
     if args.format == "json":
         print(json.dumps({"configured": True, "due": plan}, sort_keys=True))
     elif args.format == "runner":
-        periodic_due = any(item["cadence"] != "continuous" for item in plan)
-        print(("1" if periodic_due else "0") + "\t" + _prompt(plan, dept_dir))
+        print(_runner_output(plan, {}, dept_dir))
     else:
         print(_prompt(plan, dept_dir))
+    return 0
+
+
+def command_claim(args: argparse.Namespace) -> int:
+    dept_dir = Path(args.dept_dir).resolve()
+    manifest = _load_manifest(dept_dir)
+    _validate_scoped_files(dept_dir, manifest)
+    path = due_watermark_path(str(dept_dir), manifest)
+    plan, claims = claim_due_missions(path, manifest, _now(args.now_epoch), _lease_seconds(manifest))
+    print(_runner_output(plan, claims, dept_dir))
+    return 0
+
+
+def command_release(args: argparse.Namespace) -> int:
+    dept_dir = Path(args.dept_dir).resolve()
+    manifest = _load_manifest(dept_dir)
+    path = due_watermark_path(str(dept_dir), manifest)
+    release_due_claims(path, _decode_claims(args.claims_token))
     return 0
 
 
@@ -167,6 +219,14 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--now-epoch", type=int)
     plan.add_argument("--format", choices=("prompt", "json", "runner"), default="prompt")
     plan.set_defaults(func=command_plan)
+    claim = sub.add_parser("claim")
+    claim.add_argument("--dept-dir", required=True)
+    claim.add_argument("--now-epoch", type=int)
+    claim.set_defaults(func=command_claim)
+    release = sub.add_parser("release")
+    release.add_argument("--dept-dir", required=True)
+    release.add_argument("--claims-token", required=True)
+    release.set_defaults(func=command_release)
     complete = sub.add_parser("complete")
     complete.add_argument("--dept-dir", required=True)
     complete.add_argument("--mission", required=True)

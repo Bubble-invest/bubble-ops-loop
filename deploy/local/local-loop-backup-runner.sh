@@ -70,6 +70,18 @@ fi
 
 WAKE_MESSAGE='Resume your OODA loop (self-paced). Run one normal full tick now: STEP A safe pull, STEP B read queues, STEP C apply the existing layer/mission/approval gates, STEP D dispatch only the selected work, STEP E commit only allowed runtime paths, STEP F notify, then arm the next normal wake. Preserve every human approval gate.'
 PERIODIC_DUE=0
+CLAIMS_TOKEN=""
+DUE_PLANNER=""
+
+release_pending_claims() {
+    [[ -n "$CLAIMS_TOKEN" && -n "$DUE_PLANNER" ]] || return 0
+    if ! (cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" release \
+        --dept-dir "$DEPT_DIR" --claims-token "$CLAIMS_TOKEN"); then
+        log "ERROR: could not release this wake's pending due-mission claims; lease expiry will retry"
+    fi
+    CLAIMS_TOKEN=""
+}
+trap release_pending_claims EXIT
 
 # A dept that opts into loop.due_dispatch gets a calendar-period mission plan
 # in the actual injected turn. Planning is read-only: inbox acceptance never
@@ -82,13 +94,19 @@ if [[ -f "$DEPT_DIR/dept.yaml" ]] && grep -q '^[[:space:]]*due_dispatch:' "$DEPT
         log "ERROR: due dispatcher configured but planner is missing; no wake queued"
         exit 1
     fi
-    if ! DUE_RESULT="$(cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" plan \
-        --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH" --format runner)"; then
+    if [[ "$ACTIVATE_INJECT" == 1 ]]; then
+        DUE_COMMAND=(claim --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH")
+    else
+        DUE_COMMAND=(plan --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH" --format runner)
+    fi
+    if ! DUE_RESULT="$(cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" "${DUE_COMMAND[@]}")"; then
         log "ERROR: due mission planning failed; no wake queued"
         exit 1
     fi
     PERIODIC_DUE="${DUE_RESULT%%$'\t'*}"
-    WAKE_MESSAGE="${DUE_RESULT#*$'\t'}"
+    DUE_REST="${DUE_RESULT#*$'\t'}"
+    CLAIMS_TOKEN="${DUE_REST%%$'\t'*}"
+    WAKE_MESSAGE="${DUE_REST#*$'\t'}"
     if [[ "$PERIODIC_DUE" != 0 && "$PERIODIC_DUE" != 1 ]]; then
         log "ERROR: due dispatcher returned an invalid periodic flag; no wake queued"
         exit 1
@@ -153,6 +171,7 @@ if [[ "$HARNESS" == "hermes" ]]; then
     fi
     if printf '%s\n' "$WAKE_MESSAGE" | "$HERMES_PY" "$HERMES_WAKE_HELPER" \
         --profile-home "$HERMES_PROFILE_HOME" --hermes-root "$HERMES_ROOT"; then
+        CLAIMS_TOKEN=""  # accepted for delivery; still not mission success
         log "HERMES_WAKE_QUEUED_UNCONFIRMED: live gateway accepted one loop wake; execution and heartbeat advancement are not yet confirmed"
         exit 0
     else
@@ -167,7 +186,10 @@ RESULT="$(inject_loop_wake "$TELEGRAM_STATE_DIR" "$SLUG" "$NOW_EPOCH" "$COOLDOWN
     exit 1
 }
 case "$RESULT" in
-    injected) log "WAKE_APPENDED_UNCONFIRMED: existing-session inbox accepted one wake; delivery, execution, and heartbeat advancement are not yet confirmed" ;;
+    injected)
+        CLAIMS_TOKEN=""  # accepted for delivery; pending lease remains, success watermark untouched
+        log "WAKE_APPENDED_UNCONFIRMED: existing-session inbox accepted one wake; delivery, execution, and heartbeat advancement are not yet confirmed"
+        ;;
     cooldown) log "COOLDOWN: a recent wake is already pending; no duplicate appended" ;;
     *) log "ERROR: unexpected injection result"; exit 1 ;;
 esac

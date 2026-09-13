@@ -22,6 +22,7 @@ import os
 import re
 import stat
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -108,6 +109,8 @@ def due_mission_plan(
     """
     if not isinstance(manifest, dict):
         raise DueMissionConfigError("dept.yaml root must be a mapping")
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
     config = _due_dispatch_config(manifest)
     if config is None:
         return None
@@ -184,6 +187,19 @@ def due_mission_plan(
             raise DueMissionConfigError(f"{mission_id}: last_success_period must be a string")
         if cadence != "continuous" and last_period == period:
             continue
+        if cadence != "continuous":
+            pending = prior.get("pending")
+            if pending is not None:
+                if not isinstance(pending, dict):
+                    raise DueMissionConfigError(f"{mission_id}: pending lease must be a mapping")
+                pending_period = pending.get("period")
+                claim_id = pending.get("claim_id")
+                expires_at = pending.get("expires_at_epoch")
+                if not isinstance(pending_period, str) or not isinstance(claim_id, str) \
+                        or not isinstance(expires_at, int):
+                    raise DueMissionConfigError(f"{mission_id}: pending lease has an invalid shape")
+                if pending_period == period and expires_at > int(now_utc.timestamp()):
+                    continue
         result.append(
             {
                 "id": mission_id,
@@ -243,41 +259,133 @@ def write_due_success(
         raise DueMissionConfigError("unsafe mission completion arguments")
     if completed_at.tzinfo is None:
         completed_at = completed_at.replace(tzinfo=_dt.timezone.utc)
+    lock_fd = _open_due_lock(path)
+    try:
+        state = read_due_watermarks(path)
+        entry = state["missions"].setdefault(mission_id, {})
+        if not isinstance(entry, dict):
+            raise DueMissionConfigError(f"{mission_id}: watermark entry must be a mapping")
+        previous = entry.get("last_success_period")
+        if previous is not None and not isinstance(previous, str):
+            raise DueMissionConfigError(f"{mission_id}: last_success_period must be a string")
+        # A delayed old-period acknowledgement must never regress a newer
+        # success. Period tokens are lexically ordered within one cadence.
+        if previous is None or previous <= period:
+            entry["last_success_period"] = period
+            entry["completed_at"] = completed_at.astimezone(_dt.timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        # Clear only the lease for the period that actually completed. A newer
+        # period may already have been claimed at a calendar boundary.
+        pending = entry.get("pending")
+        if isinstance(pending, dict) and pending.get("period") == period:
+            del entry["pending"]
+        _write_due_state_unlocked(path, state)
+        return state
+    finally:
+        os.close(lock_fd)
+
+
+def _write_due_state_unlocked(path: Path, state: dict) -> None:
+    """Publish state atomically while the caller holds the sibling lock."""
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        body = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if os.write(fd, body) != len(body):
+            raise OSError("incomplete due-watermark write")
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(temp_name, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _open_due_lock(path: Path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = path.with_name(path.name + ".lock")
     import fcntl
 
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     lock_fd = os.open(lock_path, flags, 0o600)
+    info = os.fstat(lock_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        os.close(lock_fd)
+        raise DueMissionConfigError("due watermark lock is unsafe")
+    os.fchmod(lock_fd, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    return lock_fd
+
+
+def claim_due_missions(
+    path: Path,
+    manifest: dict,
+    now_utc: _dt.datetime,
+    lease_seconds: int,
+) -> tuple:
+    """Atomically claim currently due periodic mission-periods.
+
+    The pending lease prevents the backup and wake-catch LaunchAgents from
+    appending duplicate work after their shorter inbox cooldown expires. It is
+    only a delivery/in-flight marker: last_success_period remains untouched.
+    """
+    if not isinstance(lease_seconds, int) or not 900 <= lease_seconds <= 86400:
+        raise DueMissionConfigError("pending_lease_seconds must be between 900 and 86400")
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
+    lock_fd = _open_due_lock(path)
     try:
-        lock_info = os.fstat(lock_fd)
-        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.geteuid():
-            raise DueMissionConfigError("due watermark lock is unsafe")
-        os.fchmod(lock_fd, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         state = read_due_watermarks(path)
-        state["missions"][mission_id] = {
-            "last_success_period": period,
-            "completed_at": completed_at.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-        try:
-            os.fchmod(fd, 0o600)
-            body = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8")
-            if os.write(fd, body) != len(body):
-                raise OSError("incomplete due-watermark write")
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
-            os.replace(temp_name, path)
-        finally:
-            if fd >= 0:
-                os.close(fd)
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-        return state
+        plan = due_mission_plan(manifest, state, now_utc)
+        if plan is None:
+            raise DueMissionConfigError("due dispatcher is not configured")
+        claims: Dict[str, str] = {}
+        for item in plan:
+            if item["cadence"] == "continuous":
+                continue
+            claim_id = uuid.uuid4().hex
+            entry = state["missions"].setdefault(item["id"], {})
+            entry["pending"] = {
+                "period": item["period"],
+                "claim_id": claim_id,
+                "claimed_at": now_utc.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "expires_at_epoch": int(now_utc.timestamp()) + lease_seconds,
+            }
+            claims[item["id"]] = claim_id
+        if claims:
+            _write_due_state_unlocked(path, state)
+        return plan, claims
+    finally:
+        os.close(lock_fd)
+
+
+def release_due_claims(path: Path, claims: Dict[str, str]) -> None:
+    """Release only claim IDs owned by a wake that was not accepted."""
+    if not claims:
+        return
+    if any(not _MISSION_ID_RE.fullmatch(key) or not isinstance(value, str) or not value
+           for key, value in claims.items()):
+        raise DueMissionConfigError("unsafe due-claim release arguments")
+    lock_fd = _open_due_lock(path)
+    try:
+        state = read_due_watermarks(path)
+        changed = False
+        for mission_id, claim_id in claims.items():
+            entry = state["missions"].get(mission_id)
+            pending = entry.get("pending") if isinstance(entry, dict) else None
+            if isinstance(pending, dict) and pending.get("claim_id") == claim_id:
+                del entry["pending"]
+                if not entry:
+                    del state["missions"][mission_id]
+                changed = True
+        if changed:
+            _write_due_state_unlocked(path, state)
     finally:
         os.close(lock_fd)
 
