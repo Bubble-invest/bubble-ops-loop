@@ -81,6 +81,14 @@ if [ "$MODE" != "skillsmith" ] && [ ! -d "${WIKI_DIR}/.git" ]; then
     exit 1
 fi
 
+# #1267: intents are never read from the writable shared-wiki checkout. The
+# root-owned mirror is the sole semantic baseline for all wiki modes.
+INTENTS_ROOT="${BUBBLE_OPERATOR_INTENTS_MIRROR:-/opt/bubble-operator-intents}"
+if [ "$MODE" != "skillsmith" ] && [ ! -d "${INTENTS_ROOT}/operator-intents" ]; then
+    log "FATAL: read-only operator-intents mirror unavailable at ${INTENTS_ROOT}."
+    exit 1
+fi
+
 # Board #1247: collect structural intent-frontmatter evidence before the model
 # runs. The report never assigns intent or declares a semantic leak; the COMPILE
 # skill reads candidates and makes that judgment. Missing tooling is fatal so an
@@ -99,7 +107,8 @@ if [ "$MODE" = "compile" ]; then
     fi
     mkdir -p "$(dirname "$INTENT_AUDIT_REPORT")"
     if ! python3 "$INTENT_AUDIT_SCRIPT" \
-        --wiki "$WIKI_DIR" --output "$INTENT_AUDIT_REPORT"; then
+        --wiki "$WIKI_DIR" --intents-root "$INTENTS_ROOT" \
+        --output "$INTENT_AUDIT_REPORT"; then
         log "FATAL: intent audit failed; compile not started."
         exit 1
     fi

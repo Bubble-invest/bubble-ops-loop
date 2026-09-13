@@ -43,8 +43,17 @@ def config_for(root: Path, *, agents: list[dict] | None = None) -> dict:
 
 def make_wiki(tmp_path: Path) -> Path:
     wiki = tmp_path / "wiki"
-    write(wiki / "shared/operator-intents/sales-quality.md", "---\ncore: true\n---\n")
+    wiki.mkdir()
+    write(tmp_path / "mirror/operator-intents/sales-quality.md", "---\ncore: true\n---\n")
     return wiki
+
+
+def intents_for(wiki: Path) -> Path:
+    return wiki.parent / "mirror"
+
+
+def refresh(wiki: Path, argv: list[str]) -> int:
+    return fleet.main(argv, _validated_intents_release_for_tests=intents_for(wiki))
 
 
 def test_scan_collects_only_allowlisted_architecture_metadata(tmp_path: Path) -> None:
@@ -116,7 +125,7 @@ def test_refresh_preserves_reviewed_note_intent_and_validates_schema(tmp_path: P
     config_path = tmp_path / "sources.yaml"
     write(config_path, yaml.safe_dump(config_for(root), sort_keys=False))
 
-    exit_code = fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW])
+    exit_code = refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW])
 
     assert exit_code == 0
     state = json.loads((wiki / fleet.STATE_REL).read_text(encoding="utf-8"))
@@ -135,7 +144,7 @@ def test_invalid_or_missing_intent_target_fails_before_writes(tmp_path: Path) ->
     config_path = tmp_path / "sources.yaml"
     write(config_path, yaml.safe_dump(config_for(root), sort_keys=False))
 
-    exit_code = fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW])
+    exit_code = refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW])
 
     assert exit_code == 2
     assert not (wiki / fleet.MAP_REL).exists()
@@ -144,7 +153,7 @@ def test_invalid_or_missing_intent_target_fails_before_writes(tmp_path: Path) ->
 
 def test_intent_links_are_case_exact_even_on_case_insensitive_hosts(tmp_path: Path) -> None:
     wiki = make_wiki(tmp_path)
-    errors = fleet.validate_intents(["[[shared/operator-intents/Sales-Quality]]"], wiki)
+    errors = fleet.validate_intents(["[[shared/operator-intents/Sales-Quality]]"], intents_for(wiki))
     assert errors
     assert "case-exactly" in errors[0]
 
@@ -190,13 +199,13 @@ def test_refresh_preserves_custom_metadata_body_and_foreign_notes(tmp_path: Path
     write(root / "tools/kanban.py", "print('x')\n")
     wiki = make_wiki(tmp_path)
     config_path = write(tmp_path / "sources.yaml", yaml.safe_dump(config_for(root), sort_keys=False))
-    assert fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
+    assert refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
     note = wiki / "shared/fleet-architecture/maya/tools/kanban.md"
     text = note.read_text(encoding="utf-8")
     note.write_text(text.replace("owner: fleet-architecture-collector\n", "owner: fleet-architecture-collector\nreviewed_by: human\n") + "\n## Human context\nKeep this rationale.\n", encoding="utf-8")
     foreign = write(wiki / "shared/fleet-architecture/human-note.md", "---\nowner: human\ntype: note\n---\nDo not delete.\n")
 
-    assert fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
+    assert refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
 
     refreshed = note.read_text(encoding="utf-8")
     assert "reviewed_by: human" in refreshed
@@ -210,7 +219,7 @@ def test_check_reports_only_owned_pending_removals(tmp_path: Path, capsys) -> No
     (root / "tools").mkdir(parents=True)
     wiki = make_wiki(tmp_path)
     config_path = write(tmp_path / "sources.yaml", yaml.safe_dump(config_for(root), sort_keys=False))
-    assert fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
+    assert refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 0
     capsys.readouterr()
     orphan = write(
         wiki / "shared/fleet-architecture/maya/tools/old-owned.md",
@@ -218,7 +227,7 @@ def test_check_reports_only_owned_pending_removals(tmp_path: Path, capsys) -> No
     )
     foreign = write(wiki / "shared/fleet-architecture/maya/tools/human.md", "---\nowner: human\n---\nkeep\n")
 
-    code = fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW, "--check"])
+    code = refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW, "--check"])
     report = capsys.readouterr().out
 
     assert code == 1
@@ -270,7 +279,7 @@ def test_refresh_discovers_cross_host_fragment_and_does_not_redate_it(tmp_path: 
     source.rename(tmp_path / "mac-agent-offline")
     wiki = make_wiki(tmp_path)
 
-    assert fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", "2026-09-13T01:00:00Z"]) == 0
+    assert refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", "2026-09-13T01:00:00Z"]) == 0
     state = json.loads((wiki / fleet.STATE_REL).read_text(encoding="utf-8"))
     agent = state["agents"][0]
     assert agent["coverage"]["last_checked"] == NOW
@@ -320,5 +329,5 @@ def test_core_item_note_is_never_overwritten(tmp_path: Path) -> None:
     )
     before = note.read_text(encoding="utf-8")
     config_path = write(tmp_path / "sources.yaml", yaml.safe_dump(config_for(root), sort_keys=False))
-    assert fleet.main(["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 2
+    assert refresh(wiki, ["refresh", "--config", str(config_path), "--wiki-root", str(wiki), "--now", NOW]) == 2
     assert note.read_text(encoding="utf-8") == before

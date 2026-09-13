@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inventory board-card and PR links to the live operator-intent collection.
+"""Inventory board-card and PR links to the read-only operator-intent mirror.
 
 The collector is deliberately structural.  It can prove that a card or PR has
 no usable intent link (an orphan), but it cannot prove semantic alignment or a
@@ -13,8 +13,8 @@ issues, pull requests, or ``shared/operator-intents/**``.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
+import os
 import re
 import subprocess
 import sys
@@ -23,11 +23,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+_TOOLS_DIR = Path(__file__).resolve().parents[1]
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from readonly_intents_mirror import (  # noqa: E402
+    MirrorValidationError,
+    platform_default,
+    validate_mirror,
+)
+
 
 DEFAULT_BOARD = "Bubble-invest/bubble-ops-board"
 DEFAULT_PR_OWNERS = ("Bubble-invest", "vdk888")
-DEFAULT_INTENT_REPO = "vdk888/bubble-shared-wiki"
 INTENT_DIR = "shared/operator-intents"
+MIRROR_INTENT_DIR = "operator-intents"
+MIRROR_ENV = "BUBBLE_OPERATOR_INTENTS_MIRROR"
 LABEL_COLOR = "1d76db"
 LABEL_DESCRIPTION_PREFIX = "Operator intent: "
 
@@ -184,8 +194,16 @@ def parse_intent_documents(documents: dict[str, str]) -> dict[str, Intent]:
     return intents
 
 
-def load_intents_from_root(wiki_root: Path) -> dict[str, Intent]:
-    directory = wiki_root / INTENT_DIR
+def default_mirror_root() -> Path:
+    configured = os.environ.get(MIRROR_ENV)
+    if configured:
+        return Path(configured)
+    return platform_default()
+
+
+def load_intents_from_root(root: Path) -> dict[str, Intent]:
+    """Internal pure loader for an already validated release or unit fixture."""
+    directory = root / MIRROR_INTENT_DIR
     if not directory.is_dir():
         raise CommandError(f"operator-intents directory not found: {directory}")
     documents = {
@@ -193,24 +211,6 @@ def load_intents_from_root(wiki_root: Path) -> dict[str, Intent]:
         for path in sorted(directory.glob("*.md"))
         if path.is_file() and not path.is_symlink()
     }
-    return parse_intent_documents(documents)
-
-
-def load_intents_from_github(repo: str = DEFAULT_INTENT_REPO) -> dict[str, Intent]:
-    """Read the current main collection without cloning or modifying it."""
-    listing = _run_json(["gh", "api", f"repos/{repo}/contents/{INTENT_DIR}?ref=main"])
-    documents: dict[str, str] = {}
-    for entry in listing:
-        name = str(entry.get("name") or "")
-        if not name.endswith(".md"):
-            continue
-        payload = _run_json(
-            ["gh", "api", f"repos/{repo}/contents/{INTENT_DIR}/{name}?ref=main"]
-        )
-        try:
-            documents[name] = base64.b64decode(payload["content"]).decode("utf-8")
-        except (KeyError, ValueError, UnicodeDecodeError) as exc:
-            raise CommandError(f"could not decode live intent document {name}: {exc}") from exc
     return parse_intent_documents(documents)
 
 
@@ -672,7 +672,11 @@ def _text_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    _validated_release_for_tests: Path | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="intent_alignment_check.py")
     parser.add_argument("--board", default=DEFAULT_BOARD)
     parser.add_argument(
@@ -682,8 +686,6 @@ def main(argv: list[str] | None = None) -> int:
             "Default: Bubble-invest and vdk888"
         ),
     )
-    parser.add_argument("--intent-repo", default=DEFAULT_INTENT_REPO)
-    parser.add_argument("--wiki-root", type=Path)
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--format", choices=("json", "text"), default="text")
     parser.add_argument("--mode", choices=("audit", "backfill", "labels"), default="audit")
@@ -705,11 +707,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--apply is only valid with --mode labels")
 
     try:
-        intents = (
-            load_intents_from_root(args.wiki_root)
-            if args.wiki_root
-            else load_intents_from_github(args.intent_repo)
-        )
+        if _validated_release_for_tests is None:
+            try:
+                release = validate_mirror(default_mirror_root())
+            except MirrorValidationError as exc:
+                raise CommandError(f"read-only intent mirror validation failed: {exc}") from exc
+        else:
+            release = _validated_release_for_tests
+        intents = load_intents_from_root(release)
         if args.mode == "labels":
             output = label_plan(intents, fetch_label_names(args.board))
             if args.apply:

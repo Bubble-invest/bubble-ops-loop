@@ -17,15 +17,20 @@ Python collector.
 - More than one intent: a YAML block list, one quoted wikilink per item.
 - Missing `intent`, `intent:`, and `intent: []` are allowed only as transitional
   unresolved states. They remain visible in the next audit.
-- Every non-empty target resolves case-exactly to an existing `.md` below
-  `shared/operator-intents/`. Omit `.md`; do not use aliases or headings.
+- Every non-empty target resolves case-exactly to an existing `.md` below the
+  read-only mirror's `operator-intents/`. The mirror is selected by
+  `BUBBLE_OPERATOR_INTENTS_MIRROR`, otherwise `/opt/bubble-operator-intents` on
+  Linux or `/Library/Application Support/Bubble/operator-intents` on Darwin.
+  Omit `.md`; do not use aliases or headings. Never use the writable shared
+  wiki or a direct GitHub read as the authoritative baseline.
 - A link to an intent whose frontmatter says `status: superseded` remains an
   unresolved candidate. Read the page and current intent collection to choose a
   supported mapping; never infer the replacement from filenames or links.
 - Never assign the north-star, or any other intent, as a blanket default.
-- Never create, edit, rename, or delete anything below
-  `shared/operator-intents/`. Pages with `core: true` are also read-only; if one
-  needs provenance metadata, surface it for human handling.
+- Never create, edit, rename, or delete vault content or a writable
+  `shared/operator-intents/` copy. Pages with `core: true` are also read-only.
+  Intent changes go only to `shared/operator-intents-proposals/` on a
+  Joris-reviewed shared-wiki PR; no agent opens or pushes a vault PR.
 
 ## Per-page judgment
 

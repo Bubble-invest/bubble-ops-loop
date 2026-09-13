@@ -26,6 +26,53 @@ pushes via the operator's own **`gh`/git credential**.
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
 | `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
+| `install-operator-intents-mirror.sh` | Render/validate the root LaunchDaemon mirror; only explicit `--activate` installs or loads it. |
+| `verify-operator-intents-isolation.sh` | Read-only per-agent filesystem and GitHub-permission preflight. |
+
+## Root-owned operator-intents mirror (#1267; not deployed by this PR)
+
+Rick and Géraldine read Joris-approved intents locally from
+`/Library/Application Support/Bubble/operator-intents`. The path is a
+root:wheel stable symlink into root:wheel release directories (directories
+`0555`, files `0444`, no `.git` and no content symlinks). A root LaunchDaemon
+runs at load and every 900 seconds, cloning
+`git@github.com:vdk888/bubble-operator-intents.git` `main` with only the
+dedicated read-only key at
+`/Library/Application Support/Bubble/secrets/operator-intents-readonly-deploy-key`
+(`root:wheel 0400`). It validates the remote commit, manifest, ownership and
+modes; tamper is healed and still exits nonzero with a local operator alarm.
+
+This PR does **not** install, load, provision a key, or deploy anything. The key
+is a human/root prerequisite and neither installer nor verifier generates,
+copies, or prints it. Render first:
+
+```sh
+deploy/local/install-operator-intents-mirror.sh --render-dir /tmp/operator-intents-review
+```
+
+Before activation, run the read-only verifier for every actual agent OS user.
+It requires mirror readability, no create/remove/chmod route, an unreadable key,
+no embedded remote credential, and vault `viewerPermission` of only `READ` or
+`NONE`. The current Joris-user GitHub credential is `ADMIN`, so this preflight
+must fail for an agent running as Joris. Activation therefore requires a
+distinct agent OS account or a repo-scoped GitHub App/token that excludes the
+vault, plus the dedicated read-only deploy key for the root daemon. Do not
+weaken this check.
+
+After that prerequisite and explicit operator approval only:
+
+```sh
+sudo deploy/local/install-operator-intents-mirror.sh --activate \
+  --deploy-key-readonly-attested \
+  --agent-user <rick-os-user> --agent-user <geraldine-os-user>
+sudo deploy/local/verify-operator-intents-isolation.sh \
+  --agent-user <rick-os-user> --agent-user <geraldine-os-user>
+```
+
+Agents keep logical provenance links as
+`[[shared/operator-intents/<slug>]]`, but physical reads use the mirror.
+Proposals go only to `shared/operator-intents-proposals/` through a
+Joris-reviewed shared-wiki PR. Agents never write/push the vault.
 
 ### Main runner shape — persistent `--channels` session (KeepAlive), NOT a per-tick job
 

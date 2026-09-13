@@ -27,17 +27,17 @@ def write_page(root: Path, relative: str, frontmatter: str | None) -> None:
 def seed_intents(root: Path) -> None:
     write_page(
         root,
-        "shared/operator-intents/system-convergence.md",
+        "operator-intents/system-convergence.md",
         "title: System convergence\ncore: true",
     )
     write_page(
         root,
-        "shared/operator-intents/human-review.md",
+        "operator-intents/human-review.md",
         "title: Human review\ncore: true",
     )
     write_page(
         root,
-        "shared/operator-intents/old-direction.md",
+        "operator-intents/old-direction.md",
         "title: Old direction\nstatus: superseded\ncore: true",
     )
 
@@ -47,14 +47,15 @@ def candidate_by_path(report: dict[str, object]) -> dict[str, dict[str, object]]
 
 
 def test_scalar_and_block_list_links_are_structurally_valid(tmp_path: Path) -> None:
-    seed_intents(tmp_path)
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/scalar.md",
         'title: Scalar\nintent: "[[shared/operator-intents/system-convergence]]"',
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/multiple.md",
         "\n".join(
             [
@@ -66,7 +67,7 @@ def test_scalar_and_block_list_links_are_structurally_valid(tmp_path: Path) -> N
         ),
     )
 
-    report = audit_module.audit(tmp_path)
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
 
     assert report["summary"]["pages_scanned"] == 2
     assert report["summary"]["pages_structurally_linked"] == 2
@@ -74,11 +75,14 @@ def test_scalar_and_block_list_links_are_structurally_valid(tmp_path: Path) -> N
 
 
 def test_missing_and_explicitly_empty_intents_remain_candidates(tmp_path: Path) -> None:
-    seed_intents(tmp_path)
-    write_page(tmp_path, "rick_rnd/missing.md", "title: Missing")
-    write_page(tmp_path, "rick_rnd/empty.md", "title: Empty\nintent: []")
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "rick_rnd/missing.md", "title: Missing")
+    write_page(wiki, "rick_rnd/empty.md", "title: Empty\nintent: []")
 
-    candidates = candidate_by_path(audit_module.audit(tmp_path))
+    candidates = candidate_by_path(
+        audit_module._audit_validated_release_for_tests(wiki, mirror)
+    )
 
     assert candidates["rick_rnd/missing.md"]["issues"] == ["missing_intent"]
     assert candidates["rick_rnd/empty.md"]["issues"] == ["empty_intent"]
@@ -87,39 +91,42 @@ def test_missing_and_explicitly_empty_intents_remain_candidates(tmp_path: Path) 
 def test_audit_reports_shape_and_resolution_without_semantic_guessing(
     tmp_path: Path,
 ) -> None:
-    seed_intents(tmp_path)
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/malformed.md",
         "title: Malformed\nintent: system-convergence",
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/outside.md",
         'title: Outside\nintent: "[[shared/systems/something]]"',
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/missing-target.md",
         'title: Missing target\nintent: "[[shared/operator-intents/does-not-exist]]"',
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/unquoted.md",
         "title: Unquoted\nintent: [[shared/operator-intents/system-convergence]]",
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/wrong-case.md",
         'title: Wrong case\nintent: "[[shared/operator-intents/System-Convergence]]"',
     )
     write_page(
-        tmp_path,
+        wiki,
         "shared/systems/superseded.md",
         'title: Superseded\nintent: "[[shared/operator-intents/old-direction]]"',
     )
 
-    candidates = candidate_by_path(audit_module.audit(tmp_path))
+    candidates = candidate_by_path(
+        audit_module._audit_validated_release_for_tests(wiki, mirror)
+    )
 
     assert candidates["shared/systems/malformed.md"]["issues"] == [
         "malformed_intent",
@@ -144,31 +151,69 @@ def test_audit_reports_shape_and_resolution_without_semantic_guessing(
 
 
 def test_core_roots_and_repo_infrastructure_are_not_children(tmp_path: Path) -> None:
-    seed_intents(tmp_path)
-    write_page(tmp_path, "hooks/README.md", None)
-    write_page(tmp_path, ".github/CONTRIBUTING.md", None)
-    write_page(tmp_path, "index.md", "title: Index")
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "hooks/README.md", None)
+    write_page(wiki, ".github/CONTRIBUTING.md", None)
+    write_page(wiki, "index.md", "title: Index")
 
-    report = audit_module.audit(tmp_path)
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
 
     assert report["summary"]["pages_scanned"] == 1
     assert candidate_by_path(report).keys() == {"index.md"}
 
 
-def test_cli_atomically_writes_machine_readable_report(tmp_path: Path) -> None:
-    seed_intents(tmp_path)
-    write_page(tmp_path, "shared/systems/unresolved.md", "title: Unresolved")
+def test_internal_report_can_be_atomically_written(tmp_path: Path) -> None:
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
     output = tmp_path / "monitoring/latest.json"
 
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
+    audit_module._atomic_write(output, json.dumps(report) + "\n")
+
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["schema_version"] == 1
+    assert written["summary"]["candidate_pages"] == 1
+    assert not list(output.parent.glob(".latest.json.*"))
+
+
+def test_operational_cli_rejects_writable_unvalidated_intent_directory(
+    tmp_path: Path,
+) -> None:
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--wiki", str(tmp_path), "--output", str(output)],
-        check=True,
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--wiki",
+            str(wiki),
+            "--intents-root",
+            str(mirror),
+        ],
         capture_output=True,
         text=True,
     )
+    assert result.returncode != 0
+    assert "not a stable symlink" in result.stderr
 
-    report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 1
-    assert report["summary"]["candidate_pages"] == 1
-    assert "candidates=1" in result.stderr
-    assert not list(output.parent.glob(".latest.json.*"))
+
+def test_writable_wiki_intent_copy_is_never_the_resolution_baseline(tmp_path: Path) -> None:
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(
+        wiki,
+        "shared/operator-intents/wiki-only.md",
+        "title: Unapproved writable copy\ncore: true",
+    )
+    write_page(
+        wiki,
+        "shared/systems/page.md",
+        'title: Page\nintent: "[[shared/operator-intents/wiki-only]]"',
+    )
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
+    assert candidate_by_path(report)["shared/systems/page.md"]["issues"] == [
+        "intent_target_missing"
+    ]

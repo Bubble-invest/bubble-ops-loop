@@ -33,6 +33,15 @@ try:
 except ImportError:  # surfaced as an actionable runtime error by validation
     jsonschema = None
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from readonly_intents_mirror import (  # same tools/ directory
+    MirrorValidationError,
+    platform_default as default_intents_mirror,
+    validate_mirror,
+)
+
 
 VERSION = 1
 KINDS = ("skill", "tool", "mission", "cron", "integration", "dependency")
@@ -47,6 +56,7 @@ MAP_REL = Path("shared/systems/fleet-architecture-map.md")
 STATE_REL = Path("shared/systems/fleet-architecture-inventory.json")
 NOTES_REL = Path("shared/fleet-architecture")
 INTENT_PREFIX = "shared/operator-intents/"
+MIRROR_INTENT_PREFIX = Path("operator-intents")
 INTENT_RE = re.compile(r"^\[\[(shared/operator-intents/[A-Za-z0-9._/-]+)\]\]$")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@ -]*$")
 IGNORE_NAMES = {
@@ -165,24 +175,25 @@ def normalize_intents(raw: object) -> list[str]:
     return sorted(set(result))
 
 
-def validate_intents(intents: Sequence[str], wiki_root: Path) -> list[str]:
+def validate_intents(intents: Sequence[str], intents_release: Path) -> list[str]:
     errors: list[str] = []
     for link in intents:
         match = INTENT_RE.fullmatch(link)
         if not match:
             errors.append(f"{link!r} is not an exact operator-intent wikilink")
             continue
-        relative = Path(f"{match.group(1)}.md")
-        if any(part in {".", ".."} for part in relative.parts):
+        logical = Path(f"{match.group(1)}.md")
+        if any(part in {".", ".."} for part in logical.parts):
             errors.append(f"{link!r} contains a non-canonical path component")
             continue
-        target = wiki_root / relative
+        relative = MIRROR_INTENT_PREFIX.joinpath(*logical.parts[2:])
+        target = intents_release / relative
         try:
-            target.resolve().relative_to((wiki_root / INTENT_PREFIX).resolve())
+            target.resolve().relative_to((intents_release / MIRROR_INTENT_PREFIX).resolve())
         except ValueError:
             errors.append(f"{link!r} escapes the operator-intents collection")
             continue
-        current = wiki_root
+        current = intents_release
         case_exact = True
         for part in relative.parts:
             try:
@@ -784,7 +795,7 @@ def apply_intent_bindings(config: Mapping[str, Any], inventory: dict[str, Any]) 
     return map_links, map_why
 
 
-def validate_inventory(inventory: Mapping[str, Any], wiki_root: Path) -> None:
+def validate_inventory(inventory: Mapping[str, Any], intents_release: Path) -> None:
     ids: set[str] = set()
     errors: list[str] = []
     for agent in inventory.get("agents", []):
@@ -799,7 +810,7 @@ def validate_inventory(inventory: Mapping[str, Any], wiki_root: Path) -> None:
             if entry.get("id") in item_ids:
                 errors.append(f"{agent_id}: duplicate item id {entry.get('id')!r}")
             item_ids.add(str(entry.get("id")))
-            errors.extend(f"{agent_id}/{entry.get('id')}: {err}" for err in validate_intents(entry.get("intent") or [], wiki_root))
+            errors.extend(f"{agent_id}/{entry.get('id')}: {err}" for err in validate_intents(entry.get("intent") or [], intents_release))
             if entry.get("intent") and not str(entry.get("intent_rationale") or "").strip():
                 errors.append(f"{agent_id}/{entry.get('id')}: explicit intent has no reviewed rationale")
     if errors:
@@ -1142,11 +1153,26 @@ def cmd_scan_visible(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_refresh(args: argparse.Namespace) -> int:
+def cmd_refresh(
+    args: argparse.Namespace,
+    *,
+    _validated_intents_release_for_tests: Path | None = None,
+) -> int:
     config = load_yaml(Path(args.config))
     wiki_root = Path(args.wiki_root).resolve()
     if not wiki_root.is_dir():
         raise InventoryError(f"wiki root does not exist: {wiki_root}")
+    if _validated_intents_release_for_tests is None:
+        selected_mirror = Path(
+            args.intents_root
+            or os.environ.get("BUBBLE_OPERATOR_INTENTS_MIRROR", default_intents_mirror())
+        )
+        try:
+            intents_release = validate_mirror(selected_mirror)
+        except MirrorValidationError as exc:
+            raise InventoryError(f"read-only intent mirror validation failed: {exc}") from exc
+    else:
+        intents_release = _validated_intents_release_for_tests
     state_path = wiki_root / STATE_REL
     previous = load_previous(state_path)
     fragments = load_fragments(discover_fragment_paths(config, args.fragment))
@@ -1158,12 +1184,12 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     if reviewed_map_intents:
         map_intents = reviewed_map_intents
         map_rationale = str(map_fm.get("intent_rationale") or "").strip()
-    map_intent_errors = validate_intents(map_intents, wiki_root)
+    map_intent_errors = validate_intents(map_intents, intents_release)
     if map_intent_errors:
         raise InventoryError("map intent validation failed:\n- " + "\n- ".join(map_intent_errors))
     if map_intents and not map_rationale:
         raise InventoryError("map has an explicit intent but no reviewed rationale")
-    validate_inventory(inventory, wiki_root)
+    validate_inventory(inventory, intents_release)
     outputs = render_outputs(
         inventory,
         map_intents,
@@ -1190,6 +1216,7 @@ def parser() -> argparse.ArgumentParser:
     refresh = commands.add_parser("refresh", help="collect visible roots and refresh managed wiki outputs")
     refresh.add_argument("--config", required=True)
     refresh.add_argument("--wiki-root", required=True)
+    refresh.add_argument("--intents-root", help="verified read-only mirror stable path")
     refresh.add_argument("--fragment", action="append", default=[], help="optional per-host JSON fragment")
     refresh.add_argument("--now", help="fixed ISO timestamp for reproducible tests")
     refresh.add_argument("--check", action="store_true", help="validate and report drift without writing")
@@ -1215,9 +1242,18 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    _validated_intents_release_for_tests: Path | None = None,
+) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "refresh":
+            return int(args.func(
+                args,
+                _validated_intents_release_for_tests=_validated_intents_release_for_tests,
+            ))
         return int(args.func(args))
     except InventoryError as exc:
         print(f"fleet-architecture: {exc}", file=sys.stderr)

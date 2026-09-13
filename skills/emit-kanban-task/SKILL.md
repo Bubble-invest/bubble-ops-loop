@@ -68,12 +68,13 @@ lands, with `Serves-intent(s): UNRESOLVED` when necessary. Do not choose the nor
 to silence the warning. Canonical wikilinks are case-exact and omit `.md`; a suffixed or
 otherwise malformed link remains unresolved rather than being silently repaired.
 
-The taxonomy comes from the actual files currently on `main` under
-`vdk888/bubble-shared-wiki/shared/operator-intents/`, excluding README/TEMPLATE and
-superseded documents. At 2026-09-13 the only live intent document is
-`system-convergence-north-star.md`, so the current label is
-`intent:system-convergence-north-star`. Proposal artifacts such as wiki PR #9 are not live
-taxonomy. Read the collection when it changes; never edit it from this skill.
+The taxonomy comes only from `operator-intents/` under the verified read-only
+mirror selected by `BUBBLE_OPERATOR_INTENTS_MIRROR` (otherwise
+`/opt/bubble-operator-intents` on Linux or
+`/Library/Application Support/Bubble/operator-intents` on Darwin), excluding
+README/TEMPLATE and superseded documents. Never derive taxonomy from GitHub or
+the writable shared wiki. Read it through `tools/kanban/intent_alignment_check.py`;
+never edit the vault or mirror from this skill.
 
 **Picking a budget** (per-run/per-card USD estimate, tied to scope):
 - **Small** (~$2–5): a quick lookup, a one-file fix, a single triage pass.
