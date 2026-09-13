@@ -139,6 +139,7 @@
 set -uo pipefail
 
 AGENTS_ROOT="${BUBBLE_SYNC_AGENTS_ROOT:-/home/claude/agents}"
+CHECK_ORIGIN=""
 
 # ── Stranded-clone self-heal config (board #1064) ───────────────────────────
 # ESCALATE_AFTER: consecutive sync misses on one dept before we stop just
@@ -156,6 +157,10 @@ while [[ $# -gt 0 ]]; do
         --agents-root=*) AGENTS_ROOT="${1#--agents-root=}"
                          [ -n "$AGENTS_ROOT" ] || { echo "FATAL: --agents-root= needs a value" >&2; exit 1; }
                          shift ;;
+        --check-origin) CHECK_ORIGIN="${2:?--check-origin needs a value}"; shift 2 ;;
+        --check-origin=*) CHECK_ORIGIN="${1#--check-origin=}"
+                          [ -n "$CHECK_ORIGIN" ] || { echo "FATAL: --check-origin= needs a value" >&2; exit 1; }
+                          shift ;;
         *) echo "ERR: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -437,8 +442,21 @@ escalate_stuck_dept() {
 # This script runs reset --hard + clean -fd unattended. Two independent guards:
 #  (a) a NON-DEFAULT agents root requires BUBBLE_SYNC_UNSAFE_ROOT=1 — a mistyped
 #      --agents-root must fail loudly, never silently converge a workspace;
-#  (b) per-repo (below): only dirs whose origin is a Bubble-invest/* GitHub repo
-#      are ever touched — a foreign clone matching the glob is SKIPPED with a WARN.
+#  (b) per-repo (below): only complete sanctioned GitHub origin strings are
+#      admitted — a foreign clone matching the glob is SKIPPED with a WARN.
+is_approved_origin() {
+    local origin="$1"
+    # Complete transports only. An approved-looking github.com path embedded
+    # later in an attacker-controlled URL must never pass containment.
+    printf '%s' "$origin" | grep -qE \
+      '^(https://github\.com/Bubble-invest/[A-Za-z0-9._-]+(\.git)?|git@github\.com:Bubble-invest/[A-Za-z0-9._-]+(\.git)?|ssh://git@github\.com/Bubble-invest/[A-Za-z0-9._-]+(\.git)?|https://github\.com/vdk888/bubble-rnd-workspace(\.git)?|git@github\.com:vdk888/bubble-rnd-workspace(\.git)?|ssh://git@github\.com/vdk888/bubble-rnd-workspace(\.git)?)$'
+}
+
+if [[ -n "$CHECK_ORIGIN" ]]; then
+    is_approved_origin "$CHECK_ORIGIN"
+    exit $?
+fi
+
 DEFAULT_ROOT="/home/claude/agents"
 if [ "$AGENTS_ROOT" != "$DEFAULT_ROOT" ] && [ "${BUBBLE_SYNC_UNSAFE_ROOT:-0}" != "1" ]; then
     echo "FATAL: agents-root '$AGENTS_ROOT' != $DEFAULT_ROOT — refusing destructive sync (set BUBBLE_SYNC_UNSAFE_ROOT=1 to override for tests)" >&2
@@ -455,9 +473,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     _origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
     # BUBBLE_SYNC_ORIGIN_ALLOW: extra grep -E pattern for test fixtures (local bare
     # repos). NEVER set in production units — the Bubble-invest match is the prod rule.
-    if printf '%s' "$_origin" | grep -qE 'github\.com[:/]Bubble-invest/'; then
-        :
-    elif printf '%s' "$_origin" | grep -qE '(^|[/:@])github\.com[:/]vdk888/bubble-rnd-workspace(\.git)?$'; then
+    if is_approved_origin "$_origin"; then
         :
     elif [ -n "${BUBBLE_SYNC_ORIGIN_ALLOW:-}" ] && printf '%s' "$_origin" | grep -qE "${BUBBLE_SYNC_ORIGIN_ALLOW}"; then
         :
