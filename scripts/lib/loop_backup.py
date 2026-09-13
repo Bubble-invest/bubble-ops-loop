@@ -21,7 +21,11 @@ import json
 import os
 import re
 import stat
-from typing import List, Optional
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 # An ISO-8601 UTC timestamp at the start of a heartbeat line. Used as a more
@@ -40,6 +44,350 @@ _ISO_RE = re.compile(
 
 class HarnessSelectorError(ValueError):
     """A harness selector exists but cannot be trusted or interpreted."""
+
+
+class DueMissionConfigError(ValueError):
+    """The due-mission manifest or watermark cannot be used safely."""
+
+
+_DUE_CADENCES = {"continuous", "daily", "weekly", "monthly"}
+_MISSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def due_period(cadence: str, now_utc: _dt.datetime, timezone_name: str = "UTC") -> str:
+    """Return the calendar-period token containing ``now_utc``.
+
+    Periods deliberately have no wall-clock deadline. If a Mac sleeps through
+    a day/week/month boundary, the first later tick gets a different token and
+    the mission is due. ``continuous`` is always selected by the planner; its
+    token exists only so successful ticks still leave an auditable watermark.
+    """
+    if cadence not in _DUE_CADENCES:
+        raise DueMissionConfigError(f"unsupported cadence: {cadence!r}")
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
+    try:
+        local = now_utc.astimezone(ZoneInfo(timezone_name))
+    except ZoneInfoNotFoundError as exc:
+        raise DueMissionConfigError(f"unknown due timezone: {timezone_name!r}") from exc
+    if cadence == "daily":
+        return local.date().isoformat()
+    if cadence == "weekly":
+        iso_year, iso_week, _ = local.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if cadence == "monthly":
+        return f"{local.year:04d}-{local.month:02d}"
+    return "continuous"
+
+
+def _due_dispatch_config(manifest: dict) -> Optional[dict]:
+    loop = manifest.get("loop")
+    if loop is None:
+        return None
+    if not isinstance(loop, dict):
+        raise DueMissionConfigError("loop must be a mapping")
+    config = loop.get("due_dispatch")
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        raise DueMissionConfigError("loop.due_dispatch must be a mapping")
+    return config
+
+
+def due_mission_plan(
+    manifest: dict,
+    watermarks: dict,
+    now_utc: _dt.datetime,
+) -> Optional[List[dict]]:
+    """Validate and return the scoped missions due in the current period.
+
+    ``None`` means this is a legacy manifest with no due dispatcher and lets the
+    generic local floor keep its old wake. Once ``loop.due_dispatch`` exists,
+    every allow-listed mission and rule is validated fail-closed. Missions not
+    in that explicit list are ignored even if they have a cadence (Rick's later
+    M9 placeholder is intentionally outside the M1-M8 schedule).
+    """
+    if not isinstance(manifest, dict):
+        raise DueMissionConfigError("dept.yaml root must be a mapping")
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
+    config = _due_dispatch_config(manifest)
+    if config is None:
+        return None
+    scope = config.get("mission_ids")
+    if not isinstance(scope, list) or not scope:
+        raise DueMissionConfigError("loop.due_dispatch.mission_ids must be a non-empty list")
+    if any(not isinstance(item, str) or not _MISSION_ID_RE.fullmatch(item) for item in scope):
+        raise DueMissionConfigError("due-dispatch mission ids must be safe snake_case strings")
+    if len(scope) != len(set(scope)):
+        raise DueMissionConfigError("due-dispatch mission ids must be unique")
+
+    raw_missions = manifest.get("recurring_missions")
+    if not isinstance(raw_missions, list):
+        raise DueMissionConfigError("recurring_missions must be a list")
+    missions: Dict[str, dict] = {}
+    for item in raw_missions:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise DueMissionConfigError("every recurring mission needs a string id")
+        mission_id = item["id"]
+        if mission_id in missions:
+            raise DueMissionConfigError(f"duplicate recurring mission id: {mission_id}")
+        missions[mission_id] = item
+
+    if not isinstance(watermarks, dict):
+        raise DueMissionConfigError("watermark root must be a mapping")
+    watermark_missions = watermarks.get("missions", {})
+    if not isinstance(watermark_missions, dict):
+        raise DueMissionConfigError("watermark missions must be a mapping")
+
+    result: List[dict] = []
+    for mission_id in scope:
+        mission = missions.get(mission_id)
+        if mission is None:
+            raise DueMissionConfigError(f"scoped mission is missing: {mission_id}")
+        cadence = mission.get("cadence")
+        if cadence not in _DUE_CADENCES:
+            raise DueMissionConfigError(f"{mission_id}: unsupported cadence {cadence!r}")
+        due = mission.get("due")
+        if not isinstance(due, dict):
+            raise DueMissionConfigError(f"{mission_id}: missing due rule")
+        policy = due.get("policy")
+        if cadence == "continuous":
+            if policy != "every_tick" or set(due) != {"policy"}:
+                raise DueMissionConfigError(
+                    f"{mission_id}: continuous cadence requires only due.policy=every_tick"
+                )
+            timezone_name = "UTC"
+        else:
+            if policy != "calendar_period":
+                raise DueMissionConfigError(
+                    f"{mission_id}: {cadence} cadence requires due.policy=calendar_period"
+                )
+            timezone_name = due.get("timezone")
+            if not isinstance(timezone_name, str) or not timezone_name:
+                raise DueMissionConfigError(f"{mission_id}: calendar due rule needs a timezone")
+            if set(due) != {"policy", "timezone"}:
+                raise DueMissionConfigError(f"{mission_id}: unknown due-rule keys")
+
+        mission_file = mission.get("mission_file")
+        if not isinstance(mission_file, str) or not mission_file or Path(mission_file).is_absolute() \
+                or ".." in Path(mission_file).parts:
+            raise DueMissionConfigError(f"{mission_id}: mission_file must be a safe relative path")
+        layer = mission.get("layer")
+        layers = layer if isinstance(layer, list) else [layer]
+        if not layers or any(not isinstance(value, int) or value not in {1, 2, 3, 4} for value in layers):
+            raise DueMissionConfigError(f"{mission_id}: layer must contain only 1..4")
+
+        period = due_period(cadence, now_utc, timezone_name)
+        prior = watermark_missions.get(mission_id, {})
+        if not isinstance(prior, dict):
+            raise DueMissionConfigError(f"{mission_id}: watermark entry must be a mapping")
+        last_period = prior.get("last_success_period")
+        if last_period is not None and not isinstance(last_period, str):
+            raise DueMissionConfigError(f"{mission_id}: last_success_period must be a string")
+        if cadence != "continuous" and last_period == period:
+            continue
+        if cadence != "continuous":
+            pending = prior.get("pending")
+            if pending is not None:
+                if not isinstance(pending, dict):
+                    raise DueMissionConfigError(f"{mission_id}: pending lease must be a mapping")
+                pending_period = pending.get("period")
+                claim_id = pending.get("claim_id")
+                expires_at = pending.get("expires_at_epoch")
+                if not isinstance(pending_period, str) or not isinstance(claim_id, str) \
+                        or not isinstance(expires_at, int):
+                    raise DueMissionConfigError(f"{mission_id}: pending lease has an invalid shape")
+                if pending_period == period and expires_at > int(now_utc.timestamp()):
+                    continue
+        result.append(
+            {
+                "id": mission_id,
+                "cadence": cadence,
+                "period": period,
+                "layers": layers,
+                "mission_file": mission_file,
+            }
+        )
+    return result
+
+
+def due_watermark_path(dept_dir: str, manifest: dict) -> Path:
+    """Resolve the configured watermark while containing it inside dept_dir."""
+    config = _due_dispatch_config(manifest)
+    if config is None:
+        raise DueMissionConfigError("due dispatcher is not configured")
+    relative = config.get("watermark")
+    if not isinstance(relative, str) or not relative:
+        raise DueMissionConfigError("loop.due_dispatch.watermark is required")
+    rel_path = Path(relative)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise DueMissionConfigError("due watermark must be a safe relative path")
+    root = Path(dept_dir).resolve()
+    target = (root / rel_path).resolve()
+    if target != root and root not in target.parents:
+        raise DueMissionConfigError("due watermark escapes dept directory")
+    return target
+
+
+def read_due_watermarks(path: Path) -> dict:
+    """Read the atomic JSON watermark, failing closed on malformed state."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"version": 1, "missions": {}}
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise DueMissionConfigError("due watermark is not a regular non-symlink file")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DueMissionConfigError(f"due watermark is unreadable: {exc}") from exc
+    if not isinstance(value, dict) or value.get("version") != 1 \
+            or not isinstance(value.get("missions"), dict):
+        raise DueMissionConfigError("due watermark has an unsupported shape")
+    return value
+
+
+def write_due_success(
+    path: Path,
+    mission_id: str,
+    period: str,
+    completed_at: _dt.datetime,
+) -> dict:
+    """Atomically record one explicit mission-success acknowledgement."""
+    if not _MISSION_ID_RE.fullmatch(mission_id) or not isinstance(period, str) or not period:
+        raise DueMissionConfigError("unsafe mission completion arguments")
+    if completed_at.tzinfo is None:
+        completed_at = completed_at.replace(tzinfo=_dt.timezone.utc)
+    lock_fd = _open_due_lock(path)
+    try:
+        state = read_due_watermarks(path)
+        entry = state["missions"].setdefault(mission_id, {})
+        if not isinstance(entry, dict):
+            raise DueMissionConfigError(f"{mission_id}: watermark entry must be a mapping")
+        previous = entry.get("last_success_period")
+        if previous is not None and not isinstance(previous, str):
+            raise DueMissionConfigError(f"{mission_id}: last_success_period must be a string")
+        # A delayed old-period acknowledgement must never regress a newer
+        # success. Period tokens are lexically ordered within one cadence.
+        if previous is None or previous <= period:
+            entry["last_success_period"] = period
+            entry["completed_at"] = completed_at.astimezone(_dt.timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        # Clear only the lease for the period that actually completed. A newer
+        # period may already have been claimed at a calendar boundary.
+        pending = entry.get("pending")
+        if isinstance(pending, dict) and pending.get("period") == period:
+            del entry["pending"]
+        _write_due_state_unlocked(path, state)
+        return state
+    finally:
+        os.close(lock_fd)
+
+
+def _write_due_state_unlocked(path: Path, state: dict) -> None:
+    """Publish state atomically while the caller holds the sibling lock."""
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        body = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if os.write(fd, body) != len(body):
+            raise OSError("incomplete due-watermark write")
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(temp_name, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _open_due_lock(path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = path.with_name(path.name + ".lock")
+    import fcntl
+
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    lock_fd = os.open(lock_path, flags, 0o600)
+    info = os.fstat(lock_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        os.close(lock_fd)
+        raise DueMissionConfigError("due watermark lock is unsafe")
+    os.fchmod(lock_fd, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    return lock_fd
+
+
+def claim_due_missions(
+    path: Path,
+    manifest: dict,
+    now_utc: _dt.datetime,
+    lease_seconds: int,
+) -> tuple:
+    """Atomically claim currently due periodic mission-periods.
+
+    The pending lease prevents the backup and wake-catch LaunchAgents from
+    appending duplicate work after their shorter inbox cooldown expires. It is
+    only a delivery/in-flight marker: last_success_period remains untouched.
+    """
+    if not isinstance(lease_seconds, int) or not 900 <= lease_seconds <= 86400:
+        raise DueMissionConfigError("pending_lease_seconds must be between 900 and 86400")
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=_dt.timezone.utc)
+    lock_fd = _open_due_lock(path)
+    try:
+        state = read_due_watermarks(path)
+        plan = due_mission_plan(manifest, state, now_utc)
+        if plan is None:
+            raise DueMissionConfigError("due dispatcher is not configured")
+        claims: Dict[str, str] = {}
+        for item in plan:
+            if item["cadence"] == "continuous":
+                continue
+            claim_id = uuid.uuid4().hex
+            entry = state["missions"].setdefault(item["id"], {})
+            entry["pending"] = {
+                "period": item["period"],
+                "claim_id": claim_id,
+                "claimed_at": now_utc.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "expires_at_epoch": int(now_utc.timestamp()) + lease_seconds,
+            }
+            claims[item["id"]] = claim_id
+        if claims:
+            _write_due_state_unlocked(path, state)
+        return plan, claims
+    finally:
+        os.close(lock_fd)
+
+
+def release_due_claims(path: Path, claims: Dict[str, str]) -> None:
+    """Release only claim IDs owned by a wake that was not accepted."""
+    if not claims:
+        return
+    if any(not _MISSION_ID_RE.fullmatch(key) or not isinstance(value, str) or not value
+           for key, value in claims.items()):
+        raise DueMissionConfigError("unsafe due-claim release arguments")
+    lock_fd = _open_due_lock(path)
+    try:
+        state = read_due_watermarks(path)
+        changed = False
+        for mission_id, claim_id in claims.items():
+            entry = state["missions"].get(mission_id)
+            pending = entry.get("pending") if isinstance(entry, dict) else None
+            if isinstance(pending, dict) and pending.get("claim_id") == claim_id:
+                del entry["pending"]
+                if not entry:
+                    del state["missions"][mission_id]
+                changed = True
+        if changed:
+            _write_due_state_unlocked(path, state)
+    finally:
+        os.close(lock_fd)
 
 
 def read_harness_selector(

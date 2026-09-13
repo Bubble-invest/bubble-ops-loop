@@ -62,12 +62,76 @@ done
 
 NOW_EPOCH="${LOCAL_LOOP_NOW_EPOCH:-$(date +%s)}"
 [[ "$NOW_EPOCH" =~ ^[0-9]+$ ]] || die "LOCAL_LOOP_NOW_EPOCH must be an integer"
+PY_BIN="$(_lll_py)"
+if [[ -z "$PY_BIN" ]]; then
+    log "ERROR: no Python available to validate harness selector or plan due missions; no wake queued"
+    exit 1
+fi
+
+WAKE_MESSAGE='Resume your OODA loop (self-paced). Run one normal full tick now: STEP A safe pull, STEP B read queues, STEP C apply the existing layer/mission/approval gates, STEP D dispatch only the selected work, STEP E commit only allowed runtime paths, STEP F notify, then arm the next normal wake. Preserve every human approval gate.'
+PERIODIC_DUE=0
+CLAIMS_TOKEN=""
+DUE_PLANNER=""
+
+release_pending_claims() {
+    [[ -n "$CLAIMS_TOKEN" && -n "$DUE_PLANNER" ]] || return 0
+    if ! (cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" release \
+        --dept-dir "$DEPT_DIR" --claims-token "$CLAIMS_TOKEN"); then
+        log "ERROR: could not release this wake's pending due-mission claims; lease expiry will retry"
+    fi
+    CLAIMS_TOKEN=""
+}
+trap release_pending_claims EXIT
+
+# A dept that opts into loop.due_dispatch gets a calendar-period mission plan
+# in the actual injected turn. Planning is read-only: inbox acceptance never
+# advances a watermark. Each mission gets its own explicit success-only command
+# in the prompt; failed/partial work therefore remains due on the next wake.
+# Legacy local depts with no due_dispatch keep the exact generic wake above.
+if [[ -f "$DEPT_DIR/dept.yaml" ]] && grep -q '^[[:space:]]*due_dispatch:' "$DEPT_DIR/dept.yaml"; then
+    DUE_PLANNER="${LLL_REPO_ROOT}/scripts/due_missions.py"
+    if [[ ! -f "$DUE_PLANNER" ]]; then
+        log "ERROR: due dispatcher configured but planner is missing; no wake queued"
+        exit 1
+    fi
+    if [[ "$ACTIVATE_INJECT" == 1 ]]; then
+        DUE_COMMAND=(claim --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH")
+    else
+        DUE_COMMAND=(plan --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH" --format runner)
+    fi
+    if ! DUE_RESULT="$(cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" "${DUE_COMMAND[@]}")"; then
+        log "ERROR: due mission planning failed; no wake queued"
+        exit 1
+    fi
+    PERIODIC_DUE="${DUE_RESULT%%$'\t'*}"
+    DUE_REST="${DUE_RESULT#*$'\t'}"
+    CLAIMS_TOKEN="${DUE_REST%%$'\t'*}"
+    WAKE_MESSAGE="${DUE_REST#*$'\t'}"
+    if [[ "$PERIODIC_DUE" != 0 && "$PERIODIC_DUE" != 1 ]]; then
+        log "ERROR: due dispatcher returned an invalid periodic flag; no wake queued"
+        exit 1
+    fi
+    if [[ -z "$WAKE_MESSAGE" ]]; then
+        log "ERROR: due dispatcher returned an empty wake; no wake queued"
+        exit 1
+    fi
+    log "due mission plan attached to wake"
+fi
+
+# A fresh M1 heartbeat proves the session is alive, not that its slower missions
+# ran. A due daily/weekly/monthly mission therefore overrides heartbeat
+# freshness exactly until its explicit success watermark lands. Continuous-only
+# work retains the old stale gate, so the 5m wake-catch cannot inject every 5m.
 STATE="$(is_heartbeat_stale "$DEPT_DIR" "$STALE_SEC" "$NOW_EPOCH")"
-if [[ "$STATE" == "fresh" ]]; then
-    log "heartbeat FRESH (<= ${STALE_SEC}s) — existing session healthy"
+if [[ "$STATE" == "fresh" && "$PERIODIC_DUE" != 1 ]]; then
+    log "heartbeat FRESH (<= ${STALE_SEC}s) and no periodic mission due — existing session healthy"
     exit 0
 fi
-log "heartbeat STALE (> ${STALE_SEC}s, or missing) — existing-session wake required"
+if [[ "$STATE" == "fresh" ]]; then
+    log "heartbeat FRESH but periodic mission due — existing-session wake required"
+else
+    log "heartbeat STALE (> ${STALE_SEC}s, or missing) — existing-session wake required"
+fi
 
 if [[ "$ACTIVATE_INJECT" != 1 ]]; then
     log "DEFERRED: injection not activated; no model/session was launched"
@@ -78,15 +142,8 @@ if [[ ! -x "$TMUX_BIN" ]] || ! "$TMUX_BIN" has-session -t "$SESSION_NAME" 2>/dev
     exit 1
 fi
 
-WAKE_MESSAGE='Resume your OODA loop (self-paced). Run one normal full tick now: STEP A safe pull, STEP B read queues, STEP C apply the existing layer/mission/approval gates, STEP D dispatch only the selected work, STEP E commit only allowed runtime paths, STEP F notify, then arm the next normal wake. Preserve every human approval gate.'
-
 # Use the same security-checked selector reader as the VPS floor. Missing/empty
 # remains the Claude default; any existing unsafe/unknown selector fails closed.
-PY_BIN="$(_lll_py)"
-if [[ -z "$PY_BIN" ]]; then
-    log "ERROR: no Python available to validate harness selector; no wake queued"
-    exit 1
-fi
 HARNESS="$(
     cd "$LLL_REPO_ROOT" 2>/dev/null && "$PY_BIN" - "$HARNESS_SELECTOR" <<'PYEOF'
 import sys
@@ -114,6 +171,7 @@ if [[ "$HARNESS" == "hermes" ]]; then
     fi
     if printf '%s\n' "$WAKE_MESSAGE" | "$HERMES_PY" "$HERMES_WAKE_HELPER" \
         --profile-home "$HERMES_PROFILE_HOME" --hermes-root "$HERMES_ROOT"; then
+        CLAIMS_TOKEN=""  # accepted for delivery; still not mission success
         log "HERMES_WAKE_QUEUED_UNCONFIRMED: live gateway accepted one loop wake; execution and heartbeat advancement are not yet confirmed"
         exit 0
     else
@@ -128,7 +186,10 @@ RESULT="$(inject_loop_wake "$TELEGRAM_STATE_DIR" "$SLUG" "$NOW_EPOCH" "$COOLDOWN
     exit 1
 }
 case "$RESULT" in
-    injected) log "WAKE_APPENDED_UNCONFIRMED: existing-session inbox accepted one wake; delivery, execution, and heartbeat advancement are not yet confirmed" ;;
+    injected)
+        CLAIMS_TOKEN=""  # accepted for delivery; pending lease remains, success watermark untouched
+        log "WAKE_APPENDED_UNCONFIRMED: existing-session inbox accepted one wake; delivery, execution, and heartbeat advancement are not yet confirmed"
+        ;;
     cooldown) log "COOLDOWN: a recent wake is already pending; no duplicate appended" ;;
     *) log "ERROR: unexpected injection result"; exit 1 ;;
 esac

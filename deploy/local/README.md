@@ -24,7 +24,7 @@ pushes via the operator's own **`gh`/git credential**.
 |------|------|
 | `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
-| `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
+| `local-loop-backup-runner.sh` | The per-tick body: optional due-mission plan from `dept.yaml` → heartbeat-staleness check (overridden once by due periodic work) → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
 | `install-operator-intents-mirror.sh` | Render/validate the root LaunchDaemon mirror; only explicit `--activate` installs or loads it. |
 | `verify-operator-intents-isolation.sh` | Read-only per-agent filesystem and GitHub-permission preflight. |
@@ -94,6 +94,8 @@ Tests (run from repo root, no launchctl, no live machine):
 bash tests/test_local_loop_staleness.sh   deploy/local/lib/local_loop_lib.sh deploy/local/local-loop-backup-runner.sh
 bash tests/test_local_loop_plist_render.sh deploy/local/install-local-loop.sh deploy/local/install-local-loop-backup.sh
 bash tests/test_local_loop_injection_floor.sh deploy/local/local-loop-backup-runner.sh
+bash tests/test_rnd_due_mission_floor.sh deploy/local/local-loop-backup-runner.sh
+python3 -m pytest -q scripts/lib/tests/test_due_missions.py
 ```
 
 ## Test-safe by default (no `--activate`)
@@ -150,6 +152,75 @@ registration state.
 Uninstall: `install-local-loop.sh --uninstall --slug content` (removes the plist
 + wrapper; add `--activate` to also `launchctl unload`).
 
+## Rick #1269 post-merge render and activation (not performed by the PR)
+
+Merge/update the R&D shape **before** activating the dispatcher: a runner that
+sees `loop.due_dispatch` validates all scoped rules and fails closed rather than
+falling back to the old generic wake. The selected `python3` must provide
+PyYAML. These commands do not edit `~/.claude/agents/rnd.md` or Rick's live
+mandate.
+
+The live owner checkouts are not interchangeable with clean deploy clones. At
+the time this note was written, `/Users/joris/claude-workspaces/Rick_RnD` was
+dirty and diverged (ahead 1, behind 29); preserve and reconcile that owner work
+first without stash, reset, checkout-overwrite, or destructive cleanup. The
+framework checkout was clean but behind. Only a clean checkout on the exact
+`main` branch whose HEAD is an ancestor of `origin/main` may fast-forward:
+
+```sh
+# One fail-stop preflight + dry-render transaction. Any failed branch, dirty-
+# tree, ancestry, fetch, merge, plan, render, or lint check stops this subshell
+# before the later steps run. It never activates a LaunchAgent.
+(
+set -eu
+for repo in "$HOME/claude-workspaces/Rick_RnD" "$HOME/claude-workspaces/bubble-ops-loop"; do
+  git -C "$repo" status --short --branch
+  git -C "$repo" fetch origin main
+  test "$(git -C "$repo" branch --show-current)" = main
+  test -z "$(git -C "$repo" status --porcelain)"
+  git -C "$repo" merge-base --is-ancestor HEAD origin/main
+  git -C "$repo" merge --ff-only origin/main
+done
+
+# Read-only proof of the currently due set before touching launchd:
+cd ~/claude-workspaces/bubble-ops-loop
+python3 scripts/due_missions.py plan \
+  --dept-dir ~/claude-workspaces/Rick_RnD --format json
+
+# Render both plist candidates only; loaded jobs remain unchanged:
+deploy/local/install-local-loop-backup.sh \
+  --dept-dir "$HOME/claude-workspaces/Rick_RnD" --slug rnd \
+  --telegram-state-dir "$HOME/.claude/channels/telegram-rnd" \
+  --session-name ops-loop-rnd --tmux-bin "$HOME/.local/bin/tmux" \
+  --harness-selector "$HOME/Library/Application Support/bubble-ops-loop/harness-rnd" \
+  --interval 10800 --stale-sec 5400 --cooldown-sec 900
+deploy/local/install-local-loop-backup.sh \
+  --dept-dir "$HOME/claude-workspaces/Rick_RnD" --slug rnd \
+  --telegram-state-dir "$HOME/.claude/channels/telegram-rnd" \
+  --session-name ops-loop-rnd --tmux-bin "$HOME/.local/bin/tmux" \
+  --harness-selector "$HOME/Library/Application Support/bubble-ops-loop/harness-rnd" \
+  --wake-catch --stale-sec 5400 --cooldown-sec 900
+
+plutil -lint "$HOME/Library/LaunchAgents/com.bubble.ops-loop-backup-rnd.plist"
+plutil -lint "$HOME/Library/LaunchAgents/com.bubble.ops-loop-wake-rnd.plist"
+)
+
+# Only after Joris approves activation, rerun those same two renderer commands
+# with --activate appended, then inspect both jobs and their logs:
+launchctl print "gui/$(id -u)/com.bubble.ops-loop-backup-rnd"
+launchctl print "gui/$(id -u)/com.bubble.ops-loop-wake-rnd"
+tail -n 50 "$HOME/Library/Logs/bubble-ops-loop/com.bubble.ops-loop-"{backup,wake}"-rnd.out.log"
+```
+
+Do not pre-populate the watermark. Its absence is the intended first-run state:
+M2-M7 catch up once, while continuous M1/M8 run on every actual tick. The
+watermark advances only when Rick executes a prompt-supplied `COMPLETE` command
+after that mission succeeds. Accepted periodic work carries a six-hour pending
+delivery lease so the backup and wake-catch agents cannot duplicate it after
+the shorter inbox cooldown. Pending is not success: an uncompleted mission is
+eligible again when the lease expires, and a failed injection releases its own
+claims immediately.
+
 ## No-sudo tmux (M5 hosts without Homebrew)
 
 The main runner wants tmux so a human can `tmux attach -t ops-loop-<slug>` to
@@ -188,6 +259,19 @@ scheduled windows and is then reopened:
   once on wake." → the backstop always gets a tick shortly after the Mac reopens.
 - `StartCalendarInterval` = "run at this wall-clock time." → a window that passed
   while asleep is **silently missed**. We deliberately avoid it.
+
+For a dept with `loop.due_dispatch`, the wake-time planner then compares each
+allow-listed mission's current local calendar token (day, ISO week, or month)
+with its last-success watermark. A missed period therefore becomes due on the
+first floor invocation after wake (even if M1's heartbeat is fresh); there is
+no fixed clock window to miss. A mission already successful in the current
+period is omitted. Continuous
+missions remain due on every actual tick. The wake/inbox append writes no
+success watermark: the injected turn receives one explicit completion command
+per due mission and advances only the missions that actually succeeded. Before
+append, the floor atomically claims each periodic mission-period for the
+manifest's bounded `pending_lease_seconds`; competing floor agents suppress an
+unexpired claim, and any failed append releases only the caller's claim.
 
 ### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
 
