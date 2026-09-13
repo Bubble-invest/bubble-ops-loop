@@ -81,6 +81,25 @@ if [ "$MODE" != "skillsmith" ] && [ ! -d "${WIKI_DIR}/.git" ]; then
     exit 1
 fi
 
+# Board #1247: collect structural intent-frontmatter evidence before the model
+# runs. The report never assigns intent or declares a semantic leak; the COMPILE
+# skill reads candidates and makes that judgment. Missing tooling is fatal so an
+# incomplete deploy cannot silently disable the audit.
+INTENT_AUDIT_SCRIPT=/home/claude/scripts/wiki-intent-audit.py
+INTENT_AUDIT_REPORT=/home/claude/monitoring/wiki-intent-audit/latest.json
+if [ "$MODE" = "compile" ]; then
+    if [ ! -f "$INTENT_AUDIT_SCRIPT" ]; then
+        log "FATAL: ${INTENT_AUDIT_SCRIPT} missing (incomplete #1247 install)."
+        exit 1
+    fi
+    mkdir -p "$(dirname "$INTENT_AUDIT_REPORT")"
+    if ! python3 "$INTENT_AUDIT_SCRIPT" \
+        --wiki "$WIKI_DIR" --output "$INTENT_AUDIT_REPORT"; then
+        log "FATAL: intent audit failed; compile not started."
+        exit 1
+    fi
+fi
+
 case "$MODE" in
     compile)    TASK="Run the cloud-wiki-compile skill in COMPILE mode (nightly): mine today's transcripts from the 6 VPS agents plus both Mac caches (_mac-joris, _mac-jade) and update the shared wiki." ;;
     synthesis)  TASK="Run the cloud-wiki-compile skill in SYNTHESIS mode (weekly): read the week's wiki git diffs and write the weekly synthesis meta-document." ;;

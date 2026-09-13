@@ -2,7 +2,11 @@
 
 Fleet-wide job that mines every agent's transcripts into the shared wiki
 (`~/.claude/agent-memory/shared-wiki/`). Runs on the VPS (joris-cx33) as user
-`claude`, headless `claude -p` against `SKILL.md`. Three modes, three timers:
+`claude`, headless `claude -p` against `SKILL.md`.
+
+Before each nightly compile, the launcher runs the deterministic intent
+frontmatter audit. Its JSON is structural evidence only; the compile agent
+performs the semantic mapping through a bounded backfill mission.
 
 | Mode        | Timer                                | Cadence                       |
 |-------------|---------------------------------------|--------------------------------|
@@ -27,7 +31,10 @@ sequenced after this one merges (see #627 comments: Option A, narrow scope).
 
 ```
 /home/claude/.claude/skills/cloud-wiki-compile/SKILL.md   <- skills/cloud-wiki-compile/SKILL.md
+/home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md <- skills/cloud-wiki-compile/missions/intent-backfill.md
 /home/claude/scripts/cloud-wiki-compile.sh                <- skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh
+/home/claude/scripts/wiki-intent-audit.py                 <- skills/cloud-wiki-compile/scripts/wiki_intent_audit.py
+/home/claude/monitoring/wiki-intent-audit/latest.json     <- generated atomically before/after nightly compile
 /etc/systemd/system/cloud-wiki-compile@.service           <- deploy/templates/cloud-wiki-compile@.service
 /etc/systemd/system/cloud-wiki-compile-compile.timer      <- deploy/templates/cloud-wiki-compile-compile.timer
 /etc/systemd/system/cloud-wiki-compile-synthesis.timer    <- deploy/templates/cloud-wiki-compile-synthesis.timer
