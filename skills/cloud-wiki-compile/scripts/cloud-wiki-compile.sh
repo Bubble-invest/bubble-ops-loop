@@ -87,6 +87,11 @@ fi
 # incomplete deploy cannot silently disable the audit.
 INTENT_AUDIT_SCRIPT=/home/claude/scripts/wiki-intent-audit.py
 INTENT_AUDIT_REPORT=/home/claude/monitoring/wiki-intent-audit/latest.json
+DELTA_SCRIPT=/home/claude/scripts/wiki-delta.py
+DELTA_DIR=/home/claude/monitoring/wiki-compile-delta
+DELTA_STATE=$DELTA_DIR/state.json
+DELTA_PLAN=$DELTA_DIR/current-plan.json
+DELTA_MARKER=$DELTA_DIR/completed.json
 if [ "$MODE" = "compile" ]; then
     if [ ! -f "$INTENT_AUDIT_SCRIPT" ]; then
         log "FATAL: ${INTENT_AUDIT_SCRIPT} missing (incomplete #1247 install)."
@@ -98,10 +103,40 @@ if [ "$MODE" = "compile" ]; then
         log "FATAL: intent audit failed; compile not started."
         exit 1
     fi
+    if [ ! -f "$DELTA_SCRIPT" ]; then
+        log "FATAL: ${DELTA_SCRIPT} missing (incomplete delta-planner install)."
+        exit 1
+    fi
+    mkdir -p "$DELTA_DIR"
+    # systemd should serialize this unit, but the explicit lock also protects
+    # manual starts from racing the same plan/state files.
+    exec 9>"$DELTA_DIR/compile.lock"
+    if ! flock -n 9; then
+        log "FATAL: another cloud wiki compile owns $DELTA_DIR/compile.lock."
+        exit 1
+    fi
+    rm -f "$DELTA_MARKER"
+    DELTA_ARGS=(
+        plan --state "$DELTA_STATE" --plan "$DELTA_PLAN"
+        --run-root "$DELTA_DIR/runs"
+        --max-folders "${WIKI_COMPILE_MAX_FOLDERS:-4}"
+        --max-batches "${WIKI_COMPILE_MAX_BATCHES:-3}"
+        --max-reduced-chars "${WIKI_COMPILE_MAX_REDUCED_CHARS:-240000}"
+        --context-rows "${WIKI_COMPILE_CONTEXT_ROWS:-8}"
+        --sla-target-runs "${WIKI_COMPILE_SLA_RUNS:-3}"
+    )
+    [ "$(date -u +%u)" = "7" ] && DELTA_ARGS+=(--weekly)
+    # Operator/on-demand escape hatch. Full creates a persistent frozen
+    # generation which subsequent bounded runs continue alongside live delta.
+    [ "${WIKI_COMPILE_FULL:-0}" = "1" ] && DELTA_ARGS+=(--full)
+    if ! python3 "$DELTA_SCRIPT" "${DELTA_ARGS[@]}"; then
+        log "FATAL: delta planning failed; compile not started."
+        exit 1
+    fi
 fi
 
 case "$MODE" in
-    compile)    TASK="Run the cloud-wiki-compile skill in COMPILE mode (nightly): mine today's transcripts from the 6 VPS agents plus both Mac caches (_mac-joris, _mac-jade) and update the shared wiki." ;;
+    compile)    TASK="Run the cloud-wiki-compile skill in COMPILE mode (nightly). The deterministic work plan is ${DELTA_PLAN}; use ONLY its exact reduced feeds and batches for transcript extraction, including every selected folder and all piggyback passes. Do not find or parse transcript files yourself." ;;
     synthesis)  TASK="Run the cloud-wiki-compile skill in SYNTHESIS mode (weekly): read the week's wiki git diffs and write the weekly synthesis meta-document." ;;
     pruning)    TASK="Run the cloud-wiki-compile skill in PRUNING mode (weekly): TTL-based staleness review, archive what's stale, enforce per-agent page caps." ;;
     skillsmith) TASK="Run the skill-authoring skill (weekly, #1222): ARM A CREATE — consume THIS week's STEP 4.6 skill-gap candidates.md (do NOT re-mine transcripts), dedupe against existing skills, draft survivors, eval WITH vs WITHOUT, and only author what demonstrably helps; ARM B PRUNE — count actual Skill usage across the centralized transcript corpus and judge genuinely-dead vs rare-but-critical skills, flagging (never auto-removing) dead ones. File via emit-kanban-task, nudge owning agents, gate critical changes needs:human." ;;
@@ -145,6 +180,22 @@ MAX_THINKING_TOKENS=${RUN_THINKING} \
     "$PROMPT" \
     > "$RUN_LOG" 2>&1
 EXIT=$?
+
+# Two-phase watermark: claude's zero exit is necessary but not sufficient. The
+# launcher parses the JSON result and creates a plan-bound completion marker
+# only for is_error=false plus the exact WIKI_COMPILE_RECEIPT:<run_id>. Budget
+# exhaustion, malformed output, or tool failure leaves the semantic queue
+# untouched, so the same immutable chunks are retried.
+if [ "$MODE" = "compile" ] && [ "$EXIT" -eq 0 ]; then
+    if ! python3 "$DELTA_SCRIPT" accept-result \
+        --plan "$DELTA_PLAN" --marker "$DELTA_MARKER" --result "$RUN_LOG"; then
+        log "FATAL: compile output was not valid JSON success; watermark not advanced."
+        EXIT=1
+    elif ! python3 "$DELTA_SCRIPT" commit --plan "$DELTA_PLAN" --marker "$DELTA_MARKER"; then
+        log "FATAL: success marker could not be committed; watermark not advanced."
+        EXIT=1
+    fi
+fi
 
 log "mode=${MODE} exit=${EXIT} (output: $RUN_LOG)"
 
