@@ -15,6 +15,11 @@ bubble-ops-contents-token-refresh.sh  → writes it to /run/bubble-ops-contents/
 bubble-ops-contents-token-refresh.{service,timer} → re-mint every 45 min
 ```
 
+The refresh wrapper makes at most four mint attempts at approximately
+t=0/5/15/35s. If all attempts fail, it leaves the previous token file untouched.
+Its journal messages contain only attempt counts, helper exit status, and a
+sanitized output classification; helper stdout/stderr is never forwarded.
+
 `console/services/github_reader.py::_read_contents_token()` reads
 `/run/bubble-ops-contents/token` (env `GH_TOKEN`/`GITHUB_TOKEN` fallback for
 dev/CI) and passes it to `gh api` via `GH_TOKEN` for the decision PUT.
@@ -39,10 +44,15 @@ systemctl daemon-reload
 systemctl enable --now bubble-ops-contents-token-refresh.timer
 systemctl start bubble-ops-contents-token-refresh.service   # mint immediately
 
-# 4. Verify the token landed (claude-readable, ghs_*)
+# 4. Verify the token landed and is claude-readable without printing it
 ls -l /run/bubble-ops-contents/token
-sudo -u claude head -c4 /run/bubble-ops-contents/token   # → ghs_
+test -s /run/bubble-ops-contents/token
+sudo -u claude test -r /run/bubble-ops-contents/token
 ```
+
+For the post-#1253 update of both existing refresh wrappers, use the exact
+install and verification sequence in
+[`docs/1253-token-refresh-retry-deploy.md`](../../../docs/1253-token-refresh-retry-deploy.md).
 
 ## Verify end-to-end (after the console is redeployed at the new code)
 

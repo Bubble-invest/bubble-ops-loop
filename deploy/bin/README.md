@@ -50,6 +50,12 @@ claude-readable) every ~45 min via a systemd timer.
   at request time; it reads the pre-minted short-lived token from tmpfs instead.
 - **Install:** `/usr/local/bin/bubble-board-token-refresh.sh`, root-owned `0755`,
   driven by a root systemd timer (~45 min). Calls `bubble-board-token.sh`.
+- **Transient-failure behavior (#1253):** makes at most four mint attempts at
+  approximately t=0/5/15/35s, then fails while leaving the prior token file
+  untouched. Logs contain only attempt counts, helper exit status, and sanitized
+  output classification; helper stdout/stderr is never forwarded.
+- **Deploy:** install and verify both refresh wrappers with the exact, no-secret
+  commands in [`docs/1253-token-refresh-retry-deploy.md`](../../docs/1253-token-refresh-retry-deploy.md).
 
 ## bubble-git
 
