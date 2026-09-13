@@ -18,6 +18,12 @@ jobs:
         run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests
       - name: Framework lib tests
         run: python3 -m pytest scripts/lib/tests/ -q --tb=short
+      - name: Cloud wiki delta and install contracts
+        run: |
+          python3 -m pytest tests/test_wiki_delta.py tests/test_wiki_intent_audit.py -q --tb=short
+          bash tests/test_wiki_intent_installed_layout.sh
+          bash -n skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh
+          bash -n scripts/install-cloud-wiki-compile.sh
       # The token-broker (push chokepoint) and git-guard are security code — run
       # their suites too so a regression in the mission-file-lock / structural-push
       # detector is caught here. Run separately: each dir has its own conftest.py.

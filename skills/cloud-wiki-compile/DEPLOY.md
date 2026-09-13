@@ -8,6 +8,60 @@ Before each nightly compile, the launcher runs the deterministic intent
 frontmatter audit. Its JSON is structural evidence only; the compile agent
 performs the semantic mapping through a bounded backfill mission.
 
+It also runs `wiki-delta.py`, which separates durable capture from semantic
+acknowledgement. At the start of a cycle, all newly detected complete JSONL rows
+are copied into immutable SHA-verified queue chunks before the source watermark
+advances. The active frontier then freezes until that queue drains, while every
+invocation durably captures later complete rows into a separate next-cycle
+queue. It does this even when replaying a failed semantic plan. Deletion/rename
+cannot erase either deferred active work or newly captured post-frontier work;
+the next queue is atomically promoted when active drains.
+Nightly semantic work is capped at four folders, three Sonnet extraction
+batches, and 240,000 reduced characters. Each chunk carries bounded immediate
+prior and forward-lookahead turns as `CONTEXT_ONLY`; only `NEW` rows may produce
+findings or be acknowledged by that chunk.
+
+Queued chunks are acknowledged only when the CLI exits zero, the final Claude
+JSON envelope has `is_error=false`, and its result is the exact plan-bound
+`WIKI_COMPILE_RECEIPT:<run_id>`. Failed plans are reused byte-for-byte. Plans
+publish backlog count/age and estimated successful runs; an estimate above the
+three-run target emits `ALERT_SLA` for operator visibility.
+
+The completion bound assumes scheduled runs keep succeeding and incoming
+reduced-text volume does not permanently exceed configured processing capacity.
+No data is dropped when that assumption is false—the queues grow durably—but
+the SLA estimate/oldest age rises and `ALERT_SLA` makes the capacity breach
+explicit instead of claiming an on-time drain.
+
+Weekly-only audit passes have a separate aggregate backlog. Each successful
+nightly feed is retained until a successful `weekly=true` compile consumes it,
+so a folder processed Monday is still audited Sunday. Page writes carry the
+plan run ID and are skipped on replay, preventing duplicate decision/research
+appends if wiki sync copied a partial run before a later failure.
+
+### Bootstrap and full rebuild
+
+On first deploy, the planner seeds files older than the latest trustworthy
+successful legacy compile minus a 48-hour safety overlap. If no parseable
+success log exists it conservatively queues the last seven days. This migration
+uses prior successful compiles as the historical watermark; use the full mode
+if that premise cannot be trusted:
+
+```bash
+WIKI_COMPILE_FULL=1 sudo systemctl start cloud-wiki-compile@compile.service
+```
+
+Full mode snapshots a separate persistent full-generation queue and drains it
+through the same bounded plans over multiple successful runs. It alternates
+with live delta work when both queues are non-empty, so neither the rebuild nor
+new activity can starve or clobber the other's watermark. The launcher does not
+change the operator's `$12` cap.
+
+Projected model spend at the defaults is roughly **$3–6 on ordinary nights**
+and **$6–10 on Sunday** (the same bounded feed is read by extra weekly judgment
+passes). Recommend a temporary **$18 cap** while the bootstrap safety window is
+drained, then return to/validate `$12`; budget changes remain Joris-set.
+
 | Mode        | Timer                                | Cadence                       |
 |-------------|---------------------------------------|--------------------------------|
 | compile     | `cloud-wiki-compile-compile.timer`    | nightly, 22:00 UTC             |
@@ -34,6 +88,8 @@ sequenced after this one merges (see #627 comments: Option A, narrow scope).
 /home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md <- skills/cloud-wiki-compile/missions/intent-backfill.md
 /home/claude/scripts/cloud-wiki-compile.sh                <- skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh
 /home/claude/scripts/wiki-intent-audit.py                 <- skills/cloud-wiki-compile/scripts/wiki_intent_audit.py
+/home/claude/scripts/wiki-delta.py                        <- skills/cloud-wiki-compile/scripts/wiki_delta.py
+/home/claude/monitoring/wiki-compile-delta/               <- generated plans, state, durable reduced feeds
 /home/claude/monitoring/wiki-intent-audit/latest.json     <- generated atomically before/after nightly compile
 /etc/systemd/system/cloud-wiki-compile@.service           <- deploy/templates/cloud-wiki-compile@.service
 /etc/systemd/system/cloud-wiki-compile-compile.timer      <- deploy/templates/cloud-wiki-compile-compile.timer

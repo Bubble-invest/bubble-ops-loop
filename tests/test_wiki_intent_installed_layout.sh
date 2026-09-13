@@ -12,14 +12,17 @@ CLOUD_WIKI_INSTALL_ROOT="$TEST_ROOT/root" \
 DEPLOY_HOME="$TEST_ROOT/root/home/claude"
 LAUNCHER="$DEPLOY_HOME/scripts/cloud-wiki-compile.sh"
 AUDIT="$DEPLOY_HOME/scripts/wiki-intent-audit.py"
+DELTA="$DEPLOY_HOME/scripts/wiki-delta.py"
 SKILL="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/SKILL.md"
 MISSION="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md"
 
 test -x "$LAUNCHER"
 test -x "$AUDIT"
+test -x "$DELTA"
 test -r "$SKILL"
 test -r "$MISSION"
 grep -qF '/home/claude/scripts/wiki-intent-audit.py' "$LAUNCHER"
+grep -qF '/home/claude/scripts/wiki-delta.py' "$LAUNCHER"
 grep -qF '/home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md' "$SKILL"
 
 WIKI="$TEST_ROOT/wiki"
