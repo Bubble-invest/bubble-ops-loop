@@ -72,13 +72,16 @@ def test_board_native_card_attachment_still_resolves_against_board_repo(client, 
 
 # ── Board #491 — override map: 4 live dept: values with no bubble-ops-<x> repo ──
 
-def test_repo_for_dept_override_map_routes_to_board_repo():
-    """rnd/security/claudette/morty have no bubble-ops-<x> repo on disk (#491) —
-    _repo_for_dept must route them to the board repo, NOT build a nonexistent
-    'Bubble-invest/bubble-ops-<dept>' string that 404s."""
+def test_repo_for_dept_override_map_routes_non_depts_to_board_repo():
+    """security/claudette/morty have no bubble-ops-<x> repo on disk (#491)."""
     _kanban = _kanban_module()
-    for dept in ("rnd", "security", "claudette", "morty"):
+    for dept in ("security", "claudette", "morty"):
         assert _kanban._repo_for_dept(dept) == _kanban._BOARD_REPO, dept
+
+
+def test_repo_for_rnd_routes_to_its_real_dedicated_repo():
+    _kanban = _kanban_module()
+    assert _kanban._repo_for_dept("rnd") == "vdk888/bubble-rnd-workspace"
 
 
 def test_repo_for_dept_real_dept_repos_still_resolve_to_bubble_ops_x():
@@ -92,10 +95,8 @@ def test_repo_for_dept_real_dept_repos_still_resolve_to_bubble_ops_x():
         ), dept
 
 
-def test_dept_rnd_card_attachment_resolves_against_board_repo(client, monkeypatch):
-    """A dept:rnd card's inline attachment must resolve against the board repo
-    (rnd's own outputs live IN this loop repo, not a nonexistent
-    bubble-ops-rnd) — board #491."""
+def test_dept_rnd_card_attachment_resolves_against_rnd_repo(client, monkeypatch):
+    """A dept:rnd attachment resolves against Rick's dedicated repo (#1270)."""
     _kanban = _kanban_module()
     monkeypatch.setattr(
         _kanban, "_fetch_single_issue",
@@ -103,8 +104,8 @@ def test_dept_rnd_card_attachment_resolves_against_board_repo(client, monkeypatc
     )
     r = client.get("/kanban/card/902")
     assert r.status_code == 200
-    assert "repo=Bubble-invest/bubble-ops-board" in r.text
-    assert "repo=Bubble-invest/bubble-ops-rnd" not in r.text
+    assert "repo=vdk888%2Fbubble-rnd-workspace" in r.text or "repo=vdk888/bubble-rnd-workspace" in r.text
+    assert "repo=Bubble-invest/bubble-ops-board" not in r.text
 
 
 def test_dept_security_card_attachment_resolves_against_board_repo(client, monkeypatch):

@@ -95,8 +95,13 @@ def dept_dataflow(slug: str) -> Dict[str, Any]:
 
     # actual git repos the dept owns / can access (grounded — these are real
     # remotes; vault only present for some depts; shared-wiki read by all).
-    repos = [{"id": f"bubble-ops-{slug}", "kind": "repo",
-              "role": "repo du département (R/W : queues, outputs, layers)"}]
+    repo_remote = _dept_git_remote(slug)
+    repos = [{
+        "id": repo_remote[1] if repo_remote else f"bubble-ops-{slug}",
+        "kind": "repo",
+        "role": "repo du département (R/W : queues, outputs, layers)",
+        **({"href": f"https://github.com/{repo_remote[0]}/{repo_remote[1]}"} if repo_remote else {}),
+    }]
     # Vault: only a real GIT vault subrepo counts as a repo node. Some depts
     # (e.g. CGP) reference an *Obsidian* vault in dept.yaml — that's a data
     # source, NOT a GitHub repo, so it must NOT become a vault repo node.
@@ -108,6 +113,32 @@ def dept_dataflow(slug: str) -> Dict[str, Any]:
                   "role": "mémoire partagée (lecture)"})
 
     return {"slug": slug, "repos": repos, "layers": layers, "sources": sources}
+
+
+def _dept_git_remote(slug: str):
+    """Return (owner, repo) from the dept checkout's real GitHub origin."""
+    import re
+    import subprocess
+    from console.services.dept_registry import repo_path
+
+    root = repo_path(slug)
+    if root is None or not (root / ".git").exists():
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=4,
+        )
+        match = re.search(
+            r"(^|[/:@])github\.com[:/]([^/]+)/([^/]+)$",
+            (out.stdout or "").strip(),
+        )
+        if not match:
+            return None
+        repo = match.group(3)
+        return match.group(2), repo[:-4] if repo.endswith(".git") else repo
+    except Exception:
+        return None
 
 
 def _vault_git_remote(slug: str):

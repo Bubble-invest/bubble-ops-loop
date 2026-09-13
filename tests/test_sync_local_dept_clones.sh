@@ -692,21 +692,41 @@ nowant "T12a no 'START' log line (guard fires before the run even logs its start
 
 # -----------------------------------------------------------------------------
 # T12b: destructive-blast-radius containment (r16 review, board #667) — a
-#      mirror whose origin is NOT a github.com/Bubble-invest/* remote is
+#      mirror whose origin is NOT an exact sanctioned GitHub transport is
 #      SKIPPED with a WARN and no reset is attempted, even though it otherwise
 #      looks like a normal host:local dept (present .git, STATE.yaml says
 #      host: local). Real-git fixture: the git stub's `remote get-url origin`
 #      always answers a fixed local path (matching BUBBLE_SYNC_ORIGIN_ALLOW),
-#      so this guard needs a genuine per-dir origin — hence real git here,
-#      with BUBBLE_SYNC_ORIGIN_ALLOW explicitly UNSET so the fixture-allow
-#      escape hatch can't rescue the foreign origin.
+#      so this guard needs a genuine per-dir origin — hence real git here.
+#      The exact-string checks run through --check-origin; the convergence
+#      fixtures use a narrowly-scoped local-path override which still excludes
+#      the foreign origin.
 # -----------------------------------------------------------------------------
+for approved_origin in \
+  "https://github.com/vdk888/bubble-rnd-workspace.git" \
+  "https://github.com/vdk888/bubble-rnd-workspace" \
+  "git@github.com:vdk888/bubble-rnd-workspace.git" \
+  "ssh://git@github.com/vdk888/bubble-rnd-workspace.git" \
+  "https://github.com/Bubble-invest/bubble-ops-content.git"; do
+    "$SCRIPT_UNDER_TEST" --check-origin "$approved_origin" >/dev/null 2>&1
+    chk "T12o sanctioned complete origin accepted: $approved_origin" 0 "$?"
+done
+for rejected_origin in \
+  "https://evil.example/github.com/vdk888/bubble-rnd-workspace.git" \
+  "https://github.com/vdk888/bubble-rnd-workspace.git/extra" \
+  "https://github.com/vdk888/not-the-rnd-repo.git" \
+  "http://github.com/Bubble-invest/bubble-ops-content.git" \
+  "https://evil.example/github.com/Bubble-invest/bubble-ops-content.git"; do
+    "$SCRIPT_UNDER_TEST" --check-origin "$rejected_origin" >/dev/null 2>&1
+    [[ "$?" -ne 0 ]]
+    chk "T12o adversarial/non-sanctioned origin rejected: $rejected_origin" 0 "$?"
+done
+
 REALGIT_AGENTS12B="$WORK/agents-real12b"; rm -rf "$REALGIT_AGENTS12B"; mkdir -p "$REALGIT_AGENTS12B"
 
 # Foreign dept: a real local repo whose origin is a non-Bubble-invest GitHub URL
-# (the containment guard greps the LITERAL `remote get-url origin` output for
-# `github.com[:/]Bubble-invest/`, so a URL that merely LOOKS like GitHub but
-# names a different org must not match).
+# (the containment guard checks the complete literal remote string, so a URL
+# that merely contains an approved-looking path must not match).
 FOREIGN12B="$REALGIT_AGENTS12B/bubble-ops-foreign"
 mkdir -p "$FOREIGN12B/onboarding"
 "${real_git_env[@]}" git init -q "$FOREIGN12B"
@@ -720,10 +740,8 @@ foreign12b_head_before="$("${real_git_env[@]}" git -C "$FOREIGN12B" rev-parse HE
 # A SECOND, healthy dept in the SAME run whose origin DOES match the
 # Bubble-invest allow-rule — proves the foreign-origin dept is skipped
 # without wedging the others (fail-safe, same invariant as T3/T9). Its bare
-# "origin" is a real local repo whose PATH literally contains
-# github.com/Bubble-invest/ so the guard's string match passes for real,
-# with BUBBLE_SYNC_ORIGIN_ALLOW unset for this whole block so nothing here
-# depends on the fixture-only escape hatch.
+# "origin" is a real local repo admitted only by this block's narrowly-scoped
+# fixture override; --check-origin above separately proves production strings.
 ORIGIN12B="$WORK/github.com/Bubble-invest/bubble-ops-healthy12b.git"
 WORKTREE12B="$WORK/seed-healthy12b"
 mkdir -p "$(dirname "$ORIGIN12B")"
@@ -743,8 +761,28 @@ printf 'v: 2\n' > "$WORKTREE12B/framework.txt"
 "${real_git_env[@]}" git -C "$WORKTREE12B" push -q origin HEAD:main
 healthy12b_origin_head="$("${real_git_env[@]}" git -C "$WORKTREE12B" rev-parse HEAD)"
 
+# Rick's dedicated dept repo is the one deliberate non-Bubble-invest origin
+# admitted by the production containment rule (#1270).
+RND_ORIGIN12B="$WORK/github.com/vdk888/bubble-rnd-workspace.git"
+RND_WORKTREE12B="$WORK/seed-rnd12b"
+mkdir -p "$(dirname "$RND_ORIGIN12B")"
+"${real_git_env[@]}" git init -q --bare "$RND_ORIGIN12B"
+"${real_git_env[@]}" git clone -q "$RND_ORIGIN12B" "$RND_WORKTREE12B" 2>/dev/null
+mkdir -p "$RND_WORKTREE12B/onboarding"
+printf 'v: 1\n' > "$RND_WORKTREE12B/framework.txt"
+printf 'slug: rnd\nstatus: Live\nhost: local\n' > "$RND_WORKTREE12B/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" add -A
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" commit -qm "seed rnd"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" push -q origin HEAD:main
+RND_MIRROR12B="$REALGIT_AGENTS12B/bubble-ops-rnd"
+"${real_git_env[@]}" git clone -q "$RND_ORIGIN12B" "$RND_MIRROR12B"
+printf 'v: 2\n' > "$RND_WORKTREE12B/framework.txt"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" commit -qam "advance rnd"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" push -q origin HEAD:main
+rnd12b_origin_head="$("${real_git_env[@]}" git -C "$RND_WORKTREE12B" rev-parse HEAD)"
+
 : > "$GIT_LOG"
-env BUBBLE_SYNC_ORIGIN_ALLOW='' "${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS12B" >"$WORK/run-12b.log" 2>&1
+env BUBBLE_SYNC_ORIGIN_ALLOW="^$WORK/github.com/(Bubble-invest|vdk888)/" "${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS12B" >"$WORK/run-12b.log" 2>&1
 rc12b=$?
 chk "T12b run with a foreign-origin dept in the mix still exits 0 (fail-safe, no timer flap)" 0 "$rc12b"
 want "T12b foreign-origin dept WARN names the containment guard" "containment guard" "$WORK/run-12b.log"
@@ -763,6 +801,8 @@ nowant "T12b foreign-origin dept never even attempted a git fetch (skipped pre-f
 want "T12b healthy Bubble-invest dept in the same run still synced (foreign-origin skip didn't wedge it)" "healthy12b" "$WORK/run-12b.log"
 healthy12b_head="$("${real_git_env[@]}" git -C "$MIRROR12B" rev-parse HEAD 2>/dev/null || echo "")"
 chk_eq "T12b healthy dept converged to its real origin despite the foreign dept's skip" "$healthy12b_origin_head" "$healthy12b_head"
+rnd12b_head="$("${real_git_env[@]}" git -C "$RND_MIRROR12B" rev-parse HEAD 2>/dev/null || echo "")"
+chk_eq "T12c exact vdk888/bubble-rnd-workspace exception is maintained as a local-dept mirror" "$rnd12b_origin_head" "$rnd12b_head"
 
 # -----------------------------------------------------------------------------
 # T13: review-round-2 — dirty TRACKED file at HEAD (uncommitted hot-patch).

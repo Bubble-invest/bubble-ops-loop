@@ -39,13 +39,16 @@ LAYERS = [
 # department (`content`, host:local on {{OPERATOR_2}}'s Mac) registered via dept.yaml, so
 # she already renders as a real dept node with live telemetry. Keeping her here
 # too made her appear TWICE — once as a live dept, once as a ghost Mac-local
-# node. The Mac-local tier is now ONLY for agents with no dept registration at
-# all (Rick, Tony-local). A dept that runs on the Mac is flagged via its
-# `host: "local"` field (see _dept_node below), not duplicated here.
+# node. The Mac-local tier is now ONLY for agents with no live dept registration.
+# Rick remains a rollout-safe fallback until the manually-created `rnd` mirror
+# is discovered; then build_graph suppresses this ghost dynamically (#1270).
+# A dept that runs on the Mac is flagged via its `host: "local"` field (see
+# _dept_node below), not duplicated here.
 LOCAL_AGENTS = [
     {"id": "rick", "name": "Rick", "role": "R&D / Dev", "host": "Mac local"},
     {"id": "tony-local", "name": "Tony (local)", "role": "Management — 2e instance", "host": "Mac local"},
 ]
+LOCAL_AGENT_DEPT_SLUG = {"rick": "rnd"}
 
 
 def _rail_status(timer_unit: str) -> Dict[str, Any]:
@@ -302,6 +305,9 @@ def build_graph() -> Dict[str, Any]:
 
     # ── Mac-local agents (static — no telemetry yet) ───────────────────
     for a in LOCAL_AGENTS:
+        registered_slug = LOCAL_AGENT_DEPT_SLUG.get(a["id"])
+        if registered_slug and registered_slug in slugs:
+            continue  # live registered dept owns visibility; avoid duplicate ghost
         nodes.append({
             "id": f"local:{a['id']}", "kind": "local", "tier": 3,
             "title": a["name"], "role": a["role"], "note": a["host"],
@@ -337,7 +343,7 @@ def build_graph() -> Dict[str, Any]:
                 "id": rid, "kind": "repo", "repo_kind": rp["kind"],
                 "title": rp["id"], "role": "Repo GitHub" if rp["kind"] == "repo" else "Vault GitHub",
                 "note": rp.get("role", ""), "status": "ok",
-                "href": f"https://github.com/Bubble-invest/{rp['id']}",
+                "href": rp.get("href") or f"https://github.com/Bubble-invest/{rp['id']}",
                 "owner_dept": did,
             })
             edges.append({
