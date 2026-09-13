@@ -67,3 +67,44 @@ Board card #461 (child of #456) extended that SAME inject-file boot turn to
 also re-arm any durable dept cron declared in `config/crons.yaml`, not just
 `/loop` itself — see `docs/durable-cron-manifest.md` +
 `schemas-draft/crons-manifest.schema.yaml`.
+
+## delivery-ledger — the third channel patch (board #1284 pt E)
+
+`delivery-ledger.block.ts` is a third telegram-plugin patch, applied by the same
+`scripts/install-channel-patches.sh` re-applier (a plugin version bump wipes the
+volatile cache, so the source-of-truth lives here, like boot_rearm + bubble-inject).
+
+**Why:** grammy advances the Telegram getUpdates offset the *moment* it fetches a
+batch — it ACKs the batch to Telegram before our handler enqueues the turn into
+Claude. If the harness crashes / restarts / is taken over between fetch-ack and
+enqueue, the acked-but-undelivered updates are gone forever, **silently** (the
+existing watchdogs only check *liveness*, never *completeness*). That is the
+2026-09-10→11 Claudette incident: 19 of Jade's messages (update-bearing
+message_ids 7527–7545) vanished — absent from her session log, no signal.
+
+**What the patch does:** a grammy `bot.use` middleware (runs for every update,
+before routing/gating) appends one line per received update to
+`<TELEGRAM_STATE_DIR>/delivery-ledger.jsonl` (`update_id`, `kind`, `ts`, ids —
+never message *content*, no secrets), and touches `<state>/poll-heartbeat`.
+Because grammy hands updates over in strictly-increasing `update_id` order, a
+numeric GAP between consecutive ledger lines (…7526 then 7546) is the crash-loss
+fingerprint — the lost 19 become **visible after the fact**. It is append-only,
+best-effort, and wrapped so it can never throw into the handler chain; it uses
+only `join` + `writeFileSync` (already imported by server.ts) so `bun build`
+stays green across plugin versions.
+
+**The detector:** `scripts/telegram-gap-detector.py` (pure logic in
+`scripts/lib/telegram_gap_detector.py`, unit-tested in
+`scripts/lib/tests/test_telegram_gap_detector.py`) reads the ledger every 5 min
+(`deploy/templates/telegram-gap-detector.{service,timer}`), and on a GAP / DEAD
+poller / WEDGE (optional read-only `getWebhookInfo` pending-count probe) SIGNALS
+LOUDLY out-of-band (operator Telegram ping via the MAIN bot + a kanban card) and,
+when `BUBBLE_GAP_RESTART=1`, kicks the poller to recover. State is persisted so
+the same gap is not re-alerted every tick. This is the fix for the *core* problem:
+the ABSENCE of a loss signal, not just the drop.
+
+**Deploy note (Rick-controlled):** install the timer fleet-wide; ensure
+`telegram-watchdog-claudette.timer` is ENABLED (it was found *disabled* during
+this investigation — only morty's was enabled — so Claudette's poller liveness
+was not being auto-checked either) and wire `BUBBLE_MAIN_BOT_TOKEN` into
+`/run/telegram-gap-detector/env` from the commander secret scope.

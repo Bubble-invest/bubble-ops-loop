@@ -170,6 +170,12 @@ run_installer "$GLOB_A"
 [[ "$RC" == "0" ]] && ok "installer exits 0 (default/hook mode)" || bad "installer exit was $RC"
 [[ "$(grep -c bootRearmNotification "$TGT_A/server.ts")" == "2" ]] && ok "boot_rearm wired (import + call site)" || bad "boot_rearm not wired"
 grep -q "bubble-inject" "$TGT_A/server.ts" && ok "bubble-inject marker present" || bad "bubble-inject marker missing"
+[[ "$(grep -c 'BUBBLE-DELIVERY-LEDGER PATCH BEGIN' "$TGT_A/server.ts")" == "1" ]] && ok "delivery-ledger patch present exactly once (#1284 pt E)" || bad "delivery-ledger patch missing / duplicated"
+grep -q 'bot.use(async (ctx, next)' "$TGT_A/server.ts" && ok "delivery-ledger middleware wired" || bad "delivery-ledger middleware not wired"
+# the ledger block must sit immediately after the bot-construction anchor
+awk '/const bot = new Bot\(TOKEN\)/{getline n; if (n ~ /BUBBLE-DELIVERY-LEDGER PATCH BEGIN/) print "OK"}' "$TGT_A/server.ts" | grep -q OK \
+  && ok "delivery-ledger block sits right after the bot anchor" || bad "delivery-ledger block misplaced"
+[[ "$(ls "$TGT_A"/server.ts.bak-delivery-ledger-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "one delivery-ledger backup" || bad "expected exactly one delivery-ledger backup"
 [[ "$(grep -c 'BUBBLE-AGENT-MESSAGE-WATCHER-v1' "$TGT_A/server.ts" || true)" == "0" ]] && ok "no peer config means no peer identity/watcher is created" || bad "peer watcher invented without config"
 [[ -f "$TGT_A/boot_rearm.ts" ]] && ok "boot_rearm.ts copied" || bad "boot_rearm.ts not copied"
 [[ "$(ls "$TGT_A"/server.ts.bak-boot-rearm-* 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] && ok "one boot_rearm backup" || bad "expected exactly one boot_rearm backup"

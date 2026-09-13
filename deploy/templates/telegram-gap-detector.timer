@@ -1,0 +1,17 @@
+# telegram-gap-detector.timer — run the completeness detector every 5 min
+# (board #1284 pt E). Paired with telegram-gap-detector.service.
+[Unit]
+Description=Run the Telegram delivery-GAP detector every 5 min (#1284 pt E)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/scripts/telegram-gap-detector.py
+
+[Timer]
+Unit=telegram-gap-detector.service
+OnBootSec=4min
+OnUnitActiveSec=5min
+# Offset from the 90s telegram-watchdog-*.timer and the 45s loop-tick-watchdog
+# jitter so the probes do not all land on the same second.
+RandomizedDelaySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
