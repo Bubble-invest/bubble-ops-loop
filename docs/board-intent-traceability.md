@@ -28,23 +28,23 @@ A bare `Closes #1254` in another repository means that repository's issue, not
 the board card. `Closes`, `Fixes`, and `Resolves` and their common inflections
 are recognized.
 
-The taxonomy is **derived from the actual `.md` filenames on the shared wiki's
-`main` branch** under `shared/operator-intents/`. README, TEMPLATE, and documents
-with `status: superseded` are excluded. Labels therefore follow the live
-collection instead of a hard-coded project list. As verified on 2026-09-13, the
-live collection contains one intent document, so its current taxonomy is:
+The taxonomy is derived from the actual `.md` filenames under
+`operator-intents/` in the OS-specific, root-controlled read-only mirror of
+`vdk888/bubble-operator-intents@main`. README, TEMPLATE, and documents with
+`status: superseded` are excluded. `[[shared/operator-intents/<slug>]]` remains
+the logical provenance syntax; it does not name a writable physical baseline.
 
 ```text
 intent:system-convergence-north-star
 ```
 
-Wiki PR #9's proposal artifacts are not live intents and are deliberately not
-labels. They enter the taxonomy only if their protected-path content is later
-promoted to the actual collection through Joris's review flow.
+Shared-wiki proposal artifacts are not live intents and are deliberately not
+labels. They enter the taxonomy only after Joris promotes them to the private
+vault and the root mirror refreshes.
 
-Links point **to** the write-locked collection. None of the tools here writes
-`shared/operator-intents/**`; a new or changed intent still requires Joris's
-protected-path PR.
+Agents write proposals only under `shared/operator-intents-proposals/` on a
+Joris-reviewed shared-wiki PR. They never write, commit, push, or open a PR
+against the private vault; Joris alone changes and merges it.
 
 ## Creation behavior
 
@@ -79,10 +79,12 @@ python3 tools/kanban/intent_alignment_check.py \
   --format json
 ```
 
-The operational default reads the collection from
-`vdk888/bubble-shared-wiki@main` with `gh api`, avoiding a stale local mirror.
-`--wiki-root /path/to/shared-wiki` is available for an explicit pinned/offline
-checkout or a test fixture; do not use it casually in the live loop. The tool
+The operational default reads and verifies `BUBBLE_OPERATOR_INTENTS_MIRROR`, or
+`/opt/bubble-operator-intents` on Linux and
+`/Library/Application Support/Bubble/operator-intents` on Darwin. It fails
+closed on missing/stale metadata, manifest drift, symlinks, ownership drift, or
+writable modes. It never defaults to GitHub or the writable shared wiki.
+`--intent-root /path/to/mirror-fixture` exists only for tests. The tool
 reads all open board issues
 and searches all open PRs owned by both `Bubble-invest` and `vdk888`, deduped by
 URL. Repeat `--org` to replace those defaults with explicit owner scopes.
@@ -151,10 +153,11 @@ remove stale labels, rename casing drift, or touch work items.
 ## Deployment and verification
 
 Merging this code alone does not change the board, fleet, or loop runtime.
-Deployment requires updating the framework checkout used on each relevant
-host, re-vendoring the emitter and `emit-kanban-task` skill into departments,
-and wiring the separate canonical R&D-loop Phase 2 instruction to run the
-inventory. Then verify, without creating production cards first:
+Deployment requires first installing the reviewed root-owned VPS/Mac mirror,
+passing the isolation verifier for every agent OS user, updating the framework
+checkout used on each relevant host, re-vendoring the emitter and
+`emit-kanban-task` skill into departments, and wiring the canonical R&D loop to
+run the inventory. Then verify, without creating production cards first:
 
 1. the live collection produces the expected taxonomy;
 2. label sync dry-run shows the intended changes, then an operator applies it;

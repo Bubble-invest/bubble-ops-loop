@@ -1,0 +1,153 @@
+#!/bin/bash
+# Managed by bubble-ops-loop (#1267). Installed root:wheel outside agent paths.
+set -Eeuo pipefail
+umask 077
+
+REMOTE_URL='git@github.com:vdk888/bubble-operator-intents.git'
+REMOTE_REF='main'
+KEY='/Library/Application Support/Bubble/secrets/operator-intents-readonly-deploy-key'
+BASE='/Library/Application Support/Bubble'
+STAGING="$BASE/.operator-intents-staging"
+RELEASES="$BASE/operator-intents-releases"
+MIRROR="$BASE/operator-intents"
+
+stage=''
+cleanup() {
+  if [[ -n "$stage" && "$stage" == "$STAGING"/run.* ]]; then rm -rf -- "$stage"; fi
+}
+trap cleanup EXIT
+log() { /usr/bin/logger -t operator-intents-mirror -- "$*" 2>/dev/null || true; printf 'operator-intents-mirror: %s\n' "$*" >&2; }
+notify_operator() {
+  local console_uid
+  console_uid="$(/usr/bin/stat -f '%u' /dev/console 2>/dev/null || true)"
+  if [[ "$console_uid" =~ ^[0-9]+$ && "$console_uid" -gt 0 ]]; then
+    /bin/launchctl asuser "$console_uid" /usr/bin/osascript \
+      -e 'display notification "Read-only operator-intents mirror refresh failed. Check system logs." with title "Bubble mirror alarm"' \
+      >/dev/null 2>&1 || true
+  fi
+}
+fail() { log "ERROR: $*"; notify_operator; exit 1; }
+
+validate_release() {
+  /usr/bin/python3 - "$1" "${2:-}" <<'PY'
+import hashlib, os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+expected_commit = sys.argv[2]
+if not root.is_dir() or root.is_symlink():
+    raise SystemExit(1)
+metadata = [root / name for name in ('.mirror-commit', '.mirror-manifest', '.mirror-synced-at')]
+if any(not path.is_file() or path.is_symlink() for path in metadata):
+    raise SystemExit(1)
+commit = metadata[0].read_text(encoding='utf-8').strip()
+if len(commit) != 40 or any(ch not in '0123456789abcdef' for ch in commit):
+    raise SystemExit(1)
+if expected_commit and commit != expected_commit:
+    raise SystemExit(1)
+actual = []
+for path in sorted(root.rglob('*'), key=lambda p: p.relative_to(root).as_posix()):
+    rel = path.relative_to(root).as_posix()
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0:
+        raise SystemExit(1)
+    if stat.S_ISDIR(info.st_mode):
+        if stat.S_IMODE(info.st_mode) != 0o555:
+            raise SystemExit(1)
+    elif stat.S_ISREG(info.st_mode):
+        if stat.S_IMODE(info.st_mode) != 0o444:
+            raise SystemExit(1)
+        if path.name != '.mirror-manifest':
+            actual.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{rel}")
+    else:
+        raise SystemExit(1)
+if actual != metadata[1].read_text(encoding='utf-8').splitlines():
+    raise SystemExit(1)
+if any(path.name == '.git' for path in root.rglob('*')):
+    raise SystemExit(1)
+PY
+}
+
+[[ "$(/usr/bin/id -u)" == 0 ]] || fail 'must run as root'
+[[ -f "$KEY" && ! -L "$KEY" ]] || fail 'dedicated read-only deploy key missing'
+[[ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$KEY")" == 'root:wheel:400' ]] \
+  || fail 'deploy key must be root:wheel mode 0400'
+tampered=0
+if [[ -e "$STAGING" && "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$STAGING")" != 'root:wheel:700' ]]; then
+  log 'tamper detected: staging root ownership/mode drift'; tampered=1
+fi
+if [[ -e "$RELEASES" && "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$RELEASES")" != 'root:wheel:555' ]]; then
+  log 'tamper detected: releases root ownership/mode drift'; tampered=1
+fi
+/usr/bin/install -d -o root -g wheel -m 0700 "$STAGING"
+/usr/bin/install -d -o root -g wheel -m 0555 "$RELEASES"
+
+if [[ -e "$MIRROR" || -L "$MIRROR" ]]; then
+  if [[ ! -L "$MIRROR" || "$(/usr/bin/stat -f '%Su:%Sg' "$MIRROR")" != 'root:wheel' ]]; then
+    log 'tamper detected: stable path is not a root-owned symlink'; tampered=1
+  else
+    current_target="$(/usr/bin/readlink "$MIRROR")"
+    case "$current_target" in "$RELEASES"/*) ;; *) log 'tamper detected: stable symlink escapes release root'; tampered=1 ;; esac
+    if (( tampered == 0 )) && ! validate_release "$current_target"; then
+      log 'tamper detected: current release failed manifest/ownership/mode validation'; tampered=1
+    fi
+  fi
+fi
+while IFS= read -r -d '' old_release; do
+  if ! validate_release "$old_release"; then log "tamper detected: invalid release $old_release"; tampered=1; fi
+done < <(/usr/bin/find "$RELEASES" -mindepth 1 -maxdepth 1 -type d -print0)
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="/usr/bin/ssh -i \"$KEY\" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/ssh/ssh_known_hosts"
+remote_commit="$(/usr/bin/git ls-remote --exit-code "$REMOTE_URL" "refs/heads/$REMOTE_REF" | /usr/bin/awk 'NR == 1 {print $1}')" \
+  || fail 'cannot resolve vault main'
+[[ "$remote_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'vault main did not resolve to one commit'
+stage="$(/usr/bin/mktemp -d "$STAGING/run.XXXXXX")"
+checkout="$stage/checkout"
+/usr/bin/git clone --quiet --no-tags --single-branch --branch "$REMOTE_REF" "$REMOTE_URL" "$checkout" \
+  || fail 'fresh vault clone failed'
+[[ "$(/usr/bin/git -C "$checkout" remote get-url origin)" == "$REMOTE_URL" ]] || fail 'clone origin mismatch'
+[[ "$(/usr/bin/git -C "$checkout" rev-parse HEAD)" == "$remote_commit" ]] || fail 'clone HEAD differs from vault main'
+remote_after="$(/usr/bin/git ls-remote --exit-code "$REMOTE_URL" "refs/heads/$REMOTE_REF" | /usr/bin/awk 'NR == 1 {print $1}')" \
+  || fail 'cannot recheck vault main'
+[[ "$remote_after" == "$remote_commit" ]] || fail 'vault main moved during sync; refusing stale publication'
+[[ -z "$(/usr/bin/find "$checkout" -path "$checkout/.git" -prune -o -type l -print -quit)" ]] || fail 'vault content contains a symlink'
+rm -rf -- "$checkout/.git"
+[[ -z "$(/usr/bin/find "$checkout" -name .git -print -quit)" ]] || fail '.git remains in publication'
+printf '%s\n' "$remote_commit" > "$checkout/.mirror-commit"
+/bin/date -u +'%Y-%m-%dT%H:%M:%SZ' > "$checkout/.mirror-synced-at"
+/usr/bin/python3 - "$checkout" <<'PY' > "$checkout/.mirror-manifest"
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for path in sorted(root.rglob('*'), key=lambda p: p.relative_to(root).as_posix()):
+    if path.is_file() and path.name != '.mirror-manifest':
+        print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{path.relative_to(root).as_posix()}")
+PY
+/usr/sbin/chown -R root:wheel "$checkout"
+/usr/bin/find "$checkout" -type d -exec /bin/chmod 0555 {} +
+/usr/bin/find "$checkout" -type f -exec /bin/chmod 0444 {} +
+validate_release "$checkout" "$remote_commit" || fail 'staged release failed validation'
+
+release="$RELEASES/$remote_commit"
+if [[ -e "$release" || -L "$release" ]]; then
+  if validate_release "$release" "$remote_commit"; then
+    rm -rf -- "$checkout"
+  else
+    log "tamper detected: replacing invalid release for $remote_commit"; tampered=1
+    rm -rf -- "$release"; /bin/mv -- "$checkout" "$release"
+  fi
+else
+  /bin/mv -- "$checkout" "$release"
+fi
+/usr/sbin/chown -R root:wheel "$release"
+/usr/bin/find "$release" -type d -exec /bin/chmod 0555 {} +
+/usr/bin/find "$release" -type f -exec /bin/chmod 0444 {} +
+validate_release "$release" "$remote_commit" || fail 'published release failed validation'
+link_tmp="$BASE/.operator-intents-link.$$"
+rm -f -- "$link_tmp"
+/bin/ln -s -- "$release" "$link_tmp"
+/usr/sbin/chown -h root:wheel "$link_tmp"
+if [[ -e "$MIRROR" && ! -L "$MIRROR" ]]; then rm -rf -- "$MIRROR"; fi
+/bin/mv -fh -- "$link_tmp" "$MIRROR"
+[[ -L "$MIRROR" && "$(/usr/bin/readlink "$MIRROR")" == "$release" ]] || fail 'stable symlink publication failed'
+validate_release "$release" "$remote_commit" || fail 'post-publish validation failed'
+if (( tampered != 0 )); then fail 'preexisting mirror tamper was healed; operator review required'; fi
+log "published verified vault main $remote_commit"

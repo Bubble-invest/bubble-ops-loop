@@ -20,6 +20,7 @@ from typing import Iterable
 
 
 CORE_DIR = PurePosixPath("shared/operator-intents")
+MIRROR_INTENT_DIR = PurePosixPath("operator-intents")
 NON_CONTENT_PREFIXES = (PurePosixPath(".github"), PurePosixPath("hooks"))
 WIKILINK_RE = re.compile(r"^\[\[([^\[\]|#]+)\]\]$")
 FIELD_RE = re.compile(r"^intent\s*:\s*(.*?)\s*$")
@@ -127,7 +128,7 @@ def _intent_lifecycle_status(path: Path) -> str | None:
     return None
 
 
-def _target_issue(wiki_root: Path, value: str) -> tuple[str | None, str | None]:
+def _target_issue(intents_root: Path, value: str) -> tuple[str | None, str | None]:
     match = WIKILINK_RE.fullmatch(value)
     if not match:
         return None, "malformed_intent"
@@ -141,8 +142,9 @@ def _target_issue(wiki_root: Path, value: str) -> tuple[str | None, str | None]:
     if not _is_below(target_path, CORE_DIR) or target_path == CORE_DIR:
         return target, "intent_target_outside_core"
 
-    target_file = PurePosixPath(f"{target}.md")
-    resolved = _case_exact_file(wiki_root, target_file)
+    slug_parts = target_path.relative_to(CORE_DIR)
+    target_file = MIRROR_INTENT_DIR / PurePosixPath(f"{slug_parts.as_posix()}.md")
+    resolved = _case_exact_file(intents_root, target_file)
     if resolved is None:
         return target, "intent_target_missing"
     if _intent_lifecycle_status(resolved) == "superseded":
@@ -162,8 +164,14 @@ def _iter_pages(wiki_root: Path) -> Iterable[Path]:
         yield page
 
 
-def audit(wiki_root: Path) -> dict[str, object]:
+def audit(wiki_root: Path, intents_root: Path) -> dict[str, object]:
     wiki_root = wiki_root.resolve()
+    intents_root = intents_root.resolve()
+    mirror_intents = intents_root / MIRROR_INTENT_DIR
+    if not mirror_intents.is_dir() or mirror_intents.is_symlink():
+        raise ValueError(f"read-only mirror intent directory unavailable: {mirror_intents}")
+    if any(path.is_symlink() for path in mirror_intents.rglob("*")):
+        raise ValueError(f"read-only mirror intent directory contains a symlink: {mirror_intents}")
     candidates: list[dict[str, object]] = []
     scanned = 0
     linked = 0
@@ -183,7 +191,7 @@ def audit(wiki_root: Path) -> dict[str, object]:
             values, value_issues = _intent_values(frontmatter)
             issues.extend(value_issues)
             for value in values:
-                target, target_issue = _target_issue(wiki_root, value)
+                target, target_issue = _target_issue(intents_root, value)
                 if target:
                     targets.append(target)
                 if target_issue:
@@ -207,6 +215,7 @@ def audit(wiki_root: Path) -> dict[str, object]:
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "wiki_root": str(wiki_root),
+        "intents_root": str(intents_root),
         "contract": {
             "scalar": 'intent: "[[shared/operator-intents/<slug>]]"',
             "multiple": "quoted block list",
@@ -244,12 +253,23 @@ def _atomic_write(path: Path, payload: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wiki", type=Path, required=True, help="shared-wiki root")
+    parser.add_argument(
+        "--intents-root",
+        type=Path,
+        required=True,
+        help="read-only mirror root containing operator-intents/",
+    )
     parser.add_argument("--output", type=Path, help="atomically write JSON here")
     args = parser.parse_args()
 
     if not args.wiki.is_dir():
         parser.error(f"wiki root is not a directory: {args.wiki}")
-    report = audit(args.wiki)
+    if not args.intents_root.is_dir():
+        parser.error(f"read-only intents mirror is not a directory: {args.intents_root}")
+    try:
+        report = audit(args.wiki, args.intents_root)
+    except ValueError as exc:
+        parser.error(str(exc))
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         _atomic_write(args.output, payload)

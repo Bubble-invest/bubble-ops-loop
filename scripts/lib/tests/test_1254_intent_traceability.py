@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "tools/kanban/intent_alignment_check.py"
@@ -244,8 +246,8 @@ def test_coverage_warns_at_each_query_ceiling() -> None:
 
 
 def test_cli_backfill_limit_one_cannot_hide_incomplete_coverage(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    intent_dir = wiki / "shared/operator-intents"
+    mirror = tmp_path / "mirror"
+    intent_dir = mirror / "operator-intents"
     intent_dir.mkdir(parents=True)
     (intent_dir / "live.md").write_text(intent_doc("Live intent"), encoding="utf-8")
 
@@ -271,8 +273,8 @@ esac
         [
             sys.executable,
             str(SCRIPT),
-            "--wiki-root",
-            str(wiki),
+            "--intent-root",
+            str(mirror),
             "--mode",
             "backfill",
             "--batch-size",
@@ -291,6 +293,23 @@ esac
     assert output["coverage"]["complete"] is False
     assert len(output["coverage"]["warnings"]) == 3
     assert output["selection"]["selected_count"] == 1
+
+
+def test_default_intent_source_is_os_mirror_never_github(monkeypatch) -> None:
+    monkeypatch.setenv("BUBBLE_OPERATOR_INTENTS_MIRROR", "/controlled/mirror")
+    assert module.default_mirror_root() == Path("/controlled/mirror")
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "load_intents_from_github" not in source
+    assert "--intent-repo" not in source
+    assert "--wiki-root" not in source
+    assert "gh\", \"api\"" not in source
+
+
+def test_default_mirror_validation_fails_closed_on_writable_fixture(tmp_path: Path) -> None:
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    with pytest.raises(module.CommandError, match="not a stable symlink"):
+        module.validate_mirror(mirror)
 
 
 def fake_gh(path: Path) -> Path:
