@@ -241,6 +241,23 @@ def test_empty_root_is_unknown_but_declared_empty_surface_is_verified(tmp_path: 
     assert partial["coverage"]["surfaces"]["skill"]["status"] == "unknown"
 
 
+def test_mixed_empty_readable_and_inaccessible_skill_paths_are_partial(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "agent"
+    (root / "skills").mkdir(parents=True)
+    blocked = root / ".claude/skills"
+    blocked.mkdir(parents=True)
+    real_probe = fleet.path_probe
+
+    def probe(path: Path) -> str:
+        return "inaccessible" if path == blocked else real_probe(path)
+
+    monkeypatch.setattr(fleet, "path_probe", probe)
+    scanned = fleet.scan_root(config_for(root)["agents"][0], root, NOW)
+
+    assert scanned["coverage"]["surfaces"]["skill"] == {"status": "partial", "count": 0}
+    assert scanned["coverage"]["status"] == "partial"
+
+
 def test_refresh_discovers_cross_host_fragment_and_does_not_redate_it(tmp_path: Path) -> None:
     source = tmp_path / "mac-agent"
     write(source / "tools/kanban.py", "print('x')\n")

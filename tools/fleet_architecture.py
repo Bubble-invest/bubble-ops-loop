@@ -275,7 +275,7 @@ def surface_status(paths: Sequence[Path], item_count: int) -> str:
     probes = [path_probe(path) for path in paths]
     readable = any(probe == "readable" for probe in probes)
     blocked = any(probe == "inaccessible" for probe in probes)
-    if item_count and blocked:
+    if blocked and (readable or item_count):
         return "partial"
     if item_count or readable:
         return "verified"
