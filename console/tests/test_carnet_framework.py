@@ -100,9 +100,9 @@ def test_graph_includes_local_agents_without_telemetry(client):
     assert locals_, "Mac-local agents must be drawn (Notion wishlist)"
     assert all(n.get("telemetry") is False for n in locals_)
     local_ids = {n["id"].split(":", 1)[1] for n in locals_}
-    # Rick + Tony-local have no dept registration → they stay in the Mac-local
-    # tier. Miranda is NOT here anymore: she's a live `content` dept (host:local)
-    # rendered as a real dept node, not a telemetry-less ghost. (Card #221.)
+    # The fixture has no rnd mirror yet, so Rick remains rollout-visible as a
+    # static fallback. Once dept:rnd exists, #1270's registration test proves
+    # this fallback is dynamically suppressed. Tony-local also stays static.
     assert {"rick", "tony-local"} <= local_ids
     assert "miranda" not in local_ids, (
         "Miranda must not be a ghost Mac-local node — she's a live content dept"

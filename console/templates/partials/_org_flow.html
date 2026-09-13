@@ -117,7 +117,9 @@
     // every dept (inbound edges) but clearly sit under the Principal.
     centerRow(roles.concierge, CONCIERGE_Y);
 
-    // Mac-local agents (Rick, Tony-local, Miranda) sit NEXT TO the Principal
+    // Unregistered/fallback Mac-local agents (Tony-local, and Rick until the
+    // rnd mirror is live) sit NEXT TO the Principal. Registered host:local
+    // depts (Rick/rnd, Miranda/content) stay in the ops row
     // ({{OPERATOR}}/{{OPERATOR_2}}) — they're "our" local machines, not a bottom row. Place
     // them as a compact stack to the RIGHT of the Principal, at its height.
     var localX = COL_W * 1.4;  // just right of the centered Principal card

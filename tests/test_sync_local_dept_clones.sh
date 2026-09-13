@@ -743,6 +743,26 @@ printf 'v: 2\n' > "$WORKTREE12B/framework.txt"
 "${real_git_env[@]}" git -C "$WORKTREE12B" push -q origin HEAD:main
 healthy12b_origin_head="$("${real_git_env[@]}" git -C "$WORKTREE12B" rev-parse HEAD)"
 
+# Rick's dedicated dept repo is the one deliberate non-Bubble-invest origin
+# admitted by the production containment rule (#1270).
+RND_ORIGIN12B="$WORK/github.com/vdk888/bubble-rnd-workspace.git"
+RND_WORKTREE12B="$WORK/seed-rnd12b"
+mkdir -p "$(dirname "$RND_ORIGIN12B")"
+"${real_git_env[@]}" git init -q --bare "$RND_ORIGIN12B"
+"${real_git_env[@]}" git clone -q "$RND_ORIGIN12B" "$RND_WORKTREE12B" 2>/dev/null
+mkdir -p "$RND_WORKTREE12B/onboarding"
+printf 'v: 1\n' > "$RND_WORKTREE12B/framework.txt"
+printf 'slug: rnd\nstatus: Live\nhost: local\n' > "$RND_WORKTREE12B/onboarding/STATE.yaml"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" add -A
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" commit -qm "seed rnd"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" push -q origin HEAD:main
+RND_MIRROR12B="$REALGIT_AGENTS12B/bubble-ops-rnd"
+"${real_git_env[@]}" git clone -q "$RND_ORIGIN12B" "$RND_MIRROR12B"
+printf 'v: 2\n' > "$RND_WORKTREE12B/framework.txt"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" commit -qam "advance rnd"
+"${real_git_env[@]}" git -C "$RND_WORKTREE12B" push -q origin HEAD:main
+rnd12b_origin_head="$("${real_git_env[@]}" git -C "$RND_WORKTREE12B" rev-parse HEAD)"
+
 : > "$GIT_LOG"
 env BUBBLE_SYNC_ORIGIN_ALLOW='' "${real_git_env[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS12B" >"$WORK/run-12b.log" 2>&1
 rc12b=$?
@@ -763,6 +783,8 @@ nowant "T12b foreign-origin dept never even attempted a git fetch (skipped pre-f
 want "T12b healthy Bubble-invest dept in the same run still synced (foreign-origin skip didn't wedge it)" "healthy12b" "$WORK/run-12b.log"
 healthy12b_head="$("${real_git_env[@]}" git -C "$MIRROR12B" rev-parse HEAD 2>/dev/null || echo "")"
 chk_eq "T12b healthy dept converged to its real origin despite the foreign dept's skip" "$healthy12b_origin_head" "$healthy12b_head"
+rnd12b_head="$("${real_git_env[@]}" git -C "$RND_MIRROR12B" rev-parse HEAD 2>/dev/null || echo "")"
+chk_eq "T12c exact vdk888/bubble-rnd-workspace exception is maintained as a local-dept mirror" "$rnd12b_origin_head" "$rnd12b_head"
 
 # -----------------------------------------------------------------------------
 # T13: review-round-2 — dirty TRACKED file at HEAD (uncommitted hot-patch).

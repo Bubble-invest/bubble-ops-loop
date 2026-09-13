@@ -1574,7 +1574,10 @@ def _load_child_entry(slug: str, child_root: Path) -> Dict[str, Any]:
         layer4_dir = outputs_dir / date_str / "4"
         kpis_path = layer4_dir / "risk-kpis.yaml"
         brief_path = layer4_dir / "risk-brief.md"
-        export_path = outputs_dir / date_str / "management-export.yaml"
+        export_paths = (
+            layer4_dir / "management-export.yaml",  # canonical live path
+            outputs_dir / date_str / "management-export.yaml",  # legacy fallback
+        )
 
         if kpis_path.exists():
             try:
@@ -1588,12 +1591,15 @@ def _load_child_entry(slug: str, child_root: Path) -> Dict[str, Any]:
         if brief_path.exists():
             risk_brief_md = brief_path.read_text(encoding="utf-8")
 
-        if export_path.exists():
+        for export_path in export_paths:
+            if not export_path.exists():
+                continue
             try:
                 management_export = yaml.safe_load(export_path.read_text(encoding="utf-8"))
             except yaml.YAMLError as e:
                 _log.warning("_load_child_entry: malformed %s: %s", export_path, e)
                 management_export = None
+            break
 
     # Pending gates
     pending_gates: List[Dict[str, Any]] = []
@@ -1629,7 +1635,7 @@ def load_management_exports(dept_slug: str) -> Dict[str, Any]:
     child reads (from READ_FROM_DISK/bubble-ops-<child>/outputs/):
       - latest-date/4/risk-kpis.yaml       (parsed YAML)
       - latest-date/4/risk-brief.md         (raw text)
-      - latest-date/management-export.yaml  (parsed YAML)
+      - latest-date/4/management-export.yaml (parsed YAML; legacy root fallback)
       - queues/gates/*.yaml                 (list of pending gates)
 
     Gracefully handles:

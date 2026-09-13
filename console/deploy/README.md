@@ -45,6 +45,42 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 
 Canonical unit source: `deploy/bubble-ops-console.service.template` — kept in sync with what production actually runs (board #1081). Install/update it on a box with `scripts/deploy-console-to-vps.sh` (see `deploy/INSTALL.md` step 2); `scripts/deploy-console-to-morty.sh` re-syncs it automatically on every ongoing git-pull deploy. Full `bubble-vps-platform` pyinfra integration is still a follow-up (UX-5).
 
+### Rick (`rnd`) read-mirror registration — post-merge only
+
+Rick runs on Joris's Mac M4. The VPS paths are read-only views, never a second
+Rick runtime: the cockpit discovers `/home/claude/agents/bubble-ops-rnd` from
+its committed `onboarding/STATE.yaml`, while Tony reads the same mirror through
+the sibling path `/srv/agents/bubble-ops-rnd`. After both #1269 and #1270 merge,
+an operator may run this fail-stop block on the VPS. This PR does not run it.
+Until the mirror is present and `status: Live`, the graph deliberately retains
+the existing static Rick node; registration replaces it atomically with
+`dept:rnd` rather than making Rick disappear during a staggered rollout.
+
+```bash
+(
+set -eu
+MIRROR=/home/claude/agents/bubble-ops-rnd
+TONY_VIEW=/srv/agents/bubble-ops-rnd
+test ! -e "$MIRROR"
+test ! -e "$TONY_VIEW"
+sudo -u claude git clone --filter=blob:none --branch main --single-branch \
+  git@github.com:vdk888/bubble-rnd-workspace.git "$MIRROR"
+test "$(sudo -u claude git -C "$MIRROR" branch --show-current)" = main
+test -z "$(sudo -u claude git -C "$MIRROR" status --porcelain)"
+test "$(sed -n 's/^host:[[:space:]]*//p' "$MIRROR/onboarding/STATE.yaml")" = local
+sudo ln -s "$MIRROR" "$TONY_VIEW"
+test "$(readlink -f "$TONY_VIEW")" = "$MIRROR"
+)
+```
+
+Then run the already-deployed `sync-local-dept-clones.service` once and verify
+its timer keeps the exact `vdk888/bubble-rnd-workspace` origin current. Only
+after the mirror and symlink checks pass should the operator restart the
+cockpit and allow Tony's next normal L1/L2/L4 cycle. Verify `/dept/rnd` shows
+`host: local`, four layers, and the latest `management-export.yaml`; verify the
+org graph has `dept:rnd` and no `local:rick` ghost. No service, clone, symlink,
+or timer is changed merely by merging this code.
+
 ## Routes
 
 | Route | Purpose | Notion v5 ref |

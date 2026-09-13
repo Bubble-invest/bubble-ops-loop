@@ -205,4 +205,11 @@ def runtime_repo_path(slug: str) -> Optional[Path]:
     canonical = canonical_root / slug
     if canonical.is_dir():
         return canonical.resolve()
+    # A host:local dept's canonical runtime is on another machine. Its VPS
+    # management/report path is therefore the read-only bubble-ops-* mirror,
+    # exposed under /srv/agents for Tony without pretending a VPS runtime
+    # exists at /srv/agents/<slug> (#1270).
+    mirrored = canonical_root / f"bubble-ops-{slug}"
+    if mirrored.is_dir():
+        return mirrored.resolve()
     return repo_path(slug)

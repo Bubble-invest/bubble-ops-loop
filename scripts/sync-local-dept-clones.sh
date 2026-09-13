@@ -450,11 +450,14 @@ log "START agents_root=${AGENTS_ROOT}"
 LOCAL_COUNT=0
 FAIL_COUNT=0
 for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
-    # Guard (b): never converge a repo whose origin is not a Bubble-invest remote.
+    # Guard (b): converge only an approved dept origin. Most are Bubble-invest;
+    # Rick's canonical dept source is the one exact vdk888 exception (#1270).
     _origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
     # BUBBLE_SYNC_ORIGIN_ALLOW: extra grep -E pattern for test fixtures (local bare
     # repos). NEVER set in production units — the Bubble-invest match is the prod rule.
     if printf '%s' "$_origin" | grep -qE 'github\.com[:/]Bubble-invest/'; then
+        :
+    elif printf '%s' "$_origin" | grep -qE '(^|[/:@])github\.com[:/]vdk888/bubble-rnd-workspace(\.git)?$'; then
         :
     elif [ -n "${BUBBLE_SYNC_ORIGIN_ALLOW:-}" ] && printf '%s' "$_origin" | grep -qE "${BUBBLE_SYNC_ORIGIN_ALLOW}"; then
         :
