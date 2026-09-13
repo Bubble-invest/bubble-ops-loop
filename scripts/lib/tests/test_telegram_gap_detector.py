@@ -128,3 +128,29 @@ def test_bad_ledger_lines_are_skipped():
     assert LedgerEntry.from_line('{"update_id":"7"}') is None  # not an int
     ok = LedgerEntry.from_line('{"update_id":7,"ts":"z"}')
     assert ok is not None and ok.update_id == 7
+
+
+# ── discovery: bare `telegram/` (morty/main) must be found + slug from home ────
+
+def test_default_discover_finds_bare_telegram_dir_and_slugs_from_home(monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_gapdet_driver",
+        os.path.join(os.path.dirname(__file__), "..", "..", "telegram-gap-detector.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    dirs = [
+        "/home/agent-morty/.claude/channels/telegram/",        # bare — the bug
+        "/home/agent-claudette/.claude/channels/telegram-claudette/",
+        "/home/agent-ben/.claude/channels/telegram-ben/",
+    ]
+    import glob as _glob
+    monkeypatch.setattr(_glob, "glob", lambda pat: list(dirs))
+    monkeypatch.setattr(os.path, "exists", lambda p: p.endswith("bot.pid"))
+
+    specs = mod._default_discover("vps")
+    by_slug = {s["slug"]: s["state_dir"] for s in specs}
+    assert set(by_slug) == {"morty", "claudette", "ben"}   # morty NOT "main"
+    assert by_slug["morty"] == "/home/agent-morty/.claude/channels/telegram"

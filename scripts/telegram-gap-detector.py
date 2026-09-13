@@ -137,22 +137,35 @@ def discover(host: str, only: Optional[str]) -> List[dict]:
 
 def _default_discover(host: str) -> List[dict]:
     """Best-effort default discovery from telegram state-dir layout.
-    VPS: /home/agent-<slug>/.claude/channels/telegram-<slug>/
+    VPS: /home/agent-<slug>/.claude/channels/{telegram,telegram-<slug>}/
+         — the channel dir is `telegram-<slug>` for most depts but bare
+         `telegram` for the main/concierge bot (e.g. morty), so the glob must
+         match both, and the slug is taken from the /home/agent-<slug>/ path
+         component (NOT the channel basename, which would mislabel morty "main").
     Mac: ~/.claude/channels/telegram*/   (channel name → slug)
     A state dir is a candidate only if it already holds a delivery-ledger or a
     bot.pid (i.e. an active poller), so we never invent depts.
     """
     import glob
+    import re
 
     specs: List[dict] = []
+    seen: set = set()
     if host == "vps":
-        pattern = "/home/agent-*/.claude/channels/telegram-*/"
+        pattern = "/home/agent-*/.claude/channels/telegram*/"
     else:
         pattern = os.path.expanduser("~/.claude/channels/telegram*/")
     for d in sorted(glob.glob(pattern)):
         d = d.rstrip("/")
-        base = os.path.basename(d)  # telegram-<slug> or telegram
-        slug = base[len("telegram-"):] if base.startswith("telegram-") else "main"
+        if d in seen:
+            continue
+        seen.add(d)
+        m = re.search(r"/home/agent-([^/]+)/", d + "/")
+        if m:
+            slug = m.group(1)  # VPS: authoritative slug from the home dir
+        else:
+            base = os.path.basename(d)  # Mac: telegram-<slug> or telegram
+            slug = base[len("telegram-"):] if base.startswith("telegram-") else "main"
         if os.path.exists(os.path.join(d, "delivery-ledger.jsonl")) or os.path.exists(
             os.path.join(d, "bot.pid")
         ):
