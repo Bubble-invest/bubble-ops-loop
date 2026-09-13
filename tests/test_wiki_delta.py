@@ -348,3 +348,13 @@ def test_skill_contract_has_receipt_and_atomic_proposal_grouping():
     assert "FINAL COMPLETION RECEIPT" in skill
     assert "Group ALL A blocks by proposal page" in skill
     assert "one atomic Edit/Write per proposal page" in skill
+
+
+def test_skill_contract_separates_compile_from_core_pr_builder():
+    skill = (REPO / "skills/cloud-wiki-compile/SKILL.md").read_text()
+    assert "scheduled/live compiler always runs in the shared `main` checkout" in skill
+    assert "authorization arrives in its trusted launch/task input" in skill
+    assert "named non-main branch" in skill
+    assert "`intent-proposer` PR-only credential" in skill
+    assert "only Joris manually merges" in skill
+    assert "It never uses `WIKI_ALLOW_CORE_EDIT`" in skill
