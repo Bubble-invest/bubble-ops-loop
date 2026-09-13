@@ -38,6 +38,7 @@ so you never have to figure out where the tool lives:
   priority=<normal|high|urgent> \
   owner=<your dept slug, e.g. ben|maya|tony|content|accountant|rnd|tonio> \
   budget=<REQUIRED integer USD, per-run, e.g. 10 — see Budget guidance below> \
+  intent=<one or more comma-separated live operator-intent slugs> \
   proj=<optional project slug, e.g. bubble-shield, client-dev, cockpit, fund> \
   due=<optional YYYY-MM-DD> \
   host=<optional local|vps — usually inferred from owner> \
@@ -56,6 +57,23 @@ optional but `body`, `type`, `priority`, `owner` make a card actionable rather t
 mystery. The underlying tool exits 0 even on a valid-but-failed emission (emission must
 never break your tick) — so confirm it landed (see "Verify" below) rather than trusting the
 exit code alone.
+
+Every new card should also name at least one live operator intent. `intent=` accepts a bare
+slug, `intent:<slug>`, or the #1247 wiki-link form; separate several with commas. The emitter
+always writes the canonical body line
+`Serves-intent(s): [[shared/operator-intents/<slug>]]` and adds each matching
+`intent:<slug>` board label that is already installed. A missing intent or missing board
+label is a **warning/triage flag, never a creation gate**: legitimate or urgent work still
+lands, with `Serves-intent(s): UNRESOLVED` when necessary. Do not choose the north-star just
+to silence the warning. Canonical wikilinks are case-exact and omit `.md`; a suffixed or
+otherwise malformed link remains unresolved rather than being silently repaired.
+
+The taxonomy comes from the actual files currently on `main` under
+`vdk888/bubble-shared-wiki/shared/operator-intents/`, excluding README/TEMPLATE and
+superseded documents. At 2026-09-13 the only live intent document is
+`system-convergence-north-star.md`, so the current label is
+`intent:system-convergence-north-star`. Proposal artifacts such as wiki PR #9 are not live
+taxonomy. Read the collection when it changes; never edit it from this skill.
 
 **Picking a budget** (per-run/per-card USD estimate, tied to scope):
 - **Small** (~$2–5): a quick lookup, a one-file fix, a single triage pass.
@@ -108,6 +126,14 @@ lost — and does it matter?"* If yes to both → emit a card.
   A missing, empty, or non-integer `budget=` is a **hard fail**: the emitter prints a clear
   `budget= is required` error to stderr and creates no card at all (not even a queued
   fallback). There is no default — every card must carry an explicit estimate.
+- **intent** — one or more comma-separated slugs from the live operator-intents collection.
+  Choose by reading the intent's ask/reason/constraints, not by filename keywords. The
+  emitter records a canonical `Serves-intent(s):` body link and applies installed labels.
+  Existing labels are matched case-insensitively and reused with their actual casing, so
+  casing drift cannot create a duplicate label.
+  If no existing intent is semantically justified, leave it unresolved and explain why in
+  `body`; the card is flagged for agent triage but is never blocked. Linking points to the
+  write-locked collection and never authorizes editing it.
 - **host** — `local` or `vps`; normally inferred from owner (tonio/content/claudette→local,
   ben/maya/tony/accountant/morty→vps). `owner=tonio` → `dept:tony` + `host:local` (the local
   Tony, @ClaudeRickyBot). With `owner`+`host`, the card surfaces on THAT agent's loop tick.
@@ -147,7 +173,7 @@ assume success from exit 0.
 
 The cockpit home page surfaces **merge-ready PRs** to the operator with a plain-French
 explanation, evidence chips and a direct GitHub link (the «🟢 Prêt à merger» panel). For your
-PR to appear there **correctly and legibly**, follow BOTH conventions:
+PR to appear there **correctly and legibly**, follow these conventions:
 
 1. **`RÉSUMÉ:` line — first line of every PR body.** One clear French sentence a non-developer
    reads cold: what this PR changes for the firm, not how. It becomes the card's headline on
@@ -160,6 +186,11 @@ PR to appear there **correctly and legibly**, follow BOTH conventions:
    *quoted* inside a FAIL/request-changes comment — quoting it is safe). Never write it as a
    verdict unless an **independent reviewer (maker≠checker) actually PASSED** the diff; include
    the evidence in the same comment (tests passed, mutation checks, scope).
+3. **Intent lineage.** Prefer an explicit cross-repo closing line such as
+   `Closes Bubble-invest/bubble-ops-board#1254`; the alignment inventory then inherits the
+   card's resolved intent chain. If there is no board card, add the same canonical
+   `Serves-intent(s): [[shared/operator-intents/<slug>]]` line directly to the PR body. A
+   same-repo bare `Closes #N` in another repository does not identify a board card.
 
 Coverage: `bubble-ops-loop` PRs today; dept repos follow automatically once the board App's
 grant widens (board #470) — same conventions, zero further change on your side.
@@ -171,7 +202,8 @@ scripts/emit.sh \
   task=ben-positions-snapshot \
   title="Positions snapshot is degenerate — poisons sizer + 2 KPIs" \
   body="The stored positions snapshot is a plumbing bug (live NAV/holdings are correct, but the snapshot is degenerate). It poisons downstream: the Ledoit sizer and two L4 KPIs read it. PR #61 fixes the sizer; the deeper consolidation fix is out of scope for this tick. Track it. Evidence: outputs/<date>/positions-snapshot.json vs live broker NAV." \
-  type=bug priority=high owner=rnd budget=15 actions=accept,investigate,defer
+  type=bug priority=high owner=rnd budget=15 \
+  intent=system-convergence-north-star actions=accept,investigate,defer
 ```
 
 ## Note

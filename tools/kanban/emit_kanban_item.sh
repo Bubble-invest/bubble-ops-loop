@@ -14,6 +14,7 @@
 #     priority=high \
 #     owner=rnd \
 #     budget=10 \
+#     intent=system-convergence-north-star \
 #     actions=accept,reject,escalate \
 #     context_url=https://wiki/... \
 #     telegram_ref="https://t.me/c/123/456"
@@ -23,6 +24,7 @@
 #           A missing/invalid budget fails LOUD on stderr and creates NO card.
 # Optional: body, type (approval|decision|incident|findings|manual|bug|feature|infra|docs|chore|research),
 #           priority (normal|high|urgent), owner, actions (comma-separated), context_url, telegram_ref,
+#           intent (one or more comma-separated live operator-intent slugs),
 #           diagram_mermaid (Mermaid source for decision diagrams, ≤3000 chars),
 #           visual_attachments (comma-separated repo-relative paths to images).
 #
@@ -57,6 +59,7 @@ DUE=""
 HOST=""
 LINKS=""
 BUDGET=""
+INTENTS=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -69,6 +72,8 @@ for arg in "$@"; do
     proj=*)         PROJ="${arg#proj=}"         ;;
     due=*)          DUE="${arg#due=}"           ;;
     budget=*)       BUDGET="${arg#budget=}"     ;;
+    intent=*)       INTENTS="${arg#intent=}"    ;;
+    intents=*)      INTENTS="${arg#intents=}"   ;;
     host=*)         HOST="${arg#host=}"         ;;
     links=*)        LINKS="${arg#links=}"       ;;
     actions=*)      ACTIONS="${arg#actions=}"   ;;
@@ -167,6 +172,40 @@ if [ -z "$BUDGET" ] || ! echo "$_BUDGET_STRIPPED" | grep -qE '^[1-9][0-9]*$'; th
   echo "emit_kanban_item: budget= is required (integer USD, per-run) — every card must carry a budget. Got: '${BUDGET}'" >&2
   _budget_reject_alert "$TITLE" "$OWNER" "$TASK" "$BUDGET"
   exit 0
+fi
+
+# ── Intent proposal normalization (advisory, never a creation gate) ──────────
+# Accept the label slug, bare slug, or #1247 wiki-link form and store one
+# canonical comma-separated slug list.  The body link is always written, even
+# when the corresponding board label has not been installed yet.  An absent or
+# malformed intent is LOUDLY flagged but can never block urgent/legitimate work.
+_normalize_intents() {
+  INTENTS_RAW="$1" python3 -c "
+import os, re
+raw = os.environ.get('INTENTS_RAW', '')
+seen = []
+for token in raw.split(','):
+    value = token.strip()
+    value = re.sub(r'^intent:', '', value, flags=re.I)
+    m = re.fullmatch(r'\[\[shared/operator-intents/([A-Za-z0-9][A-Za-z0-9_-]*)\]\]', value)
+    if m:
+        value = m.group(1)
+    value = re.sub(r'^shared/operator-intents/', '', value)
+    # #1247 is case-exact and extensionless.  A `.md` target is unresolved,
+    # not something the emitter silently repairs/blesses.
+    if value.lower().endswith('.md'):
+        continue
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', value) and value not in seen:
+        seen.append(value)
+print(','.join(seen))
+"
+}
+
+NORMALIZED_INTENTS=$(_normalize_intents "$INTENTS")
+if [ -z "$NORMALIZED_INTENTS" ]; then
+  echo "[WARN] emit-kanban: no usable intent= supplied — card will be created and FLAGGED as an intent ORPHAN for triage (never blocked)" >&2
+elif [ -n "$INTENTS" ] && [ "$NORMALIZED_INTENTS" != "$INTENTS" ]; then
+  echo "emit_kanban_item: normalized intent= to '${NORMALIZED_INTENTS}'" >&2
 fi
 
 # ── GitHub issue path ─────────────────────────────────────────────────────────
@@ -281,6 +320,7 @@ _gh_emit() {
   TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
   OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
   DIAGRAM_MERMAID="$DIAGRAM_MERMAID" VISUAL_ATTACHMENTS="$VISUAL_ATTACHMENTS" LINKS="$LINKS" \
+  NORMALIZED_INTENTS="$NORMALIZED_INTENTS" \
   EMIT_KEY="$emit_key" \
   python3 -c "
 import os
@@ -295,10 +335,17 @@ telegram_ref      = os.environ['TELEGRAM_REF']
 links_raw         = os.environ.get('LINKS', '')
 diagram_mermaid   = os.environ.get('DIAGRAM_MERMAID', '')
 visual_attach_raw = os.environ.get('VISUAL_ATTACHMENTS', '')
+intent_slugs      = [s for s in os.environ.get('NORMALIZED_INTENTS', '').split(',') if s]
 
 lines = []
 lines.append('## Job')
 lines.append(title)
+lines.append('')
+if intent_slugs:
+    links = ['[[shared/operator-intents/' + slug + ']]' for slug in intent_slugs]
+    lines.append('Serves-intent(s): ' + ', '.join(links))
+else:
+    lines.append('Serves-intent(s): UNRESOLVED')
 lines.append('')
 lines.append('## Inputs')
 lines.append(context_url if context_url else '(n/a)')
@@ -411,6 +458,14 @@ print('\n'.join(lines))
       --description "Super-project" --force >/dev/null 2>&1 || true
   fi
 
+  # Intent labels are collection-derived and installed separately by the
+  # read-only-by-default label taxonomy tool.  Never make issue creation fail
+  # because a label has not reached the board yet: apply only exact existing
+  # labels; the canonical body link above remains durable either way.
+  local existing_intent_labels=""
+  existing_intent_labels=$(gh label list --repo "$BOARD_REPO" --limit 1000 --json name \
+    --jq '.[].name' 2>/dev/null || true)
+
   # Assemble --label flags
   local label_args=()
   [ -n "$dept_label"    ] && label_args+=("--label" "$dept_label")
@@ -420,6 +475,23 @@ print('\n'.join(lines))
   [ -n "$budget_label"  ] && label_args+=("--label" "$budget_label")
   [ -n "$type_label"    ] && label_args+=("--label" "$type_label")
   [ -n "$routing_label" ] && label_args+=("--label" "$routing_label")
+  if [ -n "$NORMALIZED_INTENTS" ]; then
+    local _intent_slug _intent_label _existing_match
+    while IFS= read -r _intent_slug; do
+      [ -n "$_intent_slug" ] || continue
+      _intent_label="intent:${_intent_slug}"
+      _existing_match=$(printf '%s\n' "$existing_intent_labels" | \
+        awk -v wanted="$_intent_label" 'tolower($0) == tolower(wanted) { print; exit }')
+      if [ -n "$_existing_match" ]; then
+        label_args+=("--label" "$_existing_match")
+        if [ "$_existing_match" != "$_intent_label" ]; then
+          echo "[WARN] emit-kanban: label casing drift (${_existing_match}; canonical ${_intent_label}) — reusing existing label, not creating a duplicate" >&2
+        fi
+      else
+        echo "[WARN] emit-kanban: label ${_intent_label} is not installed — preserving body link and creating card without that label" >&2
+      fi
+    done < <(printf '%s\n' "$NORMALIZED_INTENTS" | tr ',' '\n')
+  fi
 
   local issue_url
   issue_url=$(gh issue create \
@@ -475,6 +547,7 @@ _dashboard_emit() {
   local PAYLOAD
   PAYLOAD=$(TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
             OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
+            BUDGET="$BUDGET" NORMALIZED_INTENTS="$NORMALIZED_INTENTS" \
             python3 -c "
 import json, os
 actions = [a.strip() for a in os.environ['ACTIONS'].split(',') if a.strip()]
@@ -487,6 +560,8 @@ item = {
     'actions': actions,
     'context_url': os.environ['CONTEXT_URL'] or None,
     'telegram_ref': os.environ['TELEGRAM_REF'] or None,
+    'budget': int(os.environ['BUDGET'].lstrip('$')),
+    'intents': [s for s in os.environ.get('NORMALIZED_INTENTS', '').split(',') if s],
 }
 item = {k: v for k, v in item.items() if v not in (None, '', [])}
 payload = {
