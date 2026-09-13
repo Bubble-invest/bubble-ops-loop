@@ -137,7 +137,7 @@ agents:
     unavailable_reason: Jade M1 source is not mirrored into the compiler host; retain the last host snapshot as stale.
 
   - id: geraldine
-    name: Geraldine
+    name: Géraldine
     role: Accounting and bookkeeping
     host: Jade Mac M5
     wiki_folder: geraldine_accounting
