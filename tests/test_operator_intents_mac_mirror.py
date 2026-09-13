@@ -88,6 +88,13 @@ def test_sync_enforces_immutable_publication_tamper_heal_and_alarm() -> None:
         "vault main moved during sync", "remote get-url origin",
     ):
         assert required in source
+    assert "root_info = root.lstat()" in source
+    assert "stat.S_IMODE(root_info.st_mode) != 0o555" in source
+    assert "stable mirror path is missing while releases exist" in source
+    assert "preexisting mirror differed from vault main; divergence was healed" in source
+    assert "path not in {root / '.mirror-manifest', root / '.mirror-synced-at'}" in source
+    assert "synced_tmp=\"$stage/synced-at\"" in source
+    assert "trap unexpected_error ERR" in source
 
 
 def test_activation_is_transactional_and_never_handles_key_bytes() -> None:
@@ -100,8 +107,20 @@ def test_activation_is_transactional_and_never_handles_key_bytes() -> None:
     assert "install -o root -g wheel -m 0644" in source
     assert "plistlib.load" in source
     assert "plutil -lint" in source
+    assert '"$LIVE_SYNC" || die' in source
+    assert "mirror_ready" not in source
     assert "cat \"$KEY\"" not in source
     assert "cp \"$KEY\"" not in source
+    assert "stat -f '%Su:%Lp' \"$ancestor\"" in source
+    assert "install -d -o root -g wheel -m 0755 \"$ancestor\"" not in source
+
+
+def test_shared_consumer_validator_checks_release_itself_and_git_metadata() -> None:
+    validator = (ROOT / "tools/readonly_intents_mirror.py").read_text(encoding="utf-8")
+    assert "release_info = release.lstat()" in validator
+    assert "release_info.st_uid != 0 or release_info.st_gid != 0" in validator
+    assert "stat.S_IMODE(release_info.st_mode) != 0o555" in validator
+    assert 'path.name == ".git"' in validator
 
 
 def test_cloud_compile_passes_mirror_separately_and_fails_closed() -> None:

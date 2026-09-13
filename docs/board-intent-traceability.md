@@ -84,8 +84,8 @@ The operational default reads and verifies `BUBBLE_OPERATOR_INTENTS_MIRROR`, or
 `/Library/Application Support/Bubble/operator-intents` on Darwin. It fails
 closed on missing/stale metadata, manifest drift, symlinks, ownership drift, or
 writable modes. It never defaults to GitHub or the writable shared wiki.
-`--intent-root /path/to/mirror-fixture` exists only for tests. The tool
-reads all open board issues
+Tests inject a private, already-validated fixture through the Python entrypoint;
+there is no CLI bypass for agents. The tool reads all open board issues
 and searches all open PRs owned by both `Bubble-invest` and `vdk888`, deduped by
 URL. Repeat `--org` to replace those defaults with explicit owner scopes.
 `--limit` defaults to 1000 per query; the report marks coverage as incomplete

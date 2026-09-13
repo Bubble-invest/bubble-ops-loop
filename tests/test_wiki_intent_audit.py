@@ -67,7 +67,7 @@ def test_scalar_and_block_list_links_are_structurally_valid(tmp_path: Path) -> N
         ),
     )
 
-    report = audit_module.audit(wiki, mirror)
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
 
     assert report["summary"]["pages_scanned"] == 2
     assert report["summary"]["pages_structurally_linked"] == 2
@@ -80,7 +80,9 @@ def test_missing_and_explicitly_empty_intents_remain_candidates(tmp_path: Path) 
     write_page(wiki, "rick_rnd/missing.md", "title: Missing")
     write_page(wiki, "rick_rnd/empty.md", "title: Empty\nintent: []")
 
-    candidates = candidate_by_path(audit_module.audit(wiki, mirror))
+    candidates = candidate_by_path(
+        audit_module._audit_validated_release_for_tests(wiki, mirror)
+    )
 
     assert candidates["rick_rnd/missing.md"]["issues"] == ["missing_intent"]
     assert candidates["rick_rnd/empty.md"]["issues"] == ["empty_intent"]
@@ -122,7 +124,9 @@ def test_audit_reports_shape_and_resolution_without_semantic_guessing(
         'title: Superseded\nintent: "[[shared/operator-intents/old-direction]]"',
     )
 
-    candidates = candidate_by_path(audit_module.audit(wiki, mirror))
+    candidates = candidate_by_path(
+        audit_module._audit_validated_release_for_tests(wiki, mirror)
+    )
 
     assert candidates["shared/systems/malformed.md"]["issues"] == [
         "malformed_intent",
@@ -153,18 +157,33 @@ def test_core_roots_and_repo_infrastructure_are_not_children(tmp_path: Path) -> 
     write_page(wiki, ".github/CONTRIBUTING.md", None)
     write_page(wiki, "index.md", "title: Index")
 
-    report = audit_module.audit(wiki, mirror)
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
 
     assert report["summary"]["pages_scanned"] == 1
     assert candidate_by_path(report).keys() == {"index.md"}
 
 
-def test_cli_atomically_writes_machine_readable_report(tmp_path: Path) -> None:
+def test_internal_report_can_be_atomically_written(tmp_path: Path) -> None:
     wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
     seed_intents(mirror)
     write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
     output = tmp_path / "monitoring/latest.json"
 
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
+    audit_module._atomic_write(output, json.dumps(report) + "\n")
+
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["schema_version"] == 1
+    assert written["summary"]["candidate_pages"] == 1
+    assert not list(output.parent.glob(".latest.json.*"))
+
+
+def test_operational_cli_rejects_writable_unvalidated_intent_directory(
+    tmp_path: Path,
+) -> None:
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
     result = subprocess.run(
         [
             sys.executable,
@@ -173,19 +192,12 @@ def test_cli_atomically_writes_machine_readable_report(tmp_path: Path) -> None:
             str(wiki),
             "--intents-root",
             str(mirror),
-            "--output",
-            str(output),
         ],
-        check=True,
         capture_output=True,
         text=True,
     )
-
-    report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 1
-    assert report["summary"]["candidate_pages"] == 1
-    assert "candidates=1" in result.stderr
-    assert not list(output.parent.glob(".latest.json.*"))
+    assert result.returncode != 0
+    assert "not a stable symlink" in result.stderr
 
 
 def test_writable_wiki_intent_copy_is_never_the_resolution_baseline(tmp_path: Path) -> None:
@@ -201,7 +213,7 @@ def test_writable_wiki_intent_copy_is_never_the_resolution_baseline(tmp_path: Pa
         "shared/systems/page.md",
         'title: Page\nintent: "[[shared/operator-intents/wiki-only]]"',
     )
-    report = audit_module.audit(wiki, mirror)
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
     assert candidate_by_path(report)["shared/systems/page.md"]["issues"] == [
         "intent_target_missing"
     ]

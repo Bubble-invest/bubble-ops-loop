@@ -12,11 +12,19 @@ import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_TOOLS = Path(__file__).resolve().parents[3] / "tools"
+for _candidate in (_SCRIPT_DIR, _REPO_TOOLS):
+    if (_candidate / "readonly_intents_mirror.py").is_file() and str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
+from readonly_intents_mirror import MirrorValidationError, validate_mirror  # noqa: E402
 
 
 CORE_DIR = PurePosixPath("shared/operator-intents")
@@ -164,7 +172,9 @@ def _iter_pages(wiki_root: Path) -> Iterable[Path]:
         yield page
 
 
-def audit(wiki_root: Path, intents_root: Path) -> dict[str, object]:
+def _audit_validated_release(
+    wiki_root: Path, intents_root: Path
+) -> dict[str, object]:
     wiki_root = wiki_root.resolve()
     intents_root = intents_root.resolve()
     mirror_intents = intents_root / MIRROR_INTENT_DIR
@@ -233,6 +243,13 @@ def audit(wiki_root: Path, intents_root: Path) -> dict[str, object]:
     }
 
 
+def _audit_validated_release_for_tests(
+    wiki_root: Path, intents_root: Path
+) -> dict[str, object]:
+    """Internal fixture helper; not reachable through CLI or environment."""
+    return _audit_validated_release(wiki_root, intents_root)
+
+
 def _atomic_write(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -267,8 +284,9 @@ def main() -> int:
     if not args.intents_root.is_dir():
         parser.error(f"read-only intents mirror is not a directory: {args.intents_root}")
     try:
-        report = audit(args.wiki, args.intents_root)
-    except ValueError as exc:
+        release = validate_mirror(args.intents_root)
+        report = _audit_validated_release(args.wiki, release)
+    except (ValueError, MirrorValidationError) as exc:
         parser.error(str(exc))
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:

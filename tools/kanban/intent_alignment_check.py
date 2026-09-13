@@ -13,18 +13,24 @@ issues, pull requests, or ``shared/operator-intents/**``.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+_TOOLS_DIR = Path(__file__).resolve().parents[1]
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from readonly_intents_mirror import (  # noqa: E402
+    MirrorValidationError,
+    platform_default,
+    validate_mirror,
+)
 
 
 DEFAULT_BOARD = "Bubble-invest/bubble-ops-board"
@@ -32,7 +38,6 @@ DEFAULT_PR_OWNERS = ("Bubble-invest", "vdk888")
 INTENT_DIR = "shared/operator-intents"
 MIRROR_INTENT_DIR = "operator-intents"
 MIRROR_ENV = "BUBBLE_OPERATOR_INTENTS_MIRROR"
-MIRROR_MAX_AGE_SECONDS = 3600
 LABEL_COLOR = "1d76db"
 LABEL_DESCRIPTION_PREFIX = "Operator intent: "
 
@@ -193,65 +198,11 @@ def default_mirror_root() -> Path:
     configured = os.environ.get(MIRROR_ENV)
     if configured:
         return Path(configured)
-    if sys.platform == "darwin":
-        return Path("/Library/Application Support/Bubble/operator-intents")
-    return Path("/opt/bubble-operator-intents")
+    return platform_default()
 
 
-def validate_mirror(mirror_root: Path) -> Path:
-    """Fail closed unless the root-owned immutable release is fresh and intact."""
-    if not mirror_root.is_symlink():
-        raise CommandError(f"operator-intents mirror is not a stable symlink: {mirror_root}")
-    if mirror_root.lstat().st_uid != 0:
-        raise CommandError(f"operator-intents mirror symlink is not root-owned: {mirror_root}")
-    try:
-        release = mirror_root.resolve(strict=True)
-    except (FileNotFoundError, RuntimeError, OSError) as exc:
-        raise CommandError(f"operator-intents mirror symlink is invalid: {exc}") from exc
-
-    manifest = release / ".mirror-manifest"
-    commit_file = release / ".mirror-commit"
-    synced_file = release / ".mirror-synced-at"
-    for required in (manifest, commit_file, synced_file, release / MIRROR_INTENT_DIR):
-        if not required.exists() or required.is_symlink():
-            raise CommandError(f"operator-intents mirror metadata/content missing: {required}")
-    commit = commit_file.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise CommandError("operator-intents mirror commit metadata is malformed")
-    try:
-        synced = datetime.fromisoformat(
-            synced_file.read_text(encoding="utf-8").strip().replace("Z", "+00:00")
-        )
-    except (ValueError, OSError) as exc:
-        raise CommandError(f"operator-intents mirror sync time is malformed: {exc}") from exc
-    age = (datetime.now(timezone.utc) - synced.astimezone(timezone.utc)).total_seconds()
-    if age < -300 or age > MIRROR_MAX_AGE_SECONDS:
-        raise CommandError(f"operator-intents mirror is stale (age={int(age)}s)")
-
-    actual: list[str] = []
-    for path in sorted(release.rglob("*"), key=lambda item: item.relative_to(release).as_posix()):
-        relative = path.relative_to(release).as_posix()
-        if path.is_symlink():
-            raise CommandError(f"operator-intents mirror contains a symlink: {relative}")
-        info = path.stat()
-        if info.st_uid != 0 or info.st_gid != 0:
-            raise CommandError(f"operator-intents mirror is not root-owned: {relative}")
-        expected_mode = 0o555 if path.is_dir() else 0o444
-        if stat.S_IMODE(info.st_mode) != expected_mode:
-            raise CommandError(f"operator-intents mirror mode drift: {relative}")
-        if path.is_file() and path != manifest:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            actual.append(f"{digest}  ./{relative}")
-        elif not path.is_dir() and not path.is_file():
-            raise CommandError(f"operator-intents mirror has unsupported object: {relative}")
-    expected = manifest.read_text(encoding="utf-8").splitlines()
-    if actual != expected:
-        raise CommandError("operator-intents mirror manifest mismatch")
-    return release
-
-
-def load_intents_from_root(mirror_root: Path, *, validate: bool = False) -> dict[str, Intent]:
-    root = validate_mirror(mirror_root) if validate else mirror_root.resolve()
+def load_intents_from_root(root: Path) -> dict[str, Intent]:
+    """Internal pure loader for an already validated release or unit fixture."""
     directory = root / MIRROR_INTENT_DIR
     if not directory.is_dir():
         raise CommandError(f"operator-intents directory not found: {directory}")
@@ -721,7 +672,11 @@ def _text_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    _validated_release_for_tests: Path | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="intent_alignment_check.py")
     parser.add_argument("--board", default=DEFAULT_BOARD)
     parser.add_argument(
@@ -730,11 +685,6 @@ def main(argv: list[str] | None = None) -> int:
             "GitHub owner whose open PRs are inventoried; repeatable. "
             "Default: Bubble-invest and vdk888"
         ),
-    )
-    parser.add_argument(
-        "--intent-root",
-        type=Path,
-        help="test-only override: mirror-shaped root containing operator-intents/",
     )
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--format", choices=("json", "text"), default="text")
@@ -757,10 +707,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--apply is only valid with --mode labels")
 
     try:
-        intents = load_intents_from_root(
-            args.intent_root or default_mirror_root(),
-            validate=args.intent_root is None,
-        )
+        if _validated_release_for_tests is None:
+            try:
+                release = validate_mirror(default_mirror_root())
+            except MirrorValidationError as exc:
+                raise CommandError(f"read-only intent mirror validation failed: {exc}") from exc
+        else:
+            release = _validated_release_for_tests
+        intents = load_intents_from_root(release)
         if args.mode == "labels":
             output = label_plan(intents, fetch_label_names(args.board))
             if args.apply:

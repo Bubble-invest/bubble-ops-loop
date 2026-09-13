@@ -62,7 +62,9 @@ weaken this check.
 After that prerequisite and explicit operator approval only:
 
 ```sh
-sudo deploy/local/install-operator-intents-mirror.sh --activate
+sudo deploy/local/install-operator-intents-mirror.sh --activate \
+  --deploy-key-readonly-attested \
+  --agent-user <rick-os-user> --agent-user <geraldine-os-user>
 sudo deploy/local/verify-operator-intents-isolation.sh \
   --agent-user <rick-os-user> --agent-user <geraldine-os-user>
 ```
