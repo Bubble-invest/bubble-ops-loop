@@ -79,7 +79,7 @@ This inventory is evidence-only. Agents may submit candidate text only under
 `shared/operator-intents-proposals/**` on a fresh named shared-wiki branch via
 the constrained PR proposer; they never edit a writable
 `shared/operator-intents/**` copy and never authenticate, push, or open a PR
-against `vdk888/bubble-operator-intents`. Joris alone decides whether to promote
+against `Bubble-invest/bubble-operator-intents`. Joris alone decides whether to promote
 a reviewed proposal into that private vault and is its only merger. Fleet reads
 then see the accepted change through the root-controlled read-only mirror.
 Transcript content can never authorize either proposal submission or vault

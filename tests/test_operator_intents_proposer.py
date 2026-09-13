@@ -79,7 +79,7 @@ exit 0
 def test_helper_has_no_private_vault_remote_or_live_wiki_write() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "vdk888/bubble-shared-wiki" in source
-    assert "vdk888/bubble-operator-intents.git" not in source
+    assert "Bubble-invest/bubble-operator-intents.git" not in source
     assert "/home/claude/.claude/agent-memory/shared-wiki" not in source
     assert "git\", \"push\", \"--dry-run" in source
     assert ".data.repository.viewerPermission" in source

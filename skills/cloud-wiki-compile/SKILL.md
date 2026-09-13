@@ -33,7 +33,7 @@ broader action.
 Intent changes are staged only under
 `shared/operator-intents-proposals/` in a Joris-reviewed shared-wiki PR. Agents
 never write, branch, commit, push, or open a PR against the private
-`vdk888/bubble-operator-intents` vault. Only Joris changes and merges that
+`Bubble-invest/bubble-operator-intents` vault. Only Joris changes and merges that
 vault; root-controlled mirrors then pull the approved `main`.
 
 ## MODE (passed in your prompt)

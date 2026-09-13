@@ -30,7 +30,7 @@ are recognized.
 
 The taxonomy is derived from the actual `.md` filenames under
 `operator-intents/` in the OS-specific, root-controlled read-only mirror of
-`vdk888/bubble-operator-intents@main`. README, TEMPLATE, and documents with
+`Bubble-invest/bubble-operator-intents@main`. README, TEMPLATE, and documents with
 `status: superseded` are excluded. `[[shared/operator-intents/<slug>]]` remains
 the logical provenance syntax; it does not name a writable physical baseline.
 

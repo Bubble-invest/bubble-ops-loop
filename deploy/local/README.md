@@ -36,7 +36,7 @@ Rick and Géraldine read Joris-approved intents locally from
 root:wheel stable symlink into root:wheel release directories (directories
 `0555`, files `0444`, no `.git` and no content symlinks). A root LaunchDaemon
 runs at load and every 900 seconds, cloning
-`git@github.com:vdk888/bubble-operator-intents.git` `main` with only the
+`git@github.com:Bubble-invest/bubble-operator-intents.git` `main` with only the
 dedicated read-only key at
 `/Library/Application Support/Bubble/secrets/operator-intents-readonly-deploy-key`
 (`root:wheel 0400`). It validates the remote commit, manifest, ownership and
