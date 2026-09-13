@@ -62,8 +62,11 @@ the private channel inject path and its shared cooldown marker. `hermes` pipes
 the same fixed resume prompt to `scripts/wake_hermes_gateway.py`, using the
 existing tmux session and the local install defaults
 `~/.hermes/hermes-agent/venv/bin/python`, `~/.hermes/hermes-agent`, and
-`~/.hermes/profiles/<slug>`. Helper acceptance is explicitly logged as
-unconfirmed; it is not proof that the turn executed or heartbeat advanced.
+`~/.hermes/profiles/<slug>`. The helper validates and re-arms an active loop only
+when it already targets the exact selected Telegram session; otherwise it
+creates an exact-route one-shot rescue and verifies the persisted row. Helper
+acceptance is explicitly logged as unconfirmed; it is not proof that the turn
+executed or heartbeat advanced.
 
 ## Install (on the Mac, only after re-audit PASS + {{OPERATOR}} go — see MIRANDA-BUILD-SPEC P4)
 

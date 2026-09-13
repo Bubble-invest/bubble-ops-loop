@@ -129,6 +129,9 @@ esac
 # The selector is resolved afresh for every stale floor fire. Missing/empty is
 # the fleet default (Claude); an existing unsafe/unknown selector fails closed.
 HARNESS_SELECTOR_DIR="${BUBBLE_BACKUP_HARNESS_SELECTOR_DIR:-/etc/bubble-harness}"
+# An isolated production service must never let its unprivileged environment
+# redirect selector trust away from the root-owned fleet control directory.
+[[ "$ISOLATED_FLOOR" == "1" ]] && HARNESS_SELECTOR_DIR=/etc/bubble-harness
 export BUBBLE_OPS_LOOP_ROOT="$REPO_ROOT"
 PY="${REPO_ROOT}/venv/bin/python"
 
@@ -961,14 +964,14 @@ PYEOF
 resolve_floor_harness() {
     local slug="$1"
     local selector="${HARNESS_SELECTOR_DIR%/}/${slug}"
-    "$PY" - "$REPO_ROOT" "$selector" <<'PYEOF'
+    "$PY" - "$REPO_ROOT" "$selector" "$ISOLATED_FLOOR" <<'PYEOF'
 import sys
 
 sys.path.insert(0, sys.argv[1])
 from scripts.lib.loop_backup import HarnessSelectorError, read_harness_selector
 
 try:
-    print(read_harness_selector(sys.argv[2]))
+    print(read_harness_selector(sys.argv[2], require_root_owner=sys.argv[3] == "1"))
 except HarnessSelectorError as exc:
     print(f"harness selector rejected: {exc}", file=sys.stderr)
     raise SystemExit(1)
@@ -1025,8 +1028,10 @@ inject_live_loop() {
 
 # Hermes gateways do not run the Claude Telegram plugin and therefore never
 # have a Bun child or consume ~/.claude/channels/.../inject.  Use Hermes's own
-# live control socket + persisted /loop API: the gateway's idle watcher turns
-# this one-shot row into a synthetic inbound on its existing Telegram session.
+# live control socket + persisted /loop API: the socket only proves that the
+# expected profile is live. The helper re-arms a validated active loop or
+# creates an exact-route one-shot rescue; the gateway's idle watcher later
+# turns that persisted state into an inbound on its existing Telegram session.
 # The helper only mutates scheduler state; it never starts another model.
 wake_hermes_loop() {
     local slug="$1"
@@ -1048,7 +1053,7 @@ wake_hermes_loop() {
     fi
     [[ -x "$hermes_py" && -f "$wake_helper" ]] || return 1
 
-    log "$slug: waking live Hermes gateway through one-shot /loop control"
+    log "$slug: arming the live Hermes session through its persisted /loop scheduler"
     printf '%s' "$GENERIC_TICK_PROMPT" | "$hermes_py" "$wake_helper" \
         --profile-home "$profile_home" --hermes-root "$hermes_root" || return 1
 

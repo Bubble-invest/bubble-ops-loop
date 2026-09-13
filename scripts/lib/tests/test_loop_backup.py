@@ -114,6 +114,16 @@ def test_harness_selector_accepts_current_euid_owner(tmp_path):
     assert read_harness_selector(str(selector)) == "hermes"
 
 
+def test_harness_selector_can_require_root_owner(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root-owned fixture cannot exercise non-root rejection")
+    selector = tmp_path / "selector"
+    selector.write_text("claude\n", encoding="utf-8")
+    selector.chmod(0o600)
+    with pytest.raises(HarnessSelectorError, match="untrusted owner"):
+        read_harness_selector(str(selector), require_root_owner=True)
+
+
 def test_harness_selector_rejects_unreadable_file(tmp_path):
     if os.geteuid() == 0:
         pytest.skip("root can read mode-000 fixtures")

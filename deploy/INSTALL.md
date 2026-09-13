@@ -23,7 +23,7 @@ rebuilt or a new tenant box is provisioned.
 | 5 | Restic backups | `scripts/morty-restic-setup.sh` | yes | 6h backup + retention timers. (Script filename kept as-is; see script for VPS-specific config.) |
 | 6 | **OS sandbox (Layer B)** | **`scripts/install-sandbox.sh`** | **yes** | **bwrap+socat+sandbox-runtime+AppArmor + merges the sandbox block into managed-settings. Jails the Bash tool fleet-wide (anti prompt-injection). Restart agents after, verify via userns check. See `deploy/sandbox-tests/` + wiki `vps-agent-sandbox`.** |
 | 7 | Age-key offline backup | `scripts/backup-age-key.sh` | operator | Needs Keychain passphrase (operator). |
-| 8 | **`/loop` boot re-arm** | **Claude:** `scripts/install-boot-rearm.sh`; **Hermes:** `scripts/wake_hermes_gateway.py` called by `bubble-vps-platform`'s lifecycle helper | **yes** | **Claude keeps the Telegram-plugin/inject path. A Hermes-selected unit has no Claude/Bun poller, so its `ExecStartPost` drops to the department UID and arms one one-shot LoopManager row through the live Hermes control socket. Install source without restarting; prove the path on one separately approved service lifecycle. Claude requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>`; Hermes requires the root-owned `hermes` selector plus the rendered `BUBBLE_AGENT_BOOT_MESSAGE`. See `tests/test_boot_rearm_install.sh` and `scripts/tests/test_606_hermes_wake.py`.** |
+| 8 | **`/loop` boot re-arm** | **Claude:** `scripts/install-boot-rearm.sh`; **Hermes:** `scripts/wake_hermes_gateway.py` called by `bubble-vps-platform`'s lifecycle helper | **yes** | **Claude keeps the Telegram-plugin/inject path. A Hermes-selected unit has no Claude/Bun poller, so its `ExecStartPost` drops to the department UID and uses persisted LoopManager state: an exact-route active loop is validated and re-armed; otherwise an exact-route one-shot rescue is created. The control socket is only a profile-liveness check. Install source without restarting; prove the path on one separately approved service lifecycle. Claude requires `OPS_LOOP_BOOT_REARM=1` + `OPS_LOOP_DEPT=<slug>`; Hermes requires the root-owned `hermes` selector plus the rendered `BUBBLE_AGENT_BOOT_MESSAGE`. See `tests/test_boot_rearm_install.sh` and `scripts/tests/test_606_hermes_wake.py`.** |
 | 9 | **On-box helper scripts** (`/usr/local/bin/`) | **`deploy/bin/*`** (see `deploy/bin/README.md`) — **except `guard-stale-credentials.sh`, which lives at `scripts/guard-stale-credentials.sh`** (board #1150; same `scripts/`-tree convention as `install-boot-rearm.sh`/`install-channel-patches.sh`, so a root-owned `/opt/bubble-ops-loop` checkout + `bubble-safe-install` can source it) | operator | **Token minters (`bubble-board-token{,-refresh}.sh`), pre-auth git/gh wrappers (`bubble-git`, `bubble-gh`), the structural-push guard (`bubble-is-structural-push.py`), the L4 canary (`bubble-layer4-canary.sh`), the watchdog resume drop-in installer (`bubble-watchdog-resume-dropin`), the stale-credentials shadow guard (`guard-stale-credentials.sh`, board #294 / #1150), and the secrets lifecycle tools (`bubble-rotate-dept-secret`, `bubble-secrets` add/rotate/apply, board #676). Copy each into `/usr/local/bin/`; per-script env / sudoers wiring documented in `deploy/bin/README.md`. Operator-specific values are env-driven — never hardcoded.** |
 
 ## /loop boot re-arm (step 8) — existing departments
@@ -60,9 +60,12 @@ with that patch. Those two variables do not drive the Hermes branch. For a
 Hermes-selected department, the canonical `bubble-agent-prepare boot` branch
 is selected by `/etc/bubble-harness/<slug>` and passes the rendered
 `BUBBLE_AGENT_BOOT_MESSAGE` to
-`scripts/wake_hermes_gateway.py` as the department UID. The helper verifies the
-live control socket and exact Telegram home session, then arms one persisted
-LoopManager row; it never starts a second gateway or model process.
+`scripts/wake_hermes_gateway.py` as the department UID. The helper uses the
+control socket only to verify the live profile, selects the exact Telegram home
+session, then validates and re-arms an existing active loop with that exact
+route or creates an exact-route one-shot rescue. It rereads persisted state
+before reporting queue acceptance and never starts a second gateway or model
+process. Acceptance remains unconfirmed until the normal heartbeat advances.
 
 Install both helpers from reviewed source without restarting a department.
 Live acceptance is a separate, one-service lifecycle action: preserve the
@@ -92,9 +95,11 @@ agent UID. The runner never shell-sources dotenv text. The isolated production
 floor is primary-wake-only and resolves `/etc/bubble-harness/<slug>` on every
 stale fire (missing/empty defaults to `claude`; an unsafe or unknown existing
 selector defers). A Claude-selected department receives its normal tick through
-the existing Bubble channel inject file. A Hermes-selected department verifies
-its live profile through `gateway.sock` and arms a one-shot persisted `/loop`
-row. Department names are not harness classifiers, so adding a department or
+the existing Bubble channel inject file. A Hermes-selected department checks
+its live profile through `gateway.sock`, then validates and re-arms an
+exact-route active loop or creates an exact-route one-shot rescue. Queue
+acceptance remains unconfirmed until heartbeat advancement. Department names
+are not harness classifiers, so adding a department or
 switching its selector needs no floor special-case. No second model process
 starts. A missing, busy, failed, or ambiguous primary wake returns nonzero,
 records a visible deferred event, and leaves heartbeat and mission completion

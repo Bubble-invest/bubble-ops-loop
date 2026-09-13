@@ -42,13 +42,21 @@ class HarnessSelectorError(ValueError):
     """A harness selector exists but cannot be trusted or interpreted."""
 
 
-def read_harness_selector(path: str, *, max_bytes: int = 64) -> str:
+def read_harness_selector(
+    path: str,
+    *,
+    max_bytes: int = 64,
+    require_root_owner: bool = False,
+) -> str:
     """Read one trusted per-department harness selector.
 
     A missing or whitespace-only selector preserves the fleet default
     (``claude``).  Existing selectors must be small, regular, non-symlink
     files owned by root (the VPS production shape) or the current effective
-    user (local/test shape), and must not be writable by group or other.
+    user (local/test shape), and must not be writable by group or other. When
+    ``require_root_owner`` is true, only UID 0 is accepted; isolated production
+    callers use that stricter contract so their service user cannot rewrite
+    its own harness classification.
 
     The file is checked both before and after opening with ``O_NOFOLLOW`` so a
     path-shape race fails closed.  This helper has no side effects and never
@@ -66,7 +74,7 @@ def read_harness_selector(path: str, *, max_bytes: int = 64) -> str:
     if not stat.S_ISREG(before.st_mode):
         raise HarnessSelectorError("harness selector is not a regular file")
 
-    allowed_owners = {0, os.geteuid()}
+    allowed_owners = {0} if require_root_owner else {0, os.geteuid()}
     if before.st_uid not in allowed_owners:
         raise HarnessSelectorError("harness selector has an untrusted owner")
     if before.st_mode & 0o022:
