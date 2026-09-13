@@ -4,7 +4,7 @@ set -Eeuo pipefail
 MIRROR='/Library/Application Support/Bubble/operator-intents'
 KEY='/Library/Application Support/Bubble/secrets/operator-intents-readonly-deploy-key'
 SYNC='/Library/Application Support/Bubble/bin/operator-intents-mirror-sync'
-REPO='vdk888/bubble-operator-intents'
+REPO='Bubble-invest/bubble-operator-intents'
 USERS=()
 CREDENTIAL_ONLY=0
 die() { printf 'verify-operator-intents-isolation: FAIL: %s\n' "$*" >&2; exit 1; }
@@ -83,7 +83,7 @@ for user in "${USERS[@]}"; do
       || die "$user can read interactive operator credential store: $credential"
   done
   query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){viewerPermission}}'
-  api_output="$(sudo -n -H -u "$user" gh api graphql -f "query=$query" -F owner=vdk888 -F name=bubble-operator-intents --jq '.data.repository.viewerPermission // "NONE"' 2>&1)" \
+  api_output="$(sudo -n -H -u "$user" gh api graphql -f "query=$query" -F owner=Bubble-invest -F name=bubble-operator-intents --jq '.data.repository.viewerPermission // "NONE"' 2>&1)" \
     || die "$user vault GraphQL viewerPermission query was inconclusive: $api_output"
   permission="$api_output"
   case "$permission" in

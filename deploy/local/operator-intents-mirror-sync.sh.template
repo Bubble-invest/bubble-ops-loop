@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-REMOTE_URL='git@github.com:vdk888/bubble-operator-intents.git'
+REMOTE_URL='git@github.com:Bubble-invest/bubble-operator-intents.git'
 REMOTE_REF='main'
 KEY='/Library/Application Support/Bubble/secrets/operator-intents-readonly-deploy-key'
 BASE='/Library/Application Support/Bubble'

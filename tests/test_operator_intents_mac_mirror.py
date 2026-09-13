@@ -65,7 +65,7 @@ def test_nonroot_activation_fails_before_live_mutation(tmp_path: Path) -> None:
 
 def test_sync_has_exact_read_only_auth_and_no_write_credential_path() -> None:
     source = SYNC.read_text(encoding="utf-8")
-    assert "git@github.com:vdk888/bubble-operator-intents.git" in source
+    assert "git@github.com:Bubble-invest/bubble-operator-intents.git" in source
     assert "REMOTE_REF='main'" in source
     assert "operator-intents-readonly-deploy-key" in source
     assert "root:wheel:400" in source
