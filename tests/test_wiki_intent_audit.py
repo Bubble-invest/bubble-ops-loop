@@ -35,6 +35,11 @@ def seed_intents(root: Path) -> None:
         "shared/operator-intents/human-review.md",
         "title: Human review\ncore: true",
     )
+    write_page(
+        root,
+        "shared/operator-intents/old-direction.md",
+        "title: Old direction\nstatus: superseded\ncore: true",
+    )
 
 
 def candidate_by_path(report: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -108,6 +113,11 @@ def test_audit_reports_shape_and_resolution_without_semantic_guessing(
         "shared/systems/wrong-case.md",
         'title: Wrong case\nintent: "[[shared/operator-intents/System-Convergence]]"',
     )
+    write_page(
+        tmp_path,
+        "shared/systems/superseded.md",
+        'title: Superseded\nintent: "[[shared/operator-intents/old-direction]]"',
+    )
 
     candidates = candidate_by_path(audit_module.audit(tmp_path))
 
@@ -126,6 +136,9 @@ def test_audit_reports_shape_and_resolution_without_semantic_guessing(
     ]
     assert candidates["shared/systems/wrong-case.md"]["issues"] == [
         "intent_target_missing"
+    ]
+    assert candidates["shared/systems/superseded.md"]["issues"] == [
+        "intent_target_superseded"
     ]
     assert "semantic" not in json.dumps(candidates).lower()
 

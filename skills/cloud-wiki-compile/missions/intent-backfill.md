@@ -19,6 +19,9 @@ Python collector.
   unresolved states. They remain visible in the next audit.
 - Every non-empty target resolves case-exactly to an existing `.md` below
   `shared/operator-intents/`. Omit `.md`; do not use aliases or headings.
+- A link to an intent whose frontmatter says `status: superseded` remains an
+  unresolved candidate. Read the page and current intent collection to choose a
+  supported mapping; never infer the replacement from filenames or links.
 - Never assign the north-star, or any other intent, as a blanket default.
 - Never create, edit, rename, or delete anything below
   `shared/operator-intents/`. Pages with `core: true` are also read-only; if one

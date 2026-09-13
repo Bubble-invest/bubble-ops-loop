@@ -24,6 +24,7 @@ NON_CONTENT_PREFIXES = (PurePosixPath(".github"), PurePosixPath("hooks"))
 WIKILINK_RE = re.compile(r"^\[\[([^\[\]|#]+)\]\]$")
 FIELD_RE = re.compile(r"^intent\s*:\s*(.*?)\s*$")
 LIST_ITEM_RE = re.compile(r"^\s+-\s*(.*?)\s*$")
+STATUS_RE = re.compile(r"^status\s*:\s*(.*?)\s*$")
 
 
 def _is_below(path: PurePosixPath, parent: PurePosixPath) -> bool:
@@ -113,6 +114,19 @@ def _case_exact_file(root: Path, relative: PurePosixPath) -> Path | None:
     return current
 
 
+def _intent_lifecycle_status(path: Path) -> str | None:
+    frontmatter, issue = _frontmatter(
+        path.read_text(encoding="utf-8", errors="replace")
+    )
+    if issue or frontmatter is None:
+        return None
+    for line in frontmatter:
+        match = STATUS_RE.match(line)
+        if match:
+            return _unquote(match.group(1)).strip().lower() or None
+    return None
+
+
 def _target_issue(wiki_root: Path, value: str) -> tuple[str | None, str | None]:
     match = WIKILINK_RE.fullmatch(value)
     if not match:
@@ -128,8 +142,11 @@ def _target_issue(wiki_root: Path, value: str) -> tuple[str | None, str | None]:
         return target, "intent_target_outside_core"
 
     target_file = PurePosixPath(f"{target}.md")
-    if _case_exact_file(wiki_root, target_file) is None:
+    resolved = _case_exact_file(wiki_root, target_file)
+    if resolved is None:
         return target, "intent_target_missing"
+    if _intent_lifecycle_status(resolved) == "superseded":
+        return target, "intent_target_superseded"
     return target, None
 
 
@@ -194,6 +211,7 @@ def audit(wiki_root: Path) -> dict[str, object]:
             "scalar": 'intent: "[[shared/operator-intents/<slug>]]"',
             "multiple": "quoted block list",
             "unresolved": "missing, empty, or [] remains a candidate",
+            "lifecycle": "status=superseded target remains a candidate",
             "semantics": "agent judgment required; this report is structural evidence only",
         },
         "summary": {

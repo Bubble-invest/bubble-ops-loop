@@ -56,6 +56,9 @@ Intent frontmatter uses this exact contract (board #1247):
   candidate on the next audit
 - non-empty links: case-exact existing `.md` targets below
   `shared/operator-intents/`, with `.md` omitted and no alias/heading
+- a target with `status: superseded` is structurally unresolved and remains a
+  candidate; an agent must judge the current mapping rather than auto-following
+  names or links to a replacement
 
 Never apply a blanket north-star tag to clear the report. Read the page and
 make the mapping judgment. Linking points **to** the protected intent pages and
@@ -281,7 +284,8 @@ SOURCE_DIRS = {space-separated absolute paths — the VPS-native dir and/or Mac-
 WIKI_PATH = /home/claude/.claude/agent-memory/shared-wiki
 AT_CAP = {true|false}
 AVAILABLE_OPERATOR_INTENTS = {current shared/operator-intents/*.md, read-only;
-                              include path + intent statement, never edit them}
+                              include path + status + intent statement, never
+                              edit them or select status=superseded}
 
 TODAY=$(date -u +%Y-%m-%d)
 YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
@@ -1020,19 +1024,29 @@ NEW_PAGES_LIMIT = 5 (across all agents combined)
 RULES:
 1. Group entries by target page. One Read → one Edit/Write per page. Never
    re-Read a page you already touched.
-2. UPDATE: Read once, integrate ALL its entries in one Edit, set last_verified=TODAY.
+2. UPDATE: Read once, integrate ALL its entries in one Edit, set
+   last_verified=TODAY, and inspect its current `intent`. Preserve existing
+   case-exact mappings whose targets exist and are not `status: superseded`.
+   When the field is absent, empty, malformed, dangling, or superseded, apply
+   the semantically supported INTENT_LINKS_BY_ENTRY mapping in the same Edit.
+   If STEP 4 returned UNRESOLVED, write/preserve `intent: []` so STEP 8 surfaces
+   it; never guess a replacement. Add another intent to an already-valid list
+   only when INTENT_REASON shows the updated page materially serves it.
 3. CREATE: skip if agent folder AT_CAP; skip if over NEW_PAGES_LIMIT. Require a
-   semantically supported non-empty INTENT_LINKS_BY_ENTRY mapping; if it is
+   semantically supported, non-superseded, non-empty INTENT_LINKS_BY_ENTRY
+   mapping; if it is
    UNRESOLVED, skip CREATE and return it in `skipped_unresolved_intent`. Else
    Write with full frontmatter (title, domain, owner, created, last_verified,
    type, tags, intent) + [[wikilinks]]. Use the canonical scalar for one intent
    and quoted block list for multiple intents. Never blanket-assign the
    north-star. (geraldine_accounting/ may be created fresh — new folder.)
-4. DECISIONS_TO_LOG: append to shared/decisions/log.md (never modify past entries):
+4. DECISIONS_TO_LOG: read the log frontmatter and apply rule 2's intent check,
+   then append to shared/decisions/log.md (never modify past entries):
    ## YYYY-MM-DD — Title
    **What:** ... **Why:** ... **Source:** {agent} session
 5. Write each agent's hot.md from HOT_MD_CONTENT_BY_AGENT (ONE Write each).
-   Read its existing frontmatter first and preserve an existing valid `intent`.
+   Read its existing frontmatter first and preserve an existing valid,
+   non-superseded `intent`.
    If absent, judge the hot page's purpose against AVAILABLE_OPERATOR_INTENTS;
    add a supported mapping or use `intent: []` so uncertainty remains visible
    to STEP 0. Never guess or blanket-tag:
@@ -1049,10 +1063,10 @@ RULES:
 7. Do NOT rewrite index.md (parent regenerates it).
 8. Do NOT read pages not in STRUCTURED_ENTRIES, except the existing hot.md
    files and read-only AVAILABLE_OPERATOR_INTENTS required by rules 3 and 5.
-9. RESEARCH_SEEDS_BY_AGENT: for each agent with seeds, append them to
-   shared/research-seeds/{agent}.md. When creating it, require a supported
-   intent mapping exactly as rule 3; otherwise skip and include it in
-   `skipped_unresolved_intent`. Create with frontmatter — title,
+9. RESEARCH_SEEDS_BY_AGENT: for each agent with seeds, read the page and apply
+   rule 2's intent check before appending to shared/research-seeds/{agent}.md.
+   When creating it, require a supported intent mapping exactly as rule 3;
+   otherwise skip and include it in `skipped_unresolved_intent`. Create with frontmatter — title,
    type: operational, owner: cloud-wiki-compile, last_verified=TODAY,
    tags: [research-seeds, {agent}], intent — if absent. Append as dated bullets
    ("- **TODAY** — <lead>"); NEVER rewrite prior seeds. This is the dept's
