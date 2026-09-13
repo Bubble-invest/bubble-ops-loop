@@ -3,6 +3,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tools.operator_intent_source_inventory import (
     build_fleet_inventory,
     build_inventory,
@@ -181,3 +183,40 @@ def test_fleet_roster_loader_and_agent_source_parser(tmp_path: Path) -> None:
     assert parse_agent_sources(["miranda=/tmp/content"]) == {
         "miranda": Path("/tmp/content")
     }
+
+
+def test_fleet_inventory_fails_completeness_for_mapped_missing_mandate(tmp_path: Path) -> None:
+    repo = tmp_path / "bubble-ops-accountant"
+    _write(
+        repo / "dept.yaml",
+        "department:\n  slug: accountant\n  display_name: Géraldine\n"
+        "recurring_missions:\n  - id: ledger\n",
+    )
+    for layer in range(1, 5):
+        _write(repo / "layers" / str(layer) / "PROMPT.md", f"# Layer {layer}\n")
+    _write(repo / "missions" / ".gitkeep", "")
+    agents = [{"id": "geraldine", "name": "Géraldine", "role": "Accounting", "host": "M5"}]
+
+    inventory = build_fleet_inventory(agents, {"geraldine": repo})
+
+    assert inventory["summary"]["mapping_coverage_complete"] is True
+    assert inventory["summary"]["intent_source_coverage_complete"] is False
+    assert inventory["summary"]["fleet_coverage_complete"] is False
+    assert inventory["summary"]["departments_with_missing_sources"] == ["geraldine"]
+
+
+def test_fleet_inventory_rejects_duplicate_and_nested_sources(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    agents = [
+        {"id": "miranda", "name": "Miranda", "role": "Content", "host": "M1"},
+        {"id": "geraldine", "name": "Géraldine", "role": "Accounting", "host": "M5"},
+    ]
+    with pytest.raises(ValueError, match="map to the same source"):
+        build_fleet_inventory(agents, {"miranda": repo, "geraldine": repo})
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    nested = repo / "nested"
+    nested.mkdir()
+    with pytest.raises(ValueError, match="inside Git checkout"):
+        build_fleet_inventory([agents[0]], {"miranda": nested})

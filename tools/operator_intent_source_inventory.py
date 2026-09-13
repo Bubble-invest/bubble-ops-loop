@@ -22,6 +22,9 @@ DEFAULT_NON_DEPARTMENT_SLUGS = frozenset({"board", "loop"})
 
 
 def _git_head(repo: Path) -> str | None:
+    top_level = _git_top_level(repo)
+    if top_level is None or top_level != repo.resolve():
+        return None
     result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
         check=False,
@@ -32,6 +35,19 @@ def _git_head(repo: Path) -> str | None:
         return None
     value = result.stdout.strip()
     return value or None
+
+
+def _git_top_level(repo: Path) -> Path | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return Path(value).resolve() if value else None
 
 
 def _source_record(
@@ -355,6 +371,24 @@ def build_fleet_inventory(
     if unknown:
         raise ValueError(f"agent source ids absent from fleet roster: {', '.join(unknown)}")
 
+    resolved_sources: dict[Path, str] = {}
+    for agent_id, repo in sources.items():
+        if not repo.is_dir():
+            continue
+        resolved = repo.resolve()
+        prior = resolved_sources.get(resolved)
+        if prior is not None:
+            raise ValueError(
+                f"agents {prior!r} and {agent_id!r} map to the same source {resolved}"
+            )
+        resolved_sources[resolved] = agent_id
+        top_level = _git_top_level(repo)
+        if top_level is not None and top_level != resolved:
+            raise ValueError(
+                f"agent {agent_id!r} source {resolved} is inside Git checkout {top_level}; "
+                "map the exact repository root or a standalone unversioned source"
+            )
+
     records: list[dict[str, object]] = []
     without_checkout: list[str] = []
     for agent in roster:
@@ -397,6 +431,25 @@ def build_fleet_inventory(
             continue
         records.append(inventory_department(repo, agent))
 
+    source_gaps = [
+        str(record["agent"]["id"])
+        for record in records
+        if record["coverage"]["missing"]  # type: ignore[index]
+    ]
+    shape_gaps = [
+        str(record["agent"]["id"])
+        for record in records
+        if not record["standard_shape"]["complete"]  # type: ignore[index]
+    ]
+    identity_gaps = [
+        str(record["agent"]["id"])
+        for record in records
+        if record["identity_mismatches"]  # type: ignore[index]
+    ]
+    mapping_complete = not without_checkout
+    source_complete = not source_gaps
+    shape_complete = not shape_gaps
+    identity_complete = not identity_gaps
     return {
         "schema_version": SCHEMA_VERSION,
         "semantics": "unclassified; requires human or agent judgment",
@@ -407,15 +460,19 @@ def build_fleet_inventory(
             "expected_agent_count": len(roster),
             "agent_source_count": len(roster) - len(without_checkout),
             "agents_without_checkout": without_checkout,
-            "fleet_coverage_complete": not without_checkout,
+            "mapping_coverage_complete": mapping_complete,
+            "intent_source_coverage_complete": source_complete,
+            "standard_shape_coverage_complete": shape_complete,
+            "identity_coverage_complete": identity_complete,
+            "fleet_coverage_complete": (
+                mapping_complete and source_complete and shape_complete and identity_complete
+            ),
             "complete_source_sets": sum(
                 not record["coverage"]["missing"] for record in records  # type: ignore[index]
             ),
-            "departments_with_missing_sources": [
-                record["agent"]["id"]
-                for record in records
-                if record["coverage"]["missing"]  # type: ignore[index]
-            ],
+            "departments_with_missing_sources": source_gaps,
+            "agents_with_incomplete_standard_shape": shape_gaps,
+            "agents_with_identity_mismatches": identity_gaps,
         },
     }
 
@@ -496,7 +553,7 @@ def main() -> int:
     else:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
-    incomplete = inventory["summary"].get("agents_without_checkout", [])  # type: ignore[index]
+    incomplete = inventory["summary"].get("fleet_coverage_complete") is False  # type: ignore[index]
     return 2 if incomplete and not args.allow_partial_fleet else 0
 
 

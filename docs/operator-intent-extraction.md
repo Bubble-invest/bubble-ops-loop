@@ -61,9 +61,12 @@ python3 tools/operator_intent_source_inventory.py \
 Fleet mode emits the canonical persona name separately from the technical
 department slug (`Miranda` / `content`, `Géraldine` / `accountant`). It retains
 an explicit record for every configured agent. The command returns 2 if any
-roster agent lacks an `--agent-source` mapping, after writing the incomplete
-inventory for diagnosis. `--allow-partial-fleet` is an explicit escape hatch
-for investigative snapshots, never for a claimed full-fleet extraction.
+roster agent lacks an `--agent-source` mapping, any mapped source lacks its
+mandate/mission source set or standard shape, or a declared display name differs
+from the roster. Duplicate source roots and nested paths inside another Git
+checkout are rejected. The incomplete inventory is still written for diagnosis.
+`--allow-partial-fleet` is an explicit escape hatch for investigative snapshots,
+never for a claimed full-fleet extraction.
 
 The next step is semantic judgment. Read the inventoried sources at their pinned
 Git HEADs, identify an operator-level ask/reason/constraint that survives beyond
