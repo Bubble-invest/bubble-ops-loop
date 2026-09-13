@@ -66,6 +66,17 @@ def test_discovery_sorts_departments_and_skips_non_department_repositories(tmp_p
     assert [path.name for path in found] == ["bubble-ops-alpha", "bubble-ops-zeta"]
 
 
+def test_discovery_skips_symlinked_department_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write(outside / "MANDATE.md", "must not be followed\n")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "bubble-ops-linked").symlink_to(outside, target_is_directory=True)
+
+    assert discover_departments(root) == []
+
+
 def test_git_head_is_recorded_when_available(tmp_path: Path) -> None:
     repo = tmp_path / "bubble-ops-alpha"
     repo.mkdir()
@@ -78,3 +89,26 @@ def test_git_head_is_recorded_when_available(tmp_path: Path) -> None:
     expected = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
 
     assert inventory_department(repo)["git_head"] == expected
+
+
+def test_git_repository_reads_committed_blobs_not_dirty_or_untracked_files(tmp_path: Path) -> None:
+    repo = tmp_path / "bubble-ops-alpha"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    committed = "# Committed mandate\n"
+    _write(repo / "MANDATE.md", committed)
+    subprocess.run(["git", "-C", str(repo), "add", "MANDATE.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+
+    _write(repo / "MANDATE.md", "# Dirty mandate\nwith extra lines\n")
+    _write(repo / "missions" / "untracked.yaml", "id: untracked\n")
+    record = inventory_department(repo)
+
+    assert record["source_snapshot"]["mode"] == "git_commit"
+    assert [item["path"] for item in record["sources"]] == ["MANDATE.md"]
+    mandate = record["sources"][0]
+    assert mandate["sha256"] == hashlib.sha256(committed.encode()).hexdigest()
+    assert mandate["lines"] == 1
+    assert mandate["provenance_mode"] == "git_commit"

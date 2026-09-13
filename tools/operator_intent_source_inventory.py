@@ -12,6 +12,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Iterable
 
 
@@ -32,11 +33,16 @@ def _git_head(repo: Path) -> str | None:
     return value or None
 
 
-def _source_record(repo: Path, path: Path, source_type: str) -> dict[str, object]:
-    data = path.read_bytes()
+def _source_record(
+    relative_path: str,
+    source_type: str,
+    data: bytes,
+    provenance_mode: str,
+) -> dict[str, object]:
     return {
-        "path": path.relative_to(repo).as_posix(),
+        "path": relative_path,
         "source_type": source_type,
+        "provenance_mode": provenance_mode,
         "sha256": hashlib.sha256(data).hexdigest(),
         "bytes": len(data),
         "lines": len(data.splitlines()),
@@ -54,7 +60,45 @@ def _regular_file(path: Path, repo: Path) -> bool:
     return True
 
 
-def supported_sources(repo: Path) -> list[dict[str, object]]:
+def _source_type(relative_path: str) -> str | None:
+    path = PurePosixPath(relative_path)
+    if path.parts == ("MANDATE.md",):
+        return "mandate"
+    if len(path.parts) == 2 and path.parts[0] == "missions" and path.suffix in {".yaml", ".yml"}:
+        return "mission_manifest"
+    if len(path.parts) == 3 and path.parts[0] == "missions" and path.parts[2] == "PROMPT.md":
+        return "mission_prompt"
+    return None
+
+
+def _git_sources(repo: Path, revision: str) -> list[dict[str, object]]:
+    tree = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", revision, "--", "MANDATE.md", "missions"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    records: list[dict[str, object]] = []
+    for entry in tree.split(b"\0"):
+        if not entry:
+            continue
+        metadata, raw_path = entry.split(b"\t", 1)
+        mode = metadata.split(b" ", 1)[0]
+        if mode not in {b"100644", b"100755"}:
+            continue
+        relative_path = raw_path.decode("utf-8", errors="strict")
+        source_type = _source_type(relative_path)
+        if source_type is None:
+            continue
+        data = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{revision}:{relative_path}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        records.append(_source_record(relative_path, source_type, data, "git_commit"))
+    return sorted(records, key=lambda record: str(record["path"]))
+
+
+def _worktree_sources(repo: Path) -> list[dict[str, object]]:
     """Return the supported source set in deterministic path order.
 
     The fixed shapes intentionally exclude outputs, vaults, secrets, connector
@@ -68,11 +112,21 @@ def supported_sources(repo: Path) -> list[dict[str, object]]:
         candidates.extend((path, "mission_prompt") for path in missions.glob("*/PROMPT.md"))
 
     records = [
-        _source_record(repo, path, source_type)
+        _source_record(
+            path.relative_to(repo).as_posix(),
+            source_type,
+            path.read_bytes(),
+            "unversioned_worktree",
+        )
         for path, source_type in candidates
         if _regular_file(path, repo)
     ]
     return sorted(records, key=lambda record: str(record["path"]))
+
+
+def supported_sources(repo: Path, git_head: str | None = None) -> list[dict[str, object]]:
+    """Read exact commit blobs when possible, otherwise an explicit worktree snapshot."""
+    return _git_sources(repo, git_head) if git_head else _worktree_sources(repo)
 
 
 def _slug(repo: Path) -> str:
@@ -82,7 +136,8 @@ def _slug(repo: Path) -> str:
 
 def inventory_department(repo: Path) -> dict[str, object]:
     repo = repo.resolve()
-    sources = supported_sources(repo)
+    git_head = _git_head(repo)
+    sources = supported_sources(repo, git_head)
     mandate_present = any(item["source_type"] == "mandate" for item in sources)
     mission_count = sum(item["source_type"] != "mandate" for item in sources)
     missing: list[str] = []
@@ -93,7 +148,11 @@ def inventory_department(repo: Path) -> dict[str, object]:
     return {
         "department": _slug(repo),
         "repository": repo.name,
-        "git_head": _git_head(repo),
+        "git_head": git_head,
+        "source_snapshot": {
+            "mode": "git_commit" if git_head else "unversioned_worktree",
+            "revision": git_head,
+        },
         "coverage": {
             "mandate": "present" if mandate_present else "missing",
             "mission_source_count": mission_count,
@@ -110,6 +169,7 @@ def discover_departments(root: Path, excluded_slugs: Iterable[str] = ()) -> list
             child
             for child in root.iterdir()
             if child.is_dir()
+            and not child.is_symlink()
             and child.name.startswith("bubble-ops-")
             and _slug(child) not in excluded
         ),
