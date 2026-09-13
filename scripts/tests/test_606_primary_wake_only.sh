@@ -6,7 +6,7 @@ PY_BIN="${PY_BIN:-$(command -v python3)}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 TMP="$(mktemp -d)"
 trap 'find "$TMP" -depth -delete 2>/dev/null || true' EXIT
-mkdir -p "$TMP/framework/venv/bin" "$TMP/agents" "$TMP/locks" "$TMP/home" "$TMP/bin"
+mkdir -p "$TMP/framework/venv/bin" "$TMP/agents" "$TMP/locks" "$TMP/home" "$TMP/bin" "$TMP/selectors"
 ln -s "$PY_BIN" "$TMP/framework/venv/bin/python"
 ln -s "$ROOT/scripts" "$TMP/framework/scripts"
 
@@ -39,7 +39,7 @@ run_floor() {
   HOME="$TMP/home/$slug" \
   BUBBLE_BACKUP_TEST_UID_OK=1 \
   BUBBLE_BACKUP_PRIMARY_WAKE_ONLY=1 \
-  BUBBLE_BACKUP_HERMES_DEPTS=maya \
+  BUBBLE_BACKUP_HARNESS_SELECTOR_DIR="$TMP/selectors" \
   BUBBLE_OPS_LOOP_ROOT="$TMP/framework" \
   BUBBLE_BACKUP_SRV_AGENTS_ROOT="$TMP/agents" \
   BUBBLE_BACKUP_AGENTS_ROOT="$TMP/legacy" \
@@ -49,7 +49,7 @@ run_floor() {
   BUBBLE_BACKUP_SYSTEMCTL="$TMP/systemctl" \
   BUBBLE_BACKUP_CLAUDE_BIN="$TMP/deny-model" \
   BUBBLE_BACKUP_LAYER_OFFSET_H=-24 \
-  BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS=2 \
+  BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS=200 \
   BUBBLE_BACKUP_WAKE_WAIT_SECONDS=0 \
   BUBBLE_DISPATCH_DIRECTIVES=0 \
   BUBBLE_AUTORESTART=0 \
@@ -58,7 +58,8 @@ run_floor() {
 }
 
 assert_no_completion_evidence() {
-  local slug="$1" out="$TMP/agents/$slug/outputs"
+  local slug="$1"
+  local out="$TMP/agents/$slug/outputs"
   [[ ! -e "$out/$(date -u +%Y-%m-%d)/dispatch.json" ]] || fail "$slug dispatch ledger was forged"
   if [[ -d "$out" ]] && find "$out" -type f \( -name .last-run -o -name .last-materialized \) -print -quit | grep -q .; then
     fail "$slug handled marker was forged"
@@ -76,7 +77,7 @@ set -e
 [[ ! -e "$TMP/model-called" ]] || fail "headless model called for missing Ben primary"
 [[ ! -e "$TMP/agents/ben/outputs/$(date -u +%Y-%m-%d)/heartbeat.log" ]] || fail "fake Ben heartbeat written"
 assert_no_completion_evidence ben
-[[ "$ben_out" == *"primary runtime wake unavailable; headless fallback disabled"* ]] || fail "Ben defer invisible"
+[[ "$ben_out" == *"Claude session wake unavailable; headless fallback disabled"* ]] || fail "Ben defer invisible"
 grep -Eq '"action"[[:space:]]*:[[:space:]]*"deferred"' "$TMP/ben-failed.jsonl" || fail "Ben deferred event missing"
 
 # Busy Tony primary: inject is accepted but no heartbeat advances. Still defer,
@@ -97,9 +98,10 @@ assert_no_completion_evidence tony
 [[ "$tony_out" == *"headless fallback disabled"* ]] || fail "Tony defer invisible"
 grep -Eq '"action"[[:space:]]*:[[:space:]]*"deferred"' "$TMP/tony-busy.jsonl" || fail "Tony deferred event missing"
 
-# Successful classic primary wakes: the existing Ben/Tony primary writes its
+# Successful classic primary wakes: the existing Ben/Tony/Maya Claude primary writes its
 # own heartbeat; the floor records success and the deny-model stays untouched.
-for slug in ben tony; do
+printf 'claude\n' >"$TMP/selectors/maya"
+for slug in ben tony maya; do
   rm -f "$TMP/model-called"
   rm -rf "$TMP/agents/$slug/outputs"
   state_dir="$TMP/home/$slug/.claude/channels/telegram-$slug"
@@ -126,6 +128,21 @@ for slug in ben tony; do
   [[ "$ok_out" == *"live session ticked from inject"* ]] || fail "$slug success invisible"
   grep -Eq '"action"[[:space:]]*:[[:space:]]*"run"' "$TMP/$slug-ok.jsonl" || fail "$slug run event missing"
 done
+
+# An existing unknown selector fails closed before either wake path and never
+# falls through to the headless binary.
+rm -f "$TMP/model-called"
+rm -rf "$TMP/agents/ben/outputs"
+printf 'unknown\n' >"$TMP/selectors/ben"
+set +e
+unknown_out="$(run_floor ben "$TMP/ben-unknown.jsonl" 2>&1)"
+unknown_rc=$?
+set -e
+[[ "$unknown_rc" -ne 0 ]] || fail "unknown selector returned green"
+[[ ! -e "$TMP/model-called" ]] || fail "headless model called for unknown selector"
+[[ "$unknown_out" == *"harness selector rejected"* ]] || fail "unknown selector reason invisible"
+grep -Eq '"action"[[:space:]]*:[[:space:]]*"deferred"' "$TMP/ben-unknown.jsonl" || fail "unknown selector deferred event missing"
+rm -f "$TMP/selectors/ben"
 
 # Observer boundary: 23:30 UTC is already the next Europe/Paris day on both
 # sides of DST. The floor must watch the canonical primary path, not UTC's.
@@ -154,9 +171,12 @@ unset BUBBLE_BACKUP_TEST_NOW_UTC
 [[ ! -e "$TMP/agents/ben/outputs/2026-03-28/heartbeat.log" ]] || fail "UTC-day heartbeat was synthesized"
 [[ ! -e "$TMP/model-called" ]] || fail "headless model called at Paris-day boundary"
 
-# Successful Maya wake uses Hermes control, writes only the simulated primary
-# heartbeat, and cannot reach the headless binary.
+# Switching Maya's selector to Hermes routes the same stale floor through
+# Hermes control, writes only the simulated primary heartbeat, and cannot
+# reach the headless binary.
 rm -f "$TMP/model-called"
+rm -rf "$TMP/agents/maya/outputs"
+printf 'hermes\n' >"$TMP/selectors/maya"
 cat >"$TMP/hermes-wake" <<EOF_HERMES
 #!/usr/bin/env bash
 mkdir -p "$TMP/agents/maya/outputs/\$(date -u +%Y-%m-%d)"

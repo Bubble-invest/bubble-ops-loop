@@ -24,7 +24,7 @@ pushes via the operator's own **`gh`/git credential**.
 |------|------|
 | `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
-| `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → cooldown-limited wake injection into the existing tmux session. It never launches a model. |
+| `local-loop-backup-runner.sh` | The per-tick body: heartbeat-staleness check → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
 
 ### Main runner shape — persistent `--channels` session (KeepAlive), NOT a per-tick job
@@ -57,9 +57,13 @@ Both installers **only render** the plist unless `--activate` is passed.
 configured existing channel/session, subject to a cooldown. The runner contains
 no model-launch path. Calling it without `--activate-inject` reports a non-green
 deferred result, and legacy `--activate-tick` is rejected. The runner re-reads
-the main wrapper's harness selector each time: `claude` supports the channel
-inject path; `hermes` remains visibly deferred until it has a reviewed consumer.
-An append is logged as unconfirmed until the normal heartbeat advances.
+the main wrapper's security-checked harness selector each time. `claude` uses
+the private channel inject path and its shared cooldown marker. `hermes` pipes
+the same fixed resume prompt to `scripts/wake_hermes_gateway.py`, using the
+existing tmux session and the local install defaults
+`~/.hermes/hermes-agent/venv/bin/python`, `~/.hermes/hermes-agent`, and
+`~/.hermes/profiles/<slug>`. Helper acceptance is explicitly logged as
+unconfirmed; it is not proof that the turn executed or heartbeat advanced.
 
 ## Install (on the Mac, only after re-audit PASS + {{OPERATOR}} go — see MIRANDA-BUILD-SPEC P4)
 
