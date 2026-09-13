@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bubble.invest/schemas/fleet-architecture-inventory-v1.json",
+  "title": "Bubble fleet architecture inventory",
+  "type": "object",
+  "required": ["version", "generated_at", "agents"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "generated_at": {"type": "string", "minLength": 1},
+    "agents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/agent"}
+    }
+  },
+  "definitions": {
+    "surface": {
+      "type": "object",
+      "required": ["status", "count"],
+      "properties": {
+        "status": {"enum": ["verified", "partial", "stale", "unknown"]},
+        "count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["status", "last_checked", "surfaces"],
+      "properties": {
+        "status": {"enum": ["verified", "partial", "stale", "unknown"]},
+        "last_checked": {"type": "string", "minLength": 1},
+        "last_verified": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+        "source": {"type": "string"},
+        "root": {},
+        "surfaces": {
+          "type": "object",
+          "required": ["skill", "tool", "mission", "cron", "integration", "dependency"],
+          "additionalProperties": false,
+          "properties": {
+            "skill": {"$ref": "#/definitions/surface"},
+            "tool": {"$ref": "#/definitions/surface"},
+            "mission": {"$ref": "#/definitions/surface"},
+            "cron": {"$ref": "#/definitions/surface"},
+            "integration": {"$ref": "#/definitions/surface"},
+            "dependency": {"$ref": "#/definitions/surface"}
+          }
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": ["id", "kind", "name", "status", "source", "last_observed", "intent", "intent_rationale", "details"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 3},
+        "kind": {"enum": ["skill", "tool", "mission", "cron", "integration", "dependency"]},
+        "name": {"type": "string", "minLength": 1},
+        "status": {"enum": ["verified", "stale", "removed"]},
+        "source": {"type": "string", "minLength": 1},
+        "last_observed": {"type": "string", "minLength": 1},
+        "intent": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^\\[\\[shared/operator-intents/[A-Za-z0-9._/-]+\\]\\]$"}
+        },
+        "intent_rationale": {"type": "string"},
+        "details": {"type": "object"}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["id", "name", "role", "host", "wiki_folder", "coverage", "items"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "host": {"type": "string", "minLength": 1},
+        "wiki_folder": {"type": "string"},
+        "coverage": {"$ref": "#/definitions/coverage"},
+        "items": {"type": "array", "items": {"$ref": "#/definitions/item"}}
+      }
+    }
+  }
+}
