@@ -127,6 +127,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOOT_REARM_INSTALLER="$SCRIPT_DIR/install-boot-rearm.sh"
 INJECT_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/bubble-inject.block.ts"
+LEDGER_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/delivery-ledger.block.ts"
 PEER_ENSURE="$SCRIPT_DIR/ensure-agent-message-watcher.py"
 
 PLUGIN_GLOB="${CHANNEL_PATCHES_PLUGIN_GLOB:-$HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/}"
@@ -394,6 +395,13 @@ run_critical_section() {
   local inject_rc=$?
   [[ "$inject_rc" != "0" ]] && section_rc=1
 
+  # ── 3. delivery-ledger — idempotent anchor-insert + bun-build validate ────
+  #   Records every received update_id so the out-of-band gap detector can turn
+  #   a silent inbound loss into a loud one (board #1284 pt E).
+  apply_delivery_ledger
+  local ledger_rc=$?
+  [[ "$ledger_rc" != "0" ]] && section_rc=1
+
   peer_after="$(peer_watcher_digest)" || peer_after="malformed"
   if [[ "$peer_after" != "$peer_protected" ]]; then
     log "agent-message watcher changed during channel patch — restoring combined backup"
@@ -520,6 +528,95 @@ PY
     # Deliberately NOT removed on failure — the path is named in the log
     # line above so an operator can inspect it; each invocation gets its
     # own uniquely-named mktemp file, so leftovers never collide.
+    return 4
+  fi
+}
+
+apply_delivery_ledger() {
+  # Idempotent: the marker is the CANONICAL detector — grep it, not a filename.
+  if grep -q "BUBBLE-DELIVERY-LEDGER PATCH BEGIN" "$SERVER_TS" 2>/dev/null; then
+    log "delivery-ledger: already present — no-op"
+    return 0
+  fi
+
+  if [[ ! -f "$LEDGER_BLOCK" ]]; then
+    log "delivery-ledger: canonical block missing at $LEDGER_BLOCK — skip"
+    return 2
+  fi
+
+  # Insert right AFTER the bot is constructed, so `bot.use(...)` middleware is
+  # registered before any handler. `join` + `writeFileSync` are already imported
+  # by server.ts (see the block header), so no import edit is needed.
+  local anchor='const bot = new Bot(TOKEN)'
+  if ! grep -qF "$anchor" "$SERVER_TS" 2>/dev/null; then
+    log "delivery-ledger: anchor not found in $SERVER_TS (plugin drift?) — skip"
+    return 3
+  fi
+
+  if [[ "$DRY" == "1" ]]; then
+    log "delivery-ledger: DRY — would back up server.ts, insert the canonical block after the bot anchor, bun build validate"
+    return 0
+  fi
+
+  local ts bak
+  ts="$(date -u +%Y%m%d-%H%M%S)"
+  bak="${SERVER_TS}.bak-delivery-ledger-${ts}"
+  cp "$SERVER_TS" "$bak"
+
+  if ! SRV="$SERVER_TS" ANCHOR="$anchor" BLOCK="$LEDGER_BLOCK" python3 - <<'PY'
+import os, re
+
+p = os.environ["SRV"]
+anchor = os.environ["ANCHOR"]
+block_path = os.environ["BLOCK"]
+
+BEGIN = "// === BUBBLE-DELIVERY-LEDGER PATCH BEGIN ==="
+END = "// === BUBBLE-DELIVERY-LEDGER PATCH END ==="
+raw = open(block_path).read()
+i, j = raw.index(BEGIN), raw.index(END)
+patch = raw[i:j + len(END)]
+
+s = open(p).read()
+if BEGIN in s:  # defensive idempotency
+    print("already-present")
+    raise SystemExit(0)
+line = anchor + "\n"
+if line in s:
+    s = s.replace(line, line + patch + "\n", 1)
+else:
+    m = re.search(re.escape(anchor), s)
+    if not m:
+        raise SystemExit("anchor vanished")
+    idx = s.index("\n", m.end()) + 1
+    s = s[:idx] + patch + "\n" + s[idx:]
+open(p, "w").write(s)
+print("inserted")
+PY
+  then
+    log "delivery-ledger: insertion failed — restoring backup"
+    cp "$bak" "$SERVER_TS"
+    return 3
+  fi
+
+  if [[ -z "$BUN_BIN" || ! -x "$BUN_BIN" ]]; then
+    log "delivery-ledger: bun not found (checked \$CHANNEL_PATCHES_BUN and PATH) — cannot validate, restoring backup"
+    cp "$bak" "$SERVER_TS"
+    return 2
+  fi
+
+  local build_out build_log
+  build_out="$(mktemp -d)"
+  build_log="$(mktemp "${TMPDIR:-/tmp}/install-channel-patches-ledger-build.XXXXXX")"
+  if ( cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$build_out" ) \
+      >"$build_log" 2>&1; then
+    log "delivery-ledger: applied + bun build OK ($SERVER_TS)"
+    rm -rf "$build_out"
+    rm -f "$build_log"
+    return 0
+  else
+    log "delivery-ledger: bun build FAILED — restoring backup (see $build_log)"
+    cp "$bak" "$SERVER_TS"
+    rm -rf "$build_out"
     return 4
   fi
 }

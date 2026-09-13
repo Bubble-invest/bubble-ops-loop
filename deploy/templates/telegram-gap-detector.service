@@ -1,0 +1,41 @@
+# telegram-gap-detector.service — make a SILENT Telegram inbound loss LOUD
+# (board #1284 pt E — Claudette lost 19 of Jade's messages with no signal).
+#
+# Runs the completeness detector over every dept's delivery-ledger.jsonl and
+# alerts out-of-band on a GAP (updates acked to Telegram but never delivered to
+# the session), a DEAD poller, or a WEDGE. This is the missing "did every update
+# arrive?" check the liveness-only watchdogs never had.
+#
+# WHY User=root: the per-dept ledgers live under the uid-isolated agent homes
+# (/home/agent-<slug>/.claude/channels/telegram-<slug>/delivery-ledger.jsonl,
+# mode 0600, owned by agent-<slug>). The `claude` user cannot read them after the
+# #1120 uid isolation, so the detector reads them as root. It only READS the
+# ledgers + bot.pid; it writes nothing into the agent homes except the (already
+# agent-owned) ledger rotation, which it performs in place. No secrets are
+# printed. The operator alert bot token is provided via the EnvironmentFile
+# drop-in below (Rick wires it at deploy time from the commander secret scope).
+[Unit]
+Description=Telegram delivery-GAP detector — signal silent inbound loss (#1284 pt E)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/scripts/telegram-gap-detector.py
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/claude/bubble-ops-loop
+Environment=BUBBLE_GAP_STATE_DIR=/var/lib/telegram-gap-detector
+# Enable auto-recovery kicks once the alerting has proven out (default alert-only).
+Environment=BUBBLE_GAP_RESTART=0
+# Operator alert token + recipient. Provide BUBBLE_MAIN_BOT_TOKEN (and optionally
+# BUBBLE_GAP_CHAT_ID) via this drop-in; absent → the detector still RECORDS the
+# gap in its state and logs loudly, it just cannot send the Telegram ping.
+EnvironmentFile=-/run/telegram-gap-detector/env
+ExecStartPre=/bin/sh -c 'install -d -m 0700 /var/lib/telegram-gap-detector'
+ExecStart=/usr/bin/python3 /home/claude/bubble-ops-loop/scripts/telegram-gap-detector.py --host vps
+TimeoutStartSec=180
+# A watchdog must never trip its own timer into `failed`; the script exits 0 on a
+# completed pass and 2 only on a structural error.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target
