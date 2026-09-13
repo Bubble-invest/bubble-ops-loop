@@ -1,0 +1,156 @@
+version: 1
+fragment_max_age_hours: 36
+fragment_dirs:
+  - /home/claude/.claude/projects/_fleet-architecture-fragments
+
+# These are bounded, agent-reviewed semantic judgments. They are deliberately
+# sparse: unreviewed items stay unresolved instead of inheriting a blanket tag.
+intent_bindings:
+  map:
+    links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+    why: Makes the fleet, host, tool, skill, mission, and scheduler surfaces visible together so R&D can measure and converge the system as the north-star requires.
+  items:
+    rick:
+      "skill:rnd-loop":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: The north-star explicitly governs the R&D loop; this skill is the fleet manager loop that measures drift and routes convergence work.
+      "tool:fleet":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: This tool surface observes the fleet as one system, which directly supports cross-host convergence and stability.
+      "tool:wiki":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Shared wiki tooling gives the fleet a common knowledge surface, reducing fragmented agent state.
+      "tool:memory-hygiene":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Memory hygiene keeps shared and agent knowledge coherent enough for the fleet to converge on current facts.
+      "tool:skills-symlink-sync":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Skill synchronization reduces host-specific drift in the shared agent framework.
+      "tool:mac-fleet-autosave":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Fleet autosave preserves recoverable, consistent Mac agent state as part of the stable whole-system target.
+    tony:
+      "skill:dept-output-reader":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Reading department outputs lets the CEO coordinator see and align work across otherwise separate agents.
+      "skill:kpi-aggregator":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Fleet-level KPI aggregation measures whether departments are operating as a coherent, stable system.
+      "tool:read-child-export":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Child export collection is an explicit dependency bridge from department agents into fleet coordination.
+      "tool:read-child-kpis":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: Child KPI collection provides the cross-department feedback needed to detect system drift.
+      "mission:dept-kpi-watch":
+        links: ["[[shared/operator-intents/system-convergence-north-star]]"]
+        why: This mission watches department health across the fleet and turns divergence into coordinated action.
+
+# Canonical identity/host labels come from the shared wiki's team roster. Roots
+# are intentionally local paths only: each host refreshes what it can see, and
+# the collector carries facts from unavailable hosts as stale. No SSH, GitHub
+# API, transcript, secret, client-data, or broker-data discovery occurs here.
+agents:
+  - id: tony
+    name: Tony
+    role: CEO and fleet coordinator
+    host: VPS
+    wiki_folder: tony_ceo
+    roots:
+      - /srv/agents/tony
+    scan:
+      dept_yaml: false
+
+  - id: ben
+    name: Ben
+    role: Fund portfolio manager
+    host: VPS
+    wiki_folder: ben_fund
+    roots:
+      - /srv/agents/ben
+    scan:
+      dept_yaml: false
+    unavailable_reason: Source unavailable on this host; financial configs and broker data are outside the collector perimeter.
+
+  - id: maya
+    name: Maya
+    role: Prospection and LinkedIn outbound
+    host: VPS
+    wiki_folder: maya_sales
+    roots:
+      - /srv/agents/maya
+    scan:
+      dept_yaml: false
+
+  - id: claudette
+    name: Claudette
+    role: Jade's operations assistant
+    host: VPS
+    wiki_folder: claudette
+    roots:
+      - /srv/agents/claudette
+    scan:
+      dept_yaml: false
+
+  - id: morty
+    name: Morty
+    role: VPS watchdog and security audit runner
+    host: VPS
+    wiki_folder: morty
+    roots:
+      - /srv/agents/morty
+    scan:
+      dept_yaml: false
+
+  - id: rick
+    name: Rick
+    role: Internal R&D and agentic platform
+    host: Joris Mac M4
+    wiki_folder: rick_rnd
+    roots:
+      - /Users/joris/claude-workspaces/Rick_RnD
+
+  - id: tonio
+    name: Tonio
+    role: External and client R&D
+    host: Joris Mac M4
+    wiki_folder: tonio_extrnd
+    roots:
+      - /Users/joris/claude-workspaces/Tony_CEO
+
+  - id: deepseek
+    name: DeepSeek
+    role: Local R&D sandbox agent
+    host: Joris Mac M4
+    wiki_folder: rick_rnd
+    roots:
+      - /Users/joris/claude-workspaces/Rick_RnD/prototypes/deepseek-session
+
+  - id: miranda
+    name: Miranda
+    role: Content and social channels
+    host: Jade Mac M1
+    wiki_folder: miranda_socials
+    roots:
+      - /Users/jadethi-viet-lanhoang/claude-workspaces/bubble-ops-content
+      - /Users/jade-thi-viet-lanhoang/claude-workspaces/bubble-ops-content
+    unavailable_reason: Jade M1 source is not mirrored into the compiler host; retain the last host snapshot as stale.
+
+  - id: geraldine
+    name: Geraldine
+    role: Accounting and bookkeeping
+    host: Jade Mac M5
+    wiki_folder: geraldine_accounting
+    roots:
+      - /Users/jade-thi-viet-lanhoang/claude-workspaces/bubble-ops-accountant
+    unavailable_reason: Jade M5 source is not mirrored into the compiler host; retain the last host snapshot as stale.
+
+  - id: ellie
+    name: Ellie
+    role: Jade's project developer
+    host: Jade Mac M5
+    wiki_folder: ellie_assistant
+    roots:
+      - /Users/jade-thi-viet-lanhoang/claude-workspaces/ellie
+      - /Users/jade-thi-viet-lanhoang/claude-workspaces/bubble-ellie-workspace
+    unavailable_reason: Jade M5 source is not mirrored into the compiler host; retain the last host snapshot as stale.
