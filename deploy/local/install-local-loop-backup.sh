@@ -19,7 +19,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/local_loop_lib.sh"
 
 DEPT_DIR=""; SLUG=""; TELEGRAM_STATE_DIR=""; SESSION_NAME=""; HARNESS_SELECTOR=""
-TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-tmux}"
+# Default to the ABSOLUTE tmux path — a bare `tmux` is unresolvable under
+# launchd's minimal PATH, which silently breaks the floor's has-session check
+# ("existing session unavailable; injection not written"). command -v runs here
+# in a normal login shell, so it resolves to the real path baked into the plist.
+TMUX_BIN="${LOCAL_LOOP_TMUX_BIN:-$(command -v tmux 2>/dev/null || echo tmux)}"
 INTERVAL=10800
 STALE_SEC="$LOCAL_LOOP_STALE_SEC_DEFAULT"
 COOLDOWN_SEC="${LOCAL_LOOP_BACKUP_COOLDOWN_SEC:-900}"
@@ -75,6 +79,15 @@ fi
 [[ -n "$DEPT_DIR" && "$DEPT_DIR" == /* ]] || die "--dept-dir must be absolute"
 [[ -n "$TELEGRAM_STATE_DIR" && "$TELEGRAM_STATE_DIR" == /* ]] || die "--telegram-state-dir must be absolute"
 [[ -n "$SESSION_NAME" ]] || die "--session-name is required"
+# Resolve TMUX_BIN to an ABSOLUTE path (a bare name fails under launchd's minimal
+# PATH). Applies even if the caller passed --tmux-bin=tmux. Die rather than bake a
+# broken bare name into the plist.
+if [[ "$TMUX_BIN" != /* ]]; then
+    _resolved="$(command -v "$TMUX_BIN" 2>/dev/null || true)"
+    [[ -n "$_resolved" && "$_resolved" == /* ]] || die "tmux not found on PATH; pass --tmux-bin <absolute path> (a bare '$TMUX_BIN' is unresolvable under launchd)"
+    TMUX_BIN="$_resolved"
+fi
+[[ -x "$TMUX_BIN" ]] || die "--tmux-bin '$TMUX_BIN' is not executable"
 [[ "$INTERVAL" =~ ^[0-9]+$ && "$STALE_SEC" =~ ^[0-9]+$ && "$COOLDOWN_SEC" =~ ^[0-9]+$ ]] || die "intervals must be integers"
 [[ -f "$RUNNER" ]] || die "backup runner not found"
 [[ -n "$HARNESS_SELECTOR" ]] || HARNESS_SELECTOR="$HOME/Library/Application Support/bubble-ops-loop/harness-$SLUG"
