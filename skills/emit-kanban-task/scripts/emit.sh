@@ -9,7 +9,7 @@
 #
 # USAGE (identical arg surface to emit_kanban_item.sh):
 #   scripts/emit.sh task=<id> title="..." [body="..." type=... priority=... \
-#                   owner=... proj=... due=YYYY-MM-DD host=local|vps actions=... \
+#                   owner=... proj=... intent=slug[,slug] due=YYYY-MM-DD host=local|vps actions=... \
 #                   context_url=... diagram_mermaid="..." visual_attachments="..."]
 #
 # Resolution order:

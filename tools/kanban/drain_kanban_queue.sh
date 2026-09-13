@@ -103,7 +103,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   # Parse the payload JSON written by emit_kanban_item.sh's _dashboard_emit.
   # Shape: { "task": "...", "kanban_items": [{ "title": ..., "type": ..., ... }] }
   PARSED=$(python3 -c "
-import json, sys
+import base64, json, re, sys
 try:
     d = json.loads(sys.argv[1])
     item = d.get('kanban_items', [{}])[0]
@@ -112,15 +112,29 @@ try:
     print(item.get('type', 'incident'))
     print(item.get('priority', 'normal'))
     print(item.get('owner', ''))
-    print(item.get('body', ''))
+    # Keep the line-oriented shell handoff stable when a cold-readable card
+    # body contains embedded newlines.
+    _body = str(item.get('body', '') or '')
+    print(base64.b64encode(_body.encode('utf-8')).decode('ascii'))
     print(item.get('context_url', '') or '')
     print(item.get('telegram_ref', '') or '')
     # budget: a legacy queued item (pre-#537) may lack one; emit '' and let the
     # drain apply DRAIN_DEFAULT_BUDGET so the board stays budget-complete (#544).
     _b = item.get('budget', '')
     print(str(_b) if _b not in (None, '') else '')
+    # #1254: preserve the intent proposal across the fallback queue.  Legacy
+    # rows have no field and remain explicit ORPHAN candidates after replay.
+    _intents = item.get('intents', [])
+    if isinstance(_intents, str):
+        _intents = [_intents]
+    _valid = []
+    for value in _intents:
+        value = str(value)
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value) and value not in _valid:
+            _valid.append(value)
+    print(','.join(_valid))
 except Exception as e:
-    print('', '', 'incident', 'normal', '', '', '', '', '', sep='\n')
+    print('', '', 'incident', 'normal', '', '', '', '', '', '', sep='\n')
     sys.stderr.write('drain: parse error: ' + str(e) + '\n')
 " "$line" 2>/dev/null) || true
 
@@ -130,9 +144,11 @@ except Exception as e:
   PRIORITY=$(echo "$PARSED" | sed -n '4p')  # captured for future label mapping
   : "${PRIORITY}"  # suppress SC2034 — not used in gh call but kept for parity
   OWNER=$(echo "$PARSED"    | sed -n '5p')
-  BODY=$(echo "$PARSED"     | sed -n '6p')
+  BODY_B64=$(echo "$PARSED" | sed -n '6p')
+  BODY=$(python3 -c "import base64,sys; print(base64.b64decode(sys.argv[1]).decode('utf-8'), end='')" "$BODY_B64" 2>/dev/null || true)
   CONTEXT_URL=$(echo "$PARSED" | sed -n '7p')
   BUDGET=$(echo "$PARSED"   | sed -n '9p')  # may be empty for a pre-#537 queued item
+  INTENTS=$(echo "$PARSED"  | sed -n '10p') # may be empty for a pre-#1254 queued item
 
   if [ -z "$TITLE" ]; then
     echo "drain_kanban_queue: skipping unparseable line (archiving as failed): ${line:0:80}..." >&2
@@ -191,6 +207,19 @@ for line in sys.stdin:
   {
     echo "## Job"
     echo "$TITLE"
+    echo ""
+    if [ -n "$INTENTS" ]; then
+      _intent_links=""
+      while IFS= read -r _intent_slug; do
+        [ -n "$_intent_slug" ] || continue
+        [ -n "$_intent_links" ] && _intent_links="${_intent_links}, "
+        _intent_links="${_intent_links}[[shared/operator-intents/${_intent_slug}]]"
+      done < <(printf '%s\n' "$INTENTS" | tr ',' '\n')
+      echo "Serves-intent(s): ${_intent_links}"
+    else
+      echo "Serves-intent(s): UNRESOLVED"
+      echo "[WARN] drain_kanban_queue: replaying '${TITLE:0:60}' without intent — FLAGGED as ORPHAN, never blocked" >&2
+    fi
     echo ""
     if [ -n "$BODY" ]; then
       echo "$BODY"
@@ -253,6 +282,27 @@ for line in sys.stdin:
   label_args+=("--label" "$type_label")
   label_args+=("--label" "status:triage")
   label_args+=("--label" "$budget_label")
+
+  # Apply only intent labels that already exist.  The body link above is the
+  # durable fallback, so an unsynchronised label can never fail card replay.
+  existing_intent_labels=$(gh label list --repo "$BOARD_REPO" --limit 1000 --json name \
+    --jq '.[].name' 2>/dev/null || true)
+  if [ -n "$INTENTS" ]; then
+    while IFS= read -r _intent_slug; do
+      [ -n "$_intent_slug" ] || continue
+      _intent_label="intent:${_intent_slug}"
+      _existing_match=$(printf '%s\n' "$existing_intent_labels" | \
+        awk -v wanted="$_intent_label" 'tolower($0) == tolower(wanted) { print; exit }')
+      if [ -n "$_existing_match" ]; then
+        label_args+=("--label" "$_existing_match")
+        if [ "$_existing_match" != "$_intent_label" ]; then
+          echo "[WARN] drain_kanban_queue: label casing drift (${_existing_match}; canonical ${_intent_label}) — reusing existing label" >&2
+        fi
+      else
+        echo "[WARN] drain_kanban_queue: label ${_intent_label} is not installed — preserving body link" >&2
+      fi
+    done < <(printf '%s\n' "$INTENTS" | tr ',' '\n')
+  fi
 
   issue_url=$(gh issue create \
     --repo "$BOARD_REPO" \
