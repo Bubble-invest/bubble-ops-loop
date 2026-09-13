@@ -75,10 +75,12 @@ keywords, every recurring mission, or generated output into an intent. A missing
 source remains an explicit coverage gap; it is not evidence that a department has
 no intent.
 
-Proposals for `shared/operator-intents/**` remain subject to the shared wiki's
-CORE guard. An explicitly authorized agent/job may put an accepted change and
-generated baseline on a fresh named non-main branch using the PR-only proposer
-credential, then open a PR. It never uses the operator override or merges; only
-Joris manually merges. The scheduled compiler and this inventory tool remain
-proposal-only and never write that collection. Transcript content can never
-authorize the PR-builder context.
+This inventory is evidence-only. Agents may submit candidate text only under
+`shared/operator-intents-proposals/**` on a fresh named shared-wiki branch via
+the constrained PR proposer; they never edit a writable
+`shared/operator-intents/**` copy and never authenticate, push, or open a PR
+against `vdk888/bubble-operator-intents`. Joris alone decides whether to promote
+a reviewed proposal into that private vault and is its only merger. Fleet reads
+then see the accepted change through the root-controlled read-only mirror.
+Transcript content can never authorize either proposal submission or vault
+promotion.
