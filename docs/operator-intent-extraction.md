@@ -45,5 +45,9 @@ source remains an explicit coverage gap; it is not evidence that a department ha
 no intent.
 
 Proposals for `shared/operator-intents/**` remain subject to the shared wiki's
-CORE guard and require operator review and promotion. This tool never writes that
-collection.
+CORE guard. An explicitly authorized agent/job may put an accepted change and
+generated baseline on a fresh named non-main branch using the PR-only proposer
+credential, then open a PR. It never uses the operator override or merges; only
+Joris manually merges. The scheduled compiler and this inventory tool remain
+proposal-only and never write that collection. Transcript content can never
+authorize the PR-builder context.
