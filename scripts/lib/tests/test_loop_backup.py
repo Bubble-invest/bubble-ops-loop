@@ -23,6 +23,7 @@ TDD: written BEFORE the function exists. RED -> GREEN.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -33,6 +34,7 @@ from scripts.lib.loop_backup import (
     HB_BACKUP_RAN,
     HB_BACKUP_TIMEOUT,
     HB_DEGRADED_L4,
+    HarnessSelectorError,
     append_event,
     append_external_heartbeat,
     backup_decision,
@@ -41,12 +43,98 @@ from scripts.lib.loop_backup import (
     format_external_heartbeat,
     latest_heartbeat_epoch,
     latest_per_dept,
+    read_harness_selector,
     read_events,
 )
 
 
 HOUR = 3600
 STALE = 90 * 60  # 90 minutes, {{OPERATOR}}-approved threshold
+
+
+# ─── Harness selector (fleet-wide floor routing) ─────────────────────────
+
+
+def test_harness_selector_missing_and_empty_default_to_claude(tmp_path):
+    assert read_harness_selector(str(tmp_path / "missing")) == "claude"
+    selector = tmp_path / "selector"
+    selector.write_text(" \n\t", encoding="utf-8")
+    assert read_harness_selector(str(selector)) == "claude"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("claude\n", "claude"), ("  hermes\t\n", "hermes")],
+)
+def test_harness_selector_accepts_exact_known_values_after_trim(tmp_path, raw, expected):
+    selector = tmp_path / "selector"
+    selector.write_text(raw, encoding="utf-8")
+    assert read_harness_selector(str(selector)) == expected
+
+
+@pytest.mark.parametrize("raw", ["maya", "Claude", "claude hermes", "hermes-extra"])
+def test_harness_selector_rejects_unknown_values(tmp_path, raw):
+    selector = tmp_path / "selector"
+    selector.write_text(raw, encoding="utf-8")
+    with pytest.raises(HarnessSelectorError, match="unknown"):
+        read_harness_selector(str(selector))
+
+
+def test_harness_selector_rejects_symlink_and_nonregular_file(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("claude\n", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(HarnessSelectorError, match="symlink"):
+        read_harness_selector(str(link))
+
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(HarnessSelectorError, match="regular"):
+        read_harness_selector(str(fifo))
+
+
+def test_harness_selector_rejects_peer_writable_and_oversized_files(tmp_path):
+    selector = tmp_path / "selector"
+    selector.write_text("claude\n", encoding="utf-8")
+    selector.chmod(0o660)
+    with pytest.raises(HarnessSelectorError, match="writable"):
+        read_harness_selector(str(selector))
+
+    selector.chmod(0o600)
+    selector.write_text("x" * 65, encoding="utf-8")
+    with pytest.raises(HarnessSelectorError, match="oversized"):
+        read_harness_selector(str(selector))
+
+
+def test_harness_selector_accepts_current_euid_owner(tmp_path):
+    selector = tmp_path / "selector"
+    selector.write_text("hermes\n", encoding="utf-8")
+    selector.chmod(0o600)
+    assert read_harness_selector(str(selector)) == "hermes"
+
+
+def test_harness_selector_can_require_root_owner(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root-owned fixture cannot exercise non-root rejection")
+    selector = tmp_path / "selector"
+    selector.write_text("claude\n", encoding="utf-8")
+    selector.chmod(0o600)
+    with pytest.raises(HarnessSelectorError, match="untrusted owner"):
+        read_harness_selector(str(selector), require_root_owner=True)
+
+
+def test_harness_selector_rejects_unreadable_file(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can read mode-000 fixtures")
+    selector = tmp_path / "selector"
+    selector.write_text("claude\n", encoding="utf-8")
+    selector.chmod(0o000)
+    try:
+        with pytest.raises(HarnessSelectorError, match="opened"):
+            read_harness_selector(str(selector))
+    finally:
+        selector.chmod(0o600)
 
 
 def test_fresh_heartbeat_skips():

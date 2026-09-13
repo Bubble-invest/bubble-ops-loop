@@ -49,15 +49,46 @@ LOCAL_LOOP_NOW_EPOCH="$NOW" run --dept-dir "$FRESH" --slug fixture --telegram-st
 after=$(wc -l <"$STATE/inject")
 [[ "$rc" -eq 0 && "$before" = "$after" ]] && grep -q 'FRESH' "$WORK/fresh.log" && ok "fresh never injects" || bad "fresh contract"
 
-# Harness switch is resolved every run. Hermes has no reviewed consumer for
-# this inbox and must never receive a stale Claude-channel wake.
+# Harness switch is resolved every run. Hermes uses its live gateway helper
+# and must never receive a stale Claude-channel wake.
+HERMES_PY="$WORK/hermes-python"
+HERMES_HELPER="$WORK/hermes-helper.py"
+HERMES_ROOT="$WORK/hermes-root"
+HERMES_PROFILE="$WORK/hermes-profile"
+mkdir -p "$HERMES_ROOT" "$HERMES_PROFILE"
+: >"$HERMES_HELPER"
+cat >"$HERMES_PY" <<EOF_HERMES
+#!/bin/sh
+printf '%s\n' "\$@" >"$WORK/hermes-args"
+cat >"$WORK/hermes-prompt"
+: >"$WORK/hermes-called"
+exit "\${HERMES_FAIL:-0}"
+EOF_HERMES
+chmod 700 "$HERMES_PY"
 printf 'hermes' >"$SELECTOR"
 before=$(wc -l <"$STATE/inject")
-LOCAL_LOOP_NOW_EPOCH=$((NOW+2000)) run "${base[@]}" --activate-inject >"$WORK/hermes.log" 2>&1; rc=$?
-[[ "$rc" -ne 0 && "$(wc -l <"$STATE/inject")" = "$before" ]] && grep -q 'Hermes is active' "$WORK/hermes.log" && ok "Hermes selector defers without writing Claude inbox" || bad "Hermes routing"
+LOCAL_LOOP_HERMES_PY="$HERMES_PY" LOCAL_LOOP_HERMES_WAKE_HELPER="$HERMES_HELPER" LOCAL_LOOP_HERMES_ROOT="$HERMES_ROOT" LOCAL_LOOP_HERMES_PROFILE_HOME="$HERMES_PROFILE" LOCAL_LOOP_NOW_EPOCH=$((NOW+2000)) run "${base[@]}" --activate-inject >"$WORK/hermes.log" 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(wc -l <"$STATE/inject")" = "$before" && -e "$WORK/hermes-called" ]] \
+  && grep -q 'HERMES_WAKE_QUEUED_UNCONFIRMED' "$WORK/hermes.log" \
+  && grep -q '^Resume your OODA loop' "$WORK/hermes-prompt" \
+  && grep -Fxq -- '--profile-home' "$WORK/hermes-args" \
+  && grep -Fxq -- "$HERMES_PROFILE" "$WORK/hermes-args" \
+  && ok "Hermes selector calls live helper without writing Claude inbox" || bad "Hermes routing"
 printf ' \n hermes\t ' >"$SELECTOR"
-LOCAL_LOOP_NOW_EPOCH=$((NOW+3000)) run "${base[@]}" --activate-inject >"$WORK/hermes-space.log" 2>&1; rc=$?
-[[ "$rc" -ne 0 && "$(wc -l <"$STATE/inject")" = "$before" ]] && grep -q 'Hermes is active' "$WORK/hermes-space.log" && ok "whitespace Hermes selector also defers" || bad "whitespace Hermes routing"
+rm -f "$WORK/hermes-called"
+LOCAL_LOOP_HERMES_PY="$HERMES_PY" LOCAL_LOOP_HERMES_WAKE_HELPER="$HERMES_HELPER" LOCAL_LOOP_HERMES_ROOT="$HERMES_ROOT" LOCAL_LOOP_HERMES_PROFILE_HOME="$HERMES_PROFILE" LOCAL_LOOP_NOW_EPOCH=$((NOW+3000)) run "${base[@]}" --activate-inject >"$WORK/hermes-space.log" 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(wc -l <"$STATE/inject")" = "$before" && -e "$WORK/hermes-called" ]] && grep -q 'HERMES_WAKE_QUEUED_UNCONFIRMED' "$WORK/hermes-space.log" && ok "whitespace Hermes selector calls helper" || bad "whitespace Hermes routing"
+
+# Helper failure is visible/nonzero and still cannot touch Claude's inbox.
+rm -f "$WORK/hermes-called"
+HERMES_FAIL=7 LOCAL_LOOP_HERMES_PY="$HERMES_PY" LOCAL_LOOP_HERMES_WAKE_HELPER="$HERMES_HELPER" LOCAL_LOOP_HERMES_ROOT="$HERMES_ROOT" LOCAL_LOOP_HERMES_PROFILE_HOME="$HERMES_PROFILE" LOCAL_LOOP_NOW_EPOCH=$((NOW+4000)) run "${base[@]}" --activate-inject >"$WORK/hermes-fail.log" 2>&1; rc=$?
+[[ "$rc" -eq 7 && "$(wc -l <"$STATE/inject")" = "$before" ]] && grep -q 'Hermes wake helper failed (exit=7)' "$WORK/hermes-fail.log" && ok "Hermes helper failure is visible and nonzero" || bad "Hermes helper failure"
+
+# A fresh heartbeat exits before either harness path (no helper and no inject).
+rm -f "$WORK/hermes-called"
+before=$(wc -l <"$STATE/inject")
+LOCAL_LOOP_HERMES_PY="$HERMES_PY" LOCAL_LOOP_HERMES_WAKE_HELPER="$HERMES_HELPER" LOCAL_LOOP_HERMES_ROOT="$HERMES_ROOT" LOCAL_LOOP_HERMES_PROFILE_HOME="$HERMES_PROFILE" LOCAL_LOOP_NOW_EPOCH="$NOW" run --dept-dir "$FRESH" --slug fixture --telegram-state-dir "$STATE" --session-name ops-loop-fixture --harness-selector "$SELECTOR" --tmux-bin "$TMUX" --stale-sec 5400 --cooldown-sec 900 --activate-inject >"$WORK/fresh-hermes.log" 2>&1; rc=$?
+[[ "$rc" -eq 0 && ! -e "$WORK/hermes-called" && "$(wc -l <"$STATE/inject")" = "$before" ]] && grep -q 'FRESH' "$WORK/fresh-hermes.log" && ok "fresh heartbeat calls neither harness wake" || bad "fresh harness gate"
 printf 'claude\n' >"$SELECTOR"
 
 # Missing session and unsafe state/target shapes fail without appending.

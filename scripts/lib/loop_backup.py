@@ -20,6 +20,7 @@ import glob
 import json
 import os
 import re
+import stat
 from typing import List, Optional
 
 
@@ -35,6 +36,88 @@ from typing import List, Optional
 _ISO_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
 )
+
+
+class HarnessSelectorError(ValueError):
+    """A harness selector exists but cannot be trusted or interpreted."""
+
+
+def read_harness_selector(
+    path: str,
+    *,
+    max_bytes: int = 64,
+    require_root_owner: bool = False,
+) -> str:
+    """Read one trusted per-department harness selector.
+
+    A missing or whitespace-only selector preserves the fleet default
+    (``claude``).  Existing selectors must be small, regular, non-symlink
+    files owned by root (the VPS production shape) or the current effective
+    user (local/test shape), and must not be writable by group or other. When
+    ``require_root_owner`` is true, only UID 0 is accepted; isolated production
+    callers use that stricter contract so their service user cannot rewrite
+    its own harness classification.
+
+    The file is checked both before and after opening with ``O_NOFOLLOW`` so a
+    path-shape race fails closed.  This helper has no side effects and never
+    guesses when an existing selector is unsafe or unknown.
+    """
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return "claude"
+    except OSError as exc:
+        raise HarnessSelectorError(f"harness selector unavailable: {exc}") from exc
+
+    if stat.S_ISLNK(before.st_mode):
+        raise HarnessSelectorError("harness selector is a symlink")
+    if not stat.S_ISREG(before.st_mode):
+        raise HarnessSelectorError("harness selector is not a regular file")
+
+    allowed_owners = {0} if require_root_owner else {0, os.geteuid()}
+    if before.st_uid not in allowed_owners:
+        raise HarnessSelectorError("harness selector has an untrusted owner")
+    if before.st_mode & 0o022:
+        raise HarnessSelectorError("harness selector is writable by group or other")
+    if before.st_size > max_bytes:
+        raise HarnessSelectorError("harness selector is oversized")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise HarnessSelectorError(f"harness selector could not be opened: {exc}") from exc
+    try:
+        after = os.fstat(fd)
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise HarnessSelectorError("harness selector changed while opening")
+        if not stat.S_ISREG(after.st_mode):
+            raise HarnessSelectorError("harness selector changed to a non-regular file")
+        if after.st_uid not in allowed_owners:
+            raise HarnessSelectorError("harness selector has an untrusted owner")
+        if after.st_mode & 0o022:
+            raise HarnessSelectorError("harness selector is writable by group or other")
+        if after.st_size > max_bytes:
+            raise HarnessSelectorError("harness selector is oversized")
+        raw = os.read(fd, max_bytes + 1)
+    except OSError as exc:
+        raise HarnessSelectorError(f"harness selector could not be read: {exc}") from exc
+    finally:
+        os.close(fd)
+
+    if len(raw) > max_bytes:
+        raise HarnessSelectorError("harness selector is oversized")
+    try:
+        value = raw.decode("utf-8", "strict").strip()
+    except UnicodeDecodeError as exc:
+        raise HarnessSelectorError("harness selector is not valid UTF-8") from exc
+    if not value:
+        return "claude"
+    if value not in {"claude", "hermes"}:
+        raise HarnessSelectorError(f"unknown harness selector value: {value!r}")
+    return value
 
 
 def backup_decision(

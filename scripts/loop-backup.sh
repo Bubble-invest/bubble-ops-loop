@@ -126,7 +126,12 @@ case "${BUBBLE_BACKUP_PRIMARY_WAKE_ONLY:-0}" in
     1|true|yes|on) PRIMARY_WAKE_ONLY=1 ;;
 esac
 [[ "$ISOLATED_FLOOR" == "1" ]] && PRIMARY_WAKE_ONLY=1
-HERMES_DEPTS="${BUBBLE_BACKUP_HERMES_DEPTS:-maya}"
+# The selector is resolved afresh for every stale floor fire. Missing/empty is
+# the fleet default (Claude); an existing unsafe/unknown selector fails closed.
+HARNESS_SELECTOR_DIR="${BUBBLE_BACKUP_HARNESS_SELECTOR_DIR:-/etc/bubble-harness}"
+# An isolated production service must never let its unprivileged environment
+# redirect selector trust away from the root-owned fleet control directory.
+[[ "$ISOLATED_FLOOR" == "1" ]] && HARNESS_SELECTOR_DIR=/etc/bubble-harness
 export BUBBLE_OPS_LOOP_ROOT="$REPO_ROOT"
 PY="${REPO_ROOT}/venv/bin/python"
 
@@ -951,6 +956,28 @@ print(paris_today(now))
 PYEOF
 }
 
+# resolve_floor_harness <slug>: print claude|hermes after a security-checked
+# read of /etc/bubble-harness/<slug>. The Python helper permits the root-owned
+# production file and current-euid local/test fixtures, rejects unsafe file
+# shapes/modes/owners and unknown values, and defaults only a missing/empty
+# selector to Claude. Callers must treat any non-zero result as a visible defer.
+resolve_floor_harness() {
+    local slug="$1"
+    local selector="${HARNESS_SELECTOR_DIR%/}/${slug}"
+    "$PY" - "$REPO_ROOT" "$selector" "$ISOLATED_FLOOR" <<'PYEOF'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from scripts.lib.loop_backup import HarnessSelectorError, read_harness_selector
+
+try:
+    print(read_harness_selector(sys.argv[2], require_root_owner=sys.argv[3] == "1"))
+except HarnessSelectorError as exc:
+    print(f"harness selector rejected: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+}
+
 inject_live_loop() {
     local slug="$1"
     local svc="bubble-agent@${slug}.service"
@@ -1001,8 +1028,10 @@ inject_live_loop() {
 
 # Hermes gateways do not run the Claude Telegram plugin and therefore never
 # have a Bun child or consume ~/.claude/channels/.../inject.  Use Hermes's own
-# live control socket + persisted /loop API: the gateway's idle watcher turns
-# this one-shot row into a synthetic inbound on its existing Telegram session.
+# live control socket + persisted /loop API: the socket only proves that the
+# expected profile is live. The helper re-arms a validated active loop or
+# creates an exact-route one-shot rescue; the gateway's idle watcher later
+# turns that persisted state into an inbound on its existing Telegram session.
 # The helper only mutates scheduler state; it never starts another model.
 wake_hermes_loop() {
     local slug="$1"
@@ -1024,7 +1053,7 @@ wake_hermes_loop() {
     fi
     [[ -x "$hermes_py" && -f "$wake_helper" ]] || return 1
 
-    log "$slug: waking live Hermes gateway through one-shot /loop control"
+    log "$slug: arming the live Hermes session through its persisted /loop scheduler"
     printf '%s' "$GENERIC_TICK_PROMPT" | "$hermes_py" "$wake_helper" \
         --profile-home "$profile_home" --hermes-root "$hermes_root" || return 1
 
@@ -1462,10 +1491,22 @@ PYEOF2
         fi
     fi
 
+    # Resolve the runtime harness on every stale floor fire. The selector is
+    # operational truth; department names are never harness classifiers.
+    # Existing unsafe/unreadable/unknown selector state is a visible fail-closed
+    # defer and can never fall through to either injection path or headless.
+    if ! _selected_harness="$(resolve_floor_harness "$slug")"; then
+        log "$slug: DEFERRED — harness selector unavailable or unsafe; no wake attempted"
+        emit_event "$slug" "deferred" "harness selector unavailable or unsafe; no wake attempted" "$age"
+        OVERALL=1
+        continue
+    fi
+    log "$slug: floor harness selected: $_selected_harness"
+
     if [[ "$DRY_RUN" == "1" ]]; then
         # Record the decision even in dry-run so a smoke test of the schedule
         # shows up in the cockpit, without spending a real tick.
-        emit_event "$slug" "skip" "DRY_RUN — would run a backup tick ($reason)" "$age"
+        emit_event "$slug" "skip" "DRY_RUN — would wake ${_selected_harness} primary ($reason)" "$age"
         continue
     fi
 
@@ -1477,39 +1518,32 @@ PYEOF2
     # dispatch) will pick up every pending mission itself once woken, so we must
     # NOT also spawn N headless mission ticks on top of it.
     _primary_wake_only="$PRIMARY_WAKE_ONLY"
-    _legacy_hermes=0
     for _harness_slug in ${BUBBLE_BACKUP_INJECT_ONLY_DEPTS:-}; do
         if [[ "$_harness_slug" == "$slug" ]]; then
             _primary_wake_only=1
-            _legacy_hermes=1
         fi
     done
-    _is_hermes="$_legacy_hermes"
-    for _hermes_slug in $HERMES_DEPTS; do
-        [[ "$_hermes_slug" == "$slug" ]] && _is_hermes=1
-    done
-    if [[ "$_primary_wake_only" == "1" ]]; then
-        _wake_ok=1
-        if [[ "${DEGRADED_L4:-0}" != "1" ]]; then
-            if [[ "$_is_hermes" == "1" ]]; then
-                wake_hermes_loop "$slug" && _wake_ok=0
-            else
-                inject_live_loop "$slug" && _wake_ok=0
-            fi
-        fi
-        if [[ "$_wake_ok" == "0" ]]; then
-            emit_event "$slug" "run" "existing primary runtime woken — $reason" "$age" 0
-        else
-            _wake_label="primary runtime"
-            [[ "$_is_hermes" == "1" ]] && _wake_label="Hermes gateway"
-            log "$slug: DEFERRED — ${_wake_label} wake unavailable; headless fallback disabled"
-            emit_event "$slug" "deferred" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
-            OVERALL=1
-        fi
+    _wake_ok=1
+    _wake_label="Claude session"
+    [[ "$_selected_harness" == "hermes" ]] && _wake_label="Hermes gateway"
+    if [[ "${DEGRADED_L4:-0}" != "1" ]]; then
+        case "$_selected_harness" in
+            claude) inject_live_loop "$slug" && _wake_ok=0 ;;
+            hermes) wake_hermes_loop "$slug" && _wake_ok=0 ;;
+        esac
+    fi
+    if [[ "$_wake_ok" == "0" ]]; then
+        emit_event "$slug" "run" "existing ${_selected_harness} primary woken — $reason" "$age" 0
         continue
     fi
-    if [[ "${DEGRADED_L4:-0}" != "1" ]] && inject_live_loop "$slug"; then
-        emit_event "$slug" "run" "live-loop woken via inject — $reason" "$age" 0
+
+    # Isolated production is always primary-wake-only. The legacy compatibility
+    # list only opts old manual callers into the same behavior; it never selects
+    # Hermes. A Hermes selector also cannot sensibly fall through to `claude -p`.
+    if [[ "$_primary_wake_only" == "1" || "$_selected_harness" == "hermes" ]]; then
+        log "$slug: DEFERRED — ${_wake_label} wake unavailable; headless fallback disabled"
+        emit_event "$slug" "deferred" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
+        OVERALL=1
         continue
     fi
 

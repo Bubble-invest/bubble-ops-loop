@@ -22,7 +22,7 @@ def test_each_layer_has_per_department_service_and_timer_contract():
         assert "BUBBLE_DISPATCH_DIRECTIVES=remote" in service
         assert "BUBBLE_AUTORESTART=0" in service
         assert "BUBBLE_BACKUP_PRIMARY_WAKE_ONLY=1" in service
-        assert "BUBBLE_BACKUP_HERMES_DEPTS=maya" in service
+        assert "BUBBLE_BACKUP_HERMES_DEPTS" not in service
         assert f"--layer {layer} --dept %i" in service
         assert "User=root" not in service
         assert "sudo" not in service
@@ -42,7 +42,15 @@ def test_runner_never_shell_loads_dotenv_or_hardcodes_shared_identity():
     assert "dispatch: delegated to Tony" in RUNNER
     assert "--remote-delivery" in RUNNER
     assert "wake_hermes_gateway.py" in RUNNER
-    assert "one-shot /loop control" in RUNNER
+    assert "persisted /loop scheduler" in RUNNER
+    assert "BUBBLE_BACKUP_HARNESS_SELECTOR_DIR" in RUNNER
+    assert "read_harness_selector" in RUNNER
+    selector_override = 'HARNESS_SELECTOR_DIR="${BUBBLE_BACKUP_HARNESS_SELECTOR_DIR:-/etc/bubble-harness}"'
+    isolated_force = '[[ "$ISOLATED_FLOOR" == "1" ]] && HARNESS_SELECTOR_DIR=/etc/bubble-harness'
+    assert selector_override in RUNNER and isolated_force in RUNNER
+    assert RUNNER.index(isolated_force) > RUNNER.index(selector_override)
+    assert 'require_root_owner=sys.argv[3] == "1"' in RUNNER
+    assert "BUBBLE_BACKUP_HERMES_DEPTS" not in RUNNER
     assert '[[ "$ISOLATED_FLOOR" == "1" ]] && PRIMARY_WAKE_ONLY=1' in RUNNER
     assert "headless fallback disabled" in RUNNER
     assert "from scripts.lib.dispatch_helpers import paris_today" in RUNNER

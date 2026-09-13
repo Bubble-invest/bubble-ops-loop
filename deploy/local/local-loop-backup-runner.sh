@@ -73,42 +73,56 @@ if [[ "$ACTIVATE_INJECT" != 1 ]]; then
     log "DEFERRED: injection not activated; no model/session was launched"
     exit 1
 fi
-if [[ -L "$HARNESS_SELECTOR" ]]; then
-    log "ERROR: harness selector is a symlink; injection not written"
-    exit 1
-fi
-HARNESS="claude"
-if [[ -e "$HARNESS_SELECTOR" && ! -f "$HARNESS_SELECTOR" ]]; then
-    log "ERROR: harness selector is not a regular file; injection not written"
-    exit 1
-fi
-if [[ -f "$HARNESS_SELECTOR" ]]; then
-    if [[ ! -r "$HARNESS_SELECTOR" ]]; then
-        log "ERROR: harness selector is unreadable; injection not written"
-        exit 1
-    fi
-    HARNESS="$(tr -d '[:space:]' <"$HARNESS_SELECTOR" 2>/dev/null)" || {
-        log "ERROR: harness selector read failed; injection not written"
-        exit 1
-    }
-fi
-case "$HARNESS" in
-    ""|claude) ;;
-    hermes)
-        log "DEFERRED: Hermes is active and has no reviewed channel-inject consumer; injection not written"
-        exit 1
-        ;;
-    *)
-        log "ERROR: unsupported harness selector; injection not written"
-        exit 1
-        ;;
-esac
 if [[ ! -x "$TMUX_BIN" ]] || ! "$TMUX_BIN" has-session -t "$SESSION_NAME" 2>/dev/null; then
-    log "ERROR: existing session unavailable; injection not written"
+    log "ERROR: existing session unavailable; no wake queued"
     exit 1
 fi
 
 WAKE_MESSAGE='Resume your OODA loop (self-paced). Run one normal full tick now: STEP A safe pull, STEP B read queues, STEP C apply the existing layer/mission/approval gates, STEP D dispatch only the selected work, STEP E commit only allowed runtime paths, STEP F notify, then arm the next normal wake. Preserve every human approval gate.'
+
+# Use the same security-checked selector reader as the VPS floor. Missing/empty
+# remains the Claude default; any existing unsafe/unknown selector fails closed.
+PY_BIN="$(_lll_py)"
+if [[ -z "$PY_BIN" ]]; then
+    log "ERROR: no Python available to validate harness selector; no wake queued"
+    exit 1
+fi
+HARNESS="$(
+    cd "$LLL_REPO_ROOT" 2>/dev/null && "$PY_BIN" - "$HARNESS_SELECTOR" <<'PYEOF'
+import sys
+from scripts.lib.loop_backup import HarnessSelectorError, read_harness_selector
+
+try:
+    print(read_harness_selector(sys.argv[1]))
+except HarnessSelectorError as exc:
+    print(f"harness selector rejected: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+)" || {
+    log "ERROR: harness selector unavailable or unsafe; no wake queued"
+    exit 1
+}
+
+if [[ "$HARNESS" == "hermes" ]]; then
+    HERMES_ROOT="${LOCAL_LOOP_HERMES_ROOT:-${HOME}/.hermes/hermes-agent}"
+    HERMES_PY="${LOCAL_LOOP_HERMES_PY:-${HERMES_ROOT}/venv/bin/python}"
+    HERMES_WAKE_HELPER="${LOCAL_LOOP_HERMES_WAKE_HELPER:-${LLL_REPO_ROOT}/scripts/wake_hermes_gateway.py}"
+    HERMES_PROFILE_HOME="${LOCAL_LOOP_HERMES_PROFILE_HOME:-${HOME}/.hermes/profiles/${SLUG}}"
+    if [[ ! -x "$HERMES_PY" || ! -f "$HERMES_WAKE_HELPER" ]]; then
+        log "ERROR: Hermes wake helper/runtime unavailable; no wake queued"
+        exit 1
+    fi
+    if printf '%s\n' "$WAKE_MESSAGE" | "$HERMES_PY" "$HERMES_WAKE_HELPER" \
+        --profile-home "$HERMES_PROFILE_HOME" --hermes-root "$HERMES_ROOT"; then
+        log "HERMES_WAKE_QUEUED_UNCONFIRMED: live gateway accepted one loop wake; execution and heartbeat advancement are not yet confirmed"
+        exit 0
+    else
+        helper_rc=$?
+        log "ERROR: Hermes wake helper failed (exit=${helper_rc}); no wake confirmed"
+        exit "$helper_rc"
+    fi
+fi
+
 RESULT="$(inject_loop_wake "$TELEGRAM_STATE_DIR" "$SLUG" "$NOW_EPOCH" "$COOLDOWN_SEC" "$WAKE_MESSAGE")" || {
     log "ERROR: secure existing-session injection failed"
     exit 1

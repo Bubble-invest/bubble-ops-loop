@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Wake one live Hermes gateway session through its persisted /loop API.
+"""Wake one live Hermes session through its persisted /loop scheduler.
 
-The gateway control socket proves the profile is live.  A one-shot LoopManager
-row is then consumed by the gateway's own idle watcher and injected through its
-already-connected platform adapter.  This process never starts an agent/model.
+The gateway control socket only proves that the exact profile is live. A
+validated active LoopManager row is re-armed, or a one-shot rescue row is
+created for the exact Telegram session route. The gateway's idle watcher later
+consumes that persisted state through its normal platform adapter. This process
+never starts an agent/model and queue acceptance is not execution proof.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import stat
 import sys
-from typing import Any, Callable
+import time
+from typing import Any, Callable, Optional
 
 import yaml
 
@@ -22,6 +26,69 @@ def _profile_home_chat(profile_home: Path) -> str:
     cfg = yaml.safe_load((profile_home / "config.yaml").read_text(encoding="utf-8"))
     telegram = ((cfg or {}).get("platforms") or {}).get("telegram") or {}
     return str(telegram.get("home_chat_id") or telegram.get("home") or "").strip()
+
+
+def _session_route(row: dict[str, Any]) -> dict[str, str]:
+    """Build the exact gateway route for the selected Telegram session."""
+    route = {
+        "platform": "telegram",
+        "chat_id": str(row.get("chat_id") or ""),
+        "chat_type": str(row.get("chat_type") or ""),
+        "thread_id": str(row.get("thread_id") or ""),
+        "user_id": str(row.get("user_id") or ""),
+        "user_name": str(row.get("user_name") or ""),
+    }
+    return {key: value for key, value in route.items() if value}
+
+
+def _normalized_route(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): str(item)
+        for key, item in value.items()
+        if item is not None and str(item)
+    }
+
+
+def _verify_persisted_wake(
+    manager: Any,
+    *,
+    route: dict[str, str],
+    prompt: str,
+    require_one_shot: bool,
+    previous_next_due_at: Optional[float] = None,
+) -> bool:
+    """Re-read persisted loop state and prove the intended wake is armed.
+
+    LoopManager's save methods deliberately swallow persistence errors, so a
+    successful ``set``/``resume`` return is not sufficient. ``refresh`` is the
+    cross-process DB read and must show the exact route/prompt plus a near-term
+    due time before this helper can return zero.
+    """
+    try:
+        manager.refresh()
+        state = manager.state
+        due = float(getattr(state, "next_due_at", 0.0) or 0.0)
+    except Exception:
+        return False
+    if state is None or getattr(state, "status", None) != "active":
+        return False
+    if bool(getattr(state, "awaiting_response", False)):
+        return False
+    if _normalized_route(getattr(state, "route", None)) != route:
+        return False
+    if str(getattr(state, "prompt", "")) != prompt:
+        return False
+    if require_one_shot and int(getattr(state, "times", 0) or 0) != 1:
+        return False
+    if not math.isfinite(due) or due <= 0 or due > time.time() + 10.0:
+        return False
+    if previous_next_due_at is not None and due == previous_next_due_at:
+        # resume() always re-arms relative to now. Equality means its in-memory
+        # mutation was lost (the swallowed-write failure this readback catches).
+        return False
+    return True
 
 
 def wake_gateway_loop(
@@ -98,32 +165,55 @@ def wake_gateway_loop(
         return 3
 
     row = matches[0]
+    route = _session_route(row)
     manager = loop_factory(str(row["id"]))
     state = manager.state
-    if state is not None and state.status == "paused":
+    if state is not None and getattr(state, "status", None) == "paused":
         print("Hermes loop is operator-paused", file=sys.stderr)
         return 4
-    if state is not None and state.awaiting_response:
+    if state is not None and bool(getattr(state, "awaiting_response", False)):
         print("Hermes loop wake already running", file=sys.stderr)
         return 4
-    if state is not None and state.status == "active":
-        if manager.resume() is None:
+
+    existing_route = _normalized_route(getattr(state, "route", None))
+    existing_prompt = str(getattr(state, "prompt", ""))
+    if (
+        state is not None
+        and getattr(state, "status", None) == "active"
+        and existing_route == route
+        and existing_prompt.strip()
+    ):
+        try:
+            previous_due = float(getattr(state, "next_due_at", 0.0) or 0.0)
+            resumed = manager.resume()
+        except Exception:
+            resumed = None
+        if resumed is None or not _verify_persisted_wake(
+            manager,
+            route=route,
+            prompt=existing_prompt,
+            require_one_shot=False,
+            previous_next_due_at=previous_due,
+        ):
             print("Hermes loop re-arm failed", file=sys.stderr)
             return 4
-        print("Hermes gateway loop re-armed")
+        print("Hermes active loop validated and re-armed")
         return 0
 
-    route = {
-        "platform": "telegram",
-        "chat_id": str(row.get("chat_id") or ""),
-        "chat_type": str(row.get("chat_type") or ""),
-        "thread_id": str(row.get("thread_id") or ""),
-        "user_id": str(row.get("user_id") or ""),
-        "user_name": str(row.get("user_name") or ""),
-    }
-    route = {key: value for key, value in route.items() if value}
-    manager.set(prompt.strip(), times=1, route=route)
-    print("Hermes gateway one-shot loop armed")
+    rescue_prompt = prompt.strip()
+    try:
+        created = manager.set(rescue_prompt, times=1, route=route)
+    except Exception:
+        created = None
+    if created is None or not _verify_persisted_wake(
+        manager,
+        route=route,
+        prompt=rescue_prompt,
+        require_one_shot=True,
+    ):
+        print("Hermes one-shot rescue persistence failed", file=sys.stderr)
+        return 4
+    print("Hermes one-shot rescue validated and armed")
     return 0
 
 
