@@ -52,6 +52,7 @@ class DueMissionConfigError(ValueError):
 
 _DUE_CADENCES = {"continuous", "daily", "weekly", "monthly"}
 _MISSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
 # A recurring mission is only dispatchable/claimable when its per-mission
 # ``status`` is EXACTLY this. Anything else — ``planned``, some other value, or
 # a missing/non-string status — is treated as NOT live and skipped fail-closed
@@ -59,6 +60,40 @@ _MISSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 # cannot confirm. This is a pure FILTER: flipping a mission's status back to
 # ``live`` in dept.yaml makes it dispatch again with no other change.
 _MISSION_LIVE_STATUS = "live"
+
+# #1316: fraction of a claim's own lease window after which an uncompleted
+# claim is surfaced as "stale" rather than silently waited out. A claim IS
+# doing its documented job up to this point (preventing duplicate delivery
+# while work may still be in flight); past it, a live mission silently not
+# completing looks identical to one that is still running, and #1316's
+# confirmed incident (6 of 8 missions held ~4h into a lease with no
+# completion, invisible until an agent happened to read its own watermark
+# file) is exactly that ambiguity going unnoticed. 0.5 is a deliberately
+# simple, non-configurable threshold — this is an observability signal, not
+# a dispatch decision, so it never affects whether/when a mission re-fires.
+_STALE_CLAIM_FRACTION = 0.5
+
+
+def _claim_age_fraction(pending: dict, now_utc: _dt.datetime) -> "float | None":
+    """Fraction of `pending`'s own lease window elapsed since it was claimed,
+    or None if it cannot be computed. Never raises — this is a pure
+    observability signal computed from an already-validated pending lease
+    and must not be able to affect the (already-decided) dispatch outcome.
+    """
+    claimed_at = pending.get("claimed_at")
+    expires_at = pending.get("expires_at_epoch")
+    if not isinstance(claimed_at, str) or not isinstance(expires_at, int):
+        return None
+    try:
+        claimed_dt = _dt.datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    claimed_epoch = claimed_dt.timestamp()
+    total = expires_at - claimed_epoch
+    if total <= 0:
+        return None
+    elapsed = now_utc.timestamp() - claimed_epoch
+    return elapsed / total
 
 
 def due_period(cadence: str, now_utc: _dt.datetime, timezone_name: str = "UTC") -> str:
@@ -106,6 +141,7 @@ def due_mission_plan(
     watermarks: dict,
     now_utc: _dt.datetime,
     skipped: Optional[List[dict]] = None,
+    stale: Optional[List[dict]] = None,
 ) -> Optional[List[dict]]:
     """Validate and return the scoped missions due in the current period.
 
@@ -126,6 +162,18 @@ def due_mission_plan(
     appended as ``{"id", "status"}`` so the caller can emit one visible notice —
     "we have scheduled work that isn't live yet" must stay loud, and a live
     mission with a mistyped/missing status surfaces here rather than vanishing.
+
+    Stale-claim detector (#1316): a LIVE mission's own unexpired pending lease
+    that has been held for more than ``_STALE_CLAIM_FRACTION`` of its own
+    lease window, with no completion recorded, is surfaced via ``stale``
+    (each entry: ``{"id", "period", "claimed_at", "expires_at_epoch",
+    "age_fraction"}``) rather than silently waited out — the confirmed
+    incident where 6 of 8 missions sat PENDING for ~4h with no delivery and
+    nothing reported it. This is a PURE observability addition: it never
+    changes ``result`` (the mission is still excluded from the plan exactly
+    as before — the lease is doing its job of preventing duplicate delivery
+    while work MAY be in flight) and never raises (a malformed/missing
+    ``claimed_at`` just means staleness can't be computed for that entry).
     """
     if not isinstance(manifest, dict):
         raise DueMissionConfigError("dept.yaml root must be a mapping")
@@ -229,6 +277,16 @@ def due_mission_plan(
                         or not isinstance(expires_at, int):
                     raise DueMissionConfigError(f"{mission_id}: pending lease has an invalid shape")
                 if pending_period == period and expires_at > int(now_utc.timestamp()):
+                    if stale is not None:
+                        fraction = _claim_age_fraction(pending, now_utc)
+                        if fraction is not None and fraction >= _STALE_CLAIM_FRACTION:
+                            stale.append({
+                                "id": mission_id,
+                                "period": pending_period,
+                                "claimed_at": pending.get("claimed_at"),
+                                "expires_at_epoch": expires_at,
+                                "age_fraction": round(fraction, 3),
+                            })
                     continue
         result.append(
             {
@@ -353,12 +411,47 @@ def _open_due_lock(path: Path) -> int:
     return lock_fd
 
 
+def _purge_inert_leases(state: dict, skipped: List[dict]) -> bool:
+    """Remove any pending lease still held against a now-non-live mission.
+
+    #1316 (Rick's own follow-up observation): once #1317 made a non-live
+    mission's ``status`` filter run BEFORE the pending-lease check, a lease
+    claimed while the mission was still ``live`` and never released stops
+    being touched by ANYTHING — #1317's filter skips the mission before the
+    lease-release logic ever runs, so it can neither complete (nothing
+    dispatches it) nor expire-and-clear itself in any way that's visible.
+    It just sits in the watermark file as inert cruft forever. This purges
+    it opportunistically on every claim tick: a mission ``due_mission_plan``
+    just reported as skipped (non-live) has no legitimate reason to hold a
+    lease, so any lease found for it is stale by construction and removed.
+
+    Pure hygiene, no functional effect on dispatch (the #1317 filter already
+    makes the mission's OWN lease irrelevant to whether it fires) — this
+    only stops the watermark file from accumulating leases that can never
+    self-clear. Returns True iff `state` was mutated (caller uses this to
+    decide whether a write is needed even when no new claim was made).
+    """
+    changed = False
+    for item in skipped:
+        mission_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(mission_id, str):
+            continue
+        entry = state.get("missions", {}).get(mission_id)
+        if isinstance(entry, dict) and isinstance(entry.get("pending"), dict):
+            del entry["pending"]
+            if not entry:
+                del state["missions"][mission_id]
+            changed = True
+    return changed
+
+
 def claim_due_missions(
     path: Path,
     manifest: dict,
     now_utc: _dt.datetime,
     lease_seconds: int,
     skipped: Optional[List[dict]] = None,
+    stale: Optional[List[dict]] = None,
 ) -> tuple:
     """Atomically claim currently due periodic mission-periods.
 
@@ -368,8 +461,15 @@ def claim_due_missions(
 
     Claiming goes through ``due_mission_plan``, so the #1317 status filter
     applies identically to the claim path: a non-live mission is never in the
-    plan here and therefore never gets a pending lease. ``skipped`` is passed
-    straight through so a claim-path caller can emit the same visible notice.
+    plan here and therefore never gets a pending lease. ``skipped`` and
+    ``stale`` are passed straight through so a claim-path caller can emit the
+    same visible notices as the plan path.
+
+    #1316: any mission `due_mission_plan` reports as skipped (non-live) also
+    has any pending lease it might still be holding purged here (see
+    `_purge_inert_leases`) — this is the one write-capable call site in the
+    due-dispatch pipeline, so it is the natural place to clear cruft a
+    read-only `plan` cannot.
     """
     if not isinstance(lease_seconds, int) or not 900 <= lease_seconds <= 86400:
         raise DueMissionConfigError("pending_lease_seconds must be between 900 and 86400")
@@ -378,9 +478,13 @@ def claim_due_missions(
     lock_fd = _open_due_lock(path)
     try:
         state = read_due_watermarks(path)
-        plan = due_mission_plan(manifest, state, now_utc, skipped=skipped)
+        local_skipped: List[dict] = []
+        plan = due_mission_plan(manifest, state, now_utc, skipped=local_skipped, stale=stale)
         if plan is None:
             raise DueMissionConfigError("due dispatcher is not configured")
+        if skipped is not None:
+            skipped.extend(local_skipped)
+        purged = _purge_inert_leases(state, local_skipped)
         claims: Dict[str, str] = {}
         for item in plan:
             if item["cadence"] == "continuous":
@@ -394,7 +498,7 @@ def claim_due_missions(
                 "expires_at_epoch": int(now_utc.timestamp()) + lease_seconds,
             }
             claims[item["id"]] = claim_id
-        if claims:
+        if claims or purged:
             _write_due_state_unlocked(path, state)
         return plan, claims
     finally:

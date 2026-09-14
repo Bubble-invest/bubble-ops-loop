@@ -721,6 +721,43 @@ def layer_output_present(layer_dir: Path) -> bool:
     return False
 
 
+# #1235 (independent-reviewer finding, pre-merge — CRITICAL inverted-failure
+# catch): known bookkeeping entries dispatch itself writes into a mission's
+# OWN `outputs/<today>/missions/<id>/` directory at DECISION/materialize
+# time, which must NEVER count as "real output" when `_mission_output_
+# present` checks that directory for #1235's output-evidence gate.
+#
+# `dispatched-items/` (`_record_dispatched_trigger_ids`) is the event-trigger
+# consumption ledger — written UNCONDITIONALLY by the materializer for any
+# event-cadence mission the moment a pending trigger is decided, before any
+# subagent has run (let alone produced a deliverable). Treating its mere
+# presence as "output" would let a died-mid-dispatch event mission (trigger
+# consumed + `.last-materialized` stamped, subagent then died before writing
+# `.last-run` or any real deliverable) be wrongly read as fired — exactly the
+# "worse than the bug" inverted failure this whole gate exists to prevent.
+_MISSION_DIR_BOOKKEEPING_NAMES = frozenset({"dispatched-items"})
+
+
+def _mission_output_present(mission_dir: Path) -> bool:
+    """Like `layer_output_present`, but for a mission's OWN
+    `outputs/<today>/missions/<id>/` directory: additionally excludes
+    `_MISSION_DIR_BOOKKEEPING_NAMES` (dispatch's own bookkeeping, not a real
+    deliverable) on top of the dotfile exclusion `layer_output_present`
+    already applies. See that constant's docstring for why this is required
+    — the shared layer directory has no equivalent bookkeeping subdir, so
+    `layer_output_present` itself is unchanged and still used as-is there.
+    """
+    if not mission_dir.is_dir():
+        return False
+    for entry in mission_dir.iterdir():
+        if entry.name.startswith("."):
+            continue
+        if entry.name in _MISSION_DIR_BOOKKEEPING_NAMES:
+            continue
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # .last-mgmt-scan file I/O  (issue #176 — mgmt-note heartbeat coverage)
 # ---------------------------------------------------------------------------
@@ -2394,9 +2431,17 @@ def _any_mission_fired_today_for_layer(
     list) and starving the mission before `_due_missions_for_layer` was ever
     reached. Gated the same way: only for L1/L4 (`_LAYERS_WITH_OUTPUT_EVIDENCE`),
     only when `today_dir` corroborates real STEP-3 output; L2/L3 unaffected.
+
+    #1235: the output-evidence check is applied PER CANDIDATE MISSION (passing
+    its own `mid` to `_layer_output_evidence_ok`), not once for the whole
+    layer before even knowing which mission's marker is being trusted. A
+    single early `_layer_output_evidence_ok(today_dir, layer)` call (no
+    mission_id) would wrongly return False — masking a genuinely fired
+    dedicated-prompt mission whose real output lives in its OWN
+    `outputs/<today>/missions/<id>/` dir rather than the shared layer dir —
+    the exact same bug #1235 fixed in `_mission_last_fired`, reproduced here
+    in this function's independent "did ANY mission fire" fallback.
     """
-    if not _layer_output_evidence_ok(str(today_dir), layer):
-        return False
     dept_yaml = Path(repo_dir) / "dept.yaml"
     if not dept_yaml.is_file():
         return False
@@ -2437,6 +2482,11 @@ def _any_mission_fired_today_for_layer(
         # markers.  A ledger completion is real even when a new ctx is built
         # within the same second (#1117 root cause).
         if committed is None and now_utc is not None and stamped >= now_utc:
+            continue
+        # #1080/#1235: a marker alone is not proof of real output for L1/L4 —
+        # require it here too, checked per-mission (see docstring above) so a
+        # dedicated-prompt mission's own output dir counts as evidence.
+        if not _layer_output_evidence_ok(str(today_dir), layer, mid):
             continue
         return True
     return False
@@ -2955,10 +3005,11 @@ def _mission_input_ready(ctx: "dict[str, Any]", mission: dict) -> bool:
     return _queue_has_items(queue_path, drainable_kinds=drainable, today=ctx.get("today"))
 
 
-def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int) -> bool:
+def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int,
+                               mission_id: "str | None" = None) -> bool:
     """True unless `layer` is confirmed (`_LAYERS_WITH_OUTPUT_EVIDENCE`, L1/L4)
-    to write its real STEP-3 output into `outputs/<today>/<layer>/`, AND that
-    output is missing.
+    to write its real STEP-3 output somewhere this check can see, AND that
+    output is missing everywhere it could plausibly be.
 
     Card #1080 (dispatch output-truth): a `.last-run` marker — per-mission OR
     layer-level — only ever proves a DISPATCH DECISION was made or a session
@@ -2970,11 +3021,36 @@ def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int) -> bool:
     (the layer-marker fallback) apply before trusting either marker as "fired"
     — so the two call sites can never diverge on what "fired" means.
 
+    #1235 (confirmed live, Ben's dept, 2026-09-11): `mission_id` is optional
+    because the SHARED layer directory (`outputs/<today>/<N>/`) is only where
+    a LEGACY-SHIM mission's real output lands — a DEDICATED-PROMPT mission
+    (one with its own `missions/<id>/PROMPT.md`, e.g. `weekly_review`) writes
+    its real deliverables into its OWN `outputs/<today>/missions/<id>/` dir
+    instead (confirmed live: `weekly_kpi_review.md`/`.yaml` land there, never
+    in `outputs/<today>/4/`). Checking ONLY the shared layer dir made this
+    gate permanently fail-closed for such a mission: it would genuinely
+    complete (marker + real output both present, just in its OWN dir) and
+    still read as "not fired" on a later tick — the exact incident, where
+    `weekly_review` re-listed as due at 19:02Z despite completing at 15:02Z.
+    Checking the per-mission dir TOO is safe: it can only ADD evidence a
+    caller would otherwise miss (a shim mission never populates
+    `missions/<id>/` at all, so this is a pure no-op for that case), never
+    remove the pre-existing "shared dir empty -> died mid-dispatch" detection
+    #1080 added for shim missions. The per-mission dir is checked via
+    `_mission_output_present`, NOT the plain `layer_output_present` the
+    shared dir uses — a mission's own dir can hold dispatch's OWN bookkeeping
+    (`_MISSION_DIR_BOOKKEEPING_NAMES`, e.g. `dispatched-items/`) that must
+    never itself count as evidence of a real deliverable (independent-review
+    catch, pre-merge: this bookkeeping is written unconditionally at decision
+    time for event-cadence missions, so naively trusting its presence would
+    let a died-mid-dispatch event mission be wrongly read as fired).
+
     L2/L3 are deliberately excluded: their real output lives in the vault / a
-    `trades`|`decisions` DB row, never in `outputs/<today>/{2,3}/` even on a
-    fully healthy run (see `layer_output_present`'s docstring) — gating them
-    here would falsely force a needless re-run of a genuinely completed
-    mission every tick, trading a real outage for a manufactured one.
+    `trades`|`decisions` DB row, never in `outputs/<today>/{2,3}/` (or a
+    mission dir under it) even on a fully healthy run (see
+    `layer_output_present`'s docstring) — gating them here would falsely
+    force a needless re-run of a genuinely completed mission every tick,
+    trading a real outage for a manufactured one.
 
     Fail-open (True) when `today_dir_str` is absent — preserves pre-existing
     behaviour for a bare/partial ctx (e.g. a caller/test that never populated
@@ -2985,7 +3061,12 @@ def _layer_output_evidence_ok(today_dir_str: "str | None", layer: int) -> bool:
         return True
     if not today_dir_str:
         return True
-    return layer_output_present(Path(today_dir_str) / str(layer))
+    today_dir = Path(today_dir_str)
+    if layer_output_present(today_dir / str(layer)):
+        return True
+    if mission_id and _mission_output_present(today_dir / "missions" / mission_id):
+        return True
+    return False
 
 
 def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
@@ -3067,10 +3148,11 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     if committed is None and now_utc is not None and marker == now_utc:
         return None
 
-    # #1080: a genuine prior-tick marker still isn't "fired" for L1/L4 unless
-    # the mission's layer actually produced real output today — see
+    # #1080/#1235: a genuine prior-tick marker still isn't "fired" for L1/L4
+    # unless the mission's layer (or, for a dedicated-prompt mission, its OWN
+    # missions/<id>/ dir — #1235) actually produced real output today — see
     # _layer_output_evidence_ok's docstring. L2/L3 pass through unchanged.
-    if not _layer_output_evidence_ok(today_dir_str, int(mission.get("layer", 0))):
+    if not _layer_output_evidence_ok(today_dir_str, int(mission.get("layer", 0)), mid):
         return None
 
     return marker

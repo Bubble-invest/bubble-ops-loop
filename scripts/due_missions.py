@@ -11,13 +11,42 @@ import shlex
 import sys
 from pathlib import Path
 
-import yaml
+# #1330 (fail-LOUD): bare `python3` on a host with more than one interpreter
+# on PATH can resolve to one without pyyaml, crashing this module at IMPORT
+# time with a bare `ModuleNotFoundError` traceback — the exact confirmed
+# incident (2026-09-14: `complete` silently failed to run at all, the mission
+# looked identical to one that never fired, #1235/#1316's own failure class).
+# Deferring the import lets `main()` turn that into ONE unambiguous,
+# actionable stderr line (naming the interpreter actually in use) instead of
+# a traceback that can be missed or truncated — see `_require_yaml` below.
+# This does NOT fix interpreter selection (that is #1330's own "pin a known-
+# good interpreter" remedy, an infra/deploy change out of this module's
+# scope) — it only makes the failure impossible to mistake for success.
+try:
+    import yaml
+    _YAML_IMPORT_ERROR: "ImportError | None" = None
+except ImportError as _exc:  # pragma: no cover - depends on the host's interpreter
+    yaml = None  # type: ignore[assignment]
+    _YAML_IMPORT_ERROR = _exc
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+
+def _require_yaml() -> None:
+    """Raise a clear, actionable DueMissionConfigError if `yaml` failed to
+    import — see the #1330 note above `import yaml`."""
+    if _YAML_IMPORT_ERROR is not None:
+        raise DueMissionConfigError(
+            f"missing dependency 'yaml' (pyyaml) for interpreter "
+            f"{sys.executable!r} — {_YAML_IMPORT_ERROR}. This due-mission "
+            f"command did NOT run; nothing was claimed or completed. Pin "
+            f"this script to a Python with pyyaml installed (see #1330)."
+        )
+
 from scripts.lib.loop_backup import (
     _MISSION_LIVE_STATUS,
+    _STALE_CLAIM_FRACTION,
     DueMissionConfigError,
     claim_due_missions,
     due_mission_plan,
@@ -35,6 +64,7 @@ def _now(epoch: int | None) -> dt.datetime:
 
 
 def _load_manifest(dept_dir: Path) -> dict:
+    _require_yaml()
     path = dept_dir / "dept.yaml"
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -181,6 +211,31 @@ def _emit_skip_notice(skipped: list[dict]) -> None:
     )
 
 
+def _emit_stale_notice(stale: list[dict]) -> None:
+    """Emit ONE concise stderr line naming missions whose pending lease has
+    been held past #1316's staleness threshold with no completion.
+
+    #1316: "claimed" silently standing in for "running" for hours (six
+    missions, ~4h, no completion, no alert) is the exact failure this
+    surfaces — a stuck claim must be visible in the tick's own output, not
+    something an agent only notices by happening to read its own watermark
+    file. Mirrors `_emit_skip_notice`'s one-line/stderr-only contract so it
+    can never corrupt the tab-separated `runner`/`json` payload on stdout.
+    """
+    if not stale:
+        return
+    names = ", ".join(
+        f"{item['id']}(claimed {item['claimed_at']}, "
+        f"{item['age_fraction'] * 100:.0f}% of lease elapsed, no completion)"
+        for item in stale
+    )
+    print(
+        f"due-mission notice: {len(stale)} stale claim(s) held past "
+        f"{int(_STALE_CLAIM_FRACTION * 100)}% of their lease with no completion: {names}",
+        file=sys.stderr,
+    )
+
+
 def command_plan(args: argparse.Namespace) -> int:
     dept_dir = Path(args.dept_dir).resolve()
     manifest = _load_manifest(dept_dir)
@@ -192,10 +247,12 @@ def command_plan(args: argparse.Namespace) -> int:
     watermark = due_watermark_path(str(dept_dir), manifest)
     state = read_due_watermarks(watermark)
     skipped: list[dict] = []
-    plan = due_mission_plan(manifest, state, _now(args.now_epoch), skipped=skipped)
+    stale: list[dict] = []
+    plan = due_mission_plan(manifest, state, _now(args.now_epoch), skipped=skipped, stale=stale)
     if plan is None:
         return 0
     _emit_skip_notice(skipped)
+    _emit_stale_notice(stale)
     _validate_scoped_files(dept_dir, manifest)
     if args.format == "json":
         print(json.dumps({"configured": True, "due": plan}, sort_keys=True))
@@ -212,10 +269,13 @@ def command_claim(args: argparse.Namespace) -> int:
     _validate_scoped_files(dept_dir, manifest)
     path = due_watermark_path(str(dept_dir), manifest)
     skipped: list[dict] = []
+    stale: list[dict] = []
     plan, claims = claim_due_missions(
-        path, manifest, _now(args.now_epoch), _lease_seconds(manifest), skipped=skipped
+        path, manifest, _now(args.now_epoch), _lease_seconds(manifest),
+        skipped=skipped, stale=stale,
     )
     _emit_skip_notice(skipped)
+    _emit_stale_notice(stale)
     print(_runner_output(plan, claims, dept_dir))
     return 0
 
@@ -243,6 +303,21 @@ def command_complete(args: argparse.Namespace) -> int:
     _validate_completion_period(mission["cadence"], args.period)
     path = due_watermark_path(str(dept_dir), manifest)
     write_due_success(path, args.mission, args.period, _now(args.now_epoch))
+    # #1235/#1316/#1330: a completion is only real if the marker is actually
+    # written — verify the write actually landed (read the persisted state
+    # back, not just trust write_due_success's in-memory return) before
+    # reporting success. A completion command that prints "completed" while
+    # the marker silently failed to persist is indistinguishable from a
+    # genuine success to anything reading this command's stdout/exit code —
+    # exactly the ambiguity this whole family of cards is about closing.
+    persisted = read_due_watermarks(path)
+    recorded = persisted.get("missions", {}).get(args.mission, {}).get("last_success_period")
+    if recorded != args.period:
+        raise DueMissionConfigError(
+            f"{args.mission}: completion for {args.period!r} did not persist "
+            f"(watermark reads {recorded!r} after write) — treat this as a "
+            f"FAILED completion, not a success"
+        )
     print(f"completed {args.mission} for {args.period}")
     return 0
 
@@ -279,6 +354,16 @@ def main() -> int:
     except DueMissionConfigError as exc:
         print(f"due-mission error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - #1330 fail-LOUD, deliberately broad
+        # ANY uncaught exception here (e.g. the confirmed live #1330
+        # ModuleNotFoundError, or anything else) must be unambiguous and
+        # non-zero, not a bare traceback a caller could mistake for partial
+        # output. This never masks the real error (it's printed AND
+        # re-raised via a distinct exit code) — it only guarantees a
+        # completion command that errors can never look like one that
+        # silently ran and did nothing (#1235/#1316's own failure class).
+        print(f"due-mission error (unexpected {type(exc).__name__}): {exc}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":
