@@ -21,12 +21,13 @@
 
 {# ─── Filet de sécurité — roll-up ({{OPERATOR}} msg 1171) ─────────── #}
 {% if backup_rollup and backup_rollup.any_activity %}
-<p class="backup-banner{% if backup_rollup.failed %} backup-banner--fail{% endif %}">
+<p class="backup-banner{% if backup_rollup.failed %} backup-banner--fail{% elif backup_rollup.deferred %} backup-banner--warn{% endif %}">
   <span class="backup-dot" aria-hidden="true"></span>
   Filet de sécurité · dernier passage {{ backup_rollup.last_fire_ts }} —
   {{ backup_rollup.healthy }} boucle{{ '' if backup_rollup.healthy == 1 else 's' }} active{{ '' if backup_rollup.healthy == 1 else 's' }}
   {%- if backup_rollup.backed_up %}, {{ backup_rollup.backed_up }} sauvegardée{{ '' if backup_rollup.backed_up == 1 else 's' }}{% endif %}
-  {%- if backup_rollup.failed %} · {{ backup_rollup.failed }} en échec{% endif %}.
+  {%- if backup_rollup.failed %} · {{ backup_rollup.failed }} en échec{% endif %}
+  {%- if backup_rollup.deferred %} · {{ backup_rollup.deferred }} différée{{ 's' if backup_rollup.deferred != 1 else '' }} (voir la fiche du département){% endif %}.
 </p>
 {% endif %}
 

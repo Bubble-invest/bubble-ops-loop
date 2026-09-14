@@ -30,7 +30,11 @@ _MAX_PER_DEPT = 10
 @dataclass(frozen=True)
 class BackupEvent:
     ts: str
-    action: str               # "skip" (loop alive) | "run" (loop stale → tick)
+    # "skip" (loop alive) | "run" (loop stale → tick) | "deferred" (floor
+    # correctly declined to act — unsafe/unreadable harness selector, or a
+    # live primary that couldn't be woken so the headless fallback was
+    # refused, board #1313) | "degraded" (a degraded L4 carried-over export).
+    action: str
     reason: str
     age_sec: Optional[int] = None
     exit_code: Optional[int] = None
@@ -40,11 +44,38 @@ class BackupEvent:
         return self.action == "run"
 
     @property
+    def is_deferred(self) -> bool:
+        return self.action in ("deferred", "degraded")
+
+    @property
     def ok(self) -> bool:
-        """A skip is always fine; a run is fine iff its tick exited 0."""
+        """A skip is always fine; a run is fine iff its tick exited 0.
+
+        #1313 step 2: a deferral/degraded event is NOT "ok" — it means the
+        floor could not confirm the dept is fine and needs a human to look
+        (a recurring deferral is exactly the "stale for days, nothing woke
+        it" shape) — but it is a DISTINCT, calmer signal than a crashed run,
+        which the UI must still be able to tell apart (verdict_fr below).
+        """
         if self.action == "skip":
             return True
+        if self.is_deferred:
+            return False
         return self.exit_code == 0
+
+    @property
+    def severity(self) -> str:
+        """3-way UI severity: 'ok' | 'warn' | 'fail'.
+
+        A deferral/degraded event uses the existing (previously orphaned)
+        `--warn` amber styling — visibly distinct from both a healthy skip
+        and a crashed run, per #1313 step 2 (a correct refusal to act is not
+        a crash, but it is also not nothing)."""
+        if self.ok:
+            return "ok"
+        if self.is_deferred:
+            return "warn"
+        return "fail"
 
     @property
     def age_human(self) -> Optional[str]:
@@ -65,6 +96,10 @@ class BackupEvent:
         """One-line human verdict for the UI."""
         if self.action == "skip":
             return "Boucle active — sauvegarde non nécessaire"
+        if self.action == "deferred":
+            return "Boucle arrêtée — filet différé (n'a pas pu agir sans risque) ⏸"
+        if self.action == "degraded":
+            return "Boucle arrêtée — export dégradé (reporté depuis le dernier état connu)"
         if self.exit_code == 0:
             return "Boucle arrêtée — tick de secours exécuté ✓"
         if self.exit_code is None:
@@ -75,7 +110,13 @@ class BackupEvent:
 def _to_event(raw: dict) -> Optional[BackupEvent]:
     ts = raw.get("ts")
     action = raw.get("action")
-    if not ts or action not in ("skip", "run"):
+    # #1313 step 2: "deferred"/"degraded" must render too — before this fix a
+    # dept stuck repeatedly deferring (the exact Maya-incident shape) had its
+    # entire "Filet de sécurité" panel silently vanish from the cockpit once
+    # its last _MAX_PER_DEPT events were all deferrals, since a dropped event
+    # here is indistinguishable from "no events at all" to recent_backups()/
+    # latest_backup(). A deferral must stay visible, not skip/run-shaped.
+    if not ts or action not in ("skip", "run", "deferred", "degraded"):
         return None
     age = raw.get("age_sec")
     exit_code = raw.get("exit")
@@ -109,6 +150,11 @@ class BackupRollup:
     backed_up: int            # depts whose loop was stale → a tick ran
     healthy: int              # depts whose loop was alive → skipped
     failed: int               # backup ticks that exited non-zero
+    # #1313 step 2: depts whose LATEST event is a deferral/degraded carry-over
+    # — the floor correctly declined to act, but that is neither "healthy"
+    # (the primary loop IS stale) nor "backed_up" (no tick actually ran).
+    # Recurring here across fires is the exact Maya-incident shape.
+    deferred: int = 0
 
     @property
     def any_activity(self) -> bool:
@@ -122,9 +168,9 @@ def rollup() -> BackupRollup:
     LATEST event (so a dept that recovered shows as healthy, not stuck)."""
     raw = read_events(str(settings.BACKUP_LOG_PATH))
     if not raw:
-        return BackupRollup(last_fire_ts=None, backed_up=0, healthy=0, failed=0)
+        return BackupRollup(last_fire_ts=None, backed_up=0, healthy=0, failed=0, deferred=0)
     latest = latest_per_dept(raw)
-    backed_up = healthy = failed = 0
+    backed_up = healthy = failed = deferred = 0
     last_ts: Optional[str] = None
     for r in latest.values():
         ev = _to_event(r)
@@ -136,7 +182,9 @@ def rollup() -> BackupRollup:
             backed_up += 1
             if ev.exit_code not in (0, None):
                 failed += 1
+        elif ev.is_deferred:
+            deferred += 1
         else:
             healthy += 1
     return BackupRollup(last_fire_ts=last_ts, backed_up=backed_up,
-                        healthy=healthy, failed=failed)
+                        healthy=healthy, failed=failed, deferred=deferred)

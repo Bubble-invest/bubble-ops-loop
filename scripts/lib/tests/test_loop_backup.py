@@ -30,6 +30,7 @@ import pytest
 from scripts.lib.loop_backup import (
     HB_BACKUP_AUTH_FAILED,
     HB_BACKUP_BUDGET_EXCEEDED,
+    HB_BACKUP_DEFERRED,
     HB_BACKUP_FAILED,
     HB_BACKUP_RAN,
     HB_BACKUP_TIMEOUT,
@@ -342,6 +343,66 @@ def test_external_hb_backup_failed_says_dept_down():
 def test_external_hb_degraded_l4():
     line = format_external_heartbeat(HB_DEGRADED_L4, ts="2026-06-18T21:00:00Z")
     assert line == "2026-06-18T21:00:00Z tick DEGRADED-L4 carried-over"
+
+
+# ── #1313 step 2: BACKUP-DEFERRED must be a truthful heartbeat too ─────────
+#
+# A deferral (unsafe/unreadable harness selector, or a live primary that
+# couldn't be woken so the headless fallback was correctly refused) is
+# NEITHER a crash NOR evidence the dept was serviced. It must get its own
+# honest line, and — like BACKUP-FAILED — must never be mistaken for a fresh
+# liveness signal by latest_heartbeat_epoch (the exact false-fresh trap: a
+# repeatedly-deferring dept must keep looking stale, or the floor would stop
+# re-trying it).
+
+
+def test_external_hb_deferred_carries_detail():
+    line = format_external_heartbeat(
+        HB_BACKUP_DEFERRED, ts="2026-09-13T19:01:00Z",
+        detail="Hermes gateway floor wake unavailable; headless fallback disabled",
+    )
+    assert line == (
+        "2026-09-13T19:01:00Z tick BACKUP-DEFERRED — "
+        "Hermes gateway floor wake unavailable; headless fallback disabled"
+    )
+
+
+def test_external_hb_deferred_without_detail():
+    line = format_external_heartbeat(HB_BACKUP_DEFERRED, ts="t")
+    assert line == "t tick BACKUP-DEFERRED"
+
+
+def test_deferred_line_does_not_read_as_fresh(tmp_path):
+    """The exact Maya-incident shape: a fresh-timestamped BACKUP-DEFERRED
+    line must NOT count as liveness — the real (stale) heartbeat must still
+    win, or the floor would wrongly conclude the dept is fine and stop
+    re-trying it."""
+    import datetime as _dt
+    d = tmp_path / "2026-09-13"
+    d.mkdir()
+    (d / "heartbeat.log").write_text(
+        "2026-09-10T19:01:00Z tick L4 ok\n"                                  # real, very stale
+        "2026-09-13T19:01:00Z tick BACKUP-DEFERRED — wake unavailable\n",    # fresh-but-deferred
+        encoding="utf-8",
+    )
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert (got.day, got.month) == (10, 9), (
+        "BACKUP-DEFERRED leaked through as a fresh liveness signal (false-fresh)"
+    )
+
+
+def test_append_external_heartbeat_deferred_creates_parent_and_appends(tmp_path):
+    hb = tmp_path / "2026-09-13" / "heartbeat.log"  # parent missing on purpose
+    written = append_external_heartbeat(
+        str(hb), HB_BACKUP_DEFERRED, ts="2026-09-13T19:01:00Z",
+        detail="harness selector unavailable or unsafe; no wake attempted",
+    )
+    assert written == (
+        "2026-09-13T19:01:00Z tick BACKUP-DEFERRED — "
+        "harness selector unavailable or unsafe; no wake attempted"
+    )
+    assert hb.read_text(encoding="utf-8").splitlines() == [written]
 
 
 def test_external_hb_unknown_outcome_raises():

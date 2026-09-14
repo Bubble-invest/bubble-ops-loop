@@ -2971,6 +2971,7 @@ a.piece-tile:hover {
   flex: 0 0 auto;
 }
 .backup-event--fail .backup-event-verdict { color: #a3503f; }
+.backup-event--warn .backup-event-verdict { color: #b8862b; }
 .backup-banner {
   display: flex;
   align-items: center;
@@ -2984,6 +2985,9 @@ a.piece-tile:hover {
   border-radius: 3px;
 }
 .backup-banner--fail { border-left-color: #a3503f; color: #a3503f; }
+/* #1313 step 2: a deferral is a correct refusal to act, not a crash — its
+   own calmer amber tone (mirrors the pre-existing .backup-latest--warn). */
+.backup-banner--warn { border-left-color: #b8862b; color: #b8862b; }
 
 /* Output viewer page */
 .output-breadcrumb {

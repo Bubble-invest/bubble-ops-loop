@@ -864,6 +864,12 @@ HB_DEGRADED_L4 = "DEGRADED-L4"          # degraded L4 carried-over (loop was dow
 HB_BACKUP_BUDGET_EXCEEDED = "BACKUP-BUDGET-EXCEEDED"  # tick ran, hit --max-budget-usd — NOT down
 HB_BACKUP_AUTH_FAILED = "BACKUP-AUTH-FAILED"          # tick couldn't authenticate — needs re-login, not a restart
 HB_BACKUP_TIMEOUT = "BACKUP-TIMEOUT"                  # tick ran out of time — may be transient
+# #1313 step 2: the floor DEFERRED — it correctly declined to act (unsafe/
+# unreadable harness selector, or a live primary it couldn't wake, so the
+# headless fallback was refused) rather than crashing. Distinct from every
+# token above: nothing ran AT ALL, so this is even less evidence of liveness
+# than a crashed tick — it must never be mistaken for "the dept is fine".
+HB_BACKUP_DEFERRED = "BACKUP-DEFERRED"
 
 # Every outcome token the FLOOR (not the dept) writes into the dept's own
 # heartbeat.log. None of these are evidence the dept's own loop ticked, so
@@ -874,6 +880,7 @@ _HB_NOT_LIVENESS = (
     HB_BACKUP_BUDGET_EXCEEDED,
     HB_BACKUP_AUTH_FAILED,
     HB_BACKUP_TIMEOUT,
+    HB_BACKUP_DEFERRED,
 )
 
 
@@ -944,6 +951,7 @@ def format_external_heartbeat(
     layer: Optional[int] = None,
     exit_code: Optional[int] = None,
     ts: Optional[str] = None,
+    detail: Optional[str] = None,
 ) -> str:
     """Build ONE truthful heartbeat line the floor appends to the dept's
     outputs/<today>/heartbeat.log when the live loop is stale.
@@ -958,14 +966,20 @@ def format_external_heartbeat(
       * tick ran out of time        → ``<iso> tick BACKUP-TIMEOUT exit=N``
       * tick crashed, unknown cause → ``<iso> tick BACKUP-FAILED exit=N — dept DOWN``
       * degraded L4 carried-over    → ``<iso> tick DEGRADED-L4 carried-over``
+      * floor deferred (#1313)      → ``<iso> tick BACKUP-DEFERRED — <detail>``
 
     Budget/auth/timeout are DISTINCT from a genuine crash (#749/#750 defect
     (b)): the tick ran, it just hit a known, honest limit — NOT evidence the
     dept process is dead. Only HB_BACKUP_FAILED (no known signature matched)
-    means "dept DOWN".
+    means "dept DOWN". BACKUP-DEFERRED (#1313 step 2) is a THIRD category:
+    nothing ran at all — the floor correctly declined to act rather than
+    crash or fall back to a competing headless model.
 
     `outcome` is one of the HB_* constants. `ts` defaults to now (UTC ISO,
-    second resolution — same shape as now_iso()).
+    second resolution — same shape as now_iso()). `detail` is only used by
+    BACKUP-DEFERRED, to carry the specific reason (mirrors the same string
+    the caller already passed to emit_event) so a human reading the raw
+    heartbeat file — not just the cockpit — sees WHY, not just THAT.
     """
     stamp = ts or now_iso()
     if outcome == HB_BACKUP_RAN:
@@ -989,6 +1003,10 @@ def format_external_heartbeat(
         body = f"{HB_BACKUP_TIMEOUT} exit={code}"
     elif outcome == HB_DEGRADED_L4:
         body = f"{HB_DEGRADED_L4} carried-over"
+    elif outcome == HB_BACKUP_DEFERRED:
+        body = HB_BACKUP_DEFERRED
+        if detail:
+            body += f" — {detail}"
     else:
         raise ValueError(f"unknown external-heartbeat outcome: {outcome!r}")
     return f"{stamp} tick {body}"
@@ -1000,6 +1018,7 @@ def append_external_heartbeat(
     layer: Optional[int] = None,
     exit_code: Optional[int] = None,
     ts: Optional[str] = None,
+    detail: Optional[str] = None,
 ) -> str:
     """Append one truthful heartbeat line (format_external_heartbeat) to the
     dept's heartbeat.log, creating parent dirs as needed. Returns the line
@@ -1008,7 +1027,7 @@ def append_external_heartbeat(
     Append-only + a trailing newline so a half-written line never corrupts the
     file and the freshness reader (which reads the LAST ISO ts) keeps working.
     """
-    line = format_external_heartbeat(outcome, layer=layer, exit_code=exit_code, ts=ts)
+    line = format_external_heartbeat(outcome, layer=layer, exit_code=exit_code, ts=ts, detail=detail)
     parent = os.path.dirname(heartbeat_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
