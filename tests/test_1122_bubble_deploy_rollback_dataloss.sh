@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # #1122 regression under the no-rewrite contract: dirty work is left in place.
+# #1305: a pure deferred_review outcome (no FAILED) exits 0 — it is preserved
+# work, not a service failure — so it must not alarm systemd on every run.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -58,7 +60,7 @@ BUBBLE_DEPLOY_LOCK_FILE="$WORK/deploy.lock" \
 rc=$?
 set -e
 
-[[ $rc -eq 2 ]]
+[[ $rc -eq 0 ]]
 [[ "$(git -C "$WORK/infra" rev-parse HEAD)" == "$infra_head" ]]
 [[ "$(git -C "$WORK/agents/testdept" rev-parse HEAD)" == "$dept_head" ]]
 [[ "$(cat "$WORK/infra/tracked.txt")" == local-wip ]]

@@ -94,17 +94,19 @@ grep -q -- '-u fixture-owner -- git -C' "$WORK/clean.runuser"
 grep -q 'UPDATED framework' "$WORK/clean.out"
 ! grep -Eq '(^| )(reset|stash|config)($| )' "$WORK/clean.gitlog"
 
-echo "T2 ahead and non-main states are preserved and require review"
+echo "T2 ahead and non-main states are preserved, deferred for review, and exit 0 (#1305: not a service failure)"
 git -C "$WORK/infra" config user.email synthetic@example.invalid
 git -C "$WORK/infra" config user.name synthetic
 echo local >>"$WORK/infra/file.txt"; git -C "$WORK/infra" commit -qam local
 head_before=$(git -C "$WORK/infra" rev-parse HEAD)
 run_case ahead inactive --infra-only
-[[ $CASE_RC -eq 2 && "$(git -C "$WORK/infra" rev-parse HEAD)" == "$head_before" ]]
+[[ $CASE_RC -eq 0 && "$(git -C "$WORK/infra" rev-parse HEAD)" == "$head_before" ]]
 grep -q 'DEFER_REVIEW framework: 1 commits ahead' "$WORK/ahead.out"
+grep -q 'deferred_review=1' "$WORK/ahead.out"
+grep -q 'failed=0' "$WORK/ahead.out"
 git -C "$WORK/infra" checkout -qb review-branch
 run_case branch inactive --infra-only
-[[ $CASE_RC -eq 2 && "$(git -C "$WORK/infra" branch --show-current)" == review-branch ]]
+[[ $CASE_RC -eq 0 && "$(git -C "$WORK/infra" branch --show-current)" == review-branch ]]
 grep -q 'DEFER_REVIEW framework: branch review-branch' "$WORK/branch.out"
 
 echo "T3 active primary is not fast-forwarded or restarted"
@@ -236,14 +238,39 @@ grep -q 'UPDATED artifactdept' "$WORK/artifact_only.out"
 [[ -f "$WORK/agents/artifactdept/HARNESS_HANDOFF.md" ]]
 [[ -f "$WORK/agents/artifactdept/scripts/lib/foo.py.pre-vendor-20260101T000000Z" ]]
 
-echo "T12 #1187: genuine untracked dirt still defers even alongside known artifacts"
+echo "T12 #1187: genuine untracked dirt still defers even alongside known artifacts (#1305: still exits 0, not a failure)"
 push_upstream "$WORK/agents/artifactdept"
 echo unexpected >"$WORK/agents/artifactdept/unexpected.tmp"
 head_before=$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)
 run_case artifact_plus_real inactive --dept artifactdept
-[[ $CASE_RC -eq 2 && "$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)" == "$head_before" ]]
+[[ $CASE_RC -eq 0 && "$(git -C "$WORK/agents/artifactdept" rev-parse HEAD)" == "$head_before" ]]
 grep -q 'DEFER_REVIEW artifactdept: 1 dirty paths' "$WORK/artifact_plus_real.out"
 [[ -f "$WORK/agents/artifactdept/unexpected.tmp" ]]
 [[ -f "$WORK/agents/artifactdept/AGENTS.md" ]]
 
-echo "PASS: 12 safe deploy contract cases"
+echo "T13 #1305: a real FAILED elsewhere in the same run still wins — exit 1, still alarms, even with a concurrent deferred_review"
+git -C "$WORK/infra" checkout -q main
+git -C "$WORK/infra" reset -q --hard origin/main
+git -C "$WORK/infra" checkout -qb still-parked
+: >"$WORK/mixed.gitlog"; : >"$WORK/mixed.runuser"; : >"$WORK/mixed.systemctl"
+set +e
+PATH="$BIN:$PATH" \
+TEST_GIT_LOG="$WORK/mixed.gitlog" \
+TEST_RUNUSER_LOG="$WORK/mixed.runuser" \
+TEST_SYSTEMCTL_LOG="$WORK/mixed.systemctl" \
+TEST_UNIT_STATE=query-fail \
+BUBBLE_DEPLOY_INFRA_DIR="$WORK/infra" \
+BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/agents" \
+BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/empty-legacy" \
+BUBBLE_DEPLOY_LOCK_FILE="$WORK/mixed.lock" \
+    bash "$SCRIPT" --dept maya >"$WORK/mixed.out" 2>"$WORK/mixed.err"
+mixed_rc=$?
+set -e
+[[ $mixed_rc -eq 1 ]]
+grep -q 'DEFER_REVIEW framework: branch still-parked' "$WORK/mixed.out"
+grep -q 'cannot prove primary' "$WORK/mixed.out"
+grep -q 'deferred_review=1' "$WORK/mixed.out"
+grep -q 'failed=1' "$WORK/mixed.out"
+git -C "$WORK/infra" checkout -q main
+
+echo "PASS: 13 safe deploy contract cases"
