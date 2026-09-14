@@ -16,6 +16,9 @@ User=claude
 EnvironmentFile=-/run/claude-agent/env
 # Bun on PATH (Telegram MCP / plugins) + standard bins. Same as other claude crons.
 Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Fail before the agent can mutate the wiki when the immutable intent baseline
+# is absent, stale, writable, or internally inconsistent. skillsmith is exempt.
+ExecStartPre=/usr/bin/python3 /home/claude/scripts/readonly_intents_mirror.py --mode %i
 ExecStart=/home/claude/scripts/cloud-wiki-compile.sh %i
 # Generous timeout — a full compile spawns 10 knowledge-extraction subagents +
 # 1 synthesis, plus piggyback audit passes on the same feed (claimed-vs-done

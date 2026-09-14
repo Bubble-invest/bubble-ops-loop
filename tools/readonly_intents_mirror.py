@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import re
 import stat
@@ -96,3 +97,23 @@ def validate_mirror(mirror_root: Path, *, now: datetime | None = None) -> Path:
     if actual != expected:
         raise MirrorValidationError("mirror manifest mismatch")
     return release
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate the immutable operator-intents mirror.")
+    parser.add_argument("mirror", nargs="?", type=Path, default=platform_default())
+    parser.add_argument("--mode", choices=("compile", "synthesis", "pruning", "skillsmith"))
+    args = parser.parse_args(argv)
+    if args.mode == "skillsmith":
+        return 0
+    try:
+        release = validate_mirror(args.mirror)
+    except MirrorValidationError as exc:
+        print(f"readonly-intents-mirror: FAIL: {exc}", file=sys.stderr)
+        return 2
+    print(f"readonly-intents-mirror: PASS release={release}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
