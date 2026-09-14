@@ -5,6 +5,11 @@ and before the index is regenerated. It is deliberately gradual: inspect at
 most **5 candidate pages per run** from
 `/home/claude/monitoring/wiki-intent-audit/latest.json`.
 
+This mission never runs on its own — STEP 8 of the compile skill skips it
+entirely when `latest.json` is `{"skipped": true, ...}` (board #1339: no
+root-owned operator-intents mirror was available this run). There is nothing
+structural to backfill against without one; that is expected, not an error.
+
 The JSON is structural evidence only. A missing or malformed field makes a page
 a candidate for review; it does not prove the page is waste or identify the
 right intent. Never decide relevance with filenames, keywords, regexes, or the

@@ -64,9 +64,19 @@ staging area, `shared/operator-intents-proposals/`; `EXCLUDED_PATH_GLOBS` in
 `wiki_intent_audit.py`) — are excluded from the report entirely; they need no
 intent link (board #1265).
 
-If the report is absent, fail the run explicitly. The installer deploys
-`/home/claude/scripts/wiki-intent-audit.py` and the launcher must have run it;
-silently continuing would disable the loop-visible audit.
+The launcher only runs the audit when a root-owned read-only operator-intents
+mirror is available (`$BUBBLE_OPERATOR_INTENTS_MIRROR`, else
+`/opt/bubble-operator-intents` — never the writable wiki, see the SECURITY
+RAIL / #1267 note below). If neither exists (board #1339 — the mirror is not
+always deployed), the launcher writes `{"skipped": true, "reason": ...}`
+instead and logs a WARN; that is expected, not an error. If the report is
+**skipped**, or intent frontmatter otherwise can't be structurally checked
+this run, skip the rest of this step and STEP 8 (intent-provenance backfill)
+entirely for this run — proceed straight to STEP 1. Continuing the compile
+without the audit is the intended degrade path; it is not the same as the
+report being **absent while the tooling itself is missing**, which the
+launcher still treats as fatal (an incomplete #1247 install) before it ever
+reaches you.
 
 Intent frontmatter uses this exact contract (board #1247):
 
@@ -684,6 +694,11 @@ uses; leave nightly unless he says otherwise.
 
 ## STEP 4.8 — Intent-drift (map-vs-territory) detector (WEEKLY, Sunday)
 
+**Skip this step entirely if STEP 0's report was `skipped`** (no operator-intents
+mirror this run, board #1339) — there is no mirrored collection to read
+intents from or compare drift against. Note it as skipped in the STEP 10
+summary and move on; this is expected, not an error.
+
 **Only runs when the delta plan says `weekly=true`** (same reasoning as STEP 4.6 — intent
 drift is a slow signal that accrues over a week; a daily re-read adds noise, not
 signal). Piggyback the exact `weekly_aggregate_feed` directly — no transcript
@@ -1099,7 +1114,9 @@ Wait for it. Capture the summary string.
 
 ## STEP 8 — Gradual intent-provenance backfill + candidate leaks
 
-Read and follow
+Skip this step entirely if STEP 0's report was `skipped` (no mirror this
+run, board #1339) — there is nothing structural to backfill against. Otherwise
+read and follow
 `/home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md`.
 That mission reviews at most 5 structural candidates per nightly run. The
 reading agent chooses the mapping; Python never infers relevance from keywords.
@@ -1119,13 +1136,25 @@ ARCH_TOOL=/home/claude/bubble-ops-loop/tools/fleet_architecture.py
 ARCH_CONFIG=/home/claude/bubble-ops-loop/fleet/fleet-architecture-sources.yaml
 WIKI=/home/claude/.claude/agent-memory/shared-wiki
 
+# #1339: same mirror fallback the launcher uses — never the writable wiki.
+# Keep this in sync with the resolution in cloud-wiki-compile.sh (and STEP
+# 0's skip state above) if either ever changes.
+INTENTS_ROOT=""
+for _cand in "${BUBBLE_OPERATOR_INTENTS_MIRROR:-}" "/opt/bubble-operator-intents"; do
+  [ -n "$_cand" ] && [ -d "$_cand/operator-intents" ] && { INTENTS_ROOT="$_cand"; break; }
+done
+
 if [ -e "$ARCH_TOOL" ] || [ -e "$ARCH_CONFIG" ]; then
   [ -f "$ARCH_TOOL" ] && [ -f "$ARCH_CONFIG" ] || {
     echo "FATAL: partial #1249 install (tool/config pair required)" >&2
     exit 1
   }
-  python3 "$ARCH_TOOL" refresh --config "$ARCH_CONFIG" --wiki-root "$WIKI" \
-    --intents-root "$INTENTS_ROOT"
+  if [ -z "$INTENTS_ROOT" ]; then
+    echo "fleet_architecture: no operator-intents mirror this run; skipping refresh (#1339)"
+  else
+    python3 "$ARCH_TOOL" refresh --config "$ARCH_CONFIG" --wiki-root "$WIKI" \
+      --intents-root "$INTENTS_ROOT"
+  fi
 else
   echo "fleet_architecture: #1249 collector not installed; optional hook inactive"
 fi
@@ -1138,14 +1167,15 @@ The #1249 collector owns installation of its tool/config and validates explicit
 intent links using this step's frontmatter contract; it never infers a fallback
 intent or writes `shared/operator-intents/**`.
 
-After a successful refresh (or an inactive hook), re-run the structural audit
-to atomically refresh `latest.json`. Managed pages without explicit intent stay
-unresolved candidates for the next bounded semantic pass:
+After a successful refresh (or an inactive/skipped hook), and only if
+`$INTENTS_ROOT` resolved above, re-run the structural audit to atomically
+refresh `latest.json`. Managed pages without explicit intent stay unresolved
+candidates for the next bounded semantic pass:
 
 ```bash
-python3 /home/claude/scripts/wiki-intent-audit.py \
+[ -n "$INTENTS_ROOT" ] && python3 /home/claude/scripts/wiki-intent-audit.py \
   --wiki /home/claude/.claude/agent-memory/shared-wiki \
-  --intents-root "${BUBBLE_OPERATOR_INTENTS_MIRROR:-/opt/bubble-operator-intents}" \
+  --intents-root "$INTENTS_ROOT" \
   --output /home/claude/monitoring/wiki-intent-audit/latest.json
 ```
 
