@@ -43,6 +43,24 @@ _KANBAN_COL_LABELS = {
 _KANBAN_SNAPSHOT_TTL_SECONDS = 30
 _kanban_snapshot_cache: dict = {}  # limit -> (value, monotonic_checked_at)
 
+# Board #1299 — checkout_staleness() does a `git rev-parse` + one `gh api`
+# round-trip; cached per-slug for a few minutes so repeat /dept/<slug> loads
+# (htmx polls the inbox fragment every 5s) don't hammer the GitHub API for a
+# signal that only changes on the dept's own multi-minute loop cadence.
+_CHECKOUT_STALE_TTL_SECONDS = 300
+_checkout_stale_cache: dict = {}  # slug -> (value, monotonic_checked_at)
+
+
+def _checkout_staleness_cached(slug: str) -> "dict | None":
+    cached = _checkout_stale_cache.get(slug)
+    if cached is not None:
+        value, checked_at = cached
+        if (time.monotonic() - checked_at) < _CHECKOUT_STALE_TTL_SECONDS:
+            return value
+    value = github_reader.checkout_staleness(slug)
+    _checkout_stale_cache[slug] = (value, time.monotonic())
+    return value
+
 
 def _kanban_snapshot(limit: int = 6) -> "dict | None":
     """Compact cross-dept kanban view for the management cockpit: per-column
@@ -235,6 +253,15 @@ def dept_detail(
     # a graceful platform-default fallback when undeclared. Card: surface
     # agent deployment metadata on /dept/<slug> (2026-07-02).
     agent_model_info = github_reader.load_agent_model_info(dept_yaml)
+    # Checkout-drift badge (board #1299) — the console reads dept content
+    # straight off disk (repo_path) with no caching of its own; for a
+    # `host: vps` dept that disk tree IS the dept's live working checkout,
+    # which only advances when the dept's own /loop reconciles it to origin.
+    # If that stalls for a stretch (the Maya incident: days-old checkout),
+    # the console faithfully renders stale gates/drafts with no signal to the
+    # operator. Read-only two-SHA comparison, never a pull; None (unknown)
+    # renders nothing — see github_reader.checkout_staleness docstring.
+    checkout_staleness = _checkout_staleness_cached(slug)
     # L1/L2 mission files (MANDATE.md, layer PROMPT.mds, mission PROMPT.mds,
     # working memory, config) — read-only async review pane, card #622.
     # #642 PR-B (item 10, fleet rollout): now built for EVERY dept, not
@@ -298,6 +325,7 @@ def dept_detail(
             "dept": d,
             "dept_yaml": dept_yaml,
             "agent_model_info": agent_model_info,
+            "checkout_staleness": checkout_staleness,
             "gates": gates,
             "gate_groups": gate_groups,
             "missions": missions,

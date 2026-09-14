@@ -89,6 +89,82 @@ def test_dept_detail_no_gates_shows_empty_state(client, monkeypatch):
     assert "aucune décision en attente" in body
 
 
+# ─── Checkout-staleness badge (board #1299) ────────────────────────────────
+# The cockpit served days-stale prospect_email drafts for Maya because her
+# live on-disk checkout had drifted behind origin/main and nothing signalled
+# it. This badge is a read-only warning, not a fix — it must show only when
+# checkout_staleness() actually reports drift, and stay silent (as the
+# fixture repo — no .git dir — already exercises in every other test above)
+# whenever staleness is unknown or false.
+
+def test_dept_detail_no_staleness_badge_by_default(client):
+    """The `fixture` repo fixture has no .git dir → checkout_staleness()
+    returns None → the badge must not render (covers the common case: every
+    other test in this file hits the same page with no badge noise)."""
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "checkout désynchronisé" not in r.text.lower()
+
+
+def test_dept_detail_shows_staleness_badge_when_checkout_behind(client, monkeypatch):
+    """When the checkout has drifted behind origin/main, the pill must
+    render with both short SHAs so an operator can tell at a glance."""
+    from console.routes import dept as dept_route
+    dept_route._checkout_stale_cache.clear()
+    monkeypatch.setattr(
+        dept_route.github_reader, "checkout_staleness",
+        lambda slug, branch="main": {
+            "stale": True,
+            "local_sha": "a" * 40,
+            "remote_sha": "b" * 40,
+            "branch": "main",
+        } if slug == "fixture" else None,
+    )
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    body = r.text.lower()
+    assert "checkout désynchronisé de origin/main" in body
+    assert "aaaaaaa" in body  # local short sha
+    assert "bbbbbbb" in body  # remote short sha
+
+
+def test_dept_detail_no_badge_when_checkout_not_stale(client, monkeypatch):
+    """SHAs match → stale=False → no badge (never a false alarm)."""
+    from console.routes import dept as dept_route
+    dept_route._checkout_stale_cache.clear()
+    monkeypatch.setattr(
+        dept_route.github_reader, "checkout_staleness",
+        lambda slug, branch="main": {
+            "stale": False, "local_sha": "c" * 40, "remote_sha": "c" * 40,
+            "branch": "main",
+        },
+    )
+    r = client.get("/dept/fixture")
+    assert r.status_code == 200
+    assert "checkout désynchronisé" not in r.text.lower()
+
+
+def test_checkout_staleness_cached_within_ttl(monkeypatch):
+    """github_reader.checkout_staleness() is a git+gh round-trip; the route
+    must cache it per-slug for the TTL rather than re-running it on every
+    /dept/<slug> load (htmx polls the page's inbox fragment every 5s)."""
+    from console.routes import dept as dept_route
+    dept_route._checkout_stale_cache.clear()
+    calls = {"n": 0}
+
+    def fake_checkout_staleness(slug, branch="main"):
+        calls["n"] += 1
+        return {"stale": True, "local_sha": "a" * 40, "remote_sha": "b" * 40,
+                "branch": "main"}
+
+    monkeypatch.setattr(
+        dept_route.github_reader, "checkout_staleness", fake_checkout_staleness)
+    first = dept_route._checkout_staleness_cached("fixture")
+    second = dept_route._checkout_staleness_cached("fixture")
+    assert first == second
+    assert calls["n"] == 1, f"expected exactly 1 call (cached), got {calls['n']}"
+
+
 # ─── Retire CTA on dept page (UX gap — backend ready, no entry point) ─────
 # Why: POST /agents/<slug>/retire exists + retire_dept_fragment.html exists,
 # but no UI element triggers them. Operators can only retire via curl. Add
