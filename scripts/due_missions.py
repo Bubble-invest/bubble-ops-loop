@@ -85,9 +85,21 @@ def _prompt(plan: list[dict], dept_dir: Path) -> str:
     )
     commands = []
     for item in plan:
+        # Board #1330: a hardcoded "python3" resolves NON-DETERMINISTICALLY on
+        # a Mac with more than one python3 on PATH (e.g. homebrew python@3.14
+        # with no pyyaml vs. CommandLineTools python 3.9 with pyyaml) — the
+        # "complete" command below then crashes on `import yaml` and the
+        # mission silently fails to complete (looks identical to "never ran").
+        # sys.executable is the interpreter that is ACTUALLY running this
+        # script right now, which by construction already imported `yaml`
+        # successfully above — so it is always yaml-capable, and it is an
+        # absolute path (no further PATH lookup, no non-determinism). The
+        # caller (local-loop-backup-runner.sh / _lll_py) is responsible for
+        # invoking this script itself under a pinned, yaml-capable python;
+        # this line then simply propagates that same interpreter forward.
         command = " ".join(
             [
-                "python3",
+                shlex.quote(sys.executable),
                 shlex.quote(str(script)),
                 "complete",
                 "--dept-dir",

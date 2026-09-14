@@ -156,9 +156,25 @@ Uninstall: `install-local-loop.sh --uninstall --slug content` (removes the plist
 
 Merge/update the R&D shape **before** activating the dispatcher: a runner that
 sees `loop.due_dispatch` validates all scoped rules and fails closed rather than
-falling back to the old generic wake. The selected `python3` must provide
-PyYAML. These commands do not edit `~/.claude/agents/rnd.md` or Rick's live
-mandate.
+falling back to the old generic wake. These commands do not edit
+`~/.claude/agents/rnd.md` or Rick's live mandate.
+
+**Interpreter pin (board #1330):** `due_missions.py` (and other scripts/lib/*.py
+dept.yaml readers) import PyYAML at module scope. A bare `python3` on a Mac can
+resolve NON-DETERMINISTICALLY between an interpreter that has pyyaml and one
+that doesn't (e.g. a homebrew python@3.x upgrade vs. the CommandLineTools
+python), silently crashing a mission's `complete` step — the completion looks
+identical to one that never ran (#1235/#1316's class). `install-local-loop-backup.sh`
+now runs `deploy/local/ensure-loop-venv.sh` automatically, which builds a
+dedicated `<repo-root>/.venv` (from `scripts/requirements.txt`) and verifies it
+can `import yaml`; `_lll_py()` in `lib/local_loop_lib.sh` then prefers that
+pinned venv (by absolute path — never a fresh PATH lookup) over bare
+`python3`/`python`, and every candidate is verified to import yaml before being
+returned rather than trusted blindly. `due_missions.py`'s generated `COMPLETE
+... =>` command uses `sys.executable` (the interpreter that is actually running
+it, i.e. the same pinned venv) instead of a hardcoded `"python3"`, so the
+completion command Rick's session runs at the end of a tick is pinned too. To
+(re)build the venv manually: `deploy/local/ensure-loop-venv.sh [--force]`.
 
 The live owner checkouts are not interchangeable with clean deploy clones. At
 the time this note was written, `/Users/joris/claude-workspaces/Rick_RnD` was

@@ -54,8 +54,42 @@ LLL_REPO_ROOT="$(cd "$_LLL_DIR/../../.." && pwd)"
 # Default stale threshold: mirror the VPS BUBBLE_BACKUP_STALE_SEC (90 min).
 LOCAL_LOOP_STALE_SEC_DEFAULT=5400
 
-# pick a python3 (the repo's loop_backup.py is plain stdlib).
-_lll_py() { command -v python3 || command -v python; }
+# Pick a yaml-capable python3 (board #1330).
+#
+# WHY NOT bare `command -v python3`: a Mac can carry more than one python3 on
+# PATH (e.g. homebrew python@3.14 with NO pyyaml vs. CommandLineTools python
+# 3.9 WITH pyyaml), and `command -v` resolves NON-DETERMINISTICALLY across
+# shell invocations as homebrew upgrades/relinks python. due_missions.py (a
+# caller of this function, via local-loop-backup-runner.sh's $PY_BIN) imports
+# yaml at module scope, so landing on the yaml-less interpreter crashes it —
+# silently, from the caller's point of view, because a completion that ERRORS
+# looks identical to one that never ran (see #1235/#1316's completion-proof
+# class). is_heartbeat_stale and inject_loop_wake (below) are plain-stdlib and
+# don't themselves need yaml, but they share this same picker on purpose: one
+# pinned interpreter, no drift between call sites.
+#
+# Fix: prefer a DEDICATED per-repo venv (`$LLL_REPO_ROOT/.venv`, built by
+# `deploy/local/ensure-loop-venv.sh` from `scripts/requirements.txt`) — its
+# path never depends on PATH lookup order, so it can't flip between ticks.
+# Fall back to whatever `command -v python3`/`python` finds (keeps this
+# working in environments without the venv, e.g. CI), but — the actual fix for
+# "must not silently fall back to a yaml-less python" — every candidate is
+# VERIFIED to `import yaml` before being returned. If nothing on the machine
+# can import yaml, return nothing: callers already treat an empty _lll_py as
+# fail-loud (is_heartbeat_stale → "stale"; local-loop-backup-runner.sh → "no
+# wake queued", non-zero exit), never a silent partial success.
+_lll_py() {
+    local candidates=() c
+    [[ -n "${LOCAL_LOOP_PYTHON:-}" ]] && candidates+=("$LOCAL_LOOP_PYTHON")
+    candidates+=("${LLL_REPO_ROOT}/.venv/bin/python3")
+    local sys_py; sys_py="$(command -v python3 2>/dev/null || command -v python 2>/dev/null)"
+    [[ -n "$sys_py" ]] && candidates+=("$sys_py")
+    for c in "${candidates[@]}"; do
+        [[ -x "$c" ]] || continue
+        "$c" -c 'import yaml' >/dev/null 2>&1 && { echo "$c"; return 0; }
+    done
+    return 1
+}
 
 # ── is_heartbeat_stale <dept-dir> [stale_sec] [now_epoch] ────────────────────────────────
 # Echoes "stale" or "fresh" and returns 0 (the caller branches on the WORD, not

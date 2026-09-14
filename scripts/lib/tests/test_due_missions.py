@@ -334,3 +334,31 @@ def test_skip_notice_is_a_single_stderr_line(capsys):
 
     _emit_skip_notice([])  # nothing skipped → no notice at all
     assert capsys.readouterr().err == ""
+
+
+def test_completion_command_is_pinned_to_sys_executable_not_bare_python3():
+    # Board #1330: a hardcoded "python3" in the generated completion command
+    # resolves non-deterministically on a Mac with more than one python3 on
+    # PATH — one has pyyaml, the other doesn't, and landing on the wrong one
+    # crashes `due_missions.py complete` on `import yaml` (silently, from the
+    # tick's point of view). sys.executable is the interpreter that is
+    # ACTUALLY running this process right now (so it already has pyyaml, by
+    # construction) and is an absolute path — no further PATH lookup, so it
+    # can never flip between invocations.
+    import sys
+
+    from scripts.due_missions import _prompt
+
+    plan = [
+        {
+            "id": "weekly_scan",
+            "cadence": "weekly",
+            "period": "2026-W37",
+            "layers": [4],
+            "mission_file": "missions/weekly-scan.md",
+        }
+    ]
+    prompt = _prompt(plan, Path("/tmp/dept"))
+    assert f"COMPLETE weekly_scan => {sys.executable} " in prompt
+    assert "=> python3 " not in prompt
+    assert sys.executable.startswith("/")  # never a bare, PATH-resolved name
