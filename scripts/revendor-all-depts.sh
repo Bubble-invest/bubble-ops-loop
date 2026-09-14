@@ -112,6 +112,7 @@ DRY_RUN_MAP=(
   "scripts/lib/loop_notify.py        scripts/lib/loop_notify.py"
   "scripts/lib/notion_logbook.py     scripts/lib/notion_logbook.py"
   "scripts/lib/budget.py             scripts/lib/budget.py"
+  "scripts/lib/codex_write.sh        scripts/lib/codex_write.sh"
   "tools/notify_layer.py             tools/notify_layer.py"
   "skills/emit-kanban-task/SKILL.md          skills/emit-kanban-task/SKILL.md"
   "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"

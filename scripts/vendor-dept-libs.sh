@@ -145,6 +145,7 @@ MAP=(
   "scripts/lib/loop_notify.py        scripts/lib/loop_notify.py"
   "scripts/lib/notion_logbook.py     scripts/lib/notion_logbook.py"
   "scripts/lib/budget.py             scripts/lib/budget.py"
+  "scripts/lib/codex_write.sh        scripts/lib/codex_write.sh"
   "tools/notify_layer.py             tools/notify_layer.py"
 )
 
@@ -179,6 +180,10 @@ for pair in "${MAP[@]}"; do
     # -T: dst is always a normal file target (never "copy into directory").
     # --no-dereference: never follow a symlink SRC either (defense in depth).
     if copy_canonical_file "$src" "$dst"; then
+      # Preserve the canonical file's executable bit: shell-lib entries like
+      # codex_write.sh must stay runnable (`scripts/lib/codex_write.sh …`);
+      # plain-source .py entries are non-exec and left untouched.
+      [[ -x "$src" ]] && chmod +x "$dst" 2>/dev/null || true
       chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
       log "re-vendored $2 (was stale/missing)"
