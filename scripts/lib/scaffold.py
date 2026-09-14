@@ -997,6 +997,27 @@ documented in `shared-wiki/shared/systems/dept-rick-request-channel.md`).
 """
 
 
+def _append_operator_alignment(body: str) -> str:
+    """Append the canonical operator-alignment vendored block (#1318).
+
+    Single-sourced: the block text is read from `shared/snippets/operator-alignment.md`
+    via `scripts/vendor_claude_md.py` (the same renderer the fleet installer uses), so a
+    scaffolded dept and a re-vendored dept get byte-identical doctrine — no drift.
+    Fail-open: if the snippet/tool can't be resolved, scaffold still produces a valid
+    CLAUDE.md (the fleet re-vendor sweep backfills the block later).
+    """
+    try:
+        import importlib.util
+
+        vend_path = Path(__file__).resolve().parent.parent / "vendor_claude_md.py"
+        spec = importlib.util.spec_from_file_location("vendor_claude_md", vend_path)
+        vend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vend)
+        return vend.upsert(body, "operator-alignment")
+    except Exception:  # pragma: no cover - fail-open, never block scaffolding
+        return body
+
+
 def render_claude_md_operating(dept_yaml: dict) -> str:
     """Render the post-hatching (operating-mode) CLAUDE.md for a dept.
 
@@ -1032,7 +1053,7 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
     children = list(hierarchy.get("children", []) or []) if level == "management" else []
     children_section = _render_operating_children_section(children)
 
-    return CLAUDE_MD_OPERATING_TEMPLATE.format(
+    body = CLAUDE_MD_OPERATING_TEMPLATE.format(
         slug=slug,
         slug_compact=slug.replace("-", ""),
         display_name=display_name,
@@ -1042,6 +1063,9 @@ def render_claude_md_operating(dept_yaml: dict) -> str:
         children_section=children_section,
         vps_host=os.environ.get("BUBBLE_VPS_HOST", "{{VPS_HOST}}"),
     )
+    # New depts inherit the fleet operator-intent alignment directives from the
+    # single canonical source (#1318) — never a hand-copied divergent block.
+    return _append_operator_alignment(body)
 
 
 def render_systemd_handoff(slug: str) -> str:
