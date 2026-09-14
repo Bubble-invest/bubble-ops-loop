@@ -30,6 +30,27 @@ from readonly_intents_mirror import MirrorValidationError, validate_mirror  # no
 CORE_DIR = PurePosixPath("shared/operator-intents")
 MIRROR_INTENT_DIR = PurePosixPath("operator-intents")
 NON_CONTENT_PREFIXES = (PurePosixPath(".github"), PurePosixPath("hooks"))
+
+# Non-live areas that never need an intent link: archived/retired content and
+# the intent-proposal staging area. `"<segment>/**"` excludes that exact path
+# SEGMENT (not a substring — "archived-notes/" or "_archive-ish.md" do NOT
+# match) and everything below it, at any depth in the wiki tree. Board #1265:
+# the #1247 leak-audit was over-flagging archived pages (#1260-1264) that are
+# intentionally outside the live intent graph. Add a future archive/staging
+# root here as one line; the structural detector below is untouched.
+#
+# "operator-intents-proposals" is the real on-disk name of the intent staging
+# area (`shared/operator-intents-proposals/`, see SKILL.md); the plain
+# "proposals" entry is kept too per card #1265's literal wording, in case a
+# root-level `proposals/` is ever added, but on its own it does NOT match the
+# actual staging directory's longer name (adversarial review on #1265 caught
+# this: without this entry the "proposals" exclusion was a no-op against the
+# real wiki).
+EXCLUDED_PATH_GLOBS: tuple[str, ...] = (
+    "_archive/**",
+    "proposals/**",
+    "operator-intents-proposals/**",
+)
 WIKILINK_RE = re.compile(r"^\[\[([^\[\]|#]+)\]\]$")
 FIELD_RE = re.compile(r"^intent\s*:\s*(.*?)\s*$")
 LIST_ITEM_RE = re.compile(r"^\s+-\s*(.*?)\s*$")
@@ -38,6 +59,25 @@ STATUS_RE = re.compile(r"^status\s*:\s*(.*?)\s*$")
 
 def _is_below(path: PurePosixPath, parent: PurePosixPath) -> bool:
     return path == parent or parent in path.parents
+
+
+def _is_glob_excluded(relative: PurePosixPath, globs: Iterable[str]) -> bool:
+    """True if `relative` falls under one of the `"<segment>/**"` globs.
+
+    Matching is by exact path SEGMENT, not substring: `"_archive/**"` matches
+    `_archive/foo.md` and `a/_archive/b/foo.md` (the segment appears anywhere
+    in the path), but never `archived-notes/foo.md` or `not_archive.md`.
+    """
+
+    for pattern in globs:
+        if not pattern.endswith("/**"):
+            raise ValueError(f"unsupported exclusion glob (must end with '/**'): {pattern}")
+        segment = pattern[: -len("/**")]
+        if not segment or "/" in segment:
+            raise ValueError(f"unsupported exclusion glob (must be a single segment): {pattern}")
+        if segment in relative.parts[:-1]:
+            return True
+    return False
 
 
 def _unquote(value: str) -> str:
@@ -169,6 +209,8 @@ def _iter_pages(wiki_root: Path) -> Iterable[Path]:
             continue
         if any(part.startswith(".") for part in relative.parts):
             continue
+        if _is_glob_excluded(relative, EXCLUDED_PATH_GLOBS):
+            continue  # non-live: archived or staged, needs no intent link (#1265)
         yield page
 
 
