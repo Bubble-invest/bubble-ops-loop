@@ -25,7 +25,7 @@ done
 cat >"$DEPT/dept.yaml" <<'YAML'
 loop:
   due_dispatch:
-    mission_ids: [kanban_board, daily_scan, weekly_scan, monthly_scan, wiki_compile]
+    mission_ids: [kanban_board, daily_scan, weekly_scan, monthly_scan, wiki_compile, planned_scan]
     watermark: monitoring/due-mission-watermarks.json
     pending_lease_seconds: 21600
 layers:
@@ -33,31 +33,49 @@ layers:
 recurring_missions:
 - id: kanban_board
   layer: [1, 2, 3, 4]
+  status: live
   cadence: continuous
   due: {policy: every_tick}
   mission_file: missions/kanban-board.md
 - id: daily_scan
   layer: 1
+  status: live
   cadence: daily
   due: {policy: calendar_period, timezone: Europe/Paris}
   mission_file: missions/daily-scan.md
 - id: weekly_scan
   layer: 4
+  status: live
   cadence: weekly
   due: {policy: calendar_period, timezone: Europe/Paris}
   mission_file: missions/weekly-scan.md
 - id: monthly_scan
   layer: 2
+  status: live
   cadence: monthly
   due: {policy: calendar_period, timezone: Europe/Paris}
   mission_file: missions/monthly-scan.md
 - id: wiki_compile
   layer: 4
+  status: live
   cadence: continuous
   due: {policy: every_tick}
   mission_file: missions/wiki-compile.md
+# planned_scan is IN mission_ids scope but status: planned — the #1317 status
+# filter must skip it (never dispatched, never leased) even though it is due by
+# cadence. Its mission file deliberately does NOT exist, proving a not-yet-built
+# planned mission cannot crash the floor or starve the live missions.
+- id: planned_scan
+  layer: 1
+  status: planned
+  cadence: weekly
+  due: {policy: calendar_period, timezone: Europe/Paris}
+  mission_file: missions/planned-scan.md
+# website_guardian is intentionally NOT status: live AND out of mission_ids
+# scope — it must never be scheduled (double-checks the scope + status gates).
 - id: website_guardian
   layer: 1
+  status: planned
   cadence: weekly
   mission_file: missions/website-guardian.md
 YAML
@@ -88,6 +106,19 @@ else
     bad "first due-mission prompt"
 fi
 [[ "$prompt" != *website_guardian* ]] && ok "mission outside explicit M1-M8-style scope is not scheduled" || bad "unscoped mission leaked into plan"
+# #1317: an IN-scope status:planned mission is skipped by the status filter and
+# never leased, even though it is due by cadence and its file does not exist.
+[[ "$prompt" != *planned_scan* ]] && ok "in-scope status:planned mission is skipped by the #1317 status filter" || bad "planned mission leaked into plan"
+if [[ ! -f "$DEPT/monitoring/due-mission-watermarks.json" ]] || ! grep -q planned_scan "$DEPT/monitoring/due-mission-watermarks.json"; then
+    ok "status:planned mission is never leased in the watermark"
+else
+    bad "planned mission got a pending lease"
+fi
+# The skip is not hidden: the one-line stderr notice naming the skipped mission
+# must survive the wrapper's stdout-only $(...) capture and reach the log.
+grep -q 'due-mission notice.*planned_scan' "$WORK/first.log" \
+    && ok "skip notice for the planned mission reaches the log via stderr" \
+    || bad "skip notice did not reach the log"
 [[ "$prompt" == *'COMPLETE weekly_scan => python3 '* ]] \
     && [[ "$prompt" == *'only after that mission actually succeeds'* ]] \
     && [[ "$prompt" == *'inbox-accepted work'* ]] \
@@ -135,11 +166,13 @@ layers:
 recurring_missions:
 - id: board
   layer: [1, 2, 3, 4]
+  status: live
   cadence: continuous
   due: {policy: every_tick}
   mission_file: missions/board.md
 - id: weekly
   layer: 4
+  status: live
   cadence: weekly
   due: {policy: calendar_period, timezone: Europe/Paris}
   mission_file: missions/weekly.md
@@ -214,6 +247,7 @@ layers:
 recurring_missions:
 - id: weekly
   layer: 4
+  status: live
   cadence: weekly
   due: {policy: calendar_period, timezone: Europe/Paris}
   mission_file: missions/weekly.md
@@ -249,8 +283,12 @@ loop:
 layers:
   subscribed: [1, 2, 3, 4]
 recurring_missions:
+# status: live so the missing-due-rule still fails closed and raises — the
+# #1317 status filter must NOT mask a broken LIVE mission (a planned one WOULD
+# be silently skipped; that split is covered by the unit tests).
 - id: broken
   layer: 1
+  status: live
   cadence: weekly
   mission_file: missions/broken.md
 YAML
