@@ -30,19 +30,27 @@
 set -uo pipefail
 
 # Default resolution MUST mirror emit_kanban_item.sh's _resolve_queue_path
-# (board #1251 — the two independently guessed at this path and disagreed,
-# so a queued card could land somewhere nothing ever drains). Order:
+# EXACTLY, including the writability probe on candidate 2 (r1 review, board
+# #1251: an earlier version of this fix used an unconditional $BUBBLE_AGENT_
+# WORKDIR check here with no `-w` test, while emit's resolver falls through
+# to candidate 3 when that dir isn't writable for the emitting session — the
+# two could disagree again in exactly the scenario #1251 was filed over, if
+# $BUBBLE_AGENT_WORKDIR/memory exists but isn't writable). Order:
 #   1. $KANBAN_QUEUE — explicit override (a per-dept systemd drop-in, tests).
 #   2. $BUBBLE_AGENT_WORKDIR/memory/kanban_queue.jsonl — when this drain runs
 #      AS the same uid that emitted (e.g. a per-dept kanban-queue-drain@<dept>
-#      instance, WorkingDirectory=/srv/agents/<dept>), so it can actually read
-#      what that dept's own sandboxed session wrote.
+#      instance, WorkingDirectory=/srv/agents/<dept>) AND that dir is
+#      writable, so it can actually read (and later rewrite, on drain) what
+#      that dept's own sandboxed session wrote.
 #   3. $HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl — the
 #      legacy default (Rick's dev Mac, and the central `claude`-user systemd
-#      instance where the deployed drop-in still points at a fixed VPS path).
+#      instance where the deployed drop-in still points at a fixed VPS path;
+#      also emit's own fallback when candidate 2 isn't writable for it).
 if [ -n "${KANBAN_QUEUE:-}" ]; then
   QUEUE="$KANBAN_QUEUE"
-elif [ -n "${BUBBLE_AGENT_WORKDIR:-}" ]; then
+elif [ -n "${BUBBLE_AGENT_WORKDIR:-}" ] \
+     && mkdir -p "${BUBBLE_AGENT_WORKDIR%/}/memory" 2>/dev/null \
+     && [ -w "${BUBBLE_AGENT_WORKDIR%/}/memory" ]; then
   QUEUE="${BUBBLE_AGENT_WORKDIR%/}/memory/kanban_queue.jsonl"
 else
   QUEUE="$HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl"

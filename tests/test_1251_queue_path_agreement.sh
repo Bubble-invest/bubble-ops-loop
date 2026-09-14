@@ -96,5 +96,56 @@ echo "$DRAIN_OUT" | grep -q "Queue lands under BUBBLE_AGENT_WORKDIR" \
   || fail "drain dry-run did not see the card emit actually queued. Got: $DRAIN_OUT"
 pass "drain can see the exact card emit queued (no orphaned queue file)"
 
+# ── Test 3: both ends STILL agree when $BUBBLE_AGENT_WORKDIR/memory exists
+#            but is NOT writable (r1 adversarial review finding) ────────────
+# emit's _resolve_queue_path falls through to candidate 3 ($HOME/claude-
+# workspaces/Rick_RnD/monitoring) when candidate 2 isn't writable for the
+# emitting session. drain's default resolution must make the SAME decision
+# under the same env, or a card queued at candidate 3 would be reported as
+# "queue not found" by a drain that blindly trusted candidate 2 — a narrower
+# recurrence of #1251's actual failure mode.
+UNWRITABLE_WORKDIR="$TMPDIR_T/unwritable-workdir"
+mkdir -p "$UNWRITABLE_WORKDIR/memory"
+chmod 555 "$UNWRITABLE_WORKDIR/memory"
+RICK_HOME="$TMPDIR_T/home-for-fallback-test"
+mkdir -p "$RICK_HOME"
+
+env -i PATH="$STUBBIN:/usr/bin:/bin" \
+  HOME="$RICK_HOME" \
+  BUBBLE_AGENT_WORKDIR="$UNWRITABLE_WORKDIR" \
+  TMPDIR="$TMPDIR_T/decoy-tmp" \
+  bash "$EMITTER" \
+    task=test-1251-unwritable-workdir \
+    title="Falls through to Rick-monitoring when workdir unwritable" \
+    type=incident \
+    owner=morty \
+    budget=10 >/dev/null 2>&1
+emit_exit2=$?
+# Deliberately do NOT restore write perms here — the drain assertion below
+# needs the SAME unwritable state emit just saw. Removing a directory only
+# needs write+execute on its PARENT (not on the 555 dir itself), so the
+# trap's `rm -rf "$TMPDIR_T"` at script exit can still clean this up fine.
+
+[ "$emit_exit2" -ne 0 ] || fail "expected non-zero exit, got 0"
+EXPECTED_FALLBACK="$RICK_HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl"
+[ -f "$EXPECTED_FALLBACK" ] \
+  || fail "emit did not fall through to the Rick-monitoring path when \$BUBBLE_AGENT_WORKDIR/memory was unwritable"
+pass "emit falls through to candidate 3 when \$BUBBLE_AGENT_WORKDIR/memory is unwritable"
+
+DRAIN_OUT2=$(
+  env -i PATH="$STUBBIN:/usr/bin:/bin" \
+    HOME="$RICK_HOME" \
+    BUBBLE_AGENT_WORKDIR="$UNWRITABLE_WORKDIR" \
+    DRAIN_DRY_RUN=1 \
+    bash "$DRAIN" 2>&1
+)
+echo "$DRAIN_OUT2" | grep -qF "$EXPECTED_FALLBACK" \
+  || fail "drain did NOT fall through to the same candidate-3 path under an unwritable workdir — it disagreed with emit. Got: $DRAIN_OUT2"
+pass "drain also falls through to candidate 3 under the same unwritable-workdir env — still agrees with emit"
+
+echo "$DRAIN_OUT2" | grep -q "Falls through to Rick-monitoring" \
+  || fail "drain could not see the card that fell through to candidate 3. Got: $DRAIN_OUT2"
+pass "drain can see the card that fell through to candidate 3 (no stranded queue)"
+
 echo ""
 echo "All tests passed."
