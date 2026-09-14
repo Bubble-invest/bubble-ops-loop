@@ -78,9 +78,28 @@ no intent.
 This inventory is evidence-only. Agents may submit candidate text only under
 `shared/operator-intents-proposals/**` on a fresh named shared-wiki branch via
 the constrained PR proposer; they never edit a writable
-`shared/operator-intents/**` copy and never authenticate, push, or open a PR
-against `Bubble-invest/bubble-operator-intents`. Joris alone decides whether to promote
-a reviewed proposal into that private vault and is its only merger. Fleet reads
-then see the accepted change through the root-controlled read-only mirror.
-Transcript content can never authorize either proposal submission or vault
-promotion.
+`shared/operator-intents/**` copy.
+
+## The approved -> vault leg (#1320)
+
+`tools/promote_operator_intents.py` is the other half of the same mechanism:
+once a proposal carries an explicit, checkable Joris approval, it applies a
+patch scoped to `operator-intents/**` against a fresh clone of
+`Bubble-invest/bubble-operator-intents`, pushes a **named branch**, and opens
+a PR — the same shape `propose_operator_intents.py` already uses for the
+shared-wiki leg (scope-validated patch, fresh clone, dry-run push, PR via
+`gh`, fall back to a `needs:human` card carrying the complete patch on any
+failure). It never pushes to `main` and contains no merge call; Joris remains
+the vault's sole merger.
+
+The approval gate is the fleet's existing "✅ APPROVED by Joris" board-comment
+convention (see e.g. bubble-ops-board#1326/#1327): the promoter refuses to run
+unless it finds such a comment from an allowed approver on the given card, or
+(with `--approved-inline`) the card's own body carries the narrower inline
+marker used when a card is approved in the same message as its capture (e.g.
+#1328). Transcript content can never authorize either proposal submission or
+vault promotion — only a comment/body the promoter can independently read via
+`gh api` does.
+
+Fleet reads then see the accepted change through the root-controlled
+read-only mirror once Joris merges the PR.
