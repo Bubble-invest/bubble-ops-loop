@@ -1,0 +1,76 @@
+# Fleet CLAUDE.md vendoring targets (#1318)
+#
+# Single source of truth for WHICH agent CLAUDE.md files receive WHICH vendored
+# doctrine snippets. The snippets themselves live once in shared/snippets/ and are
+# applied via scripts/vendor_claude_md.py — never hand-edited per file (that is the
+# #917/#1314 drift trap this manifest exists to close).
+#
+# `snippets`:
+#   operator-alignment  -> the 4 approved operator-intent directives (UNIVERSAL,
+#                          every agent). Approved by Joris 2026-09-14 (#1318 + #1326/#1327/#1328).
+#   session-start-reads -> the standard wiki/memory read block. Applied ONLY where it
+#                          was missing/thin (Géraldine had 0 wiki refs, Ellie thin);
+#                          agents that already carry a session-start wiki block do NOT
+#                          get a second one (directive #4: never duplicate).
+#
+# Each agent's CLAUDE.md is committed in its OWN repo, so landing the block is a
+# per-repo PR (or, on the VPS, a boot-time re-vendor once merged). Global machine-level
+# ~/.claude/CLAUDE.md files are personal to each machine's owner and are NOT vendored
+# here — they are the owner's call (documented follow-up, see the PR body).
+
+targets:
+  # --- Joris's Mac (host:local) ---
+  - agent: rick
+    host: mac-joris
+    repo: vdk888/bubble-rnd-workspace
+    path: CLAUDE.md
+    snippets: [operator-alignment]     # Rick already reads the wiki (CEO Sync Protocol)
+  - agent: tonio
+    host: mac-joris
+    repo: vdk888/bubble-main-workspace
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+
+  # --- VPS depts (host:vps, live clones at /srv/agents/<slug>) ---
+  - agent: ben
+    host: vps
+    repo: Bubble-invest/bubble-ops-ben
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+  - agent: maya
+    host: vps
+    repo: Bubble-invest/bubble-ops-maya
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+  - agent: tony
+    host: vps
+    repo: Bubble-invest/bubble-ops-tony
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+  - agent: claudette
+    host: vps
+    repo: vdk888/bubble-claudette-workspace
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+  - agent: morty
+    host: vps
+    repo: Bubble-invest/bubble-ops-morty
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+
+  # --- Jade's Macs (host:local — coordinate with Jade before deploy) ---
+  - agent: miranda           # jade-m1
+    host: mac-jade-m1
+    repo: Bubble-invest/bubble-ops-content
+    path: CLAUDE.md
+    snippets: [operator-alignment]
+  - agent: geraldine         # jade-m5 — had ZERO wiki refs: needs the read block too
+    host: mac-jade-m5
+    repo: Bubble-invest/bubble-ops-accountant
+    path: CLAUDE.md
+    snippets: [operator-alignment, session-start-reads]
+  - agent: ellie             # jade-m5 — wiki block was thin: bring to baseline
+    host: mac-jade-m5
+    repo: Bubble-invest/bubble-ellie-workspace
+    path: CLAUDE.md
+    snippets: [operator-alignment, session-start-reads]
