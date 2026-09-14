@@ -54,6 +54,157 @@ def _read_contents_token() -> Optional[str]:
     return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or None
 
 
+def _resolve_checkout_branch(root: Path) -> str:
+    """Best-effort default-branch NAME for `root`'s `origin` remote.
+
+    Mirrors `scripts/sync-local-dept-clones.sh`'s `resolve_canonical_branch`
+    (same hazard: a hardcoded "main" silently mis-tracks a dept repo whose
+    default branch is something else, or that's been renamed after clone).
+    Tries the clone-time-cached `refs/remotes/origin/HEAD` first (free, no
+    network), falls back to a live `git remote show origin` parse, and only
+    falls back to the "main" convention used everywhere else in this repo's
+    tooling (e.g. Maya's own `dispatch_helpers.safe_pull`) if both fail —
+    never raises.
+    """
+    try:
+        ref = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "--short",
+             "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        if ref.returncode == 0 and ref.stdout.strip():
+            # "origin/main" -> "main"
+            return ref.stdout.strip().split("/", 1)[-1]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        shown = subprocess.run(
+            ["git", "-C", str(root), "remote", "show", "origin"],
+            capture_output=True, text=True, check=False, timeout=8,
+        )
+        if shown.returncode == 0:
+            for line in shown.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("HEAD branch:"):
+                    name = line.split(":", 1)[1].strip()
+                    if name and name != "(unknown)":
+                        return name
+    except Exception:  # noqa: BLE001
+        pass
+    return "main"
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def checkout_staleness(slug: str, branch: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Detect whether the on-disk checkout this reader serves from
+    (``repo_path(slug)`` — the SAME tree every other function in this module
+    reads gates/dept.yaml/outputs from) DIFFERS from ``origin/<branch>``.
+
+    Board #1299: for a `host: vps` dept (e.g. Maya) that repo is the dept's
+    OWN live working checkout — nothing re-clones or auto-pulls it for the
+    console. If the dept's own `/loop` tick (which normally reconciles to
+    origin on every wake) stops running for a stretch, the checkout can sit
+    days behind origin while the console keeps faithfully rendering whatever
+    is on disk. This is a **read-only** staleness check for a UI badge, never
+    a fix: it must NEVER pull/fetch/reset the dept's checkout (that could
+    clobber uncommitted work the loop hasn't pushed yet) — it only compares
+    two SHAs.
+
+      - local SHA:  `git rev-parse HEAD` in the checkout (no network). If the
+        checkout happens to be mid-`rebase` (the dept's own loop actively
+        running `safe_pull` at the exact moment of this read), this simply
+        returns whatever commit HEAD points to right now — never crashes,
+        and at worst reports a transient "stale" a few seconds early, never
+        a false "fresh" (the safe direction for a warning badge).
+      - remote SHA: GitHub REST `commits/<branch>` via `gh api`, using the
+        same short-lived contents token `_write_gate_decision_github` uses
+        (read access is implied by the write scope) — no local git config or
+        SSH credential needed, so it works regardless of what auth (if any)
+        the checkout's own `origin` remote has for THIS process/user. The
+        result is validated against `_SHA_RE` before use — `--jq .sha` on an
+        unexpected/empty API body (e.g. a branch that doesn't exist) can
+        print a truthy `"null"` with `rc=0`, which would otherwise slip past
+        the `not remote.stdout.strip()` check and register as a bogus "stale"
+        (since `"null" != local_sha`).
+
+    Caveats a caller should know:
+      - `stale=True` means the two SHAs DIFFER, not specifically "local is
+        BEHIND". A local commit made but not yet pushed would also read as
+        "stale" here. In practice (a dept's checkout only ever advances via
+        its own `/loop` pushing then pulling) behind is overwhelmingly the
+        real-world case this exists to catch, but the field name and any
+        copy built on it should say "differs from", not assert a direction.
+      - The route-level TTL cache (see `routes/dept.py`) means that right
+        after a dept's loop finally reconciles, the badge can still say
+        "stale" for up to that TTL — a stale "stale" badge. Accepted
+        tradeoff (bounds `gh api` call volume); not a data-correctness bug.
+      - `repo = f"bubble-ops-{slug}"` assumes the dept-repo naming
+        convention. `/dept/{slug}` also serves concierges (morty, claudette),
+        whose GitHub repos are NOT `bubble-ops-`-prefixed (mirrors the same
+        assumption `_write_gate_decision_github` already makes) — for those,
+        the `gh api` lookup 404s and this degrades to `None` (no badge),
+        never a false claim. Fine for this card's scope (the reported bug is
+        dept-only); a follow-up could special-case concierges if wanted.
+
+    Returns None whenever staleness can't be determined (not a git repo, `gh`
+    unavailable/unauthenticated, network hiccup, timeout, dept not on disk,
+    or the remote sha doesn't look like a real sha) — the caller must treat
+    None as "unknown", never as "not stale", and the page must render exactly
+    as if this function didn't exist. Never raises.
+    """
+    root = repo_path(slug)
+    if root is None or not (root / ".git").exists():
+        return None
+
+    try:
+        local = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("checkout_staleness: git rev-parse failed for %s: %s", slug, exc)
+        return None
+    if local.returncode != 0 or not local.stdout.strip():
+        return None
+    local_sha = local.stdout.strip()
+
+    if branch is None:
+        branch = _resolve_checkout_branch(root)
+
+    repo = f"bubble-ops-{slug}"
+    token = _read_contents_token()
+    env = {**os.environ, "GH_TOKEN": token} if token else dict(os.environ)
+    try:
+        remote = subprocess.run(
+            ["gh", "api", f"repos/{settings.GITHUB_ORG}/{repo}/commits/{branch}",
+             "--jq", ".sha"],
+            capture_output=True, text=True, check=False, env=env, timeout=8,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("checkout_staleness: gh api failed for %s: %s", slug, exc)
+        return None
+    remote_sha = remote.stdout.strip()
+    if remote.returncode != 0 or not remote_sha or not _SHA_RE.match(remote_sha):
+        # Covers both a hard gh failure AND a "succeeded" call that didn't
+        # actually return a sha (`--jq .sha` prints a truthy `null` for a
+        # missing field, e.g. a `branch` that doesn't exist on this repo) —
+        # either way we don't have a trustworthy remote sha to compare.
+        _log.info(
+            "checkout_staleness: could not resolve origin/%s sha for %s (rc=%s): %s",
+            branch, slug, remote.returncode,
+            (remote.stderr or remote_sha or "")[:200])
+        return None
+
+    return {
+        "stale": local_sha != remote_sha,
+        "local_sha": local_sha,
+        "remote_sha": remote_sha,
+        "branch": branch,
+    }
+
+
 def load_dept_yaml(slug: str) -> Optional[dict]:
     """Return dept.yaml (live) or dept.yaml.draft (a-eclore) as a dict."""
     root = repo_path(slug)

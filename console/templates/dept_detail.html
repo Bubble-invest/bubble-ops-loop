@@ -141,6 +141,19 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
         non déclaré · valeur par défaut
       </span>
     {% endif %}
+    {% if checkout_staleness and checkout_staleness.stale %}
+      {# Board #1299 — the console renders straight off this dept's on-disk
+         checkout; when that checkout no longer matches origin/main (most
+         often because its own /loop reconcile stalled and it fell behind —
+         though this only detects a DIFFERENCE, not the direction), the
+         gates/drafts shown below may be old. Informational only — never
+         auto-fixed here (that could clobber uncommitted work in the
+         checkout). #}
+      <span class="pill pill-stale"
+            title="Checkout local (HEAD {{ checkout_staleness.local_sha[:7] }}) désynchronisé de origin/{{ checkout_staleness.branch }} ({{ checkout_staleness.remote_sha[:7] }}) — les contenus ci-dessous (drafts, gates) peuvent être périmés tant que le /loop du département n'a pas resynchronisé.">
+        ⚠ checkout désynchronisé de origin/{{ checkout_staleness.branch }}
+      </span>
+    {% endif %}
   </div>
 </section>
 
