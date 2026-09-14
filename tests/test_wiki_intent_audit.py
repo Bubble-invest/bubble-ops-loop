@@ -6,7 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -161,6 +161,87 @@ def test_core_roots_and_repo_infrastructure_are_not_children(tmp_path: Path) -> 
 
     assert report["summary"]["pages_scanned"] == 1
     assert candidate_by_path(report).keys() == {"index.md"}
+
+
+def test_archive_and_proposals_segments_are_excluded_from_the_leak_check(
+    tmp_path: Path,
+) -> None:
+    """Board #1265: archived/staged content is not live and needs no intent
+    link, so it must never surface as a candidate — while a genuinely
+    untagged LIVE page is still flagged (regression guard against a change
+    that silences everything)."""
+
+    wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
+    seed_intents(mirror)
+    write_page(wiki, "_archive/HANDOFF-old-thing.md", "title: Old handoff")
+    write_page(
+        wiki, "_archive/legacy/nested/hot.md", "title: Nested archive page"
+    )
+    write_page(wiki, "proposals/new-intent-draft.md", "title: Draft proposal")
+    write_page(
+        wiki, "rick_rnd/proposals/nested-draft.md", "title: Nested proposal"
+    )
+    # The REAL on-disk staging area (not the literal "proposals/" placeholder
+    # above) — must also be excluded. Caught by adversarial review: an earlier
+    # version of this fix only matched a literal "proposals" segment, which is
+    # a no-op against the actual directory name.
+    write_page(
+        wiki,
+        "shared/operator-intents-proposals/rnd.md",
+        "title: R&D proposals",
+    )
+    # Must NOT be excluded: these only resemble the excluded segments.
+    write_page(wiki, "shared/systems/archived-notes.md", "title: Archived notes")
+    write_page(wiki, "notes/not_archive.md", "title: Not archive")
+    write_page(wiki, "notes/proposals-overview.md", "title: Proposals overview")
+    # A genuinely untagged LIVE page: must still be flagged.
+    write_page(wiki, "rick_rnd/live-orphan.md", "title: Live orphan")
+
+    report = audit_module._audit_validated_release_for_tests(wiki, mirror)
+    scanned_paths = {c["path"] for c in report["candidates"]}
+
+    for excluded in (
+        "_archive/HANDOFF-old-thing.md",
+        "_archive/legacy/nested/hot.md",
+        "proposals/new-intent-draft.md",
+        "rick_rnd/proposals/nested-draft.md",
+        "shared/operator-intents-proposals/rnd.md",
+    ):
+        assert excluded not in scanned_paths, excluded
+
+    for still_live in (
+        "shared/systems/archived-notes.md",
+        "notes/not_archive.md",
+        "notes/proposals-overview.md",
+        "rick_rnd/live-orphan.md",
+    ):
+        assert still_live in scanned_paths, still_live
+
+    assert report["candidates"]  # never silences everything
+
+
+def test_is_glob_excluded_matches_segment_not_substring() -> None:
+    globs = audit_module.EXCLUDED_PATH_GLOBS
+    assert globs == ("_archive/**", "proposals/**", "operator-intents-proposals/**")
+
+    excluded = (
+        "_archive/x.md",
+        "a/_archive/b/x.md",
+        "proposals/x.md",
+        "a/proposals/b/c.md",
+        "shared/operator-intents-proposals/x.md",
+    )
+    for path in excluded:
+        assert audit_module._is_glob_excluded(PurePosixPath(path), globs), path
+
+    not_excluded = (
+        "archived-notes/x.md",
+        "not_archive.md",
+        "proposals-overview.md",
+        "notes/proposals.md",  # a FILE named proposals.md, not the dir
+    )
+    for path in not_excluded:
+        assert not audit_module._is_glob_excluded(PurePosixPath(path), globs), path
 
 
 def test_internal_report_can_be_atomically_written(tmp_path: Path) -> None:

@@ -54,10 +54,15 @@ Everything between here and "## SYNTHESIS MODE" is the **compile** path.
 
 The launcher writes
 `/home/claude/monitoring/wiki-intent-audit/latest.json` before starting you.
-Read it now. It enumerates ordinary wiki pages whose `intent:` frontmatter is
-missing, empty, malformed, outside the CORE intent collection, or points to a
-missing target. The collector makes **no semantic relevance decision**: a row
-is a candidate for agent review, not proof that the page is a leak.
+Read it now. It enumerates live ordinary wiki pages whose `intent:`
+frontmatter is missing, empty, malformed, outside the CORE intent collection,
+or points to a missing target. The collector makes **no semantic relevance
+decision**: a row is a candidate for agent review, not proof that the page is
+a leak. Non-live areas — anything under an `_archive/`, `proposals/`, or
+`operator-intents-proposals/` path segment (the real name of the intent
+staging area, `shared/operator-intents-proposals/`; `EXCLUDED_PATH_GLOBS` in
+`wiki_intent_audit.py`) — are excluded from the report entirely; they need no
+intent link (board #1265).
 
 If the report is absent, fail the run explicitly. The installer deploys
 `/home/claude/scripts/wiki-intent-audit.py` and the launcher must have run it;
