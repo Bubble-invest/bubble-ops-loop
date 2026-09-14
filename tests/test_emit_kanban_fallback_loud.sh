@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # test_emit_kanban_fallback_loud.sh — verify that emit_kanban_item.sh emits a
-# [WARN] on stderr and exits 0 when both gh and the dashboard fail.
+# [WARN] on stderr AND exits non-zero when gh is unavailable/fails (the
+# dashboard fallback was formally retired — board #1251).
 #
 # Covers bug #262: previously a failed emission exited 0 silently — cards
-# vanished into kanban_queue.jsonl with no operator signal.
+# vanished into kanban_queue.jsonl with no operator signal. Board #1251
+# hardened this further: exit 0 on total failure was itself the residual
+# bug (a caller could not tell "filed" from "not filed" without parsing
+# stderr) — the emitter must now exit non-zero whenever the card did not
+# actually reach the board, while still writing the queue file (queueing
+# beats losing the item; only the exit code changed).
 #
 # Run: bash tests/test_emit_kanban_fallback_loud.sh
 # Returns 0 on pass, 1 on any failure.
@@ -44,7 +50,6 @@ chmod +x "$STUBBIN/ssh" "$STUBBIN/sudo"
 stderr_output=$(
   PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE" \
   TELEGRAM_BOT_TOKEN="" \
   BUBBLE_OPERATOR_CHAT_ID="" \
@@ -57,9 +62,15 @@ stderr_output=$(
 )
 exit_code=$?
 
-# Assert exit 0 (emission must never break callers)
-[ "$exit_code" -eq 0 ] || fail "exit code was $exit_code, expected 0"
-pass "exit code is 0"
+# Board #1251: exit NON-ZERO — the card did not reach the board (this is the
+# fail-loud contract; a caller must be able to tell "filed" from "not filed").
+[ "$exit_code" -ne 0 ] || fail "exit code was $exit_code, expected non-zero (card did not reach the board)"
+pass "exit code is non-zero ($exit_code) — card-not-on-board is loud"
+
+# Assert the explicit "CARD NOT ON BOARD" marker is present (board #1251)
+echo "$stderr_output" | grep -q "CARD NOT ON BOARD" \
+  || fail "'CARD NOT ON BOARD' marker not found in stderr. Got: $stderr_output"
+pass "'CARD NOT ON BOARD' marker present on stderr"
 
 # Assert [WARN] appears on stderr
 echo "$stderr_output" | grep -q "\[WARN\].*NOT on board" \
@@ -75,27 +86,27 @@ grep -q "Bug 262 fallback test card" "$QUEUE" \
   || fail "card title not found in queue. Queue: $(cat "$QUEUE")"
 pass "card title present in kanban_queue.jsonl"
 
-# ── Test 2: happy path (gh succeeds) is unchanged / quiet ────────────────────
-# We can't call real GitHub in CI, so we just verify the emitter exits 0
-# when gh auth isn't available (it should fall through to dashboard+queue).
-# This test confirms we haven't broken the happy-path exit convention.
+# ── Test 2: a second, distinct failed emit is ALSO loud (not a one-off) ──────
+# Confirms the non-zero-on-total-failure contract holds across repeat calls,
+# not just the first one, and that the queue still receives the item either way.
 
 QUEUE2="$TMPDIR_T/kanban_queue2.jsonl"
 exit2=$(
   PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE2" \
   TELEGRAM_BOT_TOKEN="" \
   bash "$EMITTER" \
     task=test-emit-fallback-loud-2 \
-    title="Second card — still exits 0" \
+    title="Second card — also not on board" \
     type=findings \
     owner=ben \
     budget=5 2>/dev/null; echo $?
 )
-[ "$exit2" -eq 0 ] || fail "second emit call returned $exit2, expected 0"
-pass "second emit call exits 0"
+[ "$exit2" -ne 0 ] || fail "second emit call returned $exit2, expected non-zero"
+pass "second emit call is also non-zero ($exit2)"
+grep -q "Second card" "$QUEUE2" || fail "second card not found in its queue"
+pass "second card still landed in the queue despite the non-zero exit"
 
 # ── Test 3: drain dry-run lists card and exits 0 ─────────────────────────────
 
@@ -184,10 +195,15 @@ bash "$EMITTER" \
   type=incident \
   owner=rnd \
   budget=10 >/dev/null 2>&1
+happy_exit=$?
 
 [ -f "$MARKER" ] \
   || fail "empty GH_TOKEN poisoned resolution: gh issue create was NOT reached (the #536 bug — emit fell to the queue instead of the board)"
 pass "empty GH_TOKEN is unset by the guard → emit reaches the board via step-2a token (#536)"
+
+# Board #1251: the happy path (card actually created) must exit 0.
+[ "$happy_exit" -eq 0 ] || fail "happy-path emit (card created on the stubbed board) returned $happy_exit, expected 0"
+pass "happy-path emit exits 0"
 
 # The queue must NOT have caught this card (it went to the board, not the fallback).
 if [ -f "$QUEUE4" ] && grep -q "536 empty-GH_TOKEN guard card" "$QUEUE4"; then

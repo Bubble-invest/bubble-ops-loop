@@ -202,6 +202,7 @@ KANBAN_MAP=(
   "skills/emit-kanban-task/SKILL.md          skills/emit-kanban-task/SKILL.md"
   "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"
   "tools/kanban/emit_kanban_item.sh          tools/kanban/emit_kanban_item.sh"
+  "tools/kanban/drain_kanban_queue.sh        tools/kanban/drain_kanban_queue.sh"
 )
 for pair in "${KANBAN_MAP[@]}"; do
   # shellcheck disable=SC2086

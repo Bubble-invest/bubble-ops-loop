@@ -17,8 +17,13 @@
 #   2. /home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh  (framework)
 #   3. ~/claude-workspaces/Rick_RnD/tools/kanban/emit_kanban_item.sh  (Rick dev Mac)
 #
-# Exit code is the tool's own (which is always 0 — emission must never break a
-# tick). On no tool found, prints a clear error and exits 1 so the caller knows.
+# Exit code is the tool's own: 0 means the card is actually on the board
+# (created, or a dup already existed) or was a rejected call (missing
+# task=/title=/budget=, a caller-usage error, not a board-reachability
+# failure); non-zero means the card did NOT reach the board — it fell to a
+# local dead-letter queue instead (board #1251 — never trust an unchecked
+# exit 0 to mean "tracked"). On no tool found, prints a clear error and exits
+# 1 so the caller knows.
 
 set -uo pipefail
 

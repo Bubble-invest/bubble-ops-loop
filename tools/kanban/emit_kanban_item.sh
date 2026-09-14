@@ -2,7 +2,10 @@
 # emit_kanban_item.sh — push a single action-required item to the GitHub board kanban.
 #
 # Primary backend: create a GitHub issue on Bubble-invest/bubble-ops-board via `gh issue create`.
-# Fallback: POST to the local dashboard (localhost:3847) + local queue file (migration safety net).
+# Fallback: append to a local dead-letter queue file (drained later by
+# tools/kanban/drain_kanban_queue.sh). The old localhost:3847 dashboard POST
+# was formally retired (board #1251) — that receiver moved to GitHub Issues
+# on 2026-06-20 (board #164) and nothing has served that port since.
 #
 # USAGE (from a SKILL.md):
 #
@@ -39,7 +42,23 @@
 # exact same finding still collapses to one card. The legacy <!-- emit-task: <task> -->
 # marker is still emitted (drain_kanban_queue.sh + tooling grep for it).
 #
-# Exit 0 always — emission must never fail the cron.
+# Exit code contract (board #1251 — fail loud):
+#   0 — the card is actually ON THE BOARD: a GitHub issue was created, OR an
+#       open issue for this task+title already existed (dedup hit).
+#   0 — a REJECTED emit that intentionally creates no card at all (missing
+#       task=/title=, or a missing/invalid budget= — board #537). These are
+#       caller-usage errors, not board-reachability failures; they were
+#       already loud on stderr (+ a Telegram alert for the budget case)
+#       before this fix and stay exit-0 so a malformed call never aborts the
+#       caller's larger tick. `--print-emit-key` also exits 0 (dry-run, no
+#       card attempted either way).
+#   1 — the card did NOT reach the board: GitHub was unreachable/failed AND
+#       it fell to the local dead-letter queue (still written — queueing
+#       beats losing the item — but the caller must be able to tell "filed"
+#       from "not filed" and act accordingly, e.g. treat it as escalation-
+#       worthy rather than assuming the finding is tracked).
+# A caller that ignores the exit code already gets a queued item (never
+# silent data loss); a caller that checks it now gets an honest signal.
 
 set -uo pipefail
 
@@ -543,7 +562,61 @@ Rick must run drain_kanban_queue.sh to replay."
     2>/dev/null || true
 }
 
-_dashboard_emit() {
+# _resolve_queue_path — the single source of truth for where the dead-letter
+# queue file lives when GitHub is unreachable. KEEP THIS IN SYNC WITH
+# drain_kanban_queue.sh's own default (same candidate order) — board #1251's
+# root cause was these two independently-guessed paths silently disagreeing,
+# so a queued card could land somewhere nothing ever drains.
+#
+# Priority (first usable wins):
+#   1. $KANBAN_QUEUE — explicit override, always wins (a per-dept systemd
+#      drop-in, or a test harness).
+#   2. $BUBBLE_AGENT_WORKDIR/memory/kanban_queue.jsonl — the dept's OWN
+#      persistent project checkout (e.g. /srv/agents/morty), set by the
+#      agent-launch unit for every uid-isolated dept. This is the fix for
+#      board #1251's actual failure: a sandboxed Bash tool call's writable
+#      filesystem is scoped to the project checkout + a session-scoped tmp
+#      dir, NOT arbitrary paths under $HOME — so $HOME-relative guesses (the
+#      old candidates below) silently failed inside the sandbox even though
+#      the dept uid owns $HOME at the Unix-permission level, and the write
+#      fell through to $TMPDIR (a `/tmp/claude-<uid>` dir that vanishes with
+#      the session — see #1250's incident). A path under the project
+#      checkout is inside the sandbox's writable root, so it actually lands.
+#   3. $HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl — Rick's
+#      own dev-Mac default (no BUBBLE_AGENT_WORKDIR there; this IS the
+#      project tree on that box).
+#   4. ${TMPDIR:-/tmp}/kanban_queue.jsonl — last resort only. Session-scoped;
+#       the caller is told explicitly that this copy may not survive.
+_resolve_queue_path() {
+  if [ -n "${KANBAN_QUEUE:-}" ]; then
+    printf '%s' "$KANBAN_QUEUE"
+    return 0
+  fi
+  if [ -n "${BUBBLE_AGENT_WORKDIR:-}" ]; then
+    local _wd="${BUBBLE_AGENT_WORKDIR%/}/memory"
+    if mkdir -p "$_wd" 2>/dev/null && [ -w "$_wd" ]; then
+      printf '%s' "$_wd/kanban_queue.jsonl"
+      return 0
+    fi
+  fi
+  local _rick="$HOME/claude-workspaces/Rick_RnD/monitoring"
+  if mkdir -p "$_rick" 2>/dev/null && [ -w "$_rick" ]; then
+    printf '%s' "$_rick/kanban_queue.jsonl"
+    return 0
+  fi
+  printf '%s' "${TMPDIR:-/tmp}/kanban_queue.jsonl"
+  return 1  # signals "this is the session-scoped last resort", not an error
+}
+
+# _queue_emit — the fallback used when GitHub is unreachable/failed.
+#
+# BOARD #1251: this used to POST to a local dashboard at localhost:3847
+# first. That receiver was retired 2026-06-20 (board #164 — the kanban moved
+# to GitHub Issues) and nothing has listened on that port anywhere in the
+# fleet since; every emit that reached this function paid a real network
+# timeout (`curl -m 5`) to hit a dead hop before queueing. Formally retired
+# here (board #1251 ask 4) — go straight to the durable queue.
+_queue_emit() {
   local PAYLOAD
   PAYLOAD=$(TASK="$TASK" TITLE="$TITLE" BODY="$BODY" TYPE="$TYPE" PRIORITY="$PRIORITY" \
             OWNER="$OWNER" ACTIONS="$ACTIONS" CONTEXT_URL="$CONTEXT_URL" TELEGRAM_REF="$TELEGRAM_REF" \
@@ -575,35 +648,24 @@ print(json.dumps(payload))
 " 2>/dev/null)
 
   if [ -z "$PAYLOAD" ]; then
-    echo "emit_kanban_item: failed to build dashboard payload" >&2
+    echo "emit_kanban_item: failed to build queue payload" >&2
     return 1
   fi
 
-  KANBAN_HOST="${KANBAN_HOST:-localhost:3847}"
-  HTTP=$(curl -s -m 5 -o /dev/null -w "%{http_code}" -X POST "http://${KANBAN_HOST}/api/monitor-event" \
-    -H 'Content-Type: application/json' \
-    -d "$PAYLOAD" 2>/dev/null)
-
-  if [ "$HTTP" != "200" ]; then
-    # Host-portable queue path: honour $KANBAN_QUEUE, else the first writable
-    # candidate dir, degrading to $TMPDIR/tmp so a read-only $HOME (e.g. a
-    # systemd-sandboxed box agent) can't swallow the card silently.
-    QUEUE="${KANBAN_QUEUE:-}"
-    if [ -z "$QUEUE" ]; then
-      for _qdir in "$HOME/claude-workspaces/Rick_RnD/monitoring" "$HOME/.bubble" "${TMPDIR:-/tmp}"; do
-        if mkdir -p "$_qdir" 2>/dev/null && [ -w "$_qdir" ]; then
-          QUEUE="$_qdir/kanban_queue.jsonl"; break
-        fi
-      done
-      QUEUE="${QUEUE:-${TMPDIR:-/tmp}/kanban_queue.jsonl}"
-    fi
-    mkdir -p "$(dirname "$QUEUE")" 2>/dev/null || true
-    echo "$PAYLOAD" >> "$QUEUE"
-    # ── LOUD WARN: the card did NOT reach the board ───────────────────────────
-    echo "[WARN] emit fell to local queue — card NOT on board (Rick must drain): ${TITLE}" >&2
-    echo "emit_kanban_item: dashboard at ${KANBAN_HOST} returned $HTTP, item queued at $QUEUE" >&2
-    _kanban_queue_alert "${TITLE}" "$QUEUE"
+  local QUEUE
+  QUEUE=$(_resolve_queue_path)
+  local queue_is_durable=$?
+  mkdir -p "$(dirname "$QUEUE")" 2>/dev/null || true
+  echo "$PAYLOAD" >> "$QUEUE"
+  # ── LOUD WARN: the card did NOT reach the board ───────────────────────────
+  echo "[WARN] emit fell to local queue — card NOT on board (Rick must drain): ${TITLE}" >&2
+  if [ "$queue_is_durable" -eq 0 ]; then
+    echo "emit_kanban_item: GitHub unavailable, item queued at durable path $QUEUE" >&2
+  else
+    echo "emit_kanban_item: GitHub unavailable AND no durable queue dir was writable — item queued at SESSION-SCOPED $QUEUE (may not survive; fix BUBBLE_AGENT_WORKDIR/KANBAN_QUEUE for this host)" >&2
   fi
+  _kanban_queue_alert "${TITLE}" "$QUEUE"
+  return 1
 }
 
 # ── Resolve a GitHub token for the board ──────────────────────────────────────
@@ -647,14 +709,31 @@ _resolve_gh_token() {
   #     keeps a fresh short-lived board token at /run/bubble-board/token
   #     (root:claude 0640, ~45min refresh). Reading it needs NO sudo, so it works
   #     even under NoNewPrivileges (where the sudo-minter path below is blocked).
+  #     BOARD #1251: that shared file is group `claude`-only, so it is invisible
+  #     to a per-dept isolated agent uid (agent-morty, agent-ben, ...) even
+  #     though a NoNewPrivileges Bash sandbox is exactly the case that needs
+  #     the no-sudo path most. The refresher (deploy/bin/bubble-board-token-
+  #     refresh.sh) also drops a PER-DEPT copy at /run/bubble-board/token.<dept>
+  #     owned root:agent-<dept> 0640 — no credential is broadened, each dept
+  #     only gets read access to a copy already permitted to that same dept's
+  #     sudoers-scoped minter grant (/etc/sudoers.d/bubble-board-token-agent-
+  #     <dept>). Try the per-dept copy first (when BUBBLE_DEPT is set), then
+  #     the shared file, so a sandboxed dept session finds a readable token
+  #     without needing sudo at all.
   local tokfile="${BOARD_TOKEN_FILE:-/run/bubble-board/token}"
-  if command -v gh &>/dev/null && [ -r "$tokfile" ]; then
-    local ftok
-    ftok=$(cat "$tokfile" 2>/dev/null || true)
-    case "$ftok" in
-      ghs_*) export GH_TOKEN="$ftok"; return 0 ;;
-    esac
-  fi
+  local dept_tokfile=""
+  [ -n "${BUBBLE_DEPT:-}" ] && dept_tokfile="${tokfile}.${BUBBLE_DEPT}"
+  local _tf
+  for _tf in "$dept_tokfile" "$tokfile"; do
+    [ -n "$_tf" ] || continue
+    if command -v gh &>/dev/null && [ -r "$_tf" ]; then
+      local ftok
+      ftok=$(cat "$_tf" 2>/dev/null || true)
+      case "$ftok" in
+        ghs_*) export GH_TOKEN="$ftok"; return 0 ;;
+      esac
+    fi
+  done
   # 2b. Fallback: mint on demand via the root-owned minter through a sudoers
   #     NOPASSWD rule (works only where NoNewPrivileges is NOT set).
   local minter=/usr/local/bin/bubble-board-token.sh
@@ -684,7 +763,7 @@ _resolve_gh_token() {
   return 1  # no usable GitHub auth
 }
 
-# ── Main: try GitHub first, fall back to dashboard ────────────────────────────
+# ── Main: try GitHub first, fall back to the durable local queue ─────────────
 
 GH_OK=0
 if _resolve_gh_token; then
@@ -694,8 +773,15 @@ if _resolve_gh_token; then
 fi
 
 if [ "$GH_OK" -eq 0 ]; then
-  echo "emit_kanban_item: gh unavailable or failed — falling back to dashboard" >&2
-  _dashboard_emit
+  echo "emit_kanban_item: gh unavailable or failed — falling back to local queue" >&2
+  _queue_emit
+  # ── FAIL LOUD (board #1251) ────────────────────────────────────────────────
+  # Neither transport landed the card on the board. The queue write above
+  # (whatever path it used) means the finding is not LOST, but it is not
+  # TRACKED either — a caller that doesn't check this exit code must not be
+  # able to walk away believing the finding is on the board.
+  echo "emit_kanban_item: CARD NOT ON BOARD — '${TITLE}' (task=${TASK}) — see the [WARN] above for the queue path; run tools/kanban/drain_kanban_queue.sh to replay once GitHub/auth is reachable" >&2
+  exit 1
 fi
 
 exit 0

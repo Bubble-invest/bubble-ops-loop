@@ -29,7 +29,24 @@
 
 set -uo pipefail
 
-QUEUE="${KANBAN_QUEUE:-$HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl}"
+# Default resolution MUST mirror emit_kanban_item.sh's _resolve_queue_path
+# (board #1251 — the two independently guessed at this path and disagreed,
+# so a queued card could land somewhere nothing ever drains). Order:
+#   1. $KANBAN_QUEUE — explicit override (a per-dept systemd drop-in, tests).
+#   2. $BUBBLE_AGENT_WORKDIR/memory/kanban_queue.jsonl — when this drain runs
+#      AS the same uid that emitted (e.g. a per-dept kanban-queue-drain@<dept>
+#      instance, WorkingDirectory=/srv/agents/<dept>), so it can actually read
+#      what that dept's own sandboxed session wrote.
+#   3. $HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl — the
+#      legacy default (Rick's dev Mac, and the central `claude`-user systemd
+#      instance where the deployed drop-in still points at a fixed VPS path).
+if [ -n "${KANBAN_QUEUE:-}" ]; then
+  QUEUE="$KANBAN_QUEUE"
+elif [ -n "${BUBBLE_AGENT_WORKDIR:-}" ]; then
+  QUEUE="${BUBBLE_AGENT_WORKDIR%/}/memory/kanban_queue.jsonl"
+else
+  QUEUE="$HOME/claude-workspaces/Rick_RnD/monitoring/kanban_queue.jsonl"
+fi
 DRAINED="${QUEUE%.jsonl}.drained"
 BOARD_REPO="Bubble-invest/bubble-ops-board"
 DRY_RUN="${DRAIN_DRY_RUN:-0}"
