@@ -10,6 +10,7 @@ Run: python3 -m pytest scripts/lib/tests/test_1253_token_refresh_retry.py -q
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -80,11 +81,20 @@ printf '%s' "$TEST_TOKEN"
         minter_assignment, f"MINTER={shlex.quote(str(minter))}", 1
     ).replace(dest_assignment, f"DEST_DIR={shlex.quote(str(dest_dir))}", 1)
     # The retry/validation/atomic-write behavior does not require root. Remove
-    # only ownership arguments from the isolated test copy.
-    script_text = script_text.replace(
-        'install -d -m 0750 -o root -g claude "$DEST_DIR"',
-        'install -d -m 0750 "$DEST_DIR"',
-        1,
+    # only ownership arguments from the isolated test copy. A regex (not an
+    # exact-mode string literal) so this survives either wrapper's own dir
+    # mode changing independently (board #1251 r2 bumped bubble-board's to
+    # 0751; contents-token stays 0750) without silently no-op'ing and
+    # leaking `-o root -g claude` into a non-root test run.
+    install_pattern = re.compile(
+        r'install -d -m (\d+) -o root -g claude "\$DEST_DIR"'
+    )
+    assert install_pattern.search(script_text), (
+        f"expected an 'install -d -m <mode> -o root -g claude \"$DEST_DIR\"' "
+        f"line in {source} — did its ownership-flag syntax change?"
+    )
+    script_text = install_pattern.sub(
+        r'install -d -m \1 "$DEST_DIR"', script_text, count=1
     ).replace('chown root:claude "$DEST.tmp"', ":", 1)
     runnable = tmp_path / source.name
     runnable.write_text(script_text, encoding="utf-8")
