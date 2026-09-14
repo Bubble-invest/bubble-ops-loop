@@ -148,11 +148,12 @@ if [ -x "$EMIT_KANBAN" ]; then
   # Build a compact kanban body (cap at 500 chars — kanban cards are glanceable)
   KANBAN_BODY="${BODY:0:500}"
 
-  # Use the Mac Tailscale IP as KANBAN_HOST (Morty→Mac dashboard tunnel)
-  if [ "$(hostname)" = "morty" ] || hostname | grep -q "hetzner"; then
-    export KANBAN_HOST="${KANBAN_HOST:-127.0.0.1:3847}"
-  fi
-
+  # Board #1251: emit_kanban_item.sh now exits non-zero whenever the card did
+  # NOT actually reach the board (its old always-exit-0 contract was itself
+  # the bug — a caller couldn't tell "filed" from "not filed"). This `if`
+  # already branched on the exit code before that fix, but the branch could
+  # never take the "queued_fallback" arm since exit was always 0 — it now
+  # correctly reports which happened.
   if "$EMIT_KANBAN" \
        task="rick-request" \
        title="$TITLE" \

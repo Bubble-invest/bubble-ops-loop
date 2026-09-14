@@ -12,7 +12,11 @@
 #       treated the same as missing — hard skip, no card.
 #   (c) an emit call WITH a valid integer budget= still reaches the real emit
 #       path (proven end-to-end via the fallback-to-queue path, same hermetic
-#       stubbing style as test_emit_kanban_fallback_loud.sh).
+#       stubbing style as test_emit_kanban_fallback_loud.sh). Board #1251:
+#       that fallback path now exits non-zero (the card did not reach the
+#       board) — distinct from the budget-rejection cases (a)/(b) above,
+#       which stay exit-0 because they are caller-usage errors that create
+#       no card at all, not a board-reachability failure.
 #
 # Run: bash tests/test_emit_budget_required.sh
 # Returns 0 on pass, 1 on any failure.
@@ -49,7 +53,6 @@ QUEUE_A="$TMPDIR_T/queue_a.jsonl"
 out_a=$(
   PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE_A" \
   TELEGRAM_BOT_TOKEN="" \
   BUBBLE_OPERATOR_CHAT_ID="" \
@@ -81,7 +84,6 @@ for bad_budget in "abc" "0" "-5" "  " "12.5"; do
   out_b=$(
     PATH="$STUBBIN:$PATH" \
     GH_TOKEN=bad_token_force_fail \
-    KANBAN_HOST=localhost:19999 \
     KANBAN_QUEUE="$QUEUE_B" \
     TELEGRAM_BOT_TOKEN="" \
     BUBBLE_OPERATOR_CHAT_ID="" \
@@ -110,7 +112,6 @@ QUEUE_C="$TMPDIR_T/queue_c.jsonl"
 out_c=$(
   PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE_C" \
   TELEGRAM_BOT_TOKEN="" \
   BUBBLE_OPERATOR_CHAT_ID="" \
@@ -123,8 +124,12 @@ out_c=$(
 )
 exit_c=$?
 
-[ "$exit_c" -eq 0 ] || fail "(c) exit code was $exit_c, expected 0"
-pass "(c) exit code is 0 with a valid budget"
+# Board #1251: budget=15 passes the gate and reaches real emission, which
+# then fails to reach the board (gh stubbed to fail) — so exit is non-zero,
+# NOT 0. This is what proves the call got PAST the budget gate: a rejected
+# call (a)/(b) never even attempts emission and writes no queue file at all.
+[ "$exit_c" -ne 0 ] || fail "(c) exit code was $exit_c, expected non-zero (card did not reach the board)"
+pass "(c) exit code is non-zero with a valid budget that still fails to reach the board"
 
 echo "$out_c" | grep -qv "budget= is required" \
   || true  # sanity only; the real assertion is the queue file below
@@ -145,7 +150,6 @@ QUEUE_D="$TMPDIR_T/queue_d.jsonl"
 bash_d_out=$(
   PATH="$STUBBIN:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE_D" \
   TELEGRAM_BOT_TOKEN="" \
   BUBBLE_OPERATOR_CHAT_ID="" \
@@ -195,7 +199,6 @@ rm -f "$TG_MARKER"
 out_e1=$(
   PATH="$STUBBIN_E:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE_E1" \
   TELEGRAM_BOT_TOKEN="stub-bot-token" \
   BUBBLE_OPERATOR_CHAT_ID="stub-chat-id" \
@@ -217,7 +220,6 @@ rm -f "$TG_MARKER"
 out_e2=$(
   PATH="$STUBBIN_E:$PATH" \
   GH_TOKEN=bad_token_force_fail \
-  KANBAN_HOST=localhost:19999 \
   KANBAN_QUEUE="$QUEUE_E2" \
   TELEGRAM_BOT_TOKEN="" \
   BUBBLE_OPERATOR_CHAT_ID="" \

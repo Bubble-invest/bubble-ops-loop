@@ -52,11 +52,16 @@ so you never have to figure out where the tool lives:
 Required: `task` + `title` + **`budget`** (integer USD, per-run — every card must carry a
 budget so cost is attributable per card from creation; board #537). A missing or
 non-integer `budget=` makes the emit **fail loud and create no card** — you'll see a clear
-`budget= is required` error on stderr, and nothing lands on the board. Everything else is
-optional but `body`, `type`, `priority`, `owner` make a card actionable rather than a
-mystery. The underlying tool exits 0 even on a valid-but-failed emission (emission must
-never break your tick) — so confirm it landed (see "Verify" below) rather than trusting the
-exit code alone.
+`budget= is required` error on stderr, and nothing lands on the board (exit 0 — a caller-
+usage error, not a board-reachability failure). Everything else is optional but `body`,
+`type`, `priority`, `owner` make a card actionable rather than a mystery.
+
+**Exit code (board #1251 — check it):** `0` means the card is actually on the board (created,
+or an open dup already existed) OR was a rejected call as above. **Non-zero means the card
+did NOT reach the board** — GitHub was unreachable/failed and it fell to a local dead-letter
+queue (still written, never lost — but not tracked either, and not drained automatically for
+every host yet). Don't ignore a non-zero exit: treat it as "this finding is not yet on the
+board" and either retry once auth/network recovers, or escalate.
 
 Every new card should also name at least one live operator intent. `intent=` accepts a bare
 slug, `intent:<slug>`, or the #1247 wiki-link form; separate several with commas. The emitter
@@ -159,16 +164,19 @@ the control plane (single source of truth) rendered in the cockpit `/kanban` and
 read-only to Notion. Your `owner`/`type` map to `dept:`/`type:` labels; the card lands as
 `status:triage` for the R&D manager loop to classify (`approval`/`decision` types add
 `needs:human`). **Auth is automatic:** on the VPS the tool mints a short-lived issues:write
-board token via the root-owned minter (`bubble-board-token.sh`, sudoers NOPASSWD); on a dev
-Mac it uses your authenticated `gh`. If GitHub is unreachable it falls back to the legacy
-dashboard POST — so emission never fails your tick (exit is always 0).
+board token via the root-owned minter (`bubble-board-token.sh`, sudoers NOPASSWD) or reads a
+pre-minted token file (works even inside a sandboxed session that can't `sudo`); on a dev Mac
+it uses your authenticated `gh`. If GitHub is unreachable it falls back to a local dead-letter
+queue and **exits non-zero** (board #1251) — it never silently drops your tick's exit code,
+but it also never hides the failure behind an exit 0.
 
-**Verify it landed** (the tool is silent on success):
+**Verify it landed:**
 ```bash
 gh issue list --repo Bubble-invest/bubble-ops-board --search "<your title>"
 ```
-Or open the cockpit `/kanban`. If you can't see it on the board, it did NOT land — do not
-assume success from exit 0.
+Or open the cockpit `/kanban`. The exit code is now a real signal (0 = on the board,
+non-zero = not yet) — but a stale/cached `gh` session or a title collision can still surprise
+you, so a search is the ground truth when it matters.
 
 ## If your card's work ends in a PR — the cockpit «Prêt à merger» conventions
 

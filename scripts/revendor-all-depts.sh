@@ -116,6 +116,7 @@ DRY_RUN_MAP=(
   "skills/emit-kanban-task/SKILL.md          skills/emit-kanban-task/SKILL.md"
   "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"
   "tools/kanban/emit_kanban_item.sh          tools/kanban/emit_kanban_item.sh"
+  "tools/kanban/drain_kanban_queue.sh        tools/kanban/drain_kanban_queue.sh"
 )
 
 log "START framework=${FRAMEWORK} agents_root=${AGENTS_ROOT} dry_run=${DRY_RUN}"
@@ -148,7 +149,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
       # files get their dest dir created if missing; the rest only refresh an
       # EXISTING dest dir. Approximate that here by checking existence OR (for
       # the kanban paths) always counting a missing file as stale.
-      if [[ "$dst" == *"skills/emit-kanban-task"* || "$dst" == *"tools/kanban/emit_kanban_item.sh"* ]]; then
+      if [[ "$dst" == *"skills/emit-kanban-task"* || "$dst" == *"tools/kanban/emit_kanban_item.sh"* || "$dst" == *"tools/kanban/drain_kanban_queue.sh"* ]]; then
         if [[ ! -f "$dst" ]] || ! cmp -s "$src" "$dst" 2>/dev/null; then
           log "  [dry-run] ${slug}: would re-vendor $2"
           stale=$((stale + 1))

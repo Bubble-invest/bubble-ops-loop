@@ -452,22 +452,19 @@ def test_fallback_queue_and_drain_preserve_intent(tmp_path: Path) -> None:
     fail_bin.mkdir()
     (fail_bin / "gh").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
     (fail_bin / "gh").chmod(0o755)
-    (fail_bin / "curl").write_text("#!/usr/bin/env bash\necho 503\n", encoding="utf-8")
-    (fail_bin / "curl").chmod(0o755)
     queue = tmp_path / "queue.jsonl"
     env = os.environ.copy()
     env.update(
         {
             "PATH": f"{fail_bin}:{env['PATH']}",
             "KANBAN_QUEUE": str(queue),
-            "KANBAN_HOST": "localhost:1",
             "TELEGRAM_BOT_TOKEN": "",
             "BUBBLE_OPERATOR_CHAT_ID": "",
         }
     )
     env.pop("GH_TOKEN", None)
     env.pop("GITHUB_TOKEN", None)
-    subprocess.run(
+    result = subprocess.run(
         [
             "bash", str(EMITTER), "task=queued-intent", "title=Queued lineage",
             "budget=5", "owner=rnd", "intent=system-convergence-north-star",
@@ -476,7 +473,15 @@ def test_fallback_queue_and_drain_preserve_intent(tmp_path: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
+    )
+    # Board #1251: the emitter now exits non-zero whenever the card falls to
+    # the local queue instead of reaching the board (fail loud) — it is NOT
+    # exit 0 here. The queue write itself (asserted below) still happens;
+    # only the exit code changed from the old always-0 contract.
+    assert result.returncode != 0, (
+        f"expected non-zero exit for a queued (not-on-board) emit, got "
+        f"{result.returncode}: stderr={result.stderr!r}"
     )
     payload = json.loads(queue.read_text(encoding="utf-8"))
     assert payload["kanban_items"][0]["intents"] == ["system-convergence-north-star"]

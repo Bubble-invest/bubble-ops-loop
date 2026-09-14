@@ -1,0 +1,38 @@
+[Unit]
+Description=Bubble kanban dead-letter drain for dept %i — replay stranded kanban_queue.jsonl cards to the board (board #1251)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Board #1251: runs AS the dept's own uid (not the shared `claude` user), so
+# it can read the queue file that dept's OWN sandboxed session actually wrote
+# — /srv/agents/<dept> is owned agent-<dept>:agent-<dept> and is NOT readable
+# by `claude` (post-#1120 uid isolation), so the single central
+# kanban-queue-drain.service can never see a per-dept-isolated queue file.
+# One instance per uid-isolated dept avoids needing any cross-uid grant.
+User=agent-%i
+Group=agent-%i
+WorkingDirectory=/srv/agents/%i
+Environment="BUBBLE_AGENT_WORKDIR=/srv/agents/%i"
+# tools/kanban/drain_kanban_queue.sh is vendored into every dept tree
+# alongside emit_kanban_item.sh (scripts/vendor-dept-libs.sh KANBAN_MAP,
+# board #1251) — re-run vendor-dept-libs.sh / revendor-all-depts.sh after
+# deploying this unit if the dept's tree predates that change.
+ExecStart=/srv/agents/%i/tools/kanban/drain_kanban_queue.sh
+# The drainer's own auth resolution (ambient gh auth, or the
+# bubble-board-token.sh minter via that dept's own sudoers NOPASSWD grant —
+# /etc/sudoers.d/bubble-board-token-agent-%i).
+TimeoutStartSec=120
+# drain_kanban_queue.sh exits 2 on "some lines still failed" (left for next
+# run — expected/non-fatal) and 1 only when no GitHub auth is available at
+# all. Neither should flip this unit to systemd `failed` and spam alerts;
+# the script's own stderr WARN + the loud [WARN] at emit-time are the signal.
+SuccessExitStatus=0 1 2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kanban-queue-drain-%i
+
+[Install]
+WantedBy=multi-user.target
