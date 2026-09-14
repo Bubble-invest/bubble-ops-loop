@@ -81,18 +81,36 @@ if [ "$MODE" != "skillsmith" ] && [ ! -d "${WIKI_DIR}/.git" ]; then
     exit 1
 fi
 
-# #1267: intents are never read from the writable shared-wiki checkout. The
-# root-owned mirror is the sole semantic baseline for all wiki modes.
-INTENTS_ROOT="${BUBBLE_OPERATOR_INTENTS_MIRROR:-/opt/bubble-operator-intents}"
-if [ "$MODE" != "skillsmith" ] && [ ! -d "${INTENTS_ROOT}/operator-intents" ]; then
-    log "FATAL: read-only operator-intents mirror unavailable at ${INTENTS_ROOT}."
-    exit 1
+# #1267: intents are never read from the writable shared-wiki checkout — the
+# root-owned mirror is the sole trusted baseline for the intent-aware audit
+# and backfill (wiki_intent_audit.py enforces this independently via a strict
+# mirror validation that a plain directory, including the wiki's own
+# shared/operator-intents/, can never satisfy by design — see its tests).
+#
+# #430 regressed this to a hard FATAL when the mirror simply isn't deployed
+# yet (board #1339 — this VPS never got one). A missing mirror should degrade
+# the intent-aware extras, not the whole nightly compile: the operator
+# intents the mission cares about already live in the wiki this job compiles,
+# so there is nothing to mine without a working compile. Resolve the mirror
+# via a small fallback chain (first existing wins); if neither candidate
+# exists, WARN and let the compile proceed WITHOUT the mirror-dependent
+# intent audit/backfill this run (never FATAL on this alone).
+INTENTS_ROOT=""
+for _candidate in "${BUBBLE_OPERATOR_INTENTS_MIRROR:-}" "/opt/bubble-operator-intents"; do
+    if [ -n "${_candidate}" ] && [ -d "${_candidate}/operator-intents" ]; then
+        INTENTS_ROOT="${_candidate}"
+        break
+    fi
+done
+if [ "$MODE" != "skillsmith" ] && [ -z "${INTENTS_ROOT}" ]; then
+    log "WARN: no read-only operator-intents mirror found (checked \$BUBBLE_OPERATOR_INTENTS_MIRROR and /opt/bubble-operator-intents) — compiling without the mirror-dependent intent audit/backfill this run."
 fi
 
 # Board #1247: collect structural intent-frontmatter evidence before the model
 # runs. The report never assigns intent or declares a semantic leak; the COMPILE
-# skill reads candidates and makes that judgment. Missing tooling is fatal so an
-# incomplete deploy cannot silently disable the audit.
+# skill reads candidates and makes that judgment. Missing TOOLING is still
+# fatal so an incomplete deploy cannot silently disable the audit — only a
+# missing MIRROR (#1339, handled above) degrades gracefully.
 INTENT_AUDIT_SCRIPT=/home/claude/scripts/wiki-intent-audit.py
 INTENT_AUDIT_REPORT=/home/claude/monitoring/wiki-intent-audit/latest.json
 DELTA_SCRIPT=/home/claude/scripts/wiki-delta.py
@@ -106,11 +124,20 @@ if [ "$MODE" = "compile" ]; then
         exit 1
     fi
     mkdir -p "$(dirname "$INTENT_AUDIT_REPORT")"
-    if ! python3 "$INTENT_AUDIT_SCRIPT" \
-        --wiki "$WIKI_DIR" --intents-root "$INTENTS_ROOT" \
-        --output "$INTENT_AUDIT_REPORT"; then
-        log "FATAL: intent audit failed; compile not started."
-        exit 1
+    if [ -n "${INTENTS_ROOT}" ]; then
+        if ! python3 "$INTENT_AUDIT_SCRIPT" \
+            --wiki "$WIKI_DIR" --intents-root "$INTENTS_ROOT" \
+            --output "$INTENT_AUDIT_REPORT"; then
+            log "FATAL: intent audit failed; compile not started."
+            exit 1
+        fi
+    else
+        # #1339: no mirror this run (WARN already logged above). Write an
+        # explicit skipped marker rather than leaving a stale/absent report,
+        # so STEP 0 can tell "no mirror this run" apart from "install broken".
+        log "skipping intent audit: no operator-intents mirror resolved"
+        printf '{"schema_version":1,"skipped":true,"reason":"no operator-intents mirror resolved (checked $BUBBLE_OPERATOR_INTENTS_MIRROR and /opt/bubble-operator-intents)","generated_at":"%s"}\n' \
+            "$TS" > "$INTENT_AUDIT_REPORT"
     fi
     if [ ! -f "$DELTA_SCRIPT" ]; then
         log "FATAL: ${DELTA_SCRIPT} missing (incomplete delta-planner install)."

@@ -123,11 +123,18 @@ def test_shared_consumer_validator_checks_release_itself_and_git_metadata() -> N
     assert 'path.name == ".git"' in validator
 
 
-def test_cloud_compile_passes_mirror_separately_and_fails_closed() -> None:
+def test_cloud_compile_resolves_mirror_with_fallback_and_degrades_open() -> None:
+    """#1339: a missing mirror WARNs and skips the intent-aware extras — it
+    must never FATAL the whole nightly compile (the #430 regression), and it
+    must never fall back to the writable wiki (#1267's invariant, still
+    enforced independently by wiki_intent_audit.py's mirror validation)."""
     source = COMPILE.read_text(encoding="utf-8")
-    assert 'BUBBLE_OPERATOR_INTENTS_MIRROR:-/opt/bubble-operator-intents' in source
+    assert '"${BUBBLE_OPERATOR_INTENTS_MIRROR:-}" "/opt/bubble-operator-intents"' in source
     assert '--wiki "$WIKI_DIR" --intents-root "$INTENTS_ROOT"' in source
-    assert 'read-only operator-intents mirror unavailable' in source
+    assert "WARN: no read-only operator-intents mirror found" in source
+    assert '"skipped":true' in source
+    assert "FATAL: read-only operator-intents mirror unavailable" not in source
+    assert "shared-wiki/shared" not in source  # never a mirror fallback candidate
 
 
 def test_isolation_verifier_is_read_only_and_rejects_write_permissions() -> None:

@@ -20,7 +20,7 @@ jobs:
         run: python3 -m pytest scripts/lib/tests/ -q --tb=short
       - name: Cloud wiki delta and install contracts
         run: |
-          python3 -m pytest tests/test_wiki_delta.py tests/test_wiki_intent_audit.py -q --tb=short
+          python3 -m pytest tests/test_wiki_delta.py tests/test_wiki_intent_audit.py tests/test_cloud_wiki_compile_intents_fallback.py tests/test_operator_intents_mac_mirror.py -q --tb=short
           bash tests/test_wiki_intent_installed_layout.sh
           bash -n skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh
           bash -n scripts/install-cloud-wiki-compile.sh
