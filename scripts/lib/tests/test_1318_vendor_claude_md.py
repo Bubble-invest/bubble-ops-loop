@@ -81,6 +81,44 @@ def test_manifest_only_references_existing_snippets():
             assert (SNIPPETS / f"{name}.md").is_file(), f"{t['agent']} -> missing snippet {name}"
 
 
+def _import_scaffold():
+    import sys
+    lib = REPO / "scripts" / "lib"
+    skill = REPO / "skills" / "department-onboarding-guide"
+    for p in (str(skill), str(lib)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import scaffold  # noqa: E402
+    return scaffold
+
+
+def _min_dept_yaml():
+    return {
+        "department": {"slug": "regress", "display_name": "Regress",
+                       "mandate": "test mandate", "level": "ops"},
+        "layers": {"subscribed": [1, 2, 3, 4]},
+    }
+
+
+def test_scaffold_operating_includes_operator_alignment():
+    """New depts inherit the operator-alignment block from the single source (#1318)."""
+    scaffold = _import_scaffold()
+    out = scaffold.render_claude_md_operating(_min_dept_yaml())
+    assert "BEGIN VENDORED:operator-alignment" in out
+    assert "Reuse existing fleet access" in out
+
+
+def test_scaffold_operating_fail_open_when_snippet_missing(monkeypatch):
+    """If the canonical snippet can't be resolved, scaffolding still produces a
+    valid CLAUDE.md (fail-open) — it never blocks a dept from being created."""
+    scaffold = _import_scaffold()
+    monkeypatch.setenv("BUBBLE_SNIPPETS_DIR", "/nonexistent/snippets/dir")
+    out = scaffold.render_claude_md_operating(_min_dept_yaml())
+    assert len(out) > 200
+    assert "Regress" in out
+    assert "BEGIN VENDORED:operator-alignment" not in out  # block skipped, no crash
+
+
 def test_cli_apply_and_check_roundtrip(tmp_path):
     f = tmp_path / "CLAUDE.md"
     f.write_text("# Agent\n")
