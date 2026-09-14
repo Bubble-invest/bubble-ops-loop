@@ -52,6 +52,13 @@ class DueMissionConfigError(ValueError):
 
 _DUE_CADENCES = {"continuous", "daily", "weekly", "monthly"}
 _MISSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# A recurring mission is only dispatchable/claimable when its per-mission
+# ``status`` is EXACTLY this. Anything else — ``planned``, some other value, or
+# a missing/non-string status — is treated as NOT live and skipped fail-closed
+# (#1317): we never claim a lease against, nor dispatch, work whose live-ness we
+# cannot confirm. This is a pure FILTER: flipping a mission's status back to
+# ``live`` in dept.yaml makes it dispatch again with no other change.
+_MISSION_LIVE_STATUS = "live"
 
 
 def due_period(cadence: str, now_utc: _dt.datetime, timezone_name: str = "UTC") -> str:
@@ -98,6 +105,7 @@ def due_mission_plan(
     manifest: dict,
     watermarks: dict,
     now_utc: _dt.datetime,
+    skipped: Optional[List[dict]] = None,
 ) -> Optional[List[dict]]:
     """Validate and return the scoped missions due in the current period.
 
@@ -106,6 +114,18 @@ def due_mission_plan(
     every allow-listed mission and rule is validated fail-closed. Missions not
     in that explicit list are ignored even if they have a cadence (Rick's later
     M9 placeholder is intentionally outside the M1-M8 schedule).
+
+    Per-mission ``status`` filter (#1317): a scoped mission whose ``status`` is
+    not exactly ``live`` (``planned``, any other value, or missing/non-string)
+    is NEVER dispatched — it is skipped BEFORE its cadence/due rule is validated
+    so an unbuilt planned mission can never crash the plan and starve the live
+    ones (the inverted failure is worse than the original bug). This filter is
+    the single chokepoint for BOTH the plan and the claim path (``claim_due_
+    missions`` calls this function), so a planned mission is never leased either.
+    Skipped missions are NOT hidden: pass a list as ``skipped`` and each is
+    appended as ``{"id", "status"}`` so the caller can emit one visible notice —
+    "we have scheduled work that isn't live yet" must stay loud, and a live
+    mission with a mistyped/missing status surfaces here rather than vanishing.
     """
     if not isinstance(manifest, dict):
         raise DueMissionConfigError("dept.yaml root must be a mapping")
@@ -145,6 +165,16 @@ def due_mission_plan(
         mission = missions.get(mission_id)
         if mission is None:
             raise DueMissionConfigError(f"scoped mission is missing: {mission_id}")
+        # #1317: skip anything not EXACTLY live BEFORE validating its cadence/due
+        # rule. Fail-closed (missing/other status → not live) and defensive: a
+        # not-yet-built planned mission with an incomplete due rule must never
+        # raise here and take the live missions down with it. Record it so the
+        # caller can surface the skipped work instead of hiding it.
+        status = mission.get("status")
+        if status != _MISSION_LIVE_STATUS:
+            if skipped is not None:
+                skipped.append({"id": mission_id, "status": status})
+            continue
         cadence = mission.get("cadence")
         if cadence not in _DUE_CADENCES:
             raise DueMissionConfigError(f"{mission_id}: unsupported cadence {cadence!r}")
@@ -328,12 +358,18 @@ def claim_due_missions(
     manifest: dict,
     now_utc: _dt.datetime,
     lease_seconds: int,
+    skipped: Optional[List[dict]] = None,
 ) -> tuple:
     """Atomically claim currently due periodic mission-periods.
 
     The pending lease prevents the backup and wake-catch LaunchAgents from
     appending duplicate work after their shorter inbox cooldown expires. It is
     only a delivery/in-flight marker: last_success_period remains untouched.
+
+    Claiming goes through ``due_mission_plan``, so the #1317 status filter
+    applies identically to the claim path: a non-live mission is never in the
+    plan here and therefore never gets a pending lease. ``skipped`` is passed
+    straight through so a claim-path caller can emit the same visible notice.
     """
     if not isinstance(lease_seconds, int) or not 900 <= lease_seconds <= 86400:
         raise DueMissionConfigError("pending_lease_seconds must be between 900 and 86400")
@@ -342,7 +378,7 @@ def claim_due_missions(
     lock_fd = _open_due_lock(path)
     try:
         state = read_due_watermarks(path)
-        plan = due_mission_plan(manifest, state, now_utc)
+        plan = due_mission_plan(manifest, state, now_utc, skipped=skipped)
         if plan is None:
             raise DueMissionConfigError("due dispatcher is not configured")
         claims: Dict[str, str] = {}

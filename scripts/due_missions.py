@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.lib.loop_backup import (
+    _MISSION_LIVE_STATUS,
     DueMissionConfigError,
     claim_due_missions,
     due_mission_plan,
@@ -55,6 +56,12 @@ def _validate_scoped_files(dept_dir: Path, manifest: dict) -> None:
         mission = by_id.get(mission_id)
         if not isinstance(mission, dict):
             continue  # the core validator emits the precise structural error
+        # #1317: a non-live (planned/unknown-status) mission is never dispatched,
+        # so its mission_file is not a precondition of this tick. Mirror the
+        # due_mission_plan filter here so an unbuilt planned mission that has no
+        # file yet cannot raise and starve the live missions' dispatch.
+        if mission.get("status") != _MISSION_LIVE_STATUS:
+            continue
         relative = mission.get("mission_file")
         if isinstance(relative, str) and not (dept_dir / relative).is_file():
             raise DueMissionConfigError(f"{mission_id}: mission file does not exist: {relative}")
@@ -151,6 +158,29 @@ def _runner_output(plan: list[dict], claims: dict, dept_dir: Path) -> str:
     )
 
 
+def _emit_skip_notice(skipped: list[dict]) -> None:
+    """Emit ONE concise stderr line naming missions skipped for not being live.
+
+    #1317: skipped ``status: planned`` (or missing/unknown-status) work must
+    stay VISIBLE — "we have scheduled work that isn't built yet" is a signal,
+    not something to hide. Deliberately ONE line per invocation (not one per
+    mission), and on STDERR so it never corrupts the tab-separated ``runner``/
+    ``json`` payload the local floor parses off STDOUT. Each entry shows the
+    mission id and the offending status so a mistyped/missing status on a
+    mission that was meant to be live is loud rather than silent.
+    """
+    if not skipped:
+        return
+    names = ", ".join(
+        f"{item['id']}(status={item['status']!r})" for item in skipped
+    )
+    print(
+        f"due-mission notice: skipped {len(skipped)} non-live mission(s) "
+        f"(not dispatched, not claimed): {names}",
+        file=sys.stderr,
+    )
+
+
 def command_plan(args: argparse.Namespace) -> int:
     dept_dir = Path(args.dept_dir).resolve()
     manifest = _load_manifest(dept_dir)
@@ -161,9 +191,11 @@ def command_plan(args: argparse.Namespace) -> int:
         return 0
     watermark = due_watermark_path(str(dept_dir), manifest)
     state = read_due_watermarks(watermark)
-    plan = due_mission_plan(manifest, state, _now(args.now_epoch))
+    skipped: list[dict] = []
+    plan = due_mission_plan(manifest, state, _now(args.now_epoch), skipped=skipped)
     if plan is None:
         return 0
+    _emit_skip_notice(skipped)
     _validate_scoped_files(dept_dir, manifest)
     if args.format == "json":
         print(json.dumps({"configured": True, "due": plan}, sort_keys=True))
@@ -179,7 +211,11 @@ def command_claim(args: argparse.Namespace) -> int:
     manifest = _load_manifest(dept_dir)
     _validate_scoped_files(dept_dir, manifest)
     path = due_watermark_path(str(dept_dir), manifest)
-    plan, claims = claim_due_missions(path, manifest, _now(args.now_epoch), _lease_seconds(manifest))
+    skipped: list[dict] = []
+    plan, claims = claim_due_missions(
+        path, manifest, _now(args.now_epoch), _lease_seconds(manifest), skipped=skipped
+    )
+    _emit_skip_notice(skipped)
     print(_runner_output(plan, claims, dept_dir))
     return 0
 

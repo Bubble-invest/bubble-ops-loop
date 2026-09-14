@@ -29,14 +29,20 @@ def manifest(*missions):
     }
 
 
-def mission(mission_id, cadence, due):
-    return {
+def mission(mission_id, cadence, due, status="live"):
+    # #1317: only a mission whose status is exactly "live" is dispatchable, so
+    # the default here is "live" (these fixtures assert on dispatched work).
+    # Pass status="planned" (or omit-via-None) to exercise the skip filter.
+    item = {
         "id": mission_id,
         "layer": 1,
         "cadence": cadence,
         "due": due,
         "mission_file": f"missions/{mission_id}.md",
     }
+    if status is not None:
+        item["status"] = status
+    return item
 
 
 def test_calendar_periods_use_the_declared_timezone():
@@ -186,3 +192,145 @@ def test_delayed_old_period_completion_preserves_new_period_claim(tmp_path: Path
     assert state["missions"]["weekly_scan"]["last_success_period"] == "2026-W37"
     assert state["missions"]["weekly_scan"]["pending"]["period"] == "2026-W38"
     assert due_mission_plan(data, state, next_week) == []
+
+
+# ── #1317: per-mission status filter (only status: live dispatches/claims) ─────
+
+WEEKLY_DUE = {"policy": "calendar_period", "timezone": "Europe/Paris"}
+EMPTY = {"version": 1, "missions": {}}
+
+
+def test_planned_mission_is_neither_due_nor_claimed(tmp_path: Path):
+    # The exact production shape: two live missions, one planned. Only the live
+    # ones plan; the planned one is skipped AND never leased (claim path).
+    data = manifest(
+        mission("board", "continuous", {"policy": "every_tick"}),
+        mission("live_weekly", "weekly", WEEKLY_DUE),
+        mission("planned_weekly", "weekly", WEEKLY_DUE, status="planned"),
+    )
+    skipped: list = []
+    plan = due_mission_plan(data, EMPTY, NOW, skipped=skipped)
+    assert [item["id"] for item in plan] == ["board", "live_weekly"]
+    assert [s["id"] for s in skipped] == ["planned_weekly"]
+
+    path = tmp_path / "monitoring" / "due.json"
+    claim_skipped: list = []
+    cplan, claims = claim_due_missions(path, data, NOW, 21600, skipped=claim_skipped)
+    assert [item["id"] for item in cplan] == ["board", "live_weekly"]
+    assert set(claims) == {"live_weekly"}  # continuous 'board' is never leased
+    assert "planned_weekly" not in claims
+    assert [s["id"] for s in claim_skipped] == ["planned_weekly"]
+    # A planned mission must have NO pending lease persisted against it.
+    state = read_due_watermarks(path)
+    assert "planned_weekly" not in state["missions"]
+
+
+def test_missing_or_unknown_status_is_not_live_fail_closed():
+    # Fail-closed: a missing status, or any value other than exactly "live",
+    # is treated as NOT live and skipped — we never dispatch work we can't
+    # confirm is live. Both are surfaced in `skipped` so they stay visible.
+    data = manifest(
+        mission("has_status", "weekly", WEEKLY_DUE),
+        mission("no_status", "weekly", WEEKLY_DUE, status=None),
+        mission("weird_status", "weekly", WEEKLY_DUE, status="active"),
+    )
+    skipped: list = []
+    plan = due_mission_plan(data, EMPTY, NOW, skipped=skipped)
+    assert [item["id"] for item in plan] == ["has_status"]
+    assert {s["id"] for s in skipped} == {"no_status", "weird_status"}
+    assert {s["id"]: s["status"] for s in skipped} == {
+        "no_status": None,
+        "weird_status": "active",
+    }
+
+
+def test_status_match_is_exactly_live_case_and_whitespace_sensitive():
+    # "Live" and "live " are NOT "live": a mistyped status fails closed (skip)
+    # and is surfaced loudly, rather than silently dispatching or — worse —
+    # being assumed live.
+    data = manifest(
+        mission("capitalised", "weekly", WEEKLY_DUE, status="Live"),
+        mission("trailing_space", "weekly", WEEKLY_DUE, status="live "),
+    )
+    skipped: list = []
+    assert due_mission_plan(data, EMPTY, NOW, skipped=skipped) == []
+    assert {s["id"] for s in skipped} == {"capitalised", "trailing_space"}
+
+
+def test_flipping_planned_to_live_redispatches_and_is_claimable(tmp_path: Path):
+    # Pure filter: the ONLY change from not-dispatched to dispatched is the
+    # status value. Same mission, same rule.
+    planned = manifest(mission("m", "weekly", WEEKLY_DUE, status="planned"))
+    assert due_mission_plan(planned, EMPTY, NOW) == []
+
+    live = manifest(mission("m", "weekly", WEEKLY_DUE, status="live"))
+    assert [item["id"] for item in due_mission_plan(live, EMPTY, NOW)] == ["m"]
+
+    path = tmp_path / "monitoring" / "due.json"
+    plan, claims = claim_due_missions(path, live, NOW, 21600)
+    assert [item["id"] for item in plan] == ["m"]
+    assert set(claims) == {"m"}
+
+
+def test_planned_mission_with_incomplete_rule_never_crashes_live_dispatch():
+    # The inverted-failure guard: a not-yet-built planned mission whose due rule
+    # is incomplete (would raise "missing due rule" if validated) must be
+    # skipped BEFORE validation so it can never take the live missions down.
+    data = manifest(
+        mission("live_board", "continuous", {"policy": "every_tick"}),
+        {
+            "id": "planned_unbuilt",
+            "layer": 1,
+            "cadence": "weekly",
+            "status": "planned",
+            "mission_file": "missions/planned_unbuilt.md",
+            # deliberately NO "due" rule — an unbuilt mission
+        },
+    )
+    skipped: list = []
+    plan = due_mission_plan(data, EMPTY, NOW, skipped=skipped)
+    assert [item["id"] for item in plan] == ["live_board"]
+    assert [s["id"] for s in skipped] == ["planned_unbuilt"]
+
+
+def test_live_pending_lease_not_redispatched_alongside_planned(tmp_path: Path):
+    # Dedupe not regressed: a live mission with a genuine in-flight lease is
+    # still suppressed until expiry, even while a planned sibling is skipped.
+    data = manifest(
+        mission("board", "continuous", {"policy": "every_tick"}),
+        mission("live_weekly", "weekly", WEEKLY_DUE),
+        mission("planned_weekly", "weekly", WEEKLY_DUE, status="planned"),
+    )
+    path = tmp_path / "monitoring" / "due.json"
+    first, claims = claim_due_missions(path, data, NOW, 21600)
+    assert [item["id"] for item in first] == ["board", "live_weekly"]
+    assert set(claims) == {"live_weekly"}
+
+    second, second_claims = claim_due_missions(
+        path, data, NOW + dt.timedelta(seconds=901), 21600
+    )
+    assert [item["id"] for item in second] == ["board"]  # live_weekly held by lease
+    assert second_claims == {}
+
+    after_expiry, retry = claim_due_missions(
+        path, data, NOW + dt.timedelta(seconds=21601), 21600
+    )
+    assert [item["id"] for item in after_expiry] == ["board", "live_weekly"]
+    assert set(retry) == {"live_weekly"}
+    # The planned mission never appears and is never leased across the cycle.
+    assert "planned_weekly" not in read_due_watermarks(path)["missions"]
+
+
+def test_skip_notice_is_a_single_stderr_line(capsys):
+    from scripts.due_missions import _emit_skip_notice
+
+    _emit_skip_notice(
+        [{"id": "a", "status": "planned"}, {"id": "b", "status": None}]
+    )
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1  # ONE line, not one per mission
+    assert "skipped 2 non-live" in err
+    assert "a" in err and "b" in err
+
+    _emit_skip_notice([])  # nothing skipped → no notice at all
+    assert capsys.readouterr().err == ""
