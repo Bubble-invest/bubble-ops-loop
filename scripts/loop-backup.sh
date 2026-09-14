@@ -1496,9 +1496,17 @@ PYEOF2
     # Existing unsafe/unreadable/unknown selector state is a visible fail-closed
     # defer and can never fall through to either injection path or headless.
     if ! _selected_harness="$(resolve_floor_harness "$slug")"; then
+        # #1313 step 2: a DEFERRAL is a deliberate, correct "I can't safely act"
+        # outcome (unsafe/unreadable/unknown selector) — NOT a service failure.
+        # Same class of bug as #1305 (bubble-deploy.sh DEFER_REVIEW exiting 2).
+        # Do NOT set OVERALL here: the deferral is already loud (log line +
+        # emit_event to the cockpit-visible loop-backup.jsonl + the truthful
+        # per-dept heartbeat line below), and OnFailure=cron-failure-alert@%n
+        # is now wired on the floor units (#1313 step 1) to page on a GENUINE
+        # crash. A deferral must stay visible without flapping the unit to
+        # `failed` on every timer tick it recurs.
         log "$slug: DEFERRED — harness selector unavailable or unsafe; no wake attempted"
         emit_event "$slug" "deferred" "harness selector unavailable or unsafe; no wake attempted" "$age"
-        OVERALL=1
         continue
     fi
     log "$slug: floor harness selected: $_selected_harness"
@@ -1541,9 +1549,18 @@ PYEOF2
     # list only opts old manual callers into the same behavior; it never selects
     # Hermes. A Hermes selector also cannot sensibly fall through to `claude -p`.
     if [[ "$_primary_wake_only" == "1" || "$_selected_harness" == "hermes" ]]; then
+        # #1313 step 2: this is the exact incident shape (Maya, 2026-09-12/13 —
+        # "Hermes gateway control socket is not live" / "DEFERRED ... headless
+        # fallback disabled") — a correct, deliberate refusal to fall back to a
+        # competing headless model, NOT a crash. Do NOT set OVERALL: it stays
+        # loud via the log line + emit_event + the truthful per-dept heartbeat
+        # (write_external_heartbeat records the outcome either way), and a
+        # genuine crash elsewhere in this run still flips OVERALL via the
+        # other call sites below. OnFailure=cron-failure-alert@%n (#1313 step 1)
+        # now covers real failures; a stale-but-can't-wake deferral must not
+        # flap the unit to `failed` on every recurring timer tick.
         log "$slug: DEFERRED — ${_wake_label} wake unavailable; headless fallback disabled"
         emit_event "$slug" "deferred" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
-        OVERALL=1
         continue
     fi
 

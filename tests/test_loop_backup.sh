@@ -78,6 +78,7 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+REAL_HOME="$HOME"   # Section N's inject-live-loop fixture temporarily overrides HOME
 
 # ── stubs ────────────────────────────────────────────────────────────────────
 # claude stub: a no-op that succeeds, so the run-branch completes WITHOUT a real
@@ -1468,6 +1469,114 @@ else
     bad "M10 expected risk_control to run (never fired today); ran=$ran claude-args=$(cat "$CLAUDE_ARGS" 2>/dev/null)"
 fi
 unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
+# =============================================================================
+# N. Board #1313 step 2 — a DEFERRAL must exit 0, a REAL failure must not.
+#    Incident: Maya's floor hit "Hermes gateway control socket is not live" /
+#    "DEFERRED ... headless fallback disabled" and exited 1, so systemd marked
+#    the unit `failed` on every recurring timer tick even though the floor did
+#    exactly the right thing (declined to spawn a competing headless model).
+#    Same class of bug as #1305 (bubble-deploy.sh DEFER_REVIEW exiting 2).
+#
+#    NOTE: this section defines its OWN systemctl stub (matching the CURRENT
+#    `bubble-agent@<slug>.service` eligibility check) rather than reusing
+#    $SYSTEMCTL_STUB above, which still emulates the pre-#1120 unit name
+#    (`ops-loop-<slug>.service`) and no longer matches what dept_eligible()
+#    actually queries — a separate, pre-existing harness/script drift out of
+#    scope for this fix (every test above that depends on set_enabled/
+#    $SYSTEMCTL_STUB eligibility is silently failing closed on this repo
+#    checkout; flagged separately, not papered over here).
+# =============================================================================
+N_SYSTEMCTL_STUB="$WORK/systemctl-stub-n.sh"
+cat > "$N_SYSTEMCTL_STUB" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "show" ]]; then
+    echo 0   # MainPID=0 → inject_live_loop sees "no live poller" → return 1
+    exit 0
+fi
+if [[ "$1" == "is-enabled" ]]; then
+    unit="$2"                              # bubble-agent@<slug>.service
+    slug="${unit#bubble-agent@}"; slug="${slug%.service}"
+    [[ "$slug" == "$N_ENABLED_SLUG" ]] && { echo enabled; exit 0; }
+    echo disabled; exit 1
+fi
+exit 0
+EOF
+chmod +x "$N_SYSTEMCTL_STUB"
+
+N_HARNESS_DIR="$WORK/harness-sel-n"
+mkdir -p "$N_HARNESS_DIR"
+
+# N1: harness selector unavailable/unsafe → DEFERRED, script exits 0.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
+export BUBBLE_BACKUP_HARNESS_SELECTOR_DIR="$N_HARNESS_DIR"
+export N_ENABLED_SLUG="n1dept"
+make_dept n1dept 10800; make_layer n1dept 1
+printf 'garbage' > "$N_HARNESS_DIR/n1dept"   # unknown selector value → HarnessSelectorError
+export BUBBLE_BACKUP_DEPTS="n1dept"
+: > "$WORK/loop-backup.jsonl"
+run_script "$SCRIPT" --layer 1
+if [[ "$RC" == "0" ]] && grep -q '"slug": "n1dept", "action": "deferred"' "$WORK/loop-backup.jsonl" 2>/dev/null \
+   && [[ "$ALL" == *"DEFERRED — harness selector unavailable or unsafe"* ]]; then
+    ok "N1 unsafe/unknown harness selector → DEFERRED, exit 0 (not a service failure)"
+else
+    bad "N1 expected exit 0 + deferred event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
+fi
+rm -f "$N_HARNESS_DIR/n1dept"
+
+# N2: primary wake unavailable (headless fallback disabled) → DEFERRED, exit 0.
+# This is the EXACT Maya incident shape: a live-wake attempt that can't reach
+# the primary session/gateway must refuse to fall back to a competing headless
+# tick — and that refusal must not read as a crash.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
+export BUBBLE_BACKUP_HARNESS_SELECTOR_DIR="$N_HARNESS_DIR"
+export BUBBLE_BACKUP_PRIMARY_WAKE_ONLY=1
+export N_ENABLED_SLUG="n2dept"
+make_dept n2dept 10800; make_layer n2dept 1
+export BUBBLE_BACKUP_DEPTS="n2dept"
+: > "$WORK/loop-backup.jsonl"
+run_script "$SCRIPT" --layer 1
+if [[ "$RC" == "0" ]] && grep -q '"slug": "n2dept", "action": "deferred"' "$WORK/loop-backup.jsonl" 2>/dev/null \
+   && [[ "$ALL" == *"DEFERRED — Claude session wake unavailable; headless fallback disabled"* ]]; then
+    ok "N2 primary wake unavailable → DEFERRED, exit 0 (Maya-incident shape, not a service failure)"
+else
+    bad "N2 expected exit 0 + deferred event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
+fi
+unset BUBBLE_BACKUP_PRIMARY_WAKE_ONLY
+
+# N3 (regression guard): a GENUINE tick failure must still exit non-zero —
+# the deferral fix must never mask a real crash.
+reset_fixtures
+common_env
+export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
+export BUBBLE_BACKUP_HARNESS_SELECTOR_DIR="$N_HARNESS_DIR"
+export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
+export BUBBLE_BACKUP_TEST_UID_OK=1
+export BUBBLE_BACKUP_TEST_LIVE_POLLER_OK=1
+export BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS=1
+export BUBBLE_BACKUP_WAKE_WAIT_SECONDS=1
+export N_ENABLED_SLUG="n3dept"
+N_HOME="$WORK/home-n3"
+mkdir -p "$N_HOME/.claude/channels/telegram-n3dept"
+: > "$N_HOME/.claude/channels/telegram-n3dept/inject"
+export HOME="$N_HOME"
+make_dept n3dept 10800; make_layer n3dept 1
+export BUBBLE_BACKUP_DEPTS="n3dept"
+: > "$WORK/loop-backup.jsonl"
+run_script "$SCRIPT" --layer 1
+if [[ "$RC" != "0" ]] && grep -q '"slug": "n3dept", "action": "run"' "$WORK/loop-backup.jsonl" 2>/dev/null; then
+    ok "N3 a genuine failed tick still exits non-zero (deferral fix does not mask real failures)"
+else
+    bad "N3 expected non-zero exit + a run/failed event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
+fi
+unset BUBBLE_BACKUP_CLAUDE_BIN BUBBLE_BACKUP_TEST_UID_OK BUBBLE_BACKUP_TEST_LIVE_POLLER_OK \
+      BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS BUBBLE_BACKUP_WAKE_WAIT_SECONDS N_ENABLED_SLUG
+export HOME="$REAL_HOME"
+export BUBBLE_BACKUP_CLAUDE_BIN="$CLAUDE_STUB"
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
