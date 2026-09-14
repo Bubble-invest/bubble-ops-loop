@@ -9,8 +9,12 @@
 #   their existing loop owns its self-pull.
 # - This script never stashes, resets, rolls back, stops, starts, or restarts.
 #
-# Exit: 0 for updated/current/active-primary deferrals; 2 when operator review is
-# required for preserved Git state; 1 for operational failures.
+# Exit: 0 for updated/current/active-primary deferrals, and for preserved Git
+# state that merely needs eventual operator review (deferred_review — local
+# work was preserved exactly, nothing is broken); 1 for genuine operational
+# failures. deferred_review is logged loudly (a DEFER_REVIEW line per checkout
+# plus the deferred_review=N count in the DONE summary) but must never trip
+# systemd's failure state / OnFailure= alarm — it is not an error. #1305.
 set -uo pipefail
 ORIGINAL_ARGS=("$@")
 
@@ -401,6 +405,18 @@ if [[ "$INFRA_ONLY" != "1" ]]; then
 fi
 
 log "DONE updated=$UPDATED would_update=$WOULD_UPDATE current=$CURRENT deferred_active=$DEFERRED_ACTIVE deferred_review=$DEFERRED_REVIEW skipped=$SKIPPED failed=$FAILED"
+# #1305: a genuine operational FAILED is the only outcome that should trip
+# systemd's failure state (and the OnFailure= Telegram alarm chain). Fetch
+# failures, unreadable Git state, refused fast-forwards etc. all still land
+# here and still exit non-zero. This check stays FIRST and wins over any
+# deferred_review count below, so a real failure can never be masked by an
+# unrelated preserved checkout in the same run.
 ((FAILED == 0)) || exit 1
-((DEFERRED_REVIEW == 0)) || exit 2
+# deferred_review means local work was preserved exactly as designed — it is
+# not a failure, so it must not alarm on every timer fire. It is already
+# logged loudly per-checkout (DEFER_REVIEW ...) and summarized above
+# (deferred_review=N); that is enough for a human to notice on their own
+# schedule without a repeating siren. Emit one more explicit NOTE so the
+# summary itself flags "this run needs eventual review" without failing it.
+((DEFERRED_REVIEW == 0)) || log "NOTE deferred_review=$DEFERRED_REVIEW: local work preserved exactly, needs eventual human review; exiting 0 (not a failure, no alarm)"
 exit 0
