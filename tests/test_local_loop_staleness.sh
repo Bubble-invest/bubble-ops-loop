@@ -163,6 +163,64 @@ case "$WORK" in
   *)  echo "  PASS: T7 dept fixtures are throwaway ($WORK)"; PASS=$((PASS+1));;
 esac
 
+# -----------------------------------------------------------------------------
+# T8-T11: board #1330 — _lll_py() must pin to a yaml-capable interpreter by
+# PATH, never silently hand back a python that can't `import yaml`.
+# -----------------------------------------------------------------------------
+FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
+
+# T8: a repo-local .venv/bin/python3 that HAS yaml is preferred over whatever
+# bare python3/python is on PATH (deterministic — no PATH lookup involved).
+VENVDIR="$WORK/fakerepo/.venv/bin"; mkdir -p "$VENVDIR"
+cat > "$VENVDIR/python3" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == "-c" && "$2" == "import yaml" ]] && exit 0
+exit 1
+EOF
+chmod +x "$VENVDIR/python3"
+picked="$(LLL_REPO_ROOT="$WORK/fakerepo" _lll_py)"
+chk_eq "T8 pinned repo .venv is preferred when yaml-capable" "$WORK/fakerepo/.venv/bin/python3" "$picked"
+
+# T9: a repo-local .venv/bin/python3 that LACKS yaml must be skipped in favor
+# of a working fallback — never returned just because the path exists.
+cat > "$VENVDIR/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$VENVDIR/python3"
+picked="$(LLL_REPO_ROOT="$WORK/fakerepo" PATH="$FAKEBIN:$PATH" _lll_py)"
+if [[ "$picked" != "$WORK/fakerepo/.venv/bin/python3" && -n "$picked" ]] \
+    && "$picked" -c 'import yaml' >/dev/null 2>&1; then
+    echo "  PASS: T9 yaml-less pinned venv is skipped, not silently returned"; PASS=$((PASS+1))
+else
+    echo "  FAIL: T9 yaml-less pinned venv was returned or nothing usable was found (got '$picked')"; FAIL=$((FAIL+1))
+fi
+
+# T10: when NOTHING on the candidate list can import yaml, _lll_py returns
+# empty (fail LOUD via the caller's existing empty-py handling) — it must
+# never hand back a yaml-less interpreter as if it were fine.
+cat > "$FAKEBIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKEBIN/python3"
+rm -f "$VENVDIR/python3"; rmdir "$VENVDIR" 2>/dev/null
+picked="$(LLL_REPO_ROOT="$WORK/fakerepo" PATH="$FAKEBIN" _lll_py)"; rc=$?
+chk "T10 no yaml-capable interpreter anywhere -> _lll_py fails (nonzero rc)" 1 "$rc"
+chk_eq "T10b -> _lll_py prints nothing (never a broken interpreter)" "" "$picked"
+
+# T11: LOCAL_LOOP_PYTHON, when set to a working interpreter, wins over
+# everything else (explicit operator override).
+OVERRIDE="$WORK/override-python3"
+cat > "$OVERRIDE" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == "-c" && "$2" == "import yaml" ]] && exit 0
+exit 1
+EOF
+chmod +x "$OVERRIDE"
+picked="$(LLL_REPO_ROOT="$WORK/fakerepo" LOCAL_LOOP_PYTHON="$OVERRIDE" _lll_py)"
+chk_eq "T11 LOCAL_LOOP_PYTHON override wins when yaml-capable" "$OVERRIDE" "$picked"
+
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

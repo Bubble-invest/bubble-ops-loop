@@ -90,6 +90,12 @@ fi
 [[ -x "$TMUX_BIN" ]] || die "--tmux-bin '$TMUX_BIN' is not executable"
 [[ "$INTERVAL" =~ ^[0-9]+$ && "$STALE_SEC" =~ ^[0-9]+$ && "$COOLDOWN_SEC" =~ ^[0-9]+$ ]] || die "intervals must be integers"
 [[ -f "$RUNNER" ]] || die "backup runner not found"
+# Board #1330: the runner's due-mission planning needs a yaml-capable python
+# pinned by path, not whatever bare `python3` resolves to on this Mac. Build/
+# refresh that dedicated venv on every (re)install so it can never go stale or
+# be skipped by hand — a failure here aborts the install rather than silently
+# leaving the runner to fall back to an unverified PATH python3.
+"$SCRIPT_DIR/ensure-loop-venv.sh" || die "could not provision the loop's pinned python venv"
 [[ -n "$HARNESS_SELECTOR" ]] || HARNESS_SELECTOR="$HOME/Library/Application Support/bubble-ops-loop/harness-$SLUG"
 [[ "$HARNESS_SELECTOR" == /* ]] || die "--harness-selector must be absolute"
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" || die "cannot create launch/log directories"

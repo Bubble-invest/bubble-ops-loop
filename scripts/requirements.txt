@@ -1,0 +1,13 @@
+# Runtime deps for the loop tooling under scripts/ (due_missions.py,
+# scripts/lib/*.py — dept.yaml / crons manifest / dispatch-directive readers).
+#
+# Board #1330: these scripts import PyYAML at module scope. On a Mac, bare
+# `python3` can resolve non-deterministically between an interpreter that has
+# this installed and one that doesn't (e.g. homebrew python@3.14 vs.
+# CommandLineTools python 3.9) — the import then crashes silently mid-tick.
+# Install into a dedicated venv (see deploy/local/ensure-loop-venv.sh) and pin
+# the loop's invocations at that venv's python, rather than relying on
+# whatever pyyaml happens to be on PATH.
+#
+# Install: <repo-root>/.venv/bin/pip install -r scripts/requirements.txt
+pyyaml>=6.0

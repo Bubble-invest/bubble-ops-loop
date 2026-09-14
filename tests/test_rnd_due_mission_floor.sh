@@ -119,10 +119,12 @@ fi
 grep -q 'due-mission notice.*planned_scan' "$WORK/first.log" \
     && ok "skip notice for the planned mission reaches the log via stderr" \
     || bad "skip notice did not reach the log"
-[[ "$prompt" == *'COMPLETE weekly_scan => python3 '* ]] \
+[[ "$prompt" == *'COMPLETE weekly_scan => '* ]] \
+    && [[ "$prompt" != *'=> python3 '* ]] \
+    && [[ "$prompt" == *'due_missions.py complete'* ]] \
     && [[ "$prompt" == *'only after that mission actually succeeds'* ]] \
     && [[ "$prompt" == *'inbox-accepted work'* ]] \
-    && ok "prompt carries per-mission success-only completion protocol" \
+    && ok "prompt carries per-mission success-only completion protocol, pinned to an absolute interpreter (#1330 — not bare 'python3')" \
     || bad "completion protocol missing"
 
 python3 "$ROOT/scripts/due_missions.py" complete --dept-dir "$DEPT" \
