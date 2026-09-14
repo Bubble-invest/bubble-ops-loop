@@ -78,7 +78,6 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-REAL_HOME="$HOME"   # Section N's inject-live-loop fixture temporarily overrides HOME
 
 # ── stubs ────────────────────────────────────────────────────────────────────
 # claude stub: a no-op that succeeds, so the run-branch completes WITHOUT a real
@@ -1507,7 +1506,10 @@ chmod +x "$N_SYSTEMCTL_STUB"
 N_HARNESS_DIR="$WORK/harness-sel-n"
 mkdir -p "$N_HARNESS_DIR"
 
-# N1: harness selector unavailable/unsafe → DEFERRED, script exits 0.
+# N1: harness selector unavailable/unsafe → DEFERRED, script exits 0, and a
+# truthful BACKUP-DEFERRED heartbeat line is written (code-review finding:
+# the original comment claimed this already happened when it did not — the
+# floor now actually calls write_external_heartbeat on both defer paths).
 reset_fixtures
 common_env
 export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
@@ -1518,18 +1520,25 @@ printf 'garbage' > "$N_HARNESS_DIR/n1dept"   # unknown selector value → Harnes
 export BUBBLE_BACKUP_DEPTS="n1dept"
 : > "$WORK/loop-backup.jsonl"
 run_script "$SCRIPT" --layer 1
+N1_HB="$AGENTS_ROOT/bubble-ops-n1dept/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
 if [[ "$RC" == "0" ]] && grep -q '"slug": "n1dept", "action": "deferred"' "$WORK/loop-backup.jsonl" 2>/dev/null \
    && [[ "$ALL" == *"DEFERRED — harness selector unavailable or unsafe"* ]]; then
     ok "N1 unsafe/unknown harness selector → DEFERRED, exit 0 (not a service failure)"
 else
     bad "N1 expected exit 0 + deferred event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
 fi
+if grep -q 'tick BACKUP-DEFERRED — harness selector unavailable' "$N1_HB" 2>/dev/null; then
+    ok "N1b a truthful BACKUP-DEFERRED heartbeat line is actually written"
+else
+    bad "N1b expected a BACKUP-DEFERRED heartbeat line; heartbeat=$(cat "$N1_HB" 2>/dev/null || echo '<missing>')"
+fi
 rm -f "$N_HARNESS_DIR/n1dept"
 
-# N2: primary wake unavailable (headless fallback disabled) → DEFERRED, exit 0.
-# This is the EXACT Maya incident shape: a live-wake attempt that can't reach
-# the primary session/gateway must refuse to fall back to a competing headless
-# tick — and that refusal must not read as a crash.
+# N2: primary wake unavailable (headless fallback disabled) → DEFERRED, exit 0,
+# plus the same truthful heartbeat check. This is the EXACT Maya incident
+# shape: a live-wake attempt that can't reach the primary session/gateway
+# must refuse to fall back to a competing headless tick — and that refusal
+# must not read as a crash.
 reset_fixtures
 common_env
 export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
@@ -1540,30 +1549,36 @@ make_dept n2dept 10800; make_layer n2dept 1
 export BUBBLE_BACKUP_DEPTS="n2dept"
 : > "$WORK/loop-backup.jsonl"
 run_script "$SCRIPT" --layer 1
+N2_HB="$AGENTS_ROOT/bubble-ops-n2dept/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
 if [[ "$RC" == "0" ]] && grep -q '"slug": "n2dept", "action": "deferred"' "$WORK/loop-backup.jsonl" 2>/dev/null \
-   && [[ "$ALL" == *"DEFERRED — Claude session wake unavailable; headless fallback disabled"* ]]; then
+   && [[ "$ALL" == *"DEFERRED — Claude session floor wake unavailable; headless fallback disabled"* ]]; then
     ok "N2 primary wake unavailable → DEFERRED, exit 0 (Maya-incident shape, not a service failure)"
 else
     bad "N2 expected exit 0 + deferred event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
 fi
+if grep -q 'tick BACKUP-DEFERRED — Claude session floor wake unavailable' "$N2_HB" 2>/dev/null; then
+    ok "N2b a truthful BACKUP-DEFERRED heartbeat line is actually written"
+else
+    bad "N2b expected a BACKUP-DEFERRED heartbeat line; heartbeat=$(cat "$N2_HB" 2>/dev/null || echo '<missing>')"
+fi
 unset BUBBLE_BACKUP_PRIMARY_WAKE_ONLY
 
 # N3 (regression guard): a GENUINE tick failure must still exit non-zero —
-# the deferral fix must never mask a real crash.
+# the deferral fix must never mask a real crash. Reaches the real tick via
+# the ORDINARY headless-fallback path (no live poller, primary-wake-only NOT
+# set) — deliberately NOT via a simulated live-session wake: N_SYSTEMCTL_STUB
+# always reports MainPID=0 for `show`, so inject_live_loop() returns at its
+# very first check regardless of any TEST_UID_OK-style bypass (code-review
+# finding: an earlier version of this test carried a live-inject fixture —
+# HOME override, an inject file, TEST_UID_OK/TEST_LIVE_POLLER_OK — that was
+# dead code, since that first check always short-circuits before any of it
+# is read; removed rather than left as misleading unreachable setup).
 reset_fixtures
 common_env
 export BUBBLE_BACKUP_SYSTEMCTL="$N_SYSTEMCTL_STUB"
 export BUBBLE_BACKUP_HARNESS_SELECTOR_DIR="$N_HARNESS_DIR"
 export BUBBLE_BACKUP_CLAUDE_BIN="$FAIL_CLAUDE"
-export BUBBLE_BACKUP_TEST_UID_OK=1
-export BUBBLE_BACKUP_TEST_LIVE_POLLER_OK=1
-export BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS=1
-export BUBBLE_BACKUP_WAKE_WAIT_SECONDS=1
 export N_ENABLED_SLUG="n3dept"
-N_HOME="$WORK/home-n3"
-mkdir -p "$N_HOME/.claude/channels/telegram-n3dept"
-: > "$N_HOME/.claude/channels/telegram-n3dept/inject"
-export HOME="$N_HOME"
 make_dept n3dept 10800; make_layer n3dept 1
 export BUBBLE_BACKUP_DEPTS="n3dept"
 : > "$WORK/loop-backup.jsonl"
@@ -1573,9 +1588,7 @@ if [[ "$RC" != "0" ]] && grep -q '"slug": "n3dept", "action": "run"' "$WORK/loop
 else
     bad "N3 expected non-zero exit + a run/failed event; rc=$RC jsonl=$(cat "$WORK/loop-backup.jsonl" 2>/dev/null); log=$ALL"
 fi
-unset BUBBLE_BACKUP_CLAUDE_BIN BUBBLE_BACKUP_TEST_UID_OK BUBBLE_BACKUP_TEST_LIVE_POLLER_OK \
-      BUBBLE_BACKUP_WAKE_WAIT_ITERATIONS BUBBLE_BACKUP_WAKE_WAIT_SECONDS N_ENABLED_SLUG
-export HOME="$REAL_HOME"
+unset BUBBLE_BACKUP_CLAUDE_BIN N_ENABLED_SLUG
 export BUBBLE_BACKUP_CLAUDE_BIN="$CLAUDE_STUB"
 
 echo

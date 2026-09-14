@@ -78,6 +78,36 @@ def test_run_success_vs_failure_verdict(backup_log):
     assert bad.ok is False and "✗" in bad.verdict_fr
 
 
+def test_deferred_event_visible_not_dropped(backup_log):
+    # #1313 step 2: before this fix, "deferred" fell outside _to_event's
+    # allowed action set and was silently dropped — a dept stuck repeatedly
+    # deferring (unsafe harness selector, or an unreachable primary that
+    # correctly refused the headless fallback) had its ENTIRE "Filet de
+    # sécurité" panel vanish, exactly as if no floor had ever run.
+    _write_log(backup_log, [
+        {"ts": "t1", "slug": "maya", "action": "deferred",
+         "reason": "Hermes gateway floor wake unavailable; headless fallback disabled",
+         "age_sec": 243612},
+    ])
+    ev = backup_history.latest_backup("maya")
+    assert ev is not None
+    assert ev.action == "deferred"
+    assert ev.ok is False           # needs attention...
+    assert ev.severity == "warn"    # ...but distinct from a crashed run
+    assert "différé" in ev.verdict_fr.lower()
+
+
+def test_degraded_event_visible_not_dropped(backup_log):
+    _write_log(backup_log, [
+        {"ts": "t1", "slug": "tony", "action": "degraded", "reason": "L4 carried-over"},
+    ])
+    ev = backup_history.latest_backup("tony")
+    assert ev is not None
+    assert ev.action == "degraded"
+    assert ev.ok is False
+    assert ev.severity == "warn"
+
+
 def test_rollup_counts_latest_per_dept(backup_log):
     _write_log(backup_log, [
         # maya recovered: first run, then a later skip → counts as healthy
@@ -92,6 +122,24 @@ def test_rollup_counts_latest_per_dept(backup_log):
     assert r.healthy == 1          # maya (latest = skip)
     assert r.backed_up == 2        # tony + cgp ran
     assert r.failed == 1           # cgp exit 1
+    assert r.deferred == 0
+
+
+def test_rollup_counts_deferred_separately_from_healthy(backup_log):
+    # #1313 step 2: a dept stuck deferring must NOT roll up as "healthy" (its
+    # primary loop IS stale — that's exactly why the floor fired) nor as
+    # "backed_up" (no tick actually ran) — it needs its own bucket so the
+    # home banner doesn't quietly launder a stuck deferral into "all fine".
+    _write_log(backup_log, [
+        {"ts": "2026-06-01T19:01:00Z", "slug": "maya", "action": "deferred",
+         "reason": "Hermes gateway wake unavailable", "age_sec": 243612},
+        {"ts": "2026-06-01T19:01:01Z", "slug": "tony", "action": "skip", "reason": "alive"},
+    ])
+    r = backup_history.rollup()
+    assert r.deferred == 1
+    assert r.healthy == 1
+    assert r.backed_up == 0
+    assert r.failed == 0
 
 
 def test_malformed_events_ignored(backup_log):
@@ -129,6 +177,26 @@ def test_dept_page_shows_latest_verdict(client, monkeypatch, tmp_path):
     assert resp.status_code == 200
     assert "tick de secours exécuté" in resp.text
     assert "2026-06-01T14:00:00Z" in resp.text
+
+
+def test_dept_page_shows_deferred_verdict_not_empty_state(client, monkeypatch, tmp_path):
+    # #1313 step 2 regression lock: a dept stuck on a deferral must render
+    # its OWN verdict — not silently fall back to the "Aucun passage
+    # enregistré" empty state, which is what happened pre-fix (the event was
+    # dropped, so latest_backup() returned None exactly as if nothing had
+    # ever run).
+    from console import settings as s
+    path = tmp_path / "loop-backup.jsonl"
+    _write_log(path, [
+        {"ts": "2026-06-01T19:01:00Z", "slug": "fixture", "action": "deferred",
+         "reason": "Hermes gateway wake unavailable", "age_sec": 243612},
+    ])
+    monkeypatch.setattr(s, "BACKUP_LOG_PATH", path)
+    resp = client.get("/dept/fixture")
+    assert resp.status_code == 200
+    assert "Aucun passage enregistré" not in resp.text
+    assert "différé" in resp.text.lower()
+    assert "backup-latest--warn" in resp.text
 
 
 # ─── Home roll-up banner ────────────────────────────────────────────────

@@ -478,26 +478,45 @@ PYEOF
 #   loop stale + backup ran OK     → `tick BACKUP-RAN-FOR-DEPT layer=N exit=0`
 #   loop stale + backup FAILED     → `tick BACKUP-FAILED exit=N — dept DOWN`
 #   degraded L4 carried-over       → `tick DEGRADED-L4 carried-over`
+#   floor deferred (#1313 step 2)  → `tick BACKUP-DEFERRED — <reason>`
 # This collapses the two channels (heartbeat freshness vs loop-backup.jsonl
 # truth) into ONE signal a downstream consumer can read straight off the tail.
 # The line keeps the `<iso> tick ...` shape so latest_heartbeat_epoch and every
-# freshness reader keep working unchanged. Never fatal — a write failure must
-# not abort the safety net.
+# freshness reader keep working unchanged. BACKUP-DEFERRED is in
+# _HB_NOT_LIVENESS (loop_backup.py) — it must NEVER read as fresh, or a
+# repeatedly-deferring dept would look "serviced" and the floor would stop
+# re-trying it. Never fatal — a write failure must not abort the safety net.
 write_external_heartbeat() {
-    local slug="$1" outcome="$2" layer="${3:-}" exit_code="${4:-}"
+    local slug="$1" outcome="$2" layer="${3:-}" exit_code="${4:-}" detail="${5:-}"
     local hb="$(_dept_workdir "$slug")/outputs/$(date -u +%Y-%m-%d)/heartbeat.log"
-    "$PY" - "$hb" "$outcome" "$layer" "$exit_code" <<'PYEOF' || log "$slug: warn — could not write truthful heartbeat to $hb"
+    "$PY" - "$hb" "$outcome" "$layer" "$exit_code" "$detail" <<'PYEOF' || log "$slug: warn — could not write truthful heartbeat to $hb"
 import sys
 sys.path.insert(0, __import__("os").environ["BUBBLE_OPS_LOOP_ROOT"])
 from scripts.lib.loop_backup import append_external_heartbeat
-hb, outcome, layer, exit_code = sys.argv[1:5]
+hb, outcome, layer, exit_code, detail = sys.argv[1:6]
 line = append_external_heartbeat(
     hb, outcome,
     layer=int(layer) if layer not in ("", "None") else None,
     exit_code=int(exit_code) if exit_code not in ("", "None") else None,
+    detail=detail or None,
 )
 print(line)
 PYEOF
+}
+
+# defer_dept <slug> <reason> <age>: the ONE place a per-dept floor deferral is
+# recorded (#1313 step 2 — code-review finding: two call sites hand-wrote this
+# same log+emit_event+heartbeat triple, which is exactly how a future third
+# deferral condition could silently reintroduce the OVERALL=1 unit-flapping
+# bug this fixes, by copy-pasting an older pattern instead of this one).
+# Deliberately does NOT set OVERALL and does NOT `continue` — the caller
+# always does `defer_dept ... ; continue` right after, so the loop-control
+# stays visible at the call site rather than hidden inside a helper.
+defer_dept() {
+    local slug="$1" reason="$2" age="$3"
+    log "$slug: DEFERRED — ${reason}"
+    emit_event "$slug" "deferred" "$reason" "$age"
+    write_external_heartbeat "$slug" "BACKUP-DEFERRED" "${FORCE_LAYER:-}" "" "$reason"
 }
 
 # ── Notify-on-fire ──────────────────────────────────────────────────────────
@@ -1500,13 +1519,16 @@ PYEOF2
         # outcome (unsafe/unreadable/unknown selector) — NOT a service failure.
         # Same class of bug as #1305 (bubble-deploy.sh DEFER_REVIEW exiting 2).
         # Do NOT set OVERALL here: the deferral is already loud (log line +
-        # emit_event to the cockpit-visible loop-backup.jsonl + the truthful
-        # per-dept heartbeat line below), and OnFailure=cron-failure-alert@%n
-        # is now wired on the floor units (#1313 step 1) to page on a GENUINE
-        # crash. A deferral must stay visible without flapping the unit to
-        # `failed` on every timer tick it recurs.
-        log "$slug: DEFERRED — harness selector unavailable or unsafe; no wake attempted"
-        emit_event "$slug" "deferred" "harness selector unavailable or unsafe; no wake attempted" "$age"
+        # emit_event to the cockpit-visible loop-backup.jsonl, rendered via
+        # console/services/backup_history.py's dedicated "deferred" verdict +
+        # the truthful per-dept BACKUP-DEFERRED heartbeat line below — a
+        # deferral is deliberately excluded from freshness, so a repeatedly-
+        # deferring dept never reads as "serviced"), and
+        # OnFailure=cron-failure-alert@%n is now wired on the floor units
+        # (#1313 step 1) to page on a GENUINE crash. A deferral must stay
+        # visible without flapping the unit to `failed` on every recurring
+        # timer tick.
+        defer_dept "$slug" "harness selector unavailable or unsafe; no wake attempted" "$age"
         continue
     fi
     log "$slug: floor harness selected: $_selected_harness"
@@ -1553,14 +1575,15 @@ PYEOF2
         # "Hermes gateway control socket is not live" / "DEFERRED ... headless
         # fallback disabled") — a correct, deliberate refusal to fall back to a
         # competing headless model, NOT a crash. Do NOT set OVERALL: it stays
-        # loud via the log line + emit_event + the truthful per-dept heartbeat
-        # (write_external_heartbeat records the outcome either way), and a
-        # genuine crash elsewhere in this run still flips OVERALL via the
-        # other call sites below. OnFailure=cron-failure-alert@%n (#1313 step 1)
-        # now covers real failures; a stale-but-can't-wake deferral must not
-        # flap the unit to `failed` on every recurring timer tick.
-        log "$slug: DEFERRED — ${_wake_label} wake unavailable; headless fallback disabled"
-        emit_event "$slug" "deferred" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
+        # loud via the log line + emit_event (cockpit-visible, backup_history.py
+        # renders a "deferred" verdict) + write_external_heartbeat below (a
+        # BACKUP-DEFERRED line, deliberately excluded from freshness so a
+        # repeatedly-deferring dept never reads as "serviced") — and a genuine
+        # crash elsewhere in this run still flips OVERALL via the other call
+        # sites below. OnFailure=cron-failure-alert@%n (#1313 step 1) now
+        # covers real failures; a stale-but-can't-wake deferral must not flap
+        # the unit to `failed` on every recurring timer tick.
+        defer_dept "$slug" "${_wake_label} floor wake unavailable; headless fallback disabled" "$age"
         continue
     fi
 

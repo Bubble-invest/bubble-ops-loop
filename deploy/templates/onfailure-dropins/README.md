@@ -21,6 +21,13 @@ The loop FLOOR — the fleet safety net (#1313):
 - `loop-layer2@.service` — templated
 - `loop-layer3@.service` — templated
 - `loop-layer4@.service` — templated (covers `@maya`, `@ben`, `@tony`, …)
+- `loop-layer@.service` — templated; the legacy/manual GENERIC-mode floor (no forced layer).
+  Added in #1313 step 2 (code-review finding: this template — still documented as supported
+  in `scripts/loop-backup.sh`'s own header — was missed from the original rollout). DORMANT
+  in production as of 2026-09-14: no live `loop-layer@<slug>` instances exist.
+- `loop-backup.service` — plain per-instance; the timer this legacy path runs under
+  (`loop-backup.timer`) is also DORMANT (disabled) as of 2026-09-14, but wiring it now closes
+  the gap before it can ever fire silently again.
 - `morty-agentic-audit.service` — plain per-instance
 - `telegram-watchdog-tony.service` — plain per-instance
 
