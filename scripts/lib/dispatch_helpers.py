@@ -4919,6 +4919,46 @@ def _recover_mtime_wedge(
     )
 
 
+def count_unpushed_commits(repo_dir: "Path | str", branch: "str | None" = None) -> int:
+    """How many local commits on `branch` (default: `_resolve_push_branch`'s
+    pick) are not yet on `origin/<branch>`?
+
+    WHY (loop-audit finding, 2026-09-14): a `force_commit_and_push` push can
+    fail (transient network, guard rejection, …) after the commit already
+    landed locally. `safe_pull`'s own tree is clean at that point — nothing
+    is staged/dirty — so a plain `git status` gives no signal that HEAD is
+    now silently ahead of origin. That drift sits invisible until whatever
+    next inspects it.
+
+    `git rev-list --count origin/<branch>..HEAD` answers exactly this:
+      - 0  → HEAD == origin (or behind) for this branch — published, clean.
+      - N>0 → N local commit(s) origin doesn't have — silent drift.
+      - -1 → unknown (no such remote-tracking ref yet, detached HEAD, git
+             not available, or any other command failure) — callers should
+             treat this as "can't tell", never as "0 confirmed clean".
+
+    Read-only; never raises (a `git` misfire degrades to -1, not a crash).
+    """
+    import subprocess
+    repo_dir = Path(repo_dir).resolve()
+    if branch is None:
+        branch = _resolve_push_branch(repo_dir)
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-list", "--count",
+             f"origin/{branch}..HEAD"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return -1
+    if out.returncode != 0:
+        return -1
+    n = out.stdout.strip()
+    if not n.isdigit():
+        return -1
+    return int(n)
+
+
 def safe_pull(
     repo_dir: "Path | str",
     bubble_git_guard_path: str = "/usr/local/bin/bubble-git-guard",
@@ -5151,6 +5191,22 @@ def safe_pull(
             )
         else:
             notes.append("stash restored")
+
+    # 6. Unpushed-commit guard ({{OPERATOR}} loop-audit, 2026-09-14): the pull
+    #    above only fast-forwards/rebases FROM origin — it never confirms this
+    #    branch's own commits made it back OUT. If step 1's push failed (or a
+    #    prior tick's did and nothing since has retried it), HEAD can now sit
+    #    ahead of origin with a perfectly clean tree, so nothing else in this
+    #    function would notice. WARN, never fail the tick — a retried push on
+    #    the next sync is the actual fix; this just stops the drift from being
+    #    silent.
+    unpushed = count_unpushed_commits(repo_dir)
+    if unpushed > 0:
+        notes.append(
+            f"WARN {unpushed} unpushed local commit(s) ahead of origin after "
+            "pull — a previous push may have failed silently; will retry on "
+            "next sync"
+        )
 
     return True, "; ".join(notes)
 
