@@ -5200,7 +5200,12 @@ def safe_pull(
     #    function would notice. WARN, never fail the tick — a retried push on
     #    the next sync is the actual fix; this just stops the drift from being
     #    silent.
-    unpushed = count_unpushed_commits(repo_dir)
+    #    Pinned to "main" explicitly (NOT count_unpushed_commits' own
+    #    _resolve_push_branch default) because step 4's pull above is itself
+    #    hardcoded to `origin main` regardless of BUBBLE_HOST — comparing
+    #    against a host:local dept's feature branch here would check the
+    #    wrong ref relative to what was actually just pulled.
+    unpushed = count_unpushed_commits(repo_dir, "main")
     if unpushed > 0:
         notes.append(
             f"WARN {unpushed} unpushed local commit(s) ahead of origin after "

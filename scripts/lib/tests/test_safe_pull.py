@@ -114,6 +114,13 @@ def test_count_unpushed_commits_zero_when_published(origin_and_local):
     assert dh.count_unpushed_commits(local, "main") == 0
 
 
+def test_count_unpushed_commits_default_branch_matches_explicit_main(origin_and_local):
+    """No `branch` given resolves via `_resolve_push_branch`, which is "main"
+    outside BUBBLE_HOST=local — must agree with the explicit-"main" call."""
+    origin, local = origin_and_local
+    assert dh.count_unpushed_commits(local) == dh.count_unpushed_commits(local, "main")
+
+
 def test_count_unpushed_commits_counts_local_only_commits(origin_and_local):
     origin, local = origin_and_local
     (local / "outputs" / "orphan.txt").write_text("local only\n")
