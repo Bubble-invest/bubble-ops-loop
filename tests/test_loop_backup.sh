@@ -22,7 +22,7 @@
 #   E. Auto-discovery — when BUBBLE_BACKUP_DEPTS is UNSET, depts are discovered
 #      by globbing $AGENTS_ROOT/bubble-ops-*; the discovered set drives the run.
 #
-#   F. Eligibility — a dept whose ops-loop-<slug>.service is NOT enabled
+#   F. Eligibility — a dept whose bubble-agent@<slug>.service is NOT enabled
 #      (disabled or absent) is SKIPPED (structural skip, no tick, no ping).
 #
 #   G. Per-layer eligibility — in --layer N mode, a dept WITHOUT
@@ -115,7 +115,7 @@ exit 0
 EOF
 chmod +x "$NOTIFY_STUB"
 
-# systemctl stub: emulate `systemctl is-enabled ops-loop-<slug>.service`.
+# systemctl stub: emulate `systemctl is-enabled bubble-agent@<slug>.service`.
 # A dept is "enabled" iff its slug is listed in $ENABLED_DEPTS (space-sep,
 # read from the file $ENABLED_FILE so each test can rewrite it). Anything else
 # → exit 1 (disabled) / the real `is-enabled` would exit 4 for not-found; both
@@ -127,8 +127,8 @@ RESTART_LOG="$WORK/systemctl-restart.log"      # records each `systemctl restart
 cat > "$SYSTEMCTL_STUB" <<EOF
 #!/usr/bin/env bash
 # Calls we emulate:
-#   systemctl is-enabled ops-loop-<slug>.service        (eligibility gate)
-#   systemctl restart    ops-loop-<slug>.service        (auto-restart — recorded)
+#   systemctl is-enabled bubble-agent@<slug>.service    (eligibility gate)
+#   systemctl restart    bubble-agent@<slug>.service    (auto-restart — recorded)
 #   systemctl show <svc> -p MainPID --value             (inject_live_loop probe)
 # The MainPID probe returns 0 (no live session) so inject_live_loop bails
 # immediately instead of doing a real pgrep/cgroup scan + 240s heartbeat wait
@@ -139,8 +139,8 @@ if [[ "\$1" == "show" ]]; then
     exit 0
 fi
 if [[ "\$1" == "is-enabled" ]]; then
-    unit="\$2"                       # ops-loop-<slug>.service
-    slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
+    unit="\$2"                       # bubble-agent@<slug>.service
+    slug="\${unit#bubble-agent@}"; slug="\${slug%.service}"
     enabled="\$(cat "$ENABLED_FILE" 2>/dev/null || true)"
     for e in \$enabled; do
         if [[ "\$e" == "\$slug" ]]; then echo "enabled"; exit 0; fi
@@ -148,7 +148,7 @@ if [[ "\$1" == "is-enabled" ]]; then
     echo "disabled"; exit 1
 fi
 if [[ "\$1" == "restart" ]]; then
-    unit="\$2"; slug="\${unit#ops-loop-}"; slug="\${slug%.service}"
+    unit="\$2"; slug="\${unit#bubble-agent@}"; slug="\${slug%.service}"
     echo "\$slug" >> "$RESTART_LOG"
     exit 0
 fi
@@ -939,7 +939,7 @@ export BUBBLE_BACKUP_DEPTS="ben"
 : > "$RESTART_LOG"
 with_dryrun -unset- -unset- "$SCRIPT" --layer 1
 if [[ "$(grep -c '^ben$' "$RESTART_LOG" || true)" == "1" ]]; then
-    ok "K1 dead dept (ben) + failed backup tick → systemctl restart ops-loop-ben fired once"
+    ok "K1 dead dept (ben) + failed backup tick → systemctl restart bubble-agent@ben fired once"
 else
     bad "K1 expected 1 restart of ben; restart.log=$(cat "$RESTART_LOG" 2>/dev/null); err=$ERR"
 fi
@@ -1477,14 +1477,12 @@ unset BUBBLE_BACKUP_LAYER_OFFSET_H
 #    exactly the right thing (declined to spawn a competing headless model).
 #    Same class of bug as #1305 (bubble-deploy.sh DEFER_REVIEW exiting 2).
 #
-#    NOTE: this section defines its OWN systemctl stub (matching the CURRENT
-#    `bubble-agent@<slug>.service` eligibility check) rather than reusing
-#    $SYSTEMCTL_STUB above, which still emulates the pre-#1120 unit name
-#    (`ops-loop-<slug>.service`) and no longer matches what dept_eligible()
-#    actually queries — a separate, pre-existing harness/script drift out of
-#    scope for this fix (every test above that depends on set_enabled/
-#    $SYSTEMCTL_STUB eligibility is silently failing closed on this repo
-#    checkout; flagged separately, not papered over here).
+#    NOTE: this section keeps its OWN small systemctl stub (single-slug
+#    match via $N_ENABLED_SLUG) rather than reusing $SYSTEMCTL_STUB above —
+#    both now emulate the same CURRENT `bubble-agent@<slug>.service` unit
+#    name (board #1331 fixed $SYSTEMCTL_STUB's stale pre-#1120
+#    `ops-loop-<slug>.service` parsing), this section's copy is just a
+#    narrower fixture kept local to these three tests.
 # =============================================================================
 N_SYSTEMCTL_STUB="$WORK/systemctl-stub-n.sh"
 cat > "$N_SYSTEMCTL_STUB" <<'EOF'
