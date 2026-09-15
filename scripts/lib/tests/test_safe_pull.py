@@ -101,6 +101,66 @@ def test_safe_pull_noop_clean_tree_still_pulls(origin_and_local):
     assert (local / "CLAUDE.md").read_text().strip() == "v2-merged"
 
 
+# ─── unpushed-commit guard (loop-audit, 2026-09-14) ───────────────────────
+#
+# A `force_commit_and_push` push can fail (transient network, guard
+# rejection, …) after the commit already landed locally. safe_pull's tree
+# is clean at that point — nothing left to notice. `count_unpushed_commits`
+# + safe_pull's step 6 WARN are meant to surface that drift instead of
+# leaving it silent until whatever next inspects the repo.
+
+def test_count_unpushed_commits_zero_when_published(origin_and_local):
+    origin, local = origin_and_local
+    assert dh.count_unpushed_commits(local, "main") == 0
+
+
+def test_count_unpushed_commits_default_branch_matches_explicit_main(origin_and_local):
+    """No `branch` given resolves via `_resolve_push_branch`, which is "main"
+    outside BUBBLE_HOST=local — must agree with the explicit-"main" call."""
+    origin, local = origin_and_local
+    assert dh.count_unpushed_commits(local) == dh.count_unpushed_commits(local, "main")
+
+
+def test_count_unpushed_commits_counts_local_only_commits(origin_and_local):
+    origin, local = origin_and_local
+    (local / "outputs" / "orphan.txt").write_text("local only\n")
+    _git(local, "add", "-A")
+    _git(local, "commit", "-m", "local-only commit")
+    assert dh.count_unpushed_commits(local, "main") == 1
+
+
+def test_count_unpushed_commits_unknown_ref_returns_minus_one(origin_and_local):
+    origin, local = origin_and_local
+    assert dh.count_unpushed_commits(local, "no-such-branch") == -1
+
+
+def test_safe_pull_warns_on_preexisting_unpushed_commit(origin_and_local):
+    """Simulate a previous push that silently failed: HEAD already carries a
+    commit origin doesn't have, but the tree is otherwise clean going in.
+    safe_pull must still succeed (never fail the tick over this) but its
+    summary must surface the drift as a WARN."""
+    origin, local = origin_and_local
+    (local / "outputs" / "orphan.txt").write_text("committed but never pushed\n")
+    _git(local, "add", "-A")
+    _git(local, "commit", "-m", "runtime: orphan commit (push never landed)")
+
+    ok, summary = dh.safe_pull(local, bubble_git_guard_path="/nonexistent/guard")
+
+    assert ok, f"safe_pull must WARN, not fail, on unpushed drift; got: {summary}"
+    assert "WARN" in summary and "unpushed" in summary, (
+        f"expected an unpushed-commit WARN in the summary; got: {summary}"
+    )
+    # The merged upstream change must still have landed despite the drift.
+    assert (local / "CLAUDE.md").read_text().strip() == "v2-merged"
+
+
+def test_safe_pull_no_warn_when_fully_published(origin_and_local):
+    origin, local = origin_and_local
+    ok, summary = dh.safe_pull(local, bubble_git_guard_path="/nonexistent/guard")
+    assert ok, summary
+    assert "unpushed" not in summary, summary
+
+
 def test_safe_pull_preserves_outputs_when_upstream_merge_deletes_them(
     tmp_path, monkeypatch,
 ):
