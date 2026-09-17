@@ -1,10 +1,15 @@
-"""Behavioral tests for board #1339: cloud-wiki-compile.sh's operator-intents
-mirror resolution must fall back gracefully (WARN + skip) instead of hard
-FATAL-ing the whole nightly compile when the root-owned mirror
-(`/opt/bubble-operator-intents`, or `$BUBBLE_OPERATOR_INTENTS_MIRROR`) is not
-deployed — the #430 regression. It must also never substitute the writable
-shared-wiki checkout for the mirror (#1267's invariant, independently
-enforced by wiki_intent_audit.py's mirror validation and its own tests).
+"""Behavioral tests for board #1339 + #1333: cloud-wiki-compile.sh's
+operator-intents resolution must fall back gracefully (WARN + skip) instead
+of hard FATAL-ing the whole nightly compile when nothing resolves — the #430
+regression, still the last-resort behavior.
+
+Board #1333 (Option C, Joris-approved 2026-09-14) changed WHAT resolves: the
+isolated, root-owned, filesystem-immutable mirror (#430/#1267,
+`/opt/bubble-operator-intents`) is retired, and the wiki's own
+`shared/operator-intents/` is now the default source (second candidate,
+after the optional `$BUBBLE_OPERATOR_INTENTS_MIRROR` override) — the tamper
+guarantee is the git-level branch-hook (#12), not filesystem immutability.
+`wiki_intent_audit.py`'s validator was loosened to match (see its own tests).
 
 These tests extract the exact, unmodified control-flow out of the real
 launcher script (by line-anchored slicing, no reimplementation) and execute
@@ -54,8 +59,8 @@ AUDIT_SNIPPET = _audit_invocation_snippet()
 # Sanity: these anchors must still exist verbatim in the shipped script, or
 # the extraction above is silently testing nothing.
 assert 'BUBBLE_OPERATOR_INTENTS_MIRROR' in RESOLUTION_SNIPPET
-assert '/opt/bubble-operator-intents' in RESOLUTION_SNIPPET
-assert 'shared-wiki' not in RESOLUTION_SNIPPET  # never a fallback candidate (#1267)
+assert '${WIKI_DIR:-}/shared' in RESOLUTION_SNIPPET  # the #1333 default
+assert '/opt/bubble-operator-intents' not in RESOLUTION_SNIPPET  # no longer a default (#1333)
 assert '--intents-root "$INTENTS_ROOT"' in AUDIT_SNIPPET
 assert '"skipped":true' in AUDIT_SNIPPET
 
@@ -101,11 +106,11 @@ def test_env_override_mirror_is_resolved_when_present(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# (b) mirror absent, but the wiki's OWN copy of operator-intents exists ->
-#     the wiki copy must NEVER be picked up (#1267); this degrades exactly
-#     like "neither present": WARN + empty INTENTS_ROOT, never FATAL.
+# (b) mirror override absent, but the wiki's OWN copy of operator-intents
+#     exists -> board #1333: this is now the DEFAULT resolution path. No
+#     WARN, INTENTS_ROOT resolves to `${WIKI_DIR}/shared`.
 # --------------------------------------------------------------------------
-def test_wiki_own_intents_copy_is_never_used_as_a_fallback(tmp_path: Path) -> None:
+def test_wiki_own_intents_copy_is_used_as_the_default(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
     (wiki / "shared" / "operator-intents").mkdir(parents=True)
     (wiki / "shared" / "operator-intents" / "system-convergence.md").write_text(
@@ -117,18 +122,41 @@ def test_wiki_own_intents_copy_is_never_used_as_a_fallback(tmp_path: Path) -> No
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert "INTENTS_ROOT=[]" in result.stdout
-    assert "WARN: no read-only operator-intents mirror found" in result.log
+    assert f"INTENTS_ROOT=[{wiki}/shared]" in result.stdout
+    assert result.log == ""  # no WARN when a source resolves
+
+
+def test_env_override_wins_over_the_wiki_default_when_both_exist(tmp_path: Path) -> None:
+    """First-existing-wins ordering: an explicit override still beats the
+    wiki default when an operator has deliberately pointed at an external
+    mirror."""
+    mirror = tmp_path / "mirror"
+    (mirror / "operator-intents").mkdir(parents=True)
+    wiki = tmp_path / "wiki"
+    (wiki / "shared" / "operator-intents").mkdir(parents=True)
+    result = _run(
+        RESOLUTION_SNIPPET + '\necho "INTENTS_ROOT=[$INTENTS_ROOT]"\n',
+        {"BUBBLE_OPERATOR_INTENTS_MIRROR": str(mirror), "WIKI_DIR": str(wiki)},
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"INTENTS_ROOT=[{mirror}]" in result.stdout
 
 
 # --------------------------------------------------------------------------
-# (c) neither the mirror nor a wiki copy exists -> WARN + empty
-#     INTENTS_ROOT, resolution step exits 0, never FATAL.
+# (c) neither an override mirror nor the wiki's shared/operator-intents/
+#     exists (e.g. the wiki checkout is missing that dir) -> WARN + empty
+#     INTENTS_ROOT, resolution step exits 0, never FATAL. Last-resort
+#     fallback kept from #1339.
 # --------------------------------------------------------------------------
 def test_no_source_at_all_warns_and_never_fatals(tmp_path: Path) -> None:
-    result = _run(RESOLUTION_SNIPPET, {"BUBBLE_OPERATOR_INTENTS_MIRROR": ""}, tmp_path)
+    result = _run(
+        RESOLUTION_SNIPPET,
+        {"BUBBLE_OPERATOR_INTENTS_MIRROR": "", "WIKI_DIR": str(tmp_path / "wiki")},
+        tmp_path,
+    )
     assert result.returncode == 0, result.stderr
-    assert "WARN: no read-only operator-intents mirror found" in result.log
+    assert "WARN: no operator-intents source found" in result.log
     assert "FATAL" not in result.log
 
 

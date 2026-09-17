@@ -259,9 +259,15 @@ def test_internal_report_can_be_atomically_written(tmp_path: Path) -> None:
     assert not list(output.parent.glob(".latest.json.*"))
 
 
-def test_operational_cli_rejects_writable_unvalidated_intent_directory(
+def test_operational_cli_accepts_a_plain_readable_intents_directory(
     tmp_path: Path,
 ) -> None:
+    """Board #1333 (Option C): the isolated, root-owned, filesystem-immutable
+    mirror (#430/#1267) is retired for this consumer. The tamper guarantee is
+    now the git-level branch-hook (#12), not filesystem immutability, so the
+    operational CLI must accept an ordinary, writable directory — exactly the
+    shape of the wiki's own shared/operator-intents/ — with no symlink, no
+    root ownership, no 0555/manifest requirement."""
     wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
     seed_intents(mirror)
     write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
@@ -277,11 +283,105 @@ def test_operational_cli_rejects_writable_unvalidated_intent_directory(
         capture_output=True,
         text=True,
     )
+    assert result.returncode == 0, result.stderr
+    assert "not a stable symlink" not in result.stderr
+    assert "wiki_intent_audit: scanned=1 linked=0 candidates=1" in result.stderr
+
+
+def test_operational_cli_rejects_a_directory_with_no_intents_collection(
+    tmp_path: Path,
+) -> None:
+    """The lenient #1333 contract still rejects obvious garbage: a directory
+    that exists but has no operator-intents/ subdirectory at all, or one whose
+    operator-intents/ collection is empty, is not a usable intents source."""
+    wiki = tmp_path / "wiki"
+    write_page(wiki, "shared/systems/unresolved.md", "title: Unresolved")
+
+    no_collection = tmp_path / "empty-root"
+    no_collection.mkdir()
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--wiki", str(wiki), "--intents-root", str(no_collection)],
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode != 0
-    assert "not a stable symlink" in result.stderr
+    assert "has no operator-intents/ collection" in result.stderr
+
+    empty_collection = tmp_path / "empty-collection"
+    (empty_collection / "operator-intents").mkdir(parents=True)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--wiki", str(wiki), "--intents-root", str(empty_collection)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "operator-intents/ collection is empty" in result.stderr
+
+    missing_root = tmp_path / "does-not-exist"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--wiki", str(wiki), "--intents-root", str(missing_root)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "intents root is not a directory" in result.stderr
 
 
-def test_writable_wiki_intent_copy_is_never_the_resolution_baseline(tmp_path: Path) -> None:
+def test_wiki_own_operator_intents_dir_is_accepted_and_used_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """Board #1333's actual production shape: --intents-root pointed straight
+    at the wiki's own shared/ directory (so operator-intents/ resolves to
+    shared/operator-intents/, exactly like cloud-wiki-compile.sh's new
+    default `${WIKI_DIR}/shared`), with a page elsewhere in the same wiki
+    checkout linking to one of those intents. Proves the wiki-dir intents
+    source is accepted AND actually used for resolution — not just accepted
+    and ignored."""
+    wiki = tmp_path / "wiki"
+    write_page(
+        wiki,
+        "shared/operator-intents/system-convergence.md",
+        "title: System convergence\ncore: true",
+    )
+    write_page(
+        wiki,
+        "shared/systems/scalar.md",
+        'title: Scalar\nintent: "[[shared/operator-intents/system-convergence]]"',
+    )
+    write_page(wiki, "rick_rnd/missing.md", "title: Missing")
+    output = tmp_path / "latest.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--wiki",
+            str(wiki),
+            "--intents-root",
+            str(wiki / "shared"),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    candidates = candidate_by_path(report)
+    assert "shared/systems/scalar.md" not in candidates  # resolved via the wiki dir
+    assert candidates["rick_rnd/missing.md"]["issues"] == ["missing_intent"]
+
+
+def test_intent_target_resolves_only_against_the_passed_intents_root(
+    tmp_path: Path,
+) -> None:
+    """Regression guard, still meaningful post-#1333: resolution always uses
+    the specific --intents-root a caller passes — never an implicit fallback
+    scan of the whole wiki checkout — even though under the new default that
+    root is itself a subdirectory of the wiki. A page written directly under
+    the WIKI's shared/operator-intents/ does not count as resolved unless the
+    caller actually pointed --intents-root there."""
     wiki, mirror = tmp_path / "wiki", tmp_path / "mirror"
     seed_intents(mirror)
     write_page(

@@ -12,19 +12,45 @@ import argparse
 import json
 import os
 import re
-import sys
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_REPO_TOOLS = Path(__file__).resolve().parents[3] / "tools"
-for _candidate in (_SCRIPT_DIR, _REPO_TOOLS):
-    if (_candidate / "readonly_intents_mirror.py").is_file() and str(_candidate) not in sys.path:
-        sys.path.insert(0, str(_candidate))
-from readonly_intents_mirror import MirrorValidationError, validate_mirror  # noqa: E402
+
+class IntentsRootValidationError(ValueError):
+    """The given --intents-root does not look like a real intents collection."""
+
+
+def validate_intents_root(intents_root: Path) -> Path:
+    """Sanity-check an operator-intents source directory.
+
+    Board #1333 (Option C, Joris-approved 2026-09-14): the isolated,
+    root-owned, filesystem-immutable mirror (#430/#1267) is retired for THIS
+    consumer. Agents now read intents straight from the wiki's own
+    `shared/operator-intents/` — an ordinary, git-tracked directory — instead
+    of a `readonly_intents_mirror.validate_mirror()`-gated release (that
+    stricter validator still exists unchanged for the separate #1249
+    fleet-architecture and #1254 kanban-intent tooling, which are out of this
+    card's scope). The tamper guarantee is no longer filesystem
+    ownership/mode/symlink/manifest; it is the git-level branch-hook (#12):
+    agents can't commit straight to a protected `main`, only open a PR a
+    human merges. So this check only confirms the path is a real, readable
+    operator-intents collection — not that it is immutable.
+    """
+    if not intents_root.is_dir():
+        raise IntentsRootValidationError(f"intents root is not a directory: {intents_root}")
+    intent_dir = intents_root / "operator-intents"
+    if not intent_dir.is_dir():
+        raise IntentsRootValidationError(
+            f"intents root has no operator-intents/ collection: {intent_dir}"
+        )
+    if not any(intent_dir.glob("*.md")):
+        raise IntentsRootValidationError(
+            f"operator-intents/ collection is empty: {intent_dir}"
+        )
+    return intents_root
 
 
 CORE_DIR = PurePosixPath("shared/operator-intents")
@@ -221,9 +247,9 @@ def _audit_validated_release(
     intents_root = intents_root.resolve()
     mirror_intents = intents_root / MIRROR_INTENT_DIR
     if not mirror_intents.is_dir() or mirror_intents.is_symlink():
-        raise ValueError(f"read-only mirror intent directory unavailable: {mirror_intents}")
+        raise ValueError(f"operator-intents source directory unavailable: {mirror_intents}")
     if any(path.is_symlink() for path in mirror_intents.rglob("*")):
-        raise ValueError(f"read-only mirror intent directory contains a symlink: {mirror_intents}")
+        raise ValueError(f"operator-intents source directory contains a symlink: {mirror_intents}")
     candidates: list[dict[str, object]] = []
     scanned = 0
     linked = 0
@@ -316,19 +342,21 @@ def main() -> int:
         "--intents-root",
         type=Path,
         required=True,
-        help="read-only mirror root containing operator-intents/",
+        help=(
+            "operator-intents source root containing operator-intents/ "
+            "(the wiki's own shared/operator-intents/ by default under #1333; "
+            "may point elsewhere, e.g. an external override)"
+        ),
     )
     parser.add_argument("--output", type=Path, help="atomically write JSON here")
     args = parser.parse_args()
 
     if not args.wiki.is_dir():
         parser.error(f"wiki root is not a directory: {args.wiki}")
-    if not args.intents_root.is_dir():
-        parser.error(f"read-only intents mirror is not a directory: {args.intents_root}")
     try:
-        release = validate_mirror(args.intents_root)
-        report = _audit_validated_release(args.wiki, release)
-    except (ValueError, MirrorValidationError) as exc:
+        validated_root = validate_intents_root(args.intents_root)
+        report = _audit_validated_release(args.wiki, validated_root)
+    except (ValueError, IntentsRootValidationError) as exc:
         parser.error(str(exc))
     payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:

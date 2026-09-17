@@ -7,8 +7,10 @@ most **5 candidate pages per run** from
 
 This mission never runs on its own — STEP 8 of the compile skill skips it
 entirely when `latest.json` is `{"skipped": true, ...}` (board #1339: no
-root-owned operator-intents mirror was available this run). There is nothing
-structural to backfill against without one; that is expected, not an error.
+operator-intents source was available this run — a last-resort fallback,
+rare since board #1333 made the wiki's own copy the default). There is
+nothing structural to backfill against without one; that is expected, not an
+error.
 
 The JSON is structural evidence only. A missing or malformed field makes a page
 a candidate for review; it does not prove the page is waste or identify the
@@ -23,19 +25,24 @@ Python collector.
 - Missing `intent`, `intent:`, and `intent: []` are allowed only as transitional
   unresolved states. They remain visible in the next audit.
 - Every non-empty target resolves case-exactly to an existing `.md` below the
-  read-only mirror's `operator-intents/`. The mirror is selected by
-  `BUBBLE_OPERATOR_INTENTS_MIRROR`, otherwise `/opt/bubble-operator-intents` on
-  Linux or `/Library/Application Support/Bubble/operator-intents` on Darwin.
-  Omit `.md`; do not use aliases or headings. Never use the writable shared
-  wiki or a direct GitHub read as the authoritative baseline.
+  resolved intents source's `operator-intents/`. Board #1333 (Option C,
+  Joris-approved 2026-09-14): that source is the wiki's own
+  `shared/operator-intents/` by default (an ordinary, git-tracked directory —
+  the isolated, root-owned, filesystem-immutable mirror this used to require
+  is retired), or `$BUBBLE_OPERATOR_INTENTS_MIRROR` when an operator points it
+  elsewhere. Omit `.md`; do not use aliases or headings. The tamper guarantee
+  is the git-level branch-hook (#12: agents can't commit straight to a
+  protected `main`, only open a PR a human merges), not filesystem
+  immutability — never a direct GitHub read as the authoritative baseline.
 - A link to an intent whose frontmatter says `status: superseded` remains an
   unresolved candidate. Read the page and current intent collection to choose a
   supported mapping; never infer the replacement from filenames or links.
 - Never assign the north-star, or any other intent, as a blanket default.
-- Never create, edit, rename, or delete vault content or a writable
-  `shared/operator-intents/` copy. Pages with `core: true` are also read-only.
-  Intent changes go only to `shared/operator-intents-proposals/` on a
-  Joris-reviewed shared-wiki PR; no agent opens or pushes a vault PR.
+- Never create, edit, rename, or delete vault content or `shared/operator-intents/`
+  itself — that copy is git-PR-gated from the private vault, not written by
+  this mission. Pages with `core: true` are also read-only. Intent changes go
+  only to `shared/operator-intents-proposals/` on a Joris-reviewed shared-wiki
+  PR; no agent opens or pushes a vault PR.
 
 ## Per-page judgment
 

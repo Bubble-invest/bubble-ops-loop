@@ -81,6 +81,16 @@ README/TEMPLATE and superseded documents. Never derive taxonomy from GitHub or
 the writable shared wiki. Read it through `tools/kanban/intent_alignment_check.py`;
 never edit the vault or mirror from this skill.
 
+Note this is a **separate, deliberately unchanged** path from board #1333: that
+card retired the isolated host mirror only for the cloud-wiki-compile
+pipeline (`wiki_intent_audit.py` now reads the wiki's own
+`shared/operator-intents/` directly, git-PR-gated — see
+`skills/cloud-wiki-compile/SKILL.md`). `intent_alignment_check.py`'s stricter
+`readonly_intents_mirror.validate_mirror()` gate (board #1254) is untouched
+and still requires a real, root-owned, filesystem-immutable mirror for THIS
+taxonomy lookup — a future card could align the two, but that has not
+happened yet.
+
 **Picking a budget** (per-run/per-card USD estimate, tied to scope):
 - **Small** (~$2–5): a quick lookup, a one-file fix, a single triage pass.
 - **Medium** (~$10–20): a typical multi-step task — investigate + fix + test one thing.
