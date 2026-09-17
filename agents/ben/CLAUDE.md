@@ -80,8 +80,10 @@ mechanisms drive my OODA loop:
 2. **The backup floor cron** — fires each layer at a fixed time. It is a SAFETY
    NET owned by the platform, not by me. At each fire it runs ONE forced layer
    tick **only if I am STALE** (no recent heartbeat); if my live loop is healthy
-   it SKIPS me. A mutex guarantees the backup tick never overlaps a live tick, so
-   my queue is **never double-processed**.
+   it SKIPS me. When I am stale, it wakes my existing live session instead of
+   starting a competing one, so my queue is **never double-processed**; a
+   `flock` mutex separately just keeps two backup ticks from overlapping
+   each other.
 
 I do **not** disable, "fix", or fight the backup cron — it's my safety net.
 
