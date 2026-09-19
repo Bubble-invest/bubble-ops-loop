@@ -222,11 +222,18 @@ def test_archive_and_proposals_segments_are_excluded_from_the_leak_check(
 
 def test_is_glob_excluded_matches_segment_not_substring() -> None:
     globs = audit_module.EXCLUDED_PATH_GLOBS
-    assert globs == ("_archive/**", "proposals/**", "operator-intents-proposals/**")
+    assert globs == (
+        "_archive/**",
+        "archive/**",
+        "proposals/**",
+        "operator-intents-proposals/**",
+    )
 
     excluded = (
         "_archive/x.md",
         "a/_archive/b/x.md",
+        "archive/x.md",
+        "shared/archive/x.md",
         "proposals/x.md",
         "a/proposals/b/c.md",
         "shared/operator-intents-proposals/x.md",

@@ -74,6 +74,12 @@ NON_CONTENT_PREFIXES = (PurePosixPath(".github"), PurePosixPath("hooks"))
 # real wiki).
 EXCLUDED_PATH_GLOBS: tuple[str, ...] = (
     "_archive/**",
+    # `shared/archive/` is a distinct first-class wiki root (~94 untagged pages)
+    # separate from `_archive/`; without this a compile cycle floods the board
+    # with intent-leak candidate cards for archived (non-live) content. "archive"
+    # as a bare segment also covers any other archive/ dir at any depth (approved
+    # follow-up to #1265, Joris 2026-09-19).
+    "archive/**",
     "proposals/**",
     "operator-intents-proposals/**",
 )
