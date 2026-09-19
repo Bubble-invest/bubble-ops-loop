@@ -177,6 +177,25 @@ for pair in "${MAP[@]}"; do
       deferred_rels="${deferred_rels}${2}|"
       continue
     fi
+    # board #1124: backup-before-clobber. Before overwriting an existing
+    # (managed-baseline) dest, snapshot it to <dst>.pre-vendor-<ts> so a bad
+    # canonical push is recoverable. Fail-OPEN (a backup problem never blocks
+    # the vendor — consistent with this script's contract). A missing dest is a
+    # pure create with nothing to back up; a symlink dest was already refused
+    # above. Keep only the newest 3 snapshots per file to bound disk use.
+    if [[ -e "$dst" && ! -L "$dst" ]]; then
+      bak="${dst}.pre-vendor-$(date -u +%Y%m%dT%H%M%SZ)"
+      if cp -f "$dst" "$bak" 2>/dev/null; then
+        log "WARN: backed up prior $2 -> $(basename "$bak") before vendor refresh"
+        # prune to newest 3 (oldest first); best-effort, never fatal
+        # shellcheck disable=SC2012
+        ls -1t "${dst}".pre-vendor-* 2>/dev/null | tail -n +4 | while read -r old; do
+          rm -f "$old" 2>/dev/null || true
+        done
+      else
+        log "WARN: could not back up $2 before vendor refresh (proceeding, fail-open)"
+      fi
+    fi
     # -T: dst is always a normal file target (never "copy into directory").
     # --no-dereference: never follow a symlink SRC either (defense in depth).
     if copy_canonical_file "$src" "$dst"; then
