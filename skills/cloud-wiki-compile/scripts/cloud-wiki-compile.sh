@@ -236,9 +236,29 @@ EXIT=$?
 # exhaustion, malformed output, or tool failure leaves the semantic queue
 # untouched, so the same immutable chunks are retried.
 if [ "$MODE" = "compile" ] && [ "$EXIT" -eq 0 ]; then
-    if ! python3 "$DELTA_SCRIPT" accept-result \
+    if [ ! -s "$RUN_LOG" ]; then
+        log "FATAL: compile produced no result envelope — likely budget/limit exhaustion on an over-large delta; RUN_LOG empty; watermark not advanced."
+        EXIT=1
+    elif ! python3 - "$RUN_LOG" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = [line.strip() for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+for line in reversed(lines):
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    raise SystemExit(0 if isinstance(value, dict) and value.get("type") == "result" else 1)
+raise SystemExit(1)
+PY
+    then
+        log "FATAL: compile produced no valid JSON result envelope — likely budget/limit exhaustion or truncated output; watermark not advanced."
+        EXIT=1
+    elif ! python3 "$DELTA_SCRIPT" accept-result \
         --plan "$DELTA_PLAN" --marker "$DELTA_MARKER" --result "$RUN_LOG"; then
-        log "FATAL: compile output was not valid JSON success; watermark not advanced."
+        log "FATAL: compile result envelope failed the exact plan-bound success receipt check; watermark not advanced."
         EXIT=1
     elif ! python3 "$DELTA_SCRIPT" commit --plan "$DELTA_PLAN" --marker "$DELTA_MARKER"; then
         log "FATAL: success marker could not be committed; watermark not advanced."

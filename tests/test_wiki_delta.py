@@ -4,7 +4,7 @@ import importlib.util
 import json
 import os
 import pathlib
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +37,7 @@ def args(tmp_path: pathlib.Path, **overrides):
         "context_rows": 8, "sla_target_runs": 3,
         "bootstrap_safety_hours": 48,
         "success_log_dir": str(tmp_path / "logs"),
+        "date_from": None, "date_to": None,
         "full": False, "weekly": False,
     }
     values.update(overrides)
@@ -313,6 +314,104 @@ def test_bootstrap_seeds_old_history_and_queues_recent(monkeypatch, tmp_path):
     state = json.loads(pathlib.Path(plan_args.state).read_text())
     assert state["capture_files"][str(old)]["bootstrap_seeded"]
     assert "Recent overlap" in pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+
+
+def test_plan_date_window_filters_transcript_mtime_inclusive(monkeypatch, tmp_path):
+    before = tmp_path / "before.jsonl"
+    start = tmp_path / "start.jsonl"
+    end = tmp_path / "end.jsonl"
+    after = tmp_path / "after.jsonl"
+    for path in (before, start, end, after):
+        path.write_bytes(row(path.stem))
+    for path, modified in (
+        (before, datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)),
+        (start, datetime(2026, 9, 18, 0, 0, 0, tzinfo=timezone.utc)),
+        (end, datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)),
+        (after, datetime(2026, 9, 19, 0, 0, 0, tzinfo=timezone.utc)),
+    ):
+        os.utime(path, (modified.timestamp(), modified.timestamp()))
+    scan = empty_scan(); scan["maya_sales"] = [before, start, end, after]
+    monkeypatch.setattr(wiki_delta, "scan_sources", lambda: scan)
+    monkeypatch.setattr(
+        wiki_delta, "bootstrap_cutoff",
+        lambda *_: pytest.fail("date window must replace bootstrap cutoff"),
+    )
+    plan_args = args(
+        tmp_path, date_from=date(2026, 9, 18), date_to=date(2026, 9, 18)
+    )
+    wiki_delta.command_plan(plan_args)
+    feed = pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+    assert "start" in feed and "end" in feed
+    assert "before" not in feed and "after" not in feed
+    assert plan_json(plan_args)["date_window"] == {
+        "from": "2026-09-18", "to": "2026-09-18",
+    }
+    with pytest.raises(ValueError, match="--from must be <= --to"):
+        wiki_delta.date_window(date(2026, 9, 19), date(2026, 9, 18))
+
+
+def test_fresh_date_window_bootstrap_prevents_later_historical_ingestion(
+    monkeypatch, tmp_path,
+):
+    before = tmp_path / "before.jsonl"
+    current = tmp_path / "current.jsonl"
+    after = tmp_path / "after.jsonl"
+    for path in (before, current, after):
+        path.write_bytes(row(path.stem))
+    for path, modified in (
+        (before, datetime(2026, 9, 17, 12, tzinfo=timezone.utc)),
+        (current, datetime(2026, 9, 18, 12, tzinfo=timezone.utc)),
+        (after, datetime(2026, 9, 19, 12, tzinfo=timezone.utc)),
+    ):
+        os.utime(path, (modified.timestamp(), modified.timestamp()))
+    scan = empty_scan(); scan["maya_sales"] = [before, current, after]
+    monkeypatch.setattr(wiki_delta, "scan_sources", lambda: scan)
+    plan_args = args(
+        tmp_path, date_from=date(2026, 9, 18), date_to=date(2026, 9, 18)
+    )
+
+    wiki_delta.command_plan(plan_args)
+    state = json.loads(pathlib.Path(plan_args.state).read_text())
+    assert state["capture_files"][str(before)]["bootstrap_seeded"]
+    assert state["bootstrap"]["source"] == "operator_date_window"
+    assert state["bootstrap"]["from"] == "2026-09-18"
+    assert state["bootstrap"]["to"] == "2026-09-18"
+    assert "current" in pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+    accept_and_commit(plan_args)
+
+    plan_args.date_from = None
+    plan_args.date_to = None
+    wiki_delta.command_plan(plan_args)
+    feed = pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+    assert "after" in feed
+    assert "before" not in feed
+
+
+def test_date_window_supersedes_stuck_plan_without_dropping_queue(monkeypatch, tmp_path):
+    old = tmp_path / "old.jsonl"
+    current = tmp_path / "current.jsonl"
+    old.write_bytes(row("outside requested date window"))
+    current.write_bytes(row("inside requested date window"))
+    for path, modified in (
+        (old, datetime(2026, 9, 17, 12, tzinfo=timezone.utc)),
+        (current, datetime(2026, 9, 18, 12, tzinfo=timezone.utc)),
+    ):
+        os.utime(path, (modified.timestamp(), modified.timestamp()))
+    scan = empty_scan(); scan["rick_rnd"] = [old, current]
+    monkeypatch.setattr(wiki_delta, "scan_sources", lambda: scan)
+    plan_args = args(tmp_path); seed_empty_state(plan_args)
+    wiki_delta.command_plan(plan_args)
+    stuck_run = plan_json(plan_args)["run_id"]
+
+    plan_args.date_from = date(2026, 9, 18)
+    plan_args.date_to = date(2026, 9, 18)
+    wiki_delta.command_plan(plan_args)
+    replacement = plan_json(plan_args)
+    feed = pathlib.Path(replacement["aggregate_feed"]).read_text()
+    state = json.loads(pathlib.Path(plan_args.state).read_text())
+    assert replacement["run_id"] != stuck_run
+    assert "inside requested" in feed and "outside requested" not in feed
+    assert len(state["delta_queue"]) == 2
 
 
 def test_malformed_complete_row_fails_closed(monkeypatch, tmp_path):
