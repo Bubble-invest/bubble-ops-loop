@@ -18,10 +18,11 @@ import json
 import math
 import os
 import pathlib
+import re
 import tempfile
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable
 
 VERSION = 2
@@ -141,6 +142,38 @@ def scan_sources(source_map: dict[str, tuple[str, ...]] = SOURCE_PATTERNS) -> di
                     found.append(resolved)
         scanned[folder] = sorted(found)
     return scanned
+
+
+def calendar_date(value: str) -> date:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise argparse.ArgumentTypeError("expected YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid date: {value}") from exc
+
+
+def date_window(
+    date_from: date | None, date_to: date | None,
+) -> tuple[datetime | None, datetime | None]:
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("--from must be <= --to")
+    start = datetime.combine(date_from, time.min, timezone.utc) if date_from else None
+    end = datetime.combine(date_to, time.max, timezone.utc) if date_to else None
+    return start, end
+
+
+def filter_sources_by_mtime(
+    scanned: dict[str, list[pathlib.Path]], start: datetime | None, end: datetime | None,
+) -> dict[str, list[pathlib.Path]]:
+    def included(path: pathlib.Path) -> bool:
+        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        return (start is None or modified >= start) and (end is None or modified <= end)
+
+    return {
+        folder: [path for path in paths if included(path)]
+        for folder, paths in scanned.items()
+    }
 
 
 def load_state(path: pathlib.Path) -> dict[str, Any]:
@@ -343,7 +376,7 @@ def promote_next_delta_cycle(state: dict[str, Any]) -> None:
 
 def capture_delta_cycle(
     state: dict[str, Any], scanned: dict[str, list[pathlib.Path]], spool_root: pathlib.Path,
-    chunk_chars: int, context_rows: int,
+    chunk_chars: int, context_rows: int, prune_missing: bool = True,
 ) -> None:
     # The active queue is immutable/fair. New rows are still captured on every
     # invocation (including failed-plan replay) into a separate next frontier.
@@ -375,9 +408,10 @@ def capture_delta_cycle(
                     "prefix_sha256": hashlib.sha256(data[:end]).hexdigest(),
                     "captured_at": utc_now(), "cycle_id": cycle_id,
                 }
-    for key in list(updated):
-        if key not in present:
-            del updated[key]
+    if prune_missing:
+        for key in list(updated):
+            if key not in present:
+                del updated[key]
     state["capture_files"] = updated
     state[queue_key] = queue
     if queue:
@@ -547,12 +581,32 @@ def command_plan(args: argparse.Namespace) -> int:
     plan_path = pathlib.Path(args.plan)
     state = load_state(state_path)
     scanned = scan_sources()
+    date_from = getattr(args, "date_from", None)
+    date_to = getattr(args, "date_to", None)
+    window_start, window_end = date_window(date_from, date_to)
+    window = None
+    if window_start or window_end:
+        scanned = filter_sources_by_mtime(scanned, window_start, window_end)
+        window = {
+            "from": date_from.isoformat() if date_from else None,
+            "to": date_to.isoformat() if date_to else None,
+        }
     if not state_path.exists():
-        cutoff, source = bootstrap_cutoff(pathlib.Path(args.success_log_dir), args.bootstrap_safety_hours)
-        seed_bootstrap(state, scanned, cutoff, source)
+        if window:
+            state["bootstrap"] = {
+                "source": "operator_date_window", **window, "created_at": utc_now(),
+            }
+        else:
+            cutoff, source = bootstrap_cutoff(
+                pathlib.Path(args.success_log_dir), args.bootstrap_safety_hours
+            )
+            seed_bootstrap(state, scanned, cutoff, source)
     spool_root = pathlib.Path(args.run_root) / "queue"
     chunk_chars = max(1, args.max_reduced_chars // args.max_folders)
-    capture_delta_cycle(state, scanned, spool_root, chunk_chars, args.context_rows)
+    capture_delta_cycle(
+        state, scanned, spool_root, chunk_chars, args.context_rows,
+        prune_missing=window is None,
+    )
     if args.full:
         start_full_generation(state, scanned, spool_root, chunk_chars, args.context_rows)
     # Capture state is independent of semantic-plan success. Persist it before
@@ -562,15 +616,21 @@ def command_plan(args: argparse.Namespace) -> int:
     if plan_path.exists():
         old = json.loads(plan_path.read_text(encoding="utf-8"))
         if state.get("last_successful_run") != old.get("run_id") and verify_plan_feeds(old):
-            if args.weekly and not old.get("weekly"):
-                upgrade_plan_to_weekly(old, state, plan_path)
-                print(f"delta_plan: upgraded pending run={old['run_id']} to weekly")
-            else:
-                print(f"delta_plan: resume run={old['run_id']} (uncommitted durable plan)")
-            return 0
+            if window is None or old.get("date_window") == window:
+                if args.weekly and not old.get("weekly"):
+                    upgrade_plan_to_weekly(old, state, plan_path)
+                    print(f"delta_plan: upgraded pending run={old['run_id']} to weekly")
+                else:
+                    print(f"delta_plan: resume run={old['run_id']} (uncommitted durable plan)")
+                return 0
 
     kind = choose_queue_kind(state)
     queue = queue_for_kind(state, kind) if kind else []
+    if window:
+        candidate_paths = {
+            str(path) for paths in scanned.values() for path in paths
+        }
+        queue = [item for item in queue if item.get("source_path") in candidate_paths]
     selected, next_index = select_chunks(
         queue, int(state.get("next_folder_index", 0)), args.max_folders,
         args.max_reduced_chars,
@@ -601,6 +661,8 @@ def command_plan(args: argparse.Namespace) -> int:
         },
         **feed_info,
     }
+    if window:
+        plan["date_window"] = window
     atomic_json(plan_path, plan)
     alert = " ALERT_SLA" if plan["sla_alert"] else ""
     print(
@@ -677,6 +739,14 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--sla-target-runs", type=int, default=3)
     plan.add_argument("--bootstrap-safety-hours", type=int, default=48)
     plan.add_argument("--success-log-dir", default="/home/claude/logs/bubble-wiki")
+    plan.add_argument(
+        "--from", dest="date_from", type=calendar_date, metavar="YYYY-MM-DD",
+        help="include transcripts modified on or after this UTC date",
+    )
+    plan.add_argument(
+        "--to", dest="date_to", type=calendar_date, metavar="YYYY-MM-DD",
+        help="include transcripts modified on or before this UTC date",
+    )
     plan.add_argument("--weekly", action="store_true")
     plan.add_argument("--full", action="store_true")
     plan.set_defaults(func=command_plan)
@@ -693,10 +763,15 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    args = parser().parse_args()
+    argument_parser = parser()
+    args = argument_parser.parse_args()
     if args.command == "plan":
         if min(args.max_folders, args.max_batches, args.max_reduced_chars) < 1:
             raise SystemExit("limits must be positive")
+        try:
+            date_window(args.date_from, args.date_to)
+        except ValueError as exc:
+            argument_parser.error(str(exc))
         state_path = pathlib.Path(args.state)
     else:
         plan = json.loads(pathlib.Path(args.plan).read_text(encoding="utf-8"))
