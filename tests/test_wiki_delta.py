@@ -350,6 +350,43 @@ def test_plan_date_window_filters_transcript_mtime_inclusive(monkeypatch, tmp_pa
         wiki_delta.date_window(date(2026, 9, 19), date(2026, 9, 18))
 
 
+def test_fresh_date_window_bootstrap_prevents_later_historical_ingestion(
+    monkeypatch, tmp_path,
+):
+    before = tmp_path / "before.jsonl"
+    current = tmp_path / "current.jsonl"
+    after = tmp_path / "after.jsonl"
+    for path in (before, current, after):
+        path.write_bytes(row(path.stem))
+    for path, modified in (
+        (before, datetime(2026, 9, 17, 12, tzinfo=timezone.utc)),
+        (current, datetime(2026, 9, 18, 12, tzinfo=timezone.utc)),
+        (after, datetime(2026, 9, 19, 12, tzinfo=timezone.utc)),
+    ):
+        os.utime(path, (modified.timestamp(), modified.timestamp()))
+    scan = empty_scan(); scan["maya_sales"] = [before, current, after]
+    monkeypatch.setattr(wiki_delta, "scan_sources", lambda: scan)
+    plan_args = args(
+        tmp_path, date_from=date(2026, 9, 18), date_to=date(2026, 9, 18)
+    )
+
+    wiki_delta.command_plan(plan_args)
+    state = json.loads(pathlib.Path(plan_args.state).read_text())
+    assert state["capture_files"][str(before)]["bootstrap_seeded"]
+    assert state["bootstrap"]["source"] == "operator_date_window"
+    assert state["bootstrap"]["from"] == "2026-09-18"
+    assert state["bootstrap"]["to"] == "2026-09-18"
+    assert "current" in pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+    accept_and_commit(plan_args)
+
+    plan_args.date_from = None
+    plan_args.date_to = None
+    wiki_delta.command_plan(plan_args)
+    feed = pathlib.Path(plan_json(plan_args)["aggregate_feed"]).read_text()
+    assert "after" in feed
+    assert "before" not in feed
+
+
 def test_date_window_supersedes_stuck_plan_without_dropping_queue(monkeypatch, tmp_path):
     old = tmp_path / "old.jsonl"
     current = tmp_path / "current.jsonl"

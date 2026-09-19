@@ -580,7 +580,8 @@ def command_plan(args: argparse.Namespace) -> int:
     state_path = pathlib.Path(args.state)
     plan_path = pathlib.Path(args.plan)
     state = load_state(state_path)
-    scanned = scan_sources()
+    full_scan = scan_sources()
+    scanned = full_scan
     date_from = getattr(args, "date_from", None)
     date_to = getattr(args, "date_to", None)
     window_start, window_end = date_window(date_from, date_to)
@@ -593,9 +594,16 @@ def command_plan(args: argparse.Namespace) -> int:
         }
     if not state_path.exists():
         if window:
-            state["bootstrap"] = {
-                "source": "operator_date_window", **window, "created_at": utc_now(),
-            }
+            if window_start is not None:
+                seed_bootstrap(
+                    state, full_scan, window_start, "operator_date_window"
+                )
+                state["bootstrap"].update(window)
+            else:
+                # A --to-only window has no pre-window history to freeze.
+                state["bootstrap"] = {
+                    "source": "operator_date_window", **window, "created_at": utc_now(),
+                }
         else:
             cutoff, source = bootstrap_cutoff(
                 pathlib.Path(args.success_log_dir), args.bootstrap_safety_hours
