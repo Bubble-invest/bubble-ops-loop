@@ -314,7 +314,16 @@ fi
     # single-quoted assignment (survives tmux's re-parse) + env -u + exec. Otherwise
     # emit the plain bare-exec form (identical to the pre-alignment generic wrapper —
     # no secrets in argv). \$1 is the leading flag ("--continue" or "").
-    local claude_flags="\$1${chrome_flag}${model_flag} --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+    #
+    # --disallowedTools AskUserQuestion (Joris 2026-09-20): headless/always-on loop
+    # agents must never call AskUserQuestion. It opens an interactive blocking menu
+    # in the REPL that halts message/mission processing until a human picks an option
+    # — with no human at the TTY, the session wedges silently (this took Claudette
+    # down). The VPS depts already carry this flag (bubble-vps-platform
+    # systemd/bubble-agent-prepare, board #1370); this generalizes the same guard to
+    # every Mac fleet agent (Rick, Tonio, Miranda, Géraldine, Ellie) launched via
+    # this lib, so the whole fleet is uniformly protected.
+    local claude_flags="\$1${chrome_flag}${model_flag} --dangerously-skip-permissions --disallowedTools AskUserQuestion --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
     local claude_launch
     if [[ -n "$inline_env_vars" || -n "$env_unset_prefix" ]]; then
         local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' "

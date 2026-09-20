@@ -118,6 +118,7 @@ nowant "T4c MAIN runner does NOT use StartCalendarInterval"  "<key>StartCalendar
 want   "T4d plist ProgramArguments points at the wrapper"    "ops-loop-${SLUG}-wrapper.sh" "$PLIST"
 want   "T5 wrapper cd's into the dept-dir"        "cd \"${DEPT}\"" "$WRAPPER"
 want   "T5b wrapper runs claude with --channels telegram" "channels plugin:telegram@claude-plugins-official" "$WRAPPER"
+want   "T5b2 wrapper disables AskUserQuestion (no interactive wedge)" "disallowedTools AskUserQuestion" "$WRAPPER"
 want   "T5c wrapper runs claude inside tmux"      "new-session" "$WRAPPER"
 want   "T5d wrapper sources the telegram env"     "${WORK}/tg/.env" "$WRAPPER"
 want   "T5e wrapper grants the workspace via --add-dir (brain↔body)" "add-dir '${WSDIR}'" "$WRAPPER"
