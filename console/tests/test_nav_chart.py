@@ -312,27 +312,36 @@ def test_dept_page_no_nav_chart_for_dept_without_fund_db(client, fixture_root):
 def test_dept_page_drops_redundant_whiteboard_nav_kpi(client, fixture_root):
     """#1209 — the canonical headline owns THE NAV, so a separately-authored
     'NAV' card in the whiteboard KPIs (which drifts — Ben's was a day-stale
-    09-09 mark next to the audited 09-10 headline) must be dropped, leaving the
-    page with exactly one NAV. Distinct risk KPIs stay."""
+    prior mark next to the audited today's headline) must be dropped, leaving
+    the page with exactly one NAV. Distinct risk KPIs stay.
+
+    The canonical headline is read from `outputs/<date>/graph-data.json` via a
+    7-day-back scan from the REAL wall-clock today (_load_latest_graph_data),
+    so — like test_1209_canonical_nav.py — this fixture must anchor its dates
+    to `date.today()` rather than a hardcoded date: a fixed past date ages out
+    of that 7-day window and silently makes nav_headline.nav None, which was
+    exactly what happened here (#1387)."""
     import json
+    import datetime
     import yaml
+    today = datetime.date.today().isoformat()
     repo = _build_ben_repo(fixture_root)
     _write_dept_yaml(repo, "ben")
     con = _make_db(repo)
-    _insert(con, "2026-09-10T05:15:00+00:00", 266108.0)
+    _insert(con, f"{today}T05:15:00+00:00", 266108.0)
     con.close()
-    day = repo / "outputs" / "2026-09-10"
+    day = repo / "outputs" / today
     day.mkdir(parents=True, exist_ok=True)
     (day / "graph-data.json").write_text(json.dumps({
         "nav": 266108.0, "since_rebase_pct": 7.03,
-        "portfolio_overview": {"nav": 266108.0, "nav_date": "2026-09-10",
+        "portfolio_overview": {"nav": 266108.0, "nav_date": today,
                                "since_rebase_pct": 7.03},
-        "generated_at": "2026-09-10T05:15:00Z",
+        "generated_at": f"{today}T05:15:00Z",
     }), encoding="utf-8")
     (repo / "whiteboard.yaml").write_text(yaml.safe_dump({
-        "updated_at": "2026-09-10T06:16:00Z",
+        "updated_at": f"{today}T06:16:00Z",
         "kpis": [
-            {"label": "NAV", "value": "$268.2k", "note": "verified 09-09 L1 mark"},
+            {"label": "NAV", "value": "$268.2k", "note": "verified prior-day L1 mark"},
             {"label": "Sharpe ITD", "value": "0.51"},
         ],
     }, sort_keys=False), encoding="utf-8")
