@@ -178,6 +178,13 @@ if [ "$MODE" = "compile" ]; then
     # Operator/on-demand escape hatch. Full creates a persistent frozen
     # generation which subsequent bounded runs continue alongside live delta.
     [ "${WIKI_COMPILE_FULL:-0}" = "1" ] && DELTA_ARGS+=(--full)
+    # Operator date-window catch-up (#1365 / #1403): bound the plan to a
+    # [FROM, TO] date range so a large backlog can be drained in small 12h
+    # slices instead of choking the unwindowed full set. Both optional; the
+    # nightly cron never sets them, so default behavior is unchanged. Threads
+    # straight to wiki-delta's already-tested --from/--to (date_window()).
+    [ -n "${WIKI_COMPILE_FROM:-}" ] && DELTA_ARGS+=(--from "${WIKI_COMPILE_FROM}")
+    [ -n "${WIKI_COMPILE_TO:-}" ]   && DELTA_ARGS+=(--to "${WIKI_COMPILE_TO}")
     if ! python3 "$DELTA_SCRIPT" "${DELTA_ARGS[@]}"; then
         log "FATAL: delta planning failed; compile not started."
         exit 1
