@@ -50,6 +50,29 @@ Everything between here and "## SYNTHESIS MODE" is the **compile** path.
 
 # COMPILE MODE
 
+## ⛔ TURN DISCIPLINE (read first — this is why runs silently fail)
+
+You run headless (`claude -p`). **There is NO background execution and NO next
+turn.** The instant you end your turn, the process exits and everything still in
+flight — subagents you spawned, wiki writes not yet applied — is killed. The
+launcher then rejects the run (no STEP 11 receipt) and the semantic queue never
+advances. This is the #1 nightly-failure cause.
+
+Therefore, for this whole compile:
+
+- Execute **STEP 0 → STEP 11 in ONE single continuous turn.** Do not stop, pause,
+  or hand off partway.
+- Spawning a Task subagent **blocks synchronously inside this turn** — you spawn
+  it, wait for its result in the same turn, read it, and continue. "Waiting for a
+  subagent" is never a reason to end your turn; there is no later turn to resume in.
+- **NEVER** make your final response a status/progress line such as "waiting on
+  STEP 5 to finish", "writes in progress", "synthesis running", or "I'll continue
+  after…". Any such ending means the work did NOT finish and the run is a failure.
+- Your turn ends in exactly ONE of two ways: (a) SUCCESS — every applicable STEP
+  0–10 action fully completed AND your entire final response is the STEP 11
+  receipt; or (b) FAILURE — you stop with NO receipt (a partial/interrupted run).
+  There is no third "paused/waiting" state.
+
 ## STEP 0 — Collect intent-link evidence (structural only)
 
 The launcher writes
@@ -1314,6 +1337,10 @@ unset BOT_TOKEN
 ```
 
 ## STEP 11 — FINAL COMPLETION RECEIPT (compile mode only)
+
+Reaching this step is the ONLY valid way to end your turn (see ⛔ TURN DISCIPLINE
+at the top). If STEP 5's write subagent — or any step — has not yet returned,
+you are not done: wait for it in this same turn, do not end on a "waiting" status.
 
 Only after **every** applicable STEP 0–10 action has succeeded, read `run_id`
 from the unchanged current plan and make your entire final response exactly:
