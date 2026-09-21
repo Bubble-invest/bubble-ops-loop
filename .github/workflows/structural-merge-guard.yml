@@ -1,0 +1,47 @@
+name: structural-merge-guard
+
+# Board #1432 (option C2). Blocks merging a PR that changes STRUCTURAL /
+# mission-definition paths unless it carries an APPROVED review authored by the
+# trusted cockpit App bot (an identity the fleet's agents cannot impersonate).
+# Make this a REQUIRED status check in branch protection to enforce it (see
+# .github/scripts/README-structural-merge-guard.md). Runtime direct-pushes to
+# main do not go through PRs, so they are unaffected.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: structural-merge-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for policy.py + the guard script)
+        uses: actions/checkout@v4
+
+      - name: Structural merge guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Override via repo variable APPROVER_BOT once the App's bot login is known.
+          APPROVER_BOT: ${{ vars.APPROVER_BOT || 'bubble-cockpit-approver[bot]' }}
+        run: |
+          set -euo pipefail
+          # Paginate both lists (PRs can exceed one page of files/reviews).
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '[.[]|{path:.filename}]')
+          reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '[.[]|{user:{login:.user.login},state:.state,commit_id:.commit_id}]')
+          jq -n --argjson files "$files" --argjson reviews "$reviews" \
+            '{files:$files, reviews:$reviews}' \
+          | python3 .github/scripts/structural_merge_guard.py \
+              --repo "$REPO" --head-sha "$HEAD_SHA"
