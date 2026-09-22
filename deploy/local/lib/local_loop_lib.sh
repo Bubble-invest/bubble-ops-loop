@@ -307,6 +307,23 @@ fi
     [[ -n "$model" ]] && model_flag=" --model '${model}'"
     local cont_flag=""
     [[ "$do_continue" == "1" ]] && cont_flag="--continue"
+    # Runtime FRESH-FALLBACK GATE (board #1195). With --continue enabled, only
+    # actually pass it when a prior transcript exists for THIS cwd — so the daily
+    # session-rotation (STOP -> archive .jsonl -> restart) starts a deterministic
+    # FRESH session instead of relying on `claude --continue` failing on a missing
+    # transcript. Mirrors the VPS bubble-agent-prepare gate. Rendered only when
+    # continue is on; otherwise CONT_FLAG is just empty (always fresh, unchanged).
+    local cont_gate="CONT_FLAG=\"\""
+    if [[ "$do_continue" == "1" ]]; then
+        cont_gate="# FRESH-FALLBACK GATE (board #1195): only pass --continue when a prior
+# transcript exists for this cwd, so the daily session-rotation (archive the
+# .jsonl then restart) deterministically starts a FRESH session. Claude names its
+# project dir after the cwd with every non-alphanumeric char turned into '-'.
+_cwd=\"\$(pwd -P)\"
+_proj=\"\$HOME/.claude/projects/\$(printf '%s' \"\$_cwd\" | LC_ALL=C tr -c 'A-Za-z0-9' '-')\"
+CONT_FLAG=\"\"
+if ls \"\$_proj\"/*.jsonl >/dev/null 2>&1; then CONT_FLAG=\"--continue\"; fi"
+    fi
 
     # Build the claude launch string (the inner command handed to tmux new-session).
     # When there is inline-env or env -u to apply, use the INLINE form: cd + a
@@ -408,7 +425,7 @@ HARNESS="claude"
 [ -f "\$SELECTOR" ] && HARNESS="\$(tr -d '[:space:]' < "\$SELECTOR" 2>/dev/null)"
 [ -n "\$HARNESS" ] || HARNESS="claude"
 
-CONT_FLAG="${cont_flag}"
+${cont_gate}
 
 # The inner command is handed to tmux new-session, which runs it in the tmux
 # SERVER's global env (NOT this wrapper's env) — hence the inline cd/PATH/secrets.
