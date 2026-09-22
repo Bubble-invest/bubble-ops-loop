@@ -401,6 +401,66 @@ want   "E11b pinned to the live session → stall detected (kick-inject)" "pin1:
 chk_eq "E11b one inject line" "1" "$(count_lines "$WORK/channels/telegram-pin1/inject")"
 want   "E11b event names the pinned transcript" "deadbeef-dept.jsonl" "$STATE"
 
+# ── E12: VPS discovery resolves the ISOLATED dept's own paths (#1455) ───────
+# board #1119/#1120 uid isolation: bubble-agent@<slug> runs the dept as
+# agent-<slug> with its OWN $HOME/cwd, neither of which is
+# /home/claude/agents/bubble-ops-<slug> any more. Pre-fix, discover_vps kept
+# pointing session_dir/inject_file at that stale shared-home layout, so a
+# 9-day-old ghost transcript + a never-draining ghost inject file fired
+# "alert-inject-failed" / "would alert" on EVERY pass for ben/maya/tony even
+# though all three were healthy (board #1455).
+mkdir -p "$WORK/vps-agents/bubble-ops-ben/onboarding"
+printf 'host: vps\n' > "$WORK/vps-agents/bubble-ops-ben/onboarding/STATE.yaml"
+mkdir -p "$WORK/vps-agents/bubble-ops-legacy/onboarding"
+printf 'host: vps\n' > "$WORK/vps-agents/bubble-ops-legacy/onboarding/STATE.yaml"
+E12="$($PY - "$REPO_ROOT" "$WORK/vps-agents" <<'PY'
+import sys, os, json, importlib.util, subprocess
+repo, agents_root = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("runner", os.path.join(repo, "scripts", "loop-tick-watchdog.py"))
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+
+# The real systemd shape verified live on the VPS (board #1455 diagnosis):
+# ExecStart never mentions --continue (it's decided dynamically INSIDE
+# bubble-agent-prepare, not baked into the unit) and Environment carries the
+# per-dept BUBBLE_AGENT_* vars for an isolated dept, absent for a legacy one.
+ENV_BEN = ('BUBBLE_AGENT_OS_USER=agent-ben BUBBLE_AGENT_WORKDIR=/srv/agents/ben '
+           'BUBBLE_AGENT_HOME=/home/agent-ben HOME=/home/agent-ben '
+           'BUBBLE_AGENT_TELEGRAM_STATE_DIR=/home/agent-ben/.claude/channels/telegram-ben '
+           'BUBBLE_AGENT_BOOT_MESSAGE=Resume your OODA loop. Run ONE normal tick now. '
+           'BUBBLE_AGENT_BOOT_DELAY=8')
+EXEC = '{ path=/bin/sh ; argv[]=/bin/sh -c exec /usr/local/libexec/bubble-agent-prepare run "%s" ; ignore_errors=no ; }'
+
+def fake_run(argv, capture=False, timeout=60):
+    if argv[:2] == ["systemctl", "is-enabled"]:
+        return subprocess.CompletedProcess(argv, 0, "enabled\n", "")
+    if argv[:4] == ["systemctl", "show", "-p", "ExecStart"]:
+        unit = argv[-1]
+        slug = unit.split("@", 1)[1].split(".", 1)[0]
+        return subprocess.CompletedProcess(argv, 0, EXEC % slug, "")
+    if argv[:4] == ["systemctl", "show", "-p", "Environment"]:
+        unit = argv[-1]
+        out = ENV_BEN if "ben" in unit else ""   # legacy dept: no BUBBLE_AGENT_* vars
+        return subprocess.CompletedProcess(argv, 0, out, "")
+    return subprocess.CompletedProcess(argv, 127, "", "unexpected call")
+
+m._run = fake_run
+specs = {s.slug: s for s in m.discover_vps(agents_root, "/home/claude/.claude/projects", "/home/claude/.claude/channels")}
+print(json.dumps({slug: s.__dict__ for slug, s in specs.items()}))
+PY
+)"
+chk_eq "E12 both depts discovered" "2" "$($PY -c 'import sys,json;print(len(json.loads(sys.argv[1])))' "$E12")"
+chk_eq "E12 isolated dept_dir = BUBBLE_AGENT_WORKDIR (not the stale shared-home checkout)" "/srv/agents/ben" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["ben"]["dept_dir"])' "$E12")"
+chk_eq "E12 isolated session_dir under the dept's OWN \$HOME" "/home/agent-ben/.claude/projects/-srv-agents-ben" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["ben"]["session_dir"])' "$E12")"
+chk_eq "E12 isolated inject_file = BUBBLE_AGENT_TELEGRAM_STATE_DIR/inject" "/home/agent-ben/.claude/channels/telegram-ben/inject" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["ben"]["inject_file"])' "$E12")"
+chk_eq "E12 isolated sessions_dir under the dept's OWN \$HOME (not claude's)" "/home/agent-ben/.claude/sessions" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["ben"]["sessions_dir"])' "$E12")"
+chk_eq "E12 isolated bot_pid_file alongside the isolated inject file" "/home/agent-ben/.claude/channels/telegram-ben/bot.pid" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["ben"]["bot_pid_file"])' "$E12")"
+EXPECT_LEGACY_SESSION_DIR="$($PY -c "import re,sys; print('/home/claude/.claude/projects/' + re.sub(r'[^A-Za-z0-9]', '-', sys.argv[1]))" "$WORK/vps-agents/bubble-ops-legacy")"
+chk_eq "E12 legacy dept (no BUBBLE_AGENT_* env) keeps the pre-#1119 shared-home layout" "$EXPECT_LEGACY_SESSION_DIR" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["legacy"]["session_dir"])' "$E12")"
+chk_eq "E12 legacy inject_file unchanged" "/home/claude/.claude/channels/telegram-legacy/inject" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["legacy"]["inject_file"])' "$E12")"
+chk_eq "E12 legacy sessions_dir empty (falls back to the runner's default)" "" "$($PY -c 'import sys,json;print(json.loads(sys.argv[1])["legacy"]["sessions_dir"])' "$E12")"
+
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

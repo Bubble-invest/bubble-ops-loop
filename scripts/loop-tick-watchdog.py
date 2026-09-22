@@ -123,15 +123,73 @@ def discover_vps(agents_root: str, projects_root: str, channels_root: str) -> Li
             log(f"{slug}: skip — host: local (runs on its own machine)")
             continue
         resumes = unit_resumes_context(unit)
+
+        # Board #1455: bubble-agent@<slug> (the #1119/#1120 uid-isolation
+        # cutover) runs the dept as its OWN os user (agent-<slug>) with its
+        # OWN $HOME and cwd — NEITHER is /home/claude/agents/bubble-ops-<slug>
+        # any more (that dir is a pre-cutover leftover: a stale git checkout
+        # nobody writes to post-migration, kept only for the onboarding
+        # STATE.yaml host check above). Read the unit's OWN effective
+        # Environment= (a systemd unit property — world-readable via D-Bus,
+        # no dept-home access needed for this lookup, same access class as
+        # unit_resumes_context's ExecStart read below) to find the REAL
+        # cwd/HOME/inject-dir the running process uses, instead of a 9-day
+        # stale ghost whose never-draining inject file fired a permanent
+        # "would alert" false positive on every pass for every isolated dept
+        # (ben/maya/tony). A pre-#1119 dept without these vars falls back to
+        # the legacy shared-`claude`-home layout, unchanged.
+        #
+        # NOTE this does not by itself restore #724 protection for isolated
+        # depts: BUBBLE_AGENT_HOME is 0750 owned by agent-<slug> with no ACL
+        # for `claude` (verified on the VPS, board #1455 diagnosis) — the
+        # transcript/session/inject paths below are correct but still
+        # UNREADABLE to this unit's `claude` user, so discovery now correctly
+        # yields ok-no-transcript (silent, no false alert) instead of a false
+        # alert-inject-failed. Actually re-arming a dead isolated-dept tick
+        # needs either a scoped read grant into that home or a privileged
+        # read helper — a cross-tenant access change outside this fix's scope
+        # (see board #1455 comment).
+        env_text = _unit_environment(unit)
+        agent_home = _unit_env_value(env_text, "BUBBLE_AGENT_HOME")
+        agent_workdir = _unit_env_value(env_text, "BUBBLE_AGENT_WORKDIR") or dept_dir
+        state_dir = _unit_env_value(env_text, "BUBBLE_AGENT_TELEGRAM_STATE_DIR")
+        if agent_home:
+            live_cwd = agent_workdir
+            session_dir = os.path.join(agent_home, ".claude", "projects", wd.projects_dir_name(live_cwd))
+            sessions_dir = os.path.join(agent_home, ".claude", "sessions")
+            state_dir = state_dir or os.path.join(agent_home, ".claude", "channels", f"telegram-{slug}")
+        else:
+            live_cwd = dept_dir
+            session_dir = os.path.join(projects_root, wd.projects_dir_name(dept_dir))
+            sessions_dir = ""
+            state_dir = os.path.join(channels_root, f"telegram-{slug}")
         out.append(DeptSpec(
-            slug=slug, dept_dir=dept_dir,
-            session_dir=os.path.join(projects_root, wd.projects_dir_name(dept_dir)),
-            inject_file=os.path.join(channels_root, f"telegram-{slug}", "inject"),
+            slug=slug, dept_dir=live_cwd,
+            session_dir=session_dir,
+            inject_file=os.path.join(state_dir, "inject"),
             host="vps", resumes_context=resumes,
             env_file=f"/run/bubble-agent-{slug}/env", unit=unit,
-            bot_pid_file=os.path.join(channels_root, f"telegram-{slug}", "bot.pid"),
+            bot_pid_file=os.path.join(state_dir, "bot.pid"),
+            sessions_dir=sessions_dir,
         ))
     return out
+
+
+def _unit_environment(unit: str) -> str:
+    """Raw effective ``Environment=`` for ``unit`` (systemd merges drop-ins;
+    same D-Bus property-read class as :func:`unit_resumes_context`'s
+    ExecStart lookup — no dept-home filesystem access needed). Printed as
+    space-joined ``KEY=VALUE`` assignments; every key this module reads is a
+    path (never contains a space), so a per-key regex search is safe even
+    though the raw text cannot be tokenized on whitespace in general. Empty
+    string on any failure (unit absent, systemctl error)."""
+    res = _run(["systemctl", "show", "-p", "Environment", "--value", unit], capture=True)
+    return (res.stdout or "") if res.returncode == 0 else ""
+
+
+def _unit_env_value(env_text: str, key: str) -> str:
+    m = re.search(rf"(?:^|\s){re.escape(key)}=(\S+)", env_text)
+    return m.group(1) if m else ""
 
 
 def unit_resumes_context(unit: str) -> bool:
