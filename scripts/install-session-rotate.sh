@@ -23,7 +23,16 @@ SCRIPT_DIR="/opt/bubble-ops-loop/scripts"
 
 echo "[install-session-rotate] installing rotation script -> $SCRIPT_DIR ..."
 sudo install -d -m 0755 "$SCRIPT_DIR"
-sudo install -m 0755 "$REPO_ROOT/scripts/bubble-session-rotate.sh" "$SCRIPT_DIR/bubble-session-rotate.sh"
+# On the VPS the repo checkout IS /opt/bubble-ops-loop, so src==dst — the script is
+# already in place via git. `install` errors on identical paths, so skip the copy then.
+SRC_SCRIPT="$REPO_ROOT/scripts/bubble-session-rotate.sh"
+DST_SCRIPT="$SCRIPT_DIR/bubble-session-rotate.sh"
+if [[ "$(readlink -f "$SRC_SCRIPT")" != "$(readlink -f "$DST_SCRIPT" 2>/dev/null || echo /nonexistent)" ]]; then
+  sudo install -m 0755 "$SRC_SCRIPT" "$DST_SCRIPT"
+else
+  echo "  (repo checkout is the /opt target — rotation script already in place, skipping self-copy)"
+  sudo chmod 0755 "$DST_SCRIPT"
+fi
 
 echo "[install-session-rotate] installing units ..."
 sudo cp "$DEPLOY/templates/bubble-session-rotate@.service" "$UNIT_DIR/bubble-session-rotate@.service"
