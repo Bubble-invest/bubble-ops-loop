@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily fresh-session rotation for %i (board #1195)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+# Prevent overlap with a live floor tick / boot: best-effort ordering only.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as ROOT: needs `systemctl restart bubble-agent@%i` + to move the
+# agent-uid-owned session transcripts out of the projects dir. The script itself
+# is fail-safe (skips the rotation unless a fresh HANDOFF.md exists).
+User=root
+ExecStart=/opt/bubble-ops-loop/scripts/bubble-session-rotate.sh %i
+# Never flap the unit to failed on a deliberate skip (exit 0) or a transient issue.
+SuccessExitStatus=0

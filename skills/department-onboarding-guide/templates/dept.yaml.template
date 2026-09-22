@@ -137,6 +137,22 @@ department:
 layers:
   subscribed: [1, 2, 3, 4]
 
+# FLEET-STANDARD mission every dept MUST carry (board #1195): `session_handoff`
+# — a Layer-4 daily mission that overwrites a tight ./HANDOFF.md of the dept's
+# current working state so the daily fresh-session rotation
+# (bubble-session-rotate@<slug>.timer) never drops context. The missions step
+# appends this to every dept alongside the dept-specific missions; see
+# agents/ben/missions/session_handoff/PROMPT.md for the canonical prompt. The
+# recurring_missions entry it adds:
+#   - id: session_handoff
+#     layer: 4
+#     cadence: daily
+#     description: FLEET-STANDARD (board #1195). Write an honest, up-to-date
+#       HANDOFF.md of the dept's current working state so tomorrow's fresh
+#       session recovers context (read at STEP 0 of every tick). Runs last.
+#     output_queue: outputs/
+#     creates: [session_handoff]
+#     input_sources: [outputs_today, working_memory]
 recurring_missions: []
 
 skills: {}
