@@ -11,6 +11,15 @@ overridable hook so the bash harness can run it hermetically:
   BUBBLE_TICKWD_ALIVE_CMD      <slug> → exit 0 iff the live session/poller is up
   BUBBLE_TICKWD_RESTART_CMD    <slug> → performs the runtime restart
   BUBBLE_TICKWD_NOTIFY_CMD     <slug> <chat_id> <text> → sends the alert
+  BUBBLE_TICKWD_HARNESS_SELECTOR_DIR  per-dept harness selector dir (default
+                               /etc/bubble-harness/<slug>; same trusted-file
+                               contract as loop-backup.sh's resolve_floor_harness
+                               — read via scripts.lib.loop_backup.read_harness_selector)
+  BUBBLE_TICKWD_HERMES_WAKE_CMD  <slug> (prompt on stdin) → level-1 wake for a
+                               hermes-harness dept, in place of the inject file
+  BUBBLE_TICKWD_HERMES_ROOT / _HERMES_PY / _HERMES_WAKE_HELPER / _HERMES_PROFILES_ROOT
+                               hermes wake plumbing (mirrors loop-backup.sh's
+                               wake_hermes_loop defaults — see there for why)
   BUBBLE_TICKWD_STATE          history JSONL (default <repo>/state/loop-tick-watchdog.jsonl)
   BUBBLE_TICKWD_DRY_RUN=1      decide + log only; never inject/restart/notify
   BUBBLE_TICKWD_RESTART=0      disable level-2 restarts fleet-wide (default 1)
@@ -56,6 +65,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from scripts.lib import loop_tick_watchdog as wd  # noqa: E402
 from scripts.lib.auto_restart import CONCIERGE_DENYLIST  # noqa: E402
+from scripts.lib.loop_backup import HarnessSelectorError, read_harness_selector  # noqa: E402
 
 DEFAULT_CHAT_ID = "6532205130"   # same literal fallback as loop-backup.sh
 
@@ -248,6 +258,32 @@ def discover_local(launch_agents_dir: str, projects_root: str, channels_root: st
     return out
 
 
+def resolve_harness(slug: str) -> str:
+    """<slug>'s runtime harness — "claude" (default) or "hermes" — via the
+    SAME trusted, root-checked-or-current-euid selector loop-backup.sh's
+    resolve_floor_harness reads (scripts.lib.loop_backup.read_harness_selector
+    against /etc/bubble-harness/<slug>). This unit always runs fleet-wide as
+    the `claude` service user (never the isolated per-dept agent-<slug> floor),
+    so it mirrors that function's NON-isolated call (require_root_owner=False,
+    matching bubble-agent-prepare's selected_harness default there too).
+
+    A missing selector already returns "claude" from read_harness_selector
+    itself. An UNSAFE/unreadable/unknown existing selector is different from
+    loop-backup.sh: that floor fails the whole dept CLOSED (defers, no wake
+    at all) because its action is competing-model-launch stakes; level-1 here
+    is a low-stakes inject-or-log nudge, so it degrades to the existing
+    Claude-harness behavior instead — never silently skipping a re-kick over
+    a selector-file permissions glitch.
+    """
+    selector_dir = os.environ.get("BUBBLE_TICKWD_HARNESS_SELECTOR_DIR", "/etc/bubble-harness")
+    selector = os.path.join(selector_dir, slug)
+    try:
+        return read_harness_selector(selector, require_root_owner=False)
+    except HarnessSelectorError as e:
+        log(f"{slug}: harness selector unreadable/unsafe ({e}) — defaulting to claude")
+        return "claude"
+
+
 def discover(host: str) -> List[DeptSpec]:
     cmd = os.environ.get("BUBBLE_TICKWD_DISCOVER_CMD")
     if cmd:
@@ -275,6 +311,13 @@ def discover(host: str) -> List[DeptSpec]:
 def _run(argv: List[str], capture: bool = False, timeout: int = 60) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(argv, capture_output=capture, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(argv, 127, "", str(e))
+
+
+def _run_stdin(argv: List[str], stdin_text: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(argv, input=stdin_text, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as e:
         return subprocess.CompletedProcess(argv, 127, "", str(e))
 
@@ -320,6 +363,41 @@ def do_inject(spec: DeptSpec, text: str) -> bool:
     except OSError as e:
         log(f"{spec.slug}: inject write failed: {e}")
         return False
+
+
+def do_hermes_wake(spec: DeptSpec, text: str) -> bool:
+    """Level-1 re-kick for a hermes-harness dept: arm the live Hermes
+    gateway's persisted /loop scheduler via wake_hermes_gateway.py, the exact
+    helper + invocation shape loop-backup.sh's wake_hermes_loop uses (see
+    there for the control-socket/session-route contract) — never the
+    Claude-plugin inject file, which a Hermes dept never reads.
+
+    This unit always runs as the SAME OS user as the rest of the pass (the
+    fleet-wide `claude` service user), just as loop-backup.sh's own
+    non-isolated floor call does — the isolated per-dept floor already runs
+    natively AS agent-<slug>, so "as the dept's OS user" there means nothing
+    more than "don't switch users"; this mirrors that, with no sudo/runuser
+    hop. The prompt is the same one-line re-arm turn used for a Claude inject
+    (rearm_turn) — semantically a stall recovery nudge, not the daily floor's
+    full generic tick prompt.
+    """
+    cmd = os.environ.get("BUBBLE_TICKWD_HERMES_WAKE_CMD")
+    if cmd:
+        res = _run_stdin(shlex.split(cmd) + [spec.slug], text)
+        return res.returncode == 0
+    hermes_root = os.environ.get("BUBBLE_TICKWD_HERMES_ROOT", "/opt/hermes/hermes-agent")
+    hermes_py = os.environ.get("BUBBLE_TICKWD_HERMES_PY", os.path.join(hermes_root, ".venv", "bin", "python"))
+    wake_helper = os.environ.get("BUBBLE_TICKWD_HERMES_WAKE_HELPER", os.path.join(REPO_ROOT, "scripts", "wake_hermes_gateway.py"))
+    profiles_root = os.environ.get("BUBBLE_TICKWD_HERMES_PROFILES_ROOT",
+                                    os.path.join(os.path.expanduser("~"), ".hermes", "profiles"))
+    profile_home = os.path.join(profiles_root, spec.slug)
+    if not (os.path.isfile(hermes_py) and os.path.isfile(wake_helper)):
+        log(f"{spec.slug}: hermes wake unavailable (hermes_py={hermes_py!r} wake_helper={wake_helper!r})")
+        return False
+    res = _run_stdin([hermes_py, wake_helper, "--profile-home", profile_home, "--hermes-root", hermes_root], text)
+    if res.returncode != 0:
+        log(f"{spec.slug}: hermes wake failed rc={res.returncode}: {(res.stderr or res.stdout or '').strip()[:200]}")
+    return res.returncode == 0
 
 
 def do_restart(spec: DeptSpec) -> bool:
@@ -529,7 +607,14 @@ def process_dept(spec: DeptSpec, state_path: str, dry_run: bool, now: float) -> 
         verdict["dry_run"] = True
         return verdict
 
-    if d.action == wd.KICK_INJECT and not session_alive(spec):
+    # Harness resolution gates ONLY how a KICK_INJECT is delivered (inject
+    # file vs. the Hermes wake helper) — level-2 restart is already
+    # harness-agnostic (it just stop/starts the dept's systemd unit) and
+    # claude-harness behavior below is untouched byte-for-byte.
+    harness = resolve_harness(spec.slug) if d.action == wd.KICK_INJECT else "claude"
+    verdict["harness"] = harness
+
+    if d.action == wd.KICK_INJECT and harness == "claude" and not session_alive(spec):
         # Nothing to inject into. KeepAlive/systemd own process death; we
         # only record + alert so the gap is visible (no double-launch).
         reason = "session/poller not alive — inject impossible; supervisor owns process death"
@@ -555,8 +640,13 @@ def process_dept(spec: DeptSpec, state_path: str, dry_run: bool, now: float) -> 
         return verdict
 
     if d.action == wd.KICK_INJECT:
-        ok = do_inject(spec, wd.rearm_turn(spec.slug, obs.error_text or "", obs.error_ts or now))
-        verdict["injected"] = ok
+        turn = wd.rearm_turn(spec.slug, obs.error_text or "", obs.error_ts or now)
+        if harness == "hermes":
+            ok = do_hermes_wake(spec, turn)
+            verdict["hermes_woken"] = ok
+        else:
+            ok = do_inject(spec, turn)
+            verdict["injected"] = ok
     else:  # KICK_RESTART
         _truncate_inject(spec)
         ok = do_restart(spec)

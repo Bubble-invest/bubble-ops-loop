@@ -99,19 +99,30 @@ cat > "$STUB/notify" <<EOF
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "\$1" "\$2" "\$3" >> "$WORK/notify.log"
 EOF
+cat > "$STUB/hermes-wake" <<EOF
+#!/usr/bin/env bash
+# records the slug + the stdin prompt it was fed
+prompt="\$(cat)"
+printf '%s|%s\n' "\$1" "\$prompt" >> "$WORK/hermes-wakes.log"
+EOF
 chmod +x "$STUB"/*
 STATE="$WORK/state/wd.jsonl"
+HARNESS_DIR="$WORK/harness"; mkdir -p "$HARNESS_DIR"
+# set_harness <slug> <claude|hermes> — writes the trusted selector file
+# read_harness_selector requires (regular file, not group/other-writable).
+set_harness() { printf '%s' "$2" > "$HARNESS_DIR/$1"; chmod 644 "$HARNESS_DIR/$1"; }
 
 run_wd() {  # [extra env assignments...] — runs one pass, log → $OUT
     OUT="$WORK/run-$RANDOM.log"
     env BUBBLE_TICKWD_DISCOVER_CMD="$STUB/discover" BUBBLE_TICKWD_ALIVE_CMD="$STUB/alive" \
         BUBBLE_TICKWD_RESTART_CMD="$STUB/restart" BUBBLE_TICKWD_NOTIFY_CMD="$STUB/notify" \
+        BUBBLE_TICKWD_HERMES_WAKE_CMD="$STUB/hermes-wake" BUBBLE_TICKWD_HARNESS_SELECTOR_DIR="$HARNESS_DIR" \
         BUBBLE_TICKWD_STATE="$STATE" "$@" "$PY" "$RUNNER" --host vps >"$OUT" 2>&1
     RC=$?
     [[ "$VERBOSE" == "1" ]] && cat "$OUT"
     return 0
 }
-reset_state() { rm -f "$STATE" "$WORK/restarts.log" "$WORK/notify.log" "$WORK"/dead-*; : > "$WORK/specs.jsonl"; }
+reset_state() { rm -f "$STATE" "$WORK/restarts.log" "$WORK/notify.log" "$WORK/hermes-wakes.log" "$WORK"/dead-*; rm -f "$HARNESS_DIR"/*; : > "$WORK/specs.jsonl"; }
 
 echo "== loop-tick-watchdog e2e =="
 
@@ -400,6 +411,59 @@ run_wd BUBBLE_TICKWD_SESSIONS_DIR="$SREG"
 want   "E11b pinned to the live session → stall detected (kick-inject)" "pin1: kick-inject" "$OUT"
 chk_eq "E11b one inject line" "1" "$(count_lines "$WORK/channels/telegram-pin1/inject")"
 want   "E11b event names the pinned transcript" "deadbeef-dept.jsonl" "$STATE"
+
+# ── E12: hermes-harness dept → level-1 wakes the Hermes gateway helper, ─────
+# NEVER the inject file (board #1454). A claude dept alongside it is
+# byte-identical to E1 (still just the inject file).
+reset_state
+set_harness hermes1 hermes
+make_dept hermes1 stalled 1200 > "$WORK/specs.jsonl"          # error 20 min ago
+INJH="$WORK/channels/telegram-hermes1/inject"
+run_wd
+chk_eq "E12 exit 0" "0" "$RC"
+want   "E12 decided kick-inject" "hermes1: kick-inject" "$OUT"
+chk_eq "E12 inject file untouched (hermes never reads it)" "0" "$(count_lines "$INJH")"
+chk_eq "E12 exactly one hermes-wake invocation" "1" "$(count_lines "$WORK/hermes-wakes.log")"
+want   "E12 hermes-wake invoked for the right slug" "^hermes1|" "$WORK/hermes-wakes.log"
+want   "E12 hermes-wake prompt carries the re-arm turn" "tick-watchdog" "$WORK/hermes-wakes.log"
+chk_eq "E12 one kick-inject event recorded" "1" "$(grep -c '"action": "kick-inject"' "$STATE" 2>/dev/null || grep -c '"action":"kick-inject"' "$STATE")"
+chk_eq "E12 one notify" "1" "$(count_lines "$WORK/notify.log")"
+chk_eq "E12 no restart" "0" "$(count_lines "$WORK/restarts.log")"
+# second pass right away: cooldown → nothing more (harness-agnostic)
+run_wd
+want   "E12b second pass holds (cooldown)" "hold-cooldown" "$OUT"
+chk_eq "E12b still exactly one hermes-wake invocation" "1" "$(count_lines "$WORK/hermes-wakes.log")"
+
+# A claude dept run alongside a hermes selector for a DIFFERENT slug must stay
+# on the inject path — the selector is per-slug, never fleet-wide.
+reset_state
+set_harness hermes2 hermes
+make_dept claude12 stalled 1200 > "$WORK/specs.jsonl"
+INJC="$WORK/channels/telegram-claude12/inject"
+run_wd
+want   "E12c claude dept still decides kick-inject" "claude12: kick-inject" "$OUT"
+chk_eq "E12c claude dept inject file gets the line" "1" "$(count_lines "$INJC")"
+chk_eq "E12c no hermes-wake invocation for a claude dept" "0" "$(count_lines "$WORK/hermes-wakes.log")"
+
+# ── E12d: no selector file at all (fleet default) → claude, byte-identical ──
+reset_state
+make_dept nosel stalled 1200 > "$WORK/specs.jsonl"
+INJD="$WORK/channels/telegram-nosel/inject"
+run_wd
+want   "E12d missing selector defaults to claude (kick-inject)" "nosel: kick-inject" "$OUT"
+chk_eq "E12d inject file gets the line" "1" "$(count_lines "$INJD")"
+chk_eq "E12d no hermes-wake invocation" "0" "$(count_lines "$WORK/hermes-wakes.log")"
+
+# ── E12e: unknown/unsafe selector value → degrades to claude, not a skip ────
+reset_state
+printf 'not-a-real-harness' > "$HARNESS_DIR/badsel"
+make_dept badsel stalled 1200 > "$WORK/specs.jsonl"
+INJE="$WORK/channels/telegram-badsel/inject"
+run_wd
+want   "E12e unknown selector logs a defaulting warning" "harness selector unreadable/unsafe" "$OUT"
+want   "E12e still decides + delivers kick-inject" "badsel: kick-inject" "$OUT"
+chk_eq "E12e inject file gets the line (never silently skipped)" "1" "$(count_lines "$INJE")"
+chk_eq "E12e no hermes-wake invocation" "0" "$(count_lines "$WORK/hermes-wakes.log")"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
