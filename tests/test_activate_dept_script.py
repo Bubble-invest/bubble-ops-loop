@@ -100,8 +100,30 @@ def _make_repo(tmp_path: Path, state_over=None, dept=None) -> Path:
         yaml.safe_dump(dept if dept is not None else _dept(),
                        sort_keys=False), encoding="utf-8")
     for sub in ("outputs", "queues/research", "queues/management",
-                "inbox/decisions", "missions", "tests"):
+                "inbox/decisions", "missions", "tests",
+                "layers/1", "layers/2", "layers/3", "layers/4"):
         (repo / sub).mkdir(parents=True, exist_ok=True)
+    # Card #1268: can_activate() now fail-closes when the core dept shape
+    # (MANDATE.md, layer prompts, declared mission files) isn't actually
+    # on disk. Write the well-formed shape here so the happy-path test
+    # keeps exercising the "everything's fine" case.
+    (repo / "MANDATE.md").write_text(
+        "# Mandat de Miranda\n\n"
+        "Je produis du contenu avec des KPIs de qualité vérifiables. "
+        "Je ne publie jamais sans validation humaine.\n",
+        encoding="utf-8",
+    )
+    for n in (1, 2, 3, 4):
+        (repo / "layers" / str(n) / "PROMPT.md").write_text(
+            f"# Layer {n} prompt stub\n\nRole description for layer {n}.\n",
+            encoding="utf-8",
+        )
+    dept_doc = dept if dept is not None else _dept()
+    for m in dept_doc.get("recurring_missions") or []:
+        mission_id = m.get("id")
+        if mission_id:
+            (repo / "missions" / f"{mission_id}.yaml").write_text(
+                yaml.safe_dump(m, sort_keys=False), encoding="utf-8")
     return repo
 
 
