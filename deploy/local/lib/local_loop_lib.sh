@@ -257,32 +257,94 @@ render_loop_wrapper() {
         done <<<"$extra_exports"
     fi
 
+    # ── SAFE SECRETS LOADER (board #1275) ─────────────────────────────────────
+    # Rendered verbatim into every wrapper (below the WRAPPER heredoc). Replaces
+    # the previous `set -a; . "$file"; set +a` bare source of decrypted secret
+    # content. A bare source RE-INTERPRETS the file as shell script: an unquoted
+    # value containing a space/`$`/backtick/quote (e.g. a Gmail app-password's
+    # display spaces, "xxxx xxxx xxxx xxxx") gets executed as a command instead
+    # of assigned — exactly how Ellie's loop crashed (exit 127) and a latent
+    # crash class for every M5 dept under `set -e`. _lll_load_secrets_safe reads
+    # each line as DATA (no eval/source), validates the key is a legal
+    # identifier, strips one matching pair of surrounding quotes (dotenv
+    # convention), and exports the value LITERALLY — a malformed value can never
+    # be executed as a command. Malformed lines are skipped + logged (by file +
+    # var name only — never the decrypted value) instead of aborting the loop.
+    # Defined via a single-quoted heredoc so none of ITS $/`/" are touched by
+    # THIS renderer (they must reach the wrapper file untouched).
+    local safe_loader
+    safe_loader="$(cat <<'SAFE_LOADER_EOF'
+# --- _lll_load_secrets_safe <file> (board #1275) ---------------------------
+# Parse a decrypted KEY=VALUE secrets file as DATA, never as shell code. Skips
+# comments/blank lines and any line that isn't KEY=VALUE with a legal
+# identifier key; strips one matching pair of surrounding quotes. Never
+# aborts the wrapper (a malformed value is logged by key name and skipped,
+# not fatal) and never logs the decrypted VALUE.
+_lll_load_secrets_safe() {
+  local _f="$1" _line _key _val
+  [ -f "$_f" ] || return 0
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _line="${_line%$'\r'}"   # tolerate CRLF-decrypted secrets files
+    case "$_line" in
+      ''|'#'*) continue ;;
+    esac
+    case "$_line" in
+      [A-Za-z_]*=*) : ;;
+      *)
+        echo "[wrapper] WARN: skipping malformed secret line in $_f (not KEY=VALUE)" >&2
+        continue
+        ;;
+    esac
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    case "$_key" in
+      *[!A-Za-z0-9_]*)
+        echo "[wrapper] WARN: skipping secret line with invalid var name '$_key' in $_f" >&2
+        continue
+        ;;
+    esac
+    case "$_val" in
+      \"*\") _val="${_val#\"}"; _val="${_val%\"}" ;;
+      \'*\') _val="${_val#\'}"; _val="${_val%\'}" ;;
+    esac
+    export "$_key=$_val"
+  done < "$_f"
+  return 0
+}
+SAFE_LOADER_EOF
+)"
+
     # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
     local age_export="" vault_block=""
     if [[ -n "$vault_path" ]]; then
         age_export="export SOPS_AGE_KEY_FILE=\"${age_key_file}\""
         vault_block="
 # --- Load dept secrets: SOPS vault primary, legacy plaintext .env fallback ---
+# Parsed via _lll_load_secrets_safe (rendered above) — NEVER a bare source/. of
+# untrusted decrypted content (board #1275: a malformed value with a space/\$/
+# backtick/quote must not crash the loop).
 VAULT=\"${vault_path}\"
 LEGACY_ENV=\"${legacy_env}\"
 if [ -f \"\$VAULT\" ]; then
   _sec=\"\$(mktemp -t ${slug}-sops)\"
   chmod 600 \"\$_sec\"
   if sops --decrypt --output \"\$_sec\" \"\$VAULT\" 2>/dev/null; then
-    set -a; . \"\$_sec\"; set +a
+    _lll_load_secrets_safe \"\$_sec\" || true
   fi
   rm -f \"\$_sec\"
 fi
 if [ -z \"\${TELEGRAM_BOT_TOKEN:-}\" ] && [ -f \"\$LEGACY_ENV\" ]; then
   echo \"[wrapper] vault yielded no token; falling back to legacy .env\" >&2
-  set -a; . \"\$LEGACY_ENV\"; set +a
+  _lll_load_secrets_safe \"\$LEGACY_ENV\" || true
 fi"
     else
-        # No vault: preserve the original behaviour (source the dept .env if present).
+        # No vault: preserve the original behaviour (source the dept .env if
+        # present) — but via the safe loader, never a bare source (board #1275).
         vault_block="
-# Source the dept telegram bot env (sets TELEGRAM_BOT_TOKEN etc.) if present.
+# Load the dept telegram bot env (sets TELEGRAM_BOT_TOKEN etc.) if present, via
+# the safe KEY=VALUE loader above (never a bare source of untrusted content).
 if [ -f \"${legacy_env}\" ]; then
-  set -a; . \"${legacy_env}\"; set +a
+  _lll_load_secrets_safe \"${legacy_env}\" || true
 fi"
     fi
 
@@ -410,6 +472,7 @@ export OPS_LOOP_DEPT="${slug}"
 export BUBBLE_DEPT="${slug}"
 export BUBBLE_HOST="local"
 export OPS_LOOP_BOOT_REARM=1
+${safe_loader}
 ${age_export}
 ${extra_export_block}cd "${dept_dir}"
 ${vault_block}
