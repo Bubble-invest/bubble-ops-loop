@@ -42,6 +42,16 @@
 # exact same finding still collapses to one card. The legacy <!-- emit-task: <task> -->
 # marker is still emitted (drain_kanban_queue.sh + tooling grep for it).
 #
+# Dismiss-ledger (board #1395): before the open-issue check above, every emit_key
+# is also checked against the persistent dismissed_emit_keys.json next to this
+# script (override: $KANBAN_DISMISS_LEDGER). A key on that ledger is skipped —
+# no card, no GitHub call — even after its board card was CLOSED and the issue
+# number is gone, so a once-reviewed-and-dismissed finding (e.g. a wiki-compile
+# intent-audit false positive) never comes back under a new issue number. A
+# missing/corrupt ledger degrades to "not dismissed" (today's behavior), never
+# a crash. Inspect with `--is-dismissed task=… title=…` (dry-run, like
+# --print-emit-key).
+#
 # Exit code contract (board #1251 — fail loud):
 #   0 — the card is actually ON THE BOARD: a GitHub issue was created, OR an
 #       open issue for this task+title already existed (dedup hit).
@@ -140,6 +150,75 @@ print(task + '::' + slug)
 # a card, so it doesn't need one.
 if [ "${1:-}" = "--print-emit-key" ]; then
   _emit_key "$TASK" "$TITLE"
+  exit 0
+fi
+
+# ── Persistent dismiss-ledger (board #1395) ───────────────────────────────────
+# A once-dismissed item (a human judged it not worth a card — an intent-audit
+# false positive, a resolved verify/incident finding, ...) must never be
+# re-emitted just because its board card was closed and the ephemeral issue
+# number is gone. Closing a CARD does not by itself record the dismissal
+# anywhere the next compile pass can see — that was #1395's actual bug: the
+# SAME ~5-7 findings kept getting re-carded under new issue numbers every
+# nightly wiki-compile.
+#
+# The ledger is a small git-tracked JSON file (dismissed_emit_keys.json, next
+# to this script) keyed by the SAME task::title-slug `emit_key` the open-issue
+# idempotency check below already computes — stable across runs for any
+# extractor whose title derives from a fixed identity (e.g. a wiki page path),
+# NOT the ephemeral board issue number. Adding an entry is a reviewed repo
+# change (one JSON object + a reason), matching the fleet's PR-gated doctrine
+# for framework-repo state rather than a live hand-edit.
+#
+# Override for tests via $KANBAN_DISMISS_LEDGER; production default sits next
+# to this script so it travels with the repo checkout on every host (VPS +
+# Mac), same pattern as the queue-path resolver below.
+_dismiss_ledger_path() {
+  if [ -n "${KANBAN_DISMISS_LEDGER:-}" ]; then
+    printf '%s' "$KANBAN_DISMISS_LEDGER"
+    return 0
+  fi
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s' "${script_dir}/dismissed_emit_keys.json"
+}
+
+# _is_dismissed KEY — prints "true"/"false" on stdout. Degrades to "false"
+# (never blocks emission) whenever the ledger is missing, unreadable, or not
+# valid JSON in the expected shape — a missing/corrupt ledger must fall back
+# to current behavior (emit), never crash the compile and never silently
+# swallow a genuinely new finding.
+_is_dismissed() {
+  local key="$1"
+  local ledger
+  ledger="$(_dismiss_ledger_path)"
+  KEY="$key" LEDGER="$ledger" python3 -c "
+import json, os, sys
+
+key = os.environ['KEY']
+path = os.environ['LEDGER']
+try:
+    with open(path, encoding='utf-8') as handle:
+        data = json.load(handle)
+    entries = data.get('dismissed', [])
+    if not isinstance(entries, list):
+        raise ValueError('dismissed is not a list')
+    keys = {entry.get('key') for entry in entries if isinstance(entry, dict)}
+except Exception:
+    # Missing file, bad JSON, or unexpected shape — degrade to 'not dismissed'
+    # rather than ever crashing the caller or over-suppressing.
+    print('false')
+    sys.exit(0)
+print('true' if key in keys else 'false')
+"
+}
+
+# Dry-run hook for tests: \`emit_kanban_item.sh --is-dismissed task=… title=…\`
+# prints true/false for whether this task+title's emit_key is on the
+# persistent dismiss-ledger, exercising the REAL lookup without touching
+# GitHub. Exempt from the budget gate — never creates a card either way.
+if [ "${1:-}" = "--is-dismissed" ]; then
+  _is_dismissed "$(_emit_key "$TASK" "$TITLE")"
   exit 0
 fi
 
@@ -317,6 +396,19 @@ _gh_emit() {
   # finding still collapses to one.
   local emit_key
   emit_key=$(_emit_key "$TASK" "$TITLE")
+
+  # Dismiss-ledger check FIRST (board #1395) — a human already reviewed and
+  # judged this exact item not worth a card. Checked before the GitHub round
+  # trip below, so it also holds up when `gh` is unauthenticated/unreachable
+  # this run (board #1422 saw exactly that: the open+closed board search
+  # silently no-ops without `gh`, which is part of how a dismissed page could
+  # re-surface). Never blocks a genuinely new finding — only exact emit_key
+  # matches on the ledger are skipped.
+  if [ "$(_is_dismissed "$emit_key")" = "true" ]; then
+    echo "emit_kanban_item: key=${emit_key} is on the dismiss-ledger — skipping (already reviewed, not carding again)" >&2
+    return 0
+  fi
+
   local marker="emit-key: ${emit_key}"
   local existing
   existing=$(gh issue list \

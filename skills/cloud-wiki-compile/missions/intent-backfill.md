@@ -76,6 +76,19 @@ EMIT=/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh
   type=findings owner=rnd priority=normal budget=1
 ```
 
+**Board #1395:** the open+closed board search above is a best-effort catch for
+duplicates *within this run's own history*; it is not durable once a card is
+closed. The emitter itself now also checks a persistent, git-tracked
+dismiss-ledger (`tools/kanban/dismissed_emit_keys.json`, keyed by the same
+`task::title-slug` this title produces) BEFORE ever calling `gh` — so a page a
+human already reviewed and judged a false positive is never re-carded again,
+even after its old card is closed and the issue number is gone. This mission
+does not need to consult the ledger itself; `emit_kanban_item.sh` silently
+no-ops for a dismissed key (logs to stderr, no card, no GitHub call). When
+Rick closes a candidate-leak card as a genuine false positive, the durable fix
+is a small reviewed PR adding that page's key to the ledger — not just closing
+the issue.
+
 The board finding is the loop-visible signal. Do not emit a finding merely
 because Python reported a missing field; emit only after this reading judgment
 cannot establish a supported mapping. Return one compact summary:
