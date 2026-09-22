@@ -708,7 +708,13 @@ Hardcoding `host=vps` would mislabel a Mac-resident dept's card.)
 
 `emit_kanban_item.sh` dedups on task+title for OPEN cards, so a claim that
 re-appears in tomorrow's overlapping 30h window collapses to the same card (the
-subagent's open+closed board search covers the already-CLOSED case).
+subagent's open+closed board search covers the already-CLOSED case). It also
+checks the persistent dismiss-ledger (board #1395,
+`tools/kanban/dismissed_emit_keys.json`) before ever calling `gh` — if this
+exact task+title key was previously added there as a reviewed dismissal, no
+card is created regardless of the board search above. The ledger only has
+entries a human explicitly added via PR; it never suppresses a claim on its
+own.
 `type=findings` → `type:research` + `status:triage`, so a human/agent triages the
 verification cheaply. **These cards are the durable output — they are emitted
 even on a wiki-quiet night** (independent of the STEP 10 Telegram report).

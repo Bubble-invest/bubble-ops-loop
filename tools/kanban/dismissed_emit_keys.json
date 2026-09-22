@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "_comment": "Persistent dismiss-ledger for emit_kanban_item.sh (board #1395). Each entry's `key` is the exact task::title-slug emit_key (verify with `emit_kanban_item.sh --print-emit-key task=<t> title=<title>`) for an item a human has already reviewed and judged NOT worth a board card. Once listed here, emit_kanban_item.sh skips emitting it forever, even after its board card is closed and the issue number is gone. Add new entries only via a reviewed PR, with a `reason` a future reader can trust without re-litigating the review.",
+  "dismissed": [
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-cgp-hot-md",
+      "reason": "content-only CGP dept scratchpad page, no operator-intent mapping applies; reviewed 3x (#1361, #1389, #1410), closed false-positive each time",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-claudette-bubble-gtm-2026-06-md",
+      "reason": "historical GTM campaign content note, not portfolio/operator governance; reviewed 3x (#1362, #1390, #1411), closed false-positive each time",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-claudette-bubble-invest-campaign-2026-06-md",
+      "reason": "historical marketing campaign content note, not portfolio/operator governance; reviewed 3x (#1363, #1391, #1412), closed false-positive each time",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-claudette-bubble-invest-website-redesign-md",
+      "reason": "website-redesign content/design note, not portfolio/operator governance; reviewed 2x (#1364, #1392), closed false-positive each time",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-claudette-bubble-labs-vision-md",
+      "reason": "labs/vision exploratory content note, not portfolio/operator governance; reviewed 2x (#1368, #1393), closed false-positive each time",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-ben-fund-dispatch-marker-reread-quirk-md",
+      "reason": "shared infra/tooling bug note (dispatch_helpers.py, tracked by its own card #1235), not portfolio governance; closed false-positive (#1430)",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-ben-fund-budget-ledger-undercounts-real-spend-md",
+      "reason": "internal budget-tooling accuracy note, not a portfolio/investment decision or reporting artifact; closed false-positive (#1429)",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-ben-fund-wiki-access-broken-on-vps-md",
+      "reason": "internal wiki-access/infra incident note, not a portfolio/investment decision or reporting artifact; closed false-positive (#1423)",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    },
+    {
+      "key": "wiki-intent-candidate-leak::candidate-intent-leak-ben-fund-fund-vault-gitignored-local-memory-md",
+      "reason": "internal memory-architecture/tooling convention note, not a portfolio/investment decision or reporting artifact; closed false-positive (#1422)",
+      "dismissed_at": "2026-09-22",
+      "dismissed_by": "rick"
+    }
+  ]
+}
