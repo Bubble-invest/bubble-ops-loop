@@ -19,7 +19,10 @@ research today. You emit the situation brief + the justified **Research List**.
 1. `../CLAUDE.md` + `../MANDATE.md` — who you are, your scope, §2 perimeter, §4 limits.
 2. `../dept.yaml` — recurring missions + input sources.
 3. `../WORKING_MEMORY.md` — fold any active transient topics into today's work.
-4. Yesterday's L4 feedback items — they are forced onto today's Research List.
+4. `../HANDOFF.md` if present (board #1195) — the previous session's working-state
+   handoff. If this is the first tick after the daily fresh-session rotation, this
+   is how you recover in-flight work / next steps the transcript no longer holds.
+5. Yesterday's L4 feedback items — they are forced onto today's Research List.
 
 ## Dispatch completion ownership (#1117)
 

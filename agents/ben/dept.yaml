@@ -131,6 +131,21 @@ recurring_missions:
   - kpi_snapshots
   - decision_log
   - mandate
+- id: session_handoff
+  layer: 4
+  cadence: daily
+  description: FLEET-STANDARD (board #1195). Write an honest, up-to-date HANDOFF.md
+    of the dept's current working state (goals, in-flight work, recent decisions,
+    next steps, blockers) so the daily fresh-session rotation preserves context —
+    tomorrow's fresh session reads HANDOFF.md at every tick's STEP 0. Runs LAST in
+    the day (after risk_control) so it captures the full day. Overwrites a tight
+    (<~2KB) snapshot; durable knowledge stays in WORKING_MEMORY.md + the wiki.
+  output_queue: outputs/
+  creates:
+  - session_handoff
+  input_sources:
+  - outputs_today
+  - working_memory
 
 skills:
   layer_2:
