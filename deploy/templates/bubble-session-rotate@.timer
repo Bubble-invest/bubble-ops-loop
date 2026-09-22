@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily fresh-session rotation timer for %i (board #1195)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop
+
+[Timer]
+Unit=bubble-session-rotate@%i.service
+# Pre-morning, before the L1 floor (09:00 Europe/Paris): rotate to a fresh session
+# overnight so the day starts clean; the L4 session_handoff mission wrote HANDOFF.md
+# the prior evening, and the fresh session's first (L1) tick reads it.
+OnCalendar=*-*-* 07:30:00 Europe/Paris
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
