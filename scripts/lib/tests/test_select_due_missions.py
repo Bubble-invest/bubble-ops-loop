@@ -23,7 +23,8 @@ Test coverage mandated by the brief:
   2. cadence-not-due mission excluded; daily-already-fired-today excluded;
      weekly-wrong-day excluded.
   3. consumer mission with empty input queue excluded; producer without queue included.
-  4. L4 prerequisite gate honored (L4 missions absent until L1/L2/L3 all fired).
+  4. L4 prerequisite gate honored (L4 missions absent until L2/L3 satisfied;
+     #1407: no longer gated on L1 having fired — see test_l4_missions_appear_when_l1_not_fired).
   5. legacy shim: no missions/<id>/PROMPT.md → resolve_mission_prompt returns layer prompt.
   6. REGRESSION: decide_dispatch(ctx) returns SAME value as before; equals the
      highest-priority phase among select_due_missions results.
@@ -420,15 +421,47 @@ def test_consumer_mission_with_non_empty_queue_included(tmp_path: Path):
 
 # ── 4. L4 prerequisite gate ──────────────────────────────────────────────────
 
-def test_l4_missions_absent_when_l1_not_fired():
-    """L4 missions must not appear if L1 has not fired today."""
+def test_l4_missions_appear_when_l1_not_fired():
+    """#1407: L4 missions must still appear even when L1 has NOT fired today.
+
+    L4's gate used to hard-require l1_fired, sequencing the aggregator after
+    L1's same-day brief exists. But that made a genuinely-missed L1 (dept
+    down/quiet all morning) hard-block the evening debrief for the WHOLE
+    day — L1's own daily-floor catch-up is a lower-priority fallthrough that
+    can consume the day's only remaining tick, stranding L4 with no later
+    chance (see decide_dispatch's C.1 comment). L1's own guarantee (it still
+    gets its own dispatch slot) is unaffected by this — only L4's dependency
+    on it is dropped.
+    """
     l4_mission = _mk_daily("debrief", layer=4, time="19:00")
-    # L1 NOT fired today → L4 prerequisite fails.
+    # L1 NOT fired today, no research/decisions pending (quiet day) → L4's
+    # remaining prerequisites ((l2_fired or not has_research), (l3_fired or
+    # not has_decisions)) are vacuously satisfied.
     ctx = _bare_ctx(AFTER_L4, layer_1_last_run_today=None)
     due = select_due_missions(ctx, [l4_mission])
+    assert len(due) == 1, (
+        "L4 missions must appear regardless of whether L1 fired today "
+        "(#1407 — L1 is no longer part of the L4 prerequisite gate)"
+    )
+    assert due[0]["id"] == "debrief"
+
+
+def test_l4_missions_absent_when_l1_not_fired_and_l3_work_pending():
+    """#1407 no-regression: dropping the l1_fired leg must NOT touch the
+    L2/L3 legs of the L4 gate — with pending inbox decisions and L3 not yet
+    fired, L4 must still wait (routes to layer_3 territory), independent of
+    L1's state."""
+    l4_mission = _mk_daily("debrief", layer=4, time="19:00")
+    ctx = _bare_ctx(
+        AFTER_L4,
+        layer_1_last_run_today=None,
+        has_inbox_decisions=True,
+        layer_3_last_run_today=None,
+    )
+    due = select_due_missions(ctx, [l4_mission])
     assert len(due) == 0, (
-        "L4 missions must not appear unless L1 has fired today "
-        "(L4 prerequisite gate)"
+        "L4 must still wait on L3/has_inbox_decisions regardless of L1's "
+        "state — only the l1_fired leg was dropped, not the l3_fired leg"
     )
 
 
