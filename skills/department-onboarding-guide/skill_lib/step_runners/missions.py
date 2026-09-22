@@ -109,6 +109,117 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ----- Fleet-standard missions (card #1441) -----
+#
+# Mirrors isolation_scaffold.FLEET_STANDARD_AGENTS's "always-include a
+# fleet-standard artifact" pattern (every dept gets plan-executor by
+# static copy, no per-dept opt-in) but for a recurring MISSION instead
+# of a static agent/skill copy. `_ensure_fleet_standard_missions` commits
+# each of these to every dept when the missions step finalizes (closing),
+# regardless of what the operator asked for themselves — so a newly
+# onboarded dept automatically gets board #1195's daily fresh-session-
+# rotation handoff, not just the depts (ben/maya/tony/content) it was
+# hand-added to before this card. Keyed by mission id; each value is a
+# full schema-valid mission dict (recurring-mission.schema.yaml).
+FLEET_STANDARD_MISSIONS: Dict[str, Dict[str, Any]] = {
+    "session_handoff": {
+        "id": "session_handoff",
+        "layer": 4,
+        "cadence": "daily",
+        "time": "23:55",
+        "description": (
+            "FLEET-STANDARD (board #1195). Write an honest, up-to-date "
+            "HANDOFF.md of the dept's current working state (goals, "
+            "in-flight work, recent decisions, next steps, blockers) so "
+            "the daily fresh-session rotation preserves context — "
+            "tomorrow's fresh session reads HANDOFF.md at every tick's "
+            "STEP 0. Runs LAST in the day so it captures the full day. "
+            "Overwrites a tight (<~2KB) snapshot; durable knowledge stays "
+            "in WORKING_MEMORY.md + the wiki."
+        ),
+        "output_queue": "outputs/",
+        "creates": ["session_handoff"],
+        "input_sources": ["outputs_today", "working_memory"],
+    },
+}
+
+# Canonical fleet-standard missions/<id>/PROMPT.md body per mission id
+# (dept-agnostic — adapted verbatim from agents/ben/missions/session_handoff/
+# PROMPT.md, the first hand-added instance). Written BEFORE
+# mission_scaffold.scaffold_mission_pieces runs (which never overwrites an
+# existing file) so the mission gets this real fleet-standard prompt
+# instead of the generic per-mission auto-render.
+FLEET_STANDARD_MISSION_PROMPTS: Dict[str, str] = {
+    "session_handoff": (
+        "# Mission: session_handoff — write today's context handoff "
+        "(Layer 4, daily)\n\n"
+        "You are a **stateless** subagent spawned by the dept's main "
+        "session at Layer 4.\n"
+        "You communicate only through the file you write. You die after "
+        "your run.\n\n"
+        "## Why you were called\n"
+        "The fleet rotates each dept to a **fresh Claude session once "
+        "per day** (board\n"
+        "#1195) so the on-disk transcript can't grow until it overflows "
+        "and wedges the\n"
+        "agent (\"Prompt is too long\"). To keep context quality across "
+        "that rotation, YOUR\n"
+        "job is to write an honest, up-to-date **handoff** of the "
+        "dept's current working\n"
+        "state, so tomorrow's fresh session (which reads this file at "
+        "the start of every\n"
+        "tick) picks the thread back up without the old transcript.\n\n"
+        "This runs once per day (dept.yaml Layer 4 `recurring_missions` "
+        "entry\n"
+        "`id: session_handoff`). Idempotence is per-mission "
+        "(`outputs/<today>/4/` marker).\n\n"
+        "## What to write — `HANDOFF.md` at the dept workdir root\n"
+        "Overwrite `./HANDOFF.md` (workdir root — the layer prompts "
+        "read it at STEP 0).\n"
+        "Keep it **tight and current** (aim ≤ ~2 KB — this is a live "
+        "working-state note,\n"
+        "NOT an archive; durable knowledge belongs in WORKING_MEMORY.md "
+        "and the wiki, which\n"
+        "are unchanged and still authoritative). Structure:\n\n"
+        "```\n"
+        "# <dept> — session handoff (updated <YYYY-MM-DD HH:MM UTC>)\n\n"
+        "## Current goals / focus\n"
+        "- <the 1–3 things the dept is actively working toward right "
+        "now>\n\n"
+        "## In-flight work (mid-stream — resume these)\n"
+        "- <anything started but not finished: a card being worked, a "
+        "PR awaiting X, a\n"
+        "  multi-step task and which step you're on>\n\n"
+        "## Recent key decisions (+ why)\n"
+        "- <decisions made recently that tomorrow's session must not "
+        "re-litigate or forget>\n\n"
+        "## Next steps\n"
+        "- <the concrete next actions for the next session>\n\n"
+        "## Blockers / waiting-on\n"
+        "- <anything blocked, and on whom/what (e.g. needs:human, a "
+        "pending merge)>\n"
+        "```\n\n"
+        "Draw it from today's actual work (this layer's inputs, "
+        "WORKING_MEMORY.md, the\n"
+        "day's outputs, open gates/cards). Be specific and honest — "
+        "write it for a capable\n"
+        "successor who has your durable memory but NOT your session "
+        "transcript. If nothing\n"
+        "is in-flight (a genuinely quiet day), say so; do not invent "
+        "work.\n\n"
+        "## Hard rules\n"
+        "- Write ONLY `./HANDOFF.md` (+ the standard Layer-4 output "
+        "marker). Touch no other\n"
+        "  file, no secrets, no git push of structural paths.\n"
+        "- Overwrite, don't append (it's a snapshot, not a log — keep "
+        "it small).\n"
+        "- Never block: if you can't determine the state, write a "
+        "minimal honest handoff\n"
+        "  rather than nothing.\n"
+    ),
+}
+
+
 # ----- Prompt copy (FR, Bureau-de-Cadre) -----
 
 PROMPT_SUBSTEP_A = (
@@ -472,6 +583,12 @@ class MissionsRunner(StepRunner):
         # Phase: closing ("you want more?")
         if self._phase == "closing":
             if _NO_RE.search(text):
+                # card #1441: append the fleet-standard missions (e.g.
+                # session_handoff) BEFORE marking the step closed, so a
+                # dept that finalizes with zero missions of its own about
+                # it still carries it, and is_done()'s ">= 1 validated"
+                # check counts it.
+                self._ensure_fleet_standard_missions()
                 self._operator_closed = True
                 self._current_status = "validated"
                 self._persist_progress()
@@ -632,6 +749,102 @@ class MissionsRunner(StepRunner):
         # Reflect in dept.yaml.draft::recurring_missions.
         self._sync_recurring_missions_in_draft()
         return True
+
+    def _ensure_fleet_standard_missions(self) -> None:
+        """Auto-commit every FLEET_STANDARD_MISSIONS entry not already
+        present, mirroring `_commit_current_mission`'s write-then-scaffold
+        flow but for a fixed, module-level mission dict rather than the
+        operator's in-negotiation `_current_mission` (card #1441).
+
+        Idempotent: a mission already reflected in `_sub_validated`, or
+        already declared on disk (`missions/<id>.yaml` — e.g. hand-added
+        by a prior session, or left over from an interrupted run), is
+        never re-tested/re-written; it is just (re-)synced into
+        `_sub_validated` + the dept.yaml.draft mirror if either was
+        somehow missing. Never raises out of `on_answer` (same OSError
+        guard as `_commit_current_mission`): a piece-emission failure is
+        surfaced via `_last_rejection_reason` on the NEXT next_prompt(),
+        never crashes the closing transition.
+
+        Unlike `_commit_current_mission`, this does NOT run the mission
+        through `test_artifact("recurring_mission", ...)`: that per-
+        mission schema (recurring-mission.schema.yaml) requires
+        `output_queue` to start with `queues/` — a rule written for
+        operator-authored Layer 1-3 missions that materialize a Layer-2
+        queue item. `session_handoff` is a fleet-mandated Layer-4 mission
+        that writes `HANDOFF.md` directly (`output_queue: outputs/`,
+        matching every hand-added instance — see agents/ben/dept.yaml and
+        the `session_handoff` block documented in
+        templates/dept.yaml.template) and is never operator-edited, so it
+        is trusted verbatim rather than validated like a fresh operator
+        proposal.
+        """
+        assert self.dept_yaml_draft_path is not None
+        dept_root = self.dept_yaml_draft_path.parent
+        validated_ids = {e.get("id") for e in self._sub_validated}
+
+        for mission_id, mission_template in FLEET_STANDARD_MISSIONS.items():
+            if mission_id in validated_ids:
+                continue
+            mission_path = dept_root / "missions" / f"{mission_id}.yaml"
+            if mission_path.exists():
+                # Already declared on disk (hand-added, or a prior
+                # interrupted run) — just reflect it in sub_validated so
+                # is_done()'s count + the dept.yaml.draft mirror see it.
+                self._sub_validated.append({
+                    "id": mission_id,
+                    "type": SUBSTEP_MISSION_DRAFT,
+                    "validated_at": _now_iso(),
+                })
+                self._sync_recurring_missions_in_draft()
+                continue
+
+            mission = dict(mission_template)
+            _atomic_write_yaml(mission_path, mission)
+            if mission_path not in self._artifacts_written:
+                self._artifacts_written.append(mission_path)
+
+            display_name = self._dept_display_name(dept_root)
+            prompt_path = dept_root / "missions" / mission_id / "PROMPT.md"
+            try:
+                prompt_body = FLEET_STANDARD_MISSION_PROMPTS.get(mission_id)
+                if prompt_body is not None and not prompt_path.exists():
+                    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+                    prompt_path.write_text(prompt_body, encoding="utf-8")
+                    if prompt_path not in self._artifacts_written:
+                        self._artifacts_written.append(prompt_path)
+                for written in mission_scaffold.scaffold_mission_pieces(
+                    dept_root, mission, dept_root.name, display_name,
+                ):
+                    if written not in self._artifacts_written:
+                        self._artifacts_written.append(written)
+                if str(mission.get("output_queue") or "").rstrip("/") == "queues/research":
+                    schema_path = mission_scaffold.scaffold_pool_schema(dept_root, display_name)
+                    if schema_path is not None and schema_path not in self._artifacts_written:
+                        self._artifacts_written.append(schema_path)
+            except OSError as exc:
+                self._last_rejection_reason = (
+                    f"⚠️ Erreur : le hatch de la mission fleet-standard "
+                    f"`{mission_id}` a échoué pendant l'écriture de ses "
+                    f"fichiers (PROMPT.md / skill / config / memory / "
+                    f"voice) : {exc}. La mission `{mission_id}` reste "
+                    f"déclarée (missions/{mission_id}.yaml existe) mais "
+                    "ses fichiers ne sont pas tous écrits. Elle sera "
+                    "resynchronisée automatiquement à la prochaine "
+                    "clôture de l'étape missions."
+                )
+                # Do NOT append to sub_validated on a partial emission —
+                # mirrors _commit_current_mission: the yaml stays declared
+                # (recoverable), and the "mission_path.exists()" branch
+                # above picks it up + syncs it on the next call.
+                continue
+
+            self._sub_validated.append({
+                "id": mission_id,
+                "type": SUBSTEP_MISSION_DRAFT,
+                "validated_at": _now_iso(),
+            })
+            self._sync_recurring_missions_in_draft()
 
     def _sync_recurring_missions_in_draft(self) -> None:
         """Mirror the list of validated missions into dept.yaml.draft.
