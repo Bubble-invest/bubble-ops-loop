@@ -386,3 +386,118 @@ def test_home_hides_section_when_empty(client, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     assert "Prêt à merger" not in r.text
+
+
+# ── board #1432: is_structural flag + in-cockpit Approve button ───────────────
+
+def test_card_flags_structural_pr_from_changed_files(monkeypatch):
+    """A merge-ready PR touching a structural path (.claude/agents/**) gets
+    is_structural=True, computed via the SHARED policy import — never a
+    locally-duplicated glob list."""
+    pulls = [{
+        "number": 42, "title": "fix: x",
+        "html_url": "https://github.com/Bubble-invest/bubble-ops-loop/pull/42",
+        "created_at": "2026-07-02T09:00:00Z", "updated_at": "2026-07-02T10:00:00Z",
+        "body": "",
+    }]
+    comments = {42: [{"body": "Merge-ready for Joris"}]}
+    files = [{"filename": ".claude/agents/rnd.md"}, {"filename": "console/main.py"}]
+
+    monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
+
+    def fake_get_json(url, token):
+        if url.endswith("/files?per_page=100"):
+            return files
+        if "/pulls" in url and "/pulls/" not in url:
+            return pulls
+        return comments.get(42, [])
+
+    monkeypatch.setattr(mrr, "_get_json", fake_get_json)
+
+    cards = mrr._compute_merge_ready(mrr._DEFAULT_REPOS)
+    assert len(cards) == 1
+    assert cards[0]["owner"] == "Bubble-invest"
+    assert cards[0]["is_structural"] is True
+
+
+def test_card_not_structural_when_no_structural_files(monkeypatch):
+    pulls = [{
+        "number": 43, "title": "fix: y",
+        "html_url": "https://github.com/Bubble-invest/bubble-ops-loop/pull/43",
+        "created_at": "2026-07-02T09:00:00Z", "updated_at": "2026-07-02T10:00:00Z",
+        "body": "",
+    }]
+    comments = {43: [{"body": "Merge-ready for Joris"}]}
+    files = [{"filename": "console/main.py"}]
+
+    monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
+
+    def fake_get_json(url, token):
+        if url.endswith("/files?per_page=100"):
+            return files
+        if "/pulls" in url and "/pulls/" not in url:
+            return pulls
+        return comments.get(43, [])
+
+    monkeypatch.setattr(mrr, "_get_json", fake_get_json)
+
+    cards = mrr._compute_merge_ready(mrr._DEFAULT_REPOS)
+    assert len(cards) == 1
+    assert cards[0]["is_structural"] is False
+
+
+def test_files_fetch_error_defaults_to_not_structural(monkeypatch):
+    """A files-list fetch failure must never crash the card build — it just
+    means the Approve-(structural) button doesn't show (falls back to the
+    plain 'Ouvrir sur GitHub' link, unaffected)."""
+    pulls = [{
+        "number": 44, "title": "fix: z",
+        "html_url": "https://github.com/Bubble-invest/bubble-ops-loop/pull/44",
+        "created_at": "2026-07-02T09:00:00Z", "updated_at": "2026-07-02T10:00:00Z",
+        "body": "",
+    }]
+    comments = {44: [{"body": "Merge-ready for Joris"}]}
+
+    monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
+
+    def fake_get_json(url, token):
+        if url.endswith("/files?per_page=100"):
+            raise RuntimeError("network blip")
+        if "/pulls" in url and "/pulls/" not in url:
+            return pulls
+        return comments.get(44, [])
+
+    monkeypatch.setattr(mrr, "_get_json", fake_get_json)
+
+    cards = mrr._compute_merge_ready(mrr._DEFAULT_REPOS)
+    assert len(cards) == 1
+    assert cards[0]["is_structural"] is False
+
+
+def test_home_shows_approve_button_only_for_structural_pr(client, monkeypatch):
+    from console.routes import home
+    stub = [{
+        "owner": "Bubble-invest", "repo": "bubble-ops-loop", "number": 99,
+        "title": "fix: x", "html_url": "https://github.com/o/r/pull/99",
+        "created_at": "2026-07-02T09:00:00Z", "age": "il y a 2 h",
+        "explanation": "PR structurelle.", "chips": [], "is_structural": True,
+    }]
+    monkeypatch.setattr(home.merge_ready_reader, "list_merge_ready", lambda *a, **k: stub)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Approve (structural)" in r.text
+    assert 'href="/pr/Bubble-invest/bubble-ops-loop/99"' in r.text
+
+
+def test_home_hides_approve_button_for_non_structural_pr(client, monkeypatch):
+    from console.routes import home
+    stub = [{
+        "owner": "Bubble-invest", "repo": "bubble-ops-loop", "number": 100,
+        "title": "fix: y", "html_url": "https://github.com/o/r/pull/100",
+        "created_at": "2026-07-02T09:00:00Z", "age": "il y a 2 h",
+        "explanation": "PR ordinaire.", "chips": [], "is_structural": False,
+    }]
+    monkeypatch.setattr(home.merge_ready_reader, "list_merge_ready", lambda *a, **k: stub)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Approve (structural)" not in r.text

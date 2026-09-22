@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}PR {{ pr.owner }}/{{ pr.repo }}#{{ pr.number }} — Cabinet d'éclosion{% endblock %}
+{# body.m4 scopes the mockup-4 skin — same as gate_card.html / home.html. #}
+{% block body_class %}m4{% endblock %}
+{% block content %}
+
+<header class="page-hero m4-hero dept-header" aria-labelledby="pr-detail-title">
+  <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>{{ pr.owner }}/{{ pr.repo }} · PR #{{ pr.number }}</div>
+  <h1 class="page-hero-title dept-title" id="pr-detail-title">{{ pr.title or ('PR #' ~ pr.number) }}</h1>
+  <p class="page-hero-lede dept-subtitle">
+    base <span class="slug-ref">{{ pr.base_ref or '?' }}</span>
+    {% if pr.head_sha %} · head <span class="slug-ref">{{ pr.head_sha[:12] }}</span>{% endif %}
+    {% if pr.state %} · {{ pr.state }}{% endif %}
+  </p>
+</header>
+
+<div class="gate-card">
+
+  {# ─── Structural-merge-guard status ─────────────────────────────
+     Best-effort read of the `structural-merge-guard / guard` check run on
+     the PR's head SHA (see pr_detail_reader._guard_status). "unknown" is a
+     genuinely honest state (no scope / no run yet / network hiccup) — never
+     rendered as pass or fail. #}
+  {% set guard = pr.guard_status %}
+  <div class="gate-meta" style="margin-bottom:16px;">
+    <div>
+      chemins structurels
+      <b style="color: {{ 'var(--danger, #c0392b)' if pr.structural else 'var(--sage)' }};">
+        {{ 'oui' if pr.structural else 'non' }}
+      </b>
+    </div>
+    <div>
+      structural-merge-guard
+      <b style="color:
+        {%- if guard == 'pass' %} var(--sage)
+        {%- elif guard == 'fail' %} var(--danger, #c0392b)
+        {%- elif guard == 'pending' %} var(--ochre)
+        {%- else %} var(--body-muted)
+        {%- endif %};">
+        {%- if guard == 'pass' %} ✓ passé
+        {%- elif guard == 'fail' %} ✗ bloqué
+        {%- elif guard == 'pending' %} en cours
+        {%- else %} inconnu
+        {%- endif %}
+      </b>
+    </div>
+  </div>
+
+  {# ─── Changed files, structural ones flagged first ──────────────── #}
+  <div class="gate-payload" style="margin:0 0 18px; padding:14px 16px;
+       background: var(--paper-soft); border:1px solid var(--line);
+       border-left:3px solid var(--ochre); border-radius:2px;">
+    <div class="gate-payload-label muted-italic"
+         style="font-size:11px; margin-bottom:8px; color: var(--body-muted); text-transform:uppercase; letter-spacing:.3px;">
+      Fichiers modifiés{% if pr.files %} ({{ pr.files | length }}){% endif %}
+    </div>
+    {% if pr.files_error %}
+    <p class="muted-italic" style="font-size:13px; color: var(--body-muted);">{{ pr.files_error }}</p>
+    {% elif not pr.files %}
+    <p class="muted-italic" style="font-size:13px; color: var(--body-muted);">Aucun fichier — ou liste indisponible.</p>
+    {% else %}
+    <ul style="margin:0; padding-left:18px; font-family: var(--font-mono); font-size:13px;">
+      {% for f in pr.files %}
+      <li style="margin-bottom:4px; {% if f.structural %}color: var(--danger, #c0392b); font-weight:600;{% else %}color: var(--body-soft);{% endif %}">
+        {{ f.path }}{% if f.structural %} <span class="chip">structurel</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  {# ─── Approve — App-signed structural approval (board #1432) ──────
+     Same shared handler as home.html's "Prêt à merger" cards
+     (bubbleApprovePR, base.html). Shown regardless of `pr.structural` here
+     (this IS the dedicated per-PR page — Rick sends this link precisely
+     because a decision is needed) — RBAC is enforced server-side by the
+     POST route either way, so a non-operator viewer just gets the 403
+     message rendered in place instead of a silent no-op. #}
+  <div style="margin-top:8px;">
+    <button type="button" class="btn-ochre"
+            onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'pr-detail-approve-result')">
+      Approve (structural)
+    </button>
+    <div id="pr-detail-approve-result" style="margin-top:8px; font-size:14px;"></div>
+  </div>
+
+  <p style="margin-top:22px;">
+    <a href="https://github.com/{{ pr.owner }}/{{ pr.repo }}/pull/{{ pr.number }}"
+       target="_blank" rel="noopener" class="discreet-link">Ouvrir sur GitHub →</a>
+  </p>
+</div>
+
+{% endblock %}
