@@ -1514,14 +1514,28 @@ def read_chat_log(slug: str, step_num: int, step_name: str) -> Optional[str]:
 def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
                          ) -> Optional[Path]:
     """Land the operator's approval in inbox/decisions/<gate_id>.yaml where the
-    dept's loop reads it. Returns the path (vps) / a sentinel path (local) on
-    success, or None on failure.
+    dept's loop reads it. Returns the path (vps) / a sentinel path (local/
+    uid-isolated) on success, or None on failure.
 
     Hybrid local/VPS agent (2026-06-12): a dept declares its host in STATE.yaml.
       - host=vps (default): the dept repo is on the cockpit's disk → write to disk.
       - host=local (e.g. Miranda on {{OPERATOR_2}}'s Mac): the repo is NOT on the cockpit's
         disk — it lives on the Mac + GitHub. We commit the decision to the dept's
         GitHub repo via `gh api` so the Mac loop pulls it on its next safe_pull.
+
+    #1451: a host=vps dept can ALSO be uid-isolated (post-#1120, e.g. Maya) —
+    its live checkout moved to ``runtime_repo_path(slug)`` (``/srv/agents/<slug>``,
+    owned by ``agent-<slug>``), while ``repo_path(slug)`` still resolves to the
+    legacy on-disk mirror the dept's own loop never reads or writes again (see
+    ``checkout_staleness`` / #1285's read-path fix). Writing the decision to
+    that mirror silently loses it — the dept never sees it — and the console
+    process can't write into ``/srv/agents/<slug>`` either way (it's owned by a
+    different uid; EACCES). So for a uid-isolated dept we route through the
+    SAME GitHub-commit path host=local already uses: it commits the decision
+    to the dept's repo, and the dept's own `safe_pull` (every loop tick) brings
+    it into its live tree. No new write path, no privilege escalation — just
+    reusing the existing host=local mechanism for a host=vps dept once its
+    disk-write path is known to be a dead end.
     """
     # Resolve the dept's host (default vps). Reference the function through the
     # MODULE (dept_registry.get_department) rather than a `from … import` binding,
@@ -1544,10 +1558,28 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
             _write_local_hide_marker(slug, gate_id, decision)
         return out
 
-    # host=vps — write to the on-disk repo. Atomic: write to a temp file in the
-    # same dir + os.replace, so a reader (the dept's loop, or another cockpit
-    # request) never observes a partially-written decision file.
-    root = repo_path(slug)
+    # host=vps. Detect uid-isolation the same way the #1285 read-path fix
+    # does: the dept's canonical runtime tree (`runtime_repo_path`) resolves
+    # to something OTHER than the on-disk mirror (`repo_path`) the console
+    # would otherwise write to. Pre-isolation vps depts (or ones never on
+    # disk at all) have `runtime_repo_path(slug) == repo_path(slug)` — those
+    # keep the original disk write, unchanged.
+    disk_root = repo_path(slug)
+    runtime_root = runtime_repo_path(slug)
+    if runtime_root is not None and runtime_root != disk_root:
+        # Uid-isolated: the disk mirror is a dead end (never read again by
+        # the dept's loop) and /srv/agents/<slug> is owned by agent-<slug>,
+        # not writable by the console process. Commit to GitHub instead —
+        # exactly the host=local mechanism above — and let the dept's own
+        # safe_pull bring it home. Do NOT attempt to write into runtime_root
+        # directly: it would EACCES.
+        return _write_gate_decision_github(slug, gate_id, decision)
+
+    # Not uid-isolated — write to the on-disk repo as before. Atomic: write
+    # to a temp file in the same dir + os.replace, so a reader (the dept's
+    # loop, or another cockpit request) never observes a partially-written
+    # decision file.
+    root = disk_root
     if root is None:
         return None
     decisions_dir = root / "inbox" / "decisions"
