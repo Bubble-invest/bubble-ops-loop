@@ -98,9 +98,18 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 
 def checkout_staleness(slug: str, branch: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Detect whether the on-disk checkout this reader serves from
-    (``repo_path(slug)`` — the SAME tree every other function in this module
-    reads gates/dept.yaml/outputs from) DIFFERS from ``origin/<branch>``.
+    """Detect whether the on-disk checkout at ``repo_path(slug)`` — the legacy
+    disk-root tree gate WRITES still land in (see ``write_gate_decision``) —
+    DIFFERS from ``origin/<branch>``.
+
+    #1285 update: gate-content READS (``list_pending_gates`` and friends) now
+    prefer ``runtime_repo_path(slug)`` instead, since a uid-isolation cutover
+    can leave THIS tree permanently orphaned (not just "behind") once a dept's
+    own loop stops reading/writing it — see #1285 for the confirmed case
+    (bubble-ops-maya's legacy mirror froze at the #1299 resync commit while
+    /srv/agents/maya kept advancing). This function still targets
+    ``repo_path()`` on purpose: it exists to warn about exactly that
+    divergence for the tree gate decisions are written to.
 
     Board #1299: for a `host: vps` dept (e.g. Maya) that repo is the dept's
     OWN live working checkout — nothing re-clones or auto-pulls it for the
@@ -573,8 +582,16 @@ def list_pending_gates(slug: str) -> List[Dict[str, Any]]:
     NOTE: a true end-to-end "agent links the redraft to the original gate id"
     requires a dept-side convention (out of scope here). The cockpit side is
     correct: modify stays visible + flagged until the agent resolves the gate.
+
+    #1285: prefer the canonical runtime workdir (mirrors #1209's whiteboard
+    fix) so gate content — e.g. Maya's cold-outreach draft bodies — reflects
+    her live checkout, not a legacy `disk_root()` mirror that a uid-isolation
+    cutover can freeze indefinitely once the dept's own loop stops reading
+    from it (confirmed on the box: bubble-ops-maya's legacy mirror was frozen
+    at the exact commit of the #1299 resync while /srv/agents/maya kept
+    advancing — the mirror was not "behind", it was orphaned).
     """
-    root = repo_path(slug)
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return []
     gates_dir = root / "queues" / "gates"
@@ -768,7 +785,10 @@ def load_gate_direct(slug: str, gate_id: str) -> Optional[Dict[str, Any]]:
     # Reject gate_ids that could escape the gates directory.
     if not gate_id or "/" in gate_id or "\\" in gate_id or ".." in gate_id:
         return None
-    root = repo_path(slug)
+    # #1285: same canonical-runtime preference as list_pending_gates — this
+    # reads the gate YAML directly (undo's resolved/decided_by check) and must
+    # agree with what the cockpit is currently showing, not a frozen mirror.
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return None
     gates_dir = (root / "queues" / "gates").resolve()
@@ -786,7 +806,8 @@ def load_gate_direct(slug: str, gate_id: str) -> Optional[Dict[str, Any]]:
 
 
 def load_gate_raw(slug: str, gate_id: str) -> Optional[str]:
-    root = repo_path(slug)
+    # #1285: canonical-runtime preference, same as list_pending_gates.
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return None
     p = root / "queues" / "gates" / f"{gate_id}.yaml"
@@ -1101,7 +1122,11 @@ def resolve_gate_payload_path(slug: str, rel_path: str) -> Optional[Path]:
     if not rel_path or not isinstance(rel_path, str):
         return None
 
-    root = repo_path(slug)
+    # #1285: canonical-runtime preference, same as list_pending_gates — a
+    # gate's `approval_bridge.item_ref` payload (e.g. a long-form cold-outreach
+    # draft under outputs/) must be read from the same live tree the gate list
+    # itself now reads from, not a frozen legacy mirror.
+    root = runtime_repo_path(slug) or repo_path(slug)
     if root is None:
         return None
     root = root.resolve()
