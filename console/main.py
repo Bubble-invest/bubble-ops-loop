@@ -27,7 +27,7 @@ from starlette.responses import RedirectResponse
 from console import settings
 from console.routes import (
     agents, auth, concierge, costs, dept, dept_session, gate, health, home,
-    kanban, onboarding, thesis_book,
+    kanban, onboarding, pr, thesis_book,
 )
 from console.routes import settings as settings_route
 from console.services import sessions
@@ -302,6 +302,7 @@ def create_app() -> FastAPI:
     app.include_router(home.router)
     app.include_router(dept.router)
     app.include_router(gate.router)
+    app.include_router(pr.router)
     app.include_router(settings_route.router)
     app.include_router(health.router)
     app.include_router(costs.router)
