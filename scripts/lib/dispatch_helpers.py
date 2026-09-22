@@ -4427,7 +4427,18 @@ def force_commit_and_push(
     if _broker_bin not in _env.get("PATH", ""):
         _env["PATH"] = _broker_bin + ":" + _env.get("PATH", "")
 
-    repo_dir = Path(repo_dir)
+    # Resolve to an ABSOLUTE path up front (board #1452): bubble-git-guard is
+    # a separate subprocess that does NOT inherit repo_dir as its cwd (unlike
+    # the `git -C <repo_dir>` calls below, which work fine with a relative
+    # path since they resolve against our own cwd). A relative repo_dir
+    # (e.g. the default '.') passed straight through to `--repo-dir` made
+    # the guard fail with "not inside a git work tree: ." / "fatal: not a
+    # git repository" on every guarded push — the commit landed but the push
+    # ALWAYS fell through to the guard-DENY path. Resolving here matches the
+    # sibling helpers (safe_pull, count_unpushed_commits) that already do
+    # this, and is a no-op when the caller's cwd already IS the repo root
+    # (Path('.').resolve() == that same root).
+    repo_dir = Path(repo_dir).resolve()
 
     # 1. Anything to commit?
     status = subprocess.run(
