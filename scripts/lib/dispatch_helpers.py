@@ -4080,8 +4080,14 @@ _VENDORED_NONPUSHABLE_GLOBS = (
 # resume/handoff. They are local runner state, not dept runtime artifacts, and
 # are outside every runtime push allowlist. Keep this deliberately exact and
 # root-only: do not turn it into a broader allowlist or ignore arbitrary files.
+# HANDOFF.md (board #1195): the daily fresh-session rotation's working-state note,
+# written at the workdir root by the L4 session_handoff mission and read locally at
+# STEP 0. It is local session-bridging state (rotation is same-box), never a pushable
+# runtime artifact — excluding it here stops the pre-sync auto-commit from staging it
+# into a commit the git-guard then refuses (which stranded every subsequent push;
+# hit Tony live 2026-09-22, #1442).
 _UNTRACKED_HARNESS_ROOT_ARTIFACTS = frozenset(
-    {"AGENTS.md", "HARNESS_HANDOFF.md"}
+    {"AGENTS.md", "HARNESS_HANDOFF.md", "HANDOFF.md"}
 )
 
 
