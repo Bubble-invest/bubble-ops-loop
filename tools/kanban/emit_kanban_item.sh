@@ -289,8 +289,11 @@ for token in raw.split(','):
     if m:
         value = m.group(1)
     value = re.sub(r'^shared/operator-intents/', '', value)
-    # #1247 is case-exact and extensionless.  A `.md` target is unresolved,
-    # not something the emitter silently repairs/blesses.
+    # #1247 is case-exact and extensionless.  A '.md' target is unresolved,
+    # not something the emitter silently repairs/blesses. (Bug #1434: this
+    # whole block is a bash DOUBLE-quoted string handed to python3 -c, so
+    # backtick pairs or embedded double-quote chars here get evaluated by
+    # bash itself before python ever sees them -- avoid both in this block.)
     if value.lower().endswith('.md'):
         continue
     if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', value) and value not in seen:
