@@ -9,8 +9,15 @@ App's key).
 
 - `bubble-cockpit-approver-token.sh` — root-owned; mints a ~1h `pull_requests:write`
   installation token for App `cockpit-approver` (app_id 5019127, installation 163454332).
-- `console/services/pr_approver.py` — calls the minter, then POSTs an `APPROVED` review to
-  the PR as the App.
+- `bubble-cockpit-approver-token-refresh.{sh,service,timer}` — a root-owned systemd
+  TIMER (every ~45min) that calls the minter above and writes the token to
+  `/run/bubble-cockpit-approver/token` (tmpfs, 0640 root:claude — group-readable by
+  the console's `claude` user, **never** via `sudo`). **1:1 mirror of
+  `console/deploy/contents-token/`** — same file layout, same perms, same cadence,
+  same fail-closed behaviour when the key isn't provisioned yet.
+- `console/services/pr_approver.py` — READS that token file (no subprocess, no sudo),
+  then POSTs an `APPROVED` review to the PR as the App. Mirrors
+  `console/services/github_reader.py::_read_contents_token()`'s reader shape exactly.
 - `console/routes/pr.py` — `GET /pr/{owner}/{repo}/{number}` (deep-link view) +
   `POST /pr/{owner}/{repo}/{number}/approve` (cockpit-auth + RBAC gated, same
   principal check as gate decisions), triggers the approval.
@@ -19,11 +26,24 @@ App's key).
 - `console/services/structural_paths.py` — re-exports `is_structural_for_repo` from
   `token-broker/src/policy.py` (the SAME policy the guard workflow enforces) so the
   cockpit's "is this PR structural?" UI hint never drifts from the guard's own truth.
-- `console/deploy/cockpit-approver/install-cockpit-approver-minter.sh` +
-  `deploy/templates/bubble-cockpit-approver.sudoers` — idempotent installer for the
-  minter binary + its scoped `sudo -n` grant (see step 2 below).
+- `console/deploy/cockpit-approver/install-cockpit-approver-refresh.sh` — idempotent
+  installer for the minter + refresh timer (see step 2 below). There is **no sudoers
+  grant anywhere in this feature** — the console never invokes the minter, only reads
+  the file the timer writes.
 - `.github/workflows/structural-merge-guard.yml` (already merged) — requires an `APPROVED`
   review by `cockpit-approver[bot]` on the head SHA for any PR touching structural paths.
+
+### Why a timer + tmpfs file, not `sudo -n` at request time
+
+The production console unit sets `NoNewPrivileges=true`
+(`console/deploy/bubble-ops-console.service.template`). Under `NoNewPrivileges=true`,
+`sudo` (a setuid-root binary) cannot escalate — a request-time `sudo -n` call from the
+console process would simply fail. This is the exact problem
+`console/deploy/contents-token/` already solved: instead of the console sudo-ing at
+request time, a root-owned systemd timer mints on its own schedule and writes a tmpfs
+file the console only *reads*. This feature was originally shipped with a `sudo -n`
+call (see PR #482's first revision) before that conflict was caught in review; it now
+mirrors the contents-token shape 1:1 instead.
 
 ## Cockpit UI (board #1432 follow-up)
 
@@ -43,9 +63,10 @@ App's key).
 
 ## One-time operator steps — provision the App private key (deferred until Joris is home)
 
-The token minter reads the App's private key from a root-owned SOPS file. Until it exists,
-`pr_approver` cleanly reports "approver key not provisioned" and submits nothing (no false
-approval).
+The refresh timer mints from the App's private key, read from a root-owned SOPS file.
+Until it exists, every mint attempt fails closed, the token file is never written, and
+`pr_approver` cleanly reports "approver key not provisioned" — submits nothing (no
+false approval).
 
 1. **Drop the `.pem` (SOPS).** On the machine where you downloaded the App's `.pem` at
    App-creation time, SOPS-encrypt it to the VPS age recipient and drop it at:
@@ -53,26 +74,20 @@ approval).
    Use the same secure flow as the other App keys (the `auth` skill / `morty-sops-add-key`
    pattern) — the key never transits chat.
 2. **Run the installer:**
-   `bash console/deploy/cockpit-approver/install-cockpit-approver-minter.sh`
-   (root, on the VPS). Idempotent — installs the minter (0750 root:root) to
-   `/usr/local/bin/` and the scoped `sudo -n` grant
-   (`/etc/sudoers.d/bubble-cockpit-approver`, mirroring the settings_pr broker-mint
-   convention in `deploy/templates/bubble-broker-mint.sudoers`) via `visudo -cf`
-   validation. `--dry-run` shows what it would do without writing anything. It does
-   NOT touch the key and does NOT run/smoke-test the minter.
-
-   **Known gap to resolve before this is load-bearing** (found while building the
-   button/page, not fixed here — needs a decision): the production console unit
-   sets `NoNewPrivileges=true`
-   (`console/deploy/bubble-ops-console.service.template`), under which `sudo`
-   cannot escalate — so `pr_approver.py`'s request-time `sudo -n` call will fail
-   exactly the way a request-time `sudo` for contents-token would have (which is
-   why THAT minter is instead a root systemd timer writing a tmpfs file the
-   console only reads — see `console/deploy/contents-token/README.md`). Either
-   drop `NoNewPrivileges` for this unit or migrate `pr_approver.py` to the same
-   timer+tmpfs-file pattern before step 3 below is expected to pass in production.
-3. **Smoke-test:** `sudo -n /usr/local/bin/bubble-cockpit-approver-token.sh` prints a `ghs_…`
-   token; then approve a throwaway structural PR from the cockpit (either the home-page
+   `bash console/deploy/cockpit-approver/install-cockpit-approver-refresh.sh`
+   (root, on the VPS). Idempotent — installs the minter + refresh script (0750
+   root:root) to `/usr/local/bin/`, the unit + timer (0644) to
+   `/etc/systemd/system/`, then `daemon-reload` + `enable --now` the timer.
+   `--dry-run` shows what it would do without writing anything; `--mint-now` also
+   fires one immediate mint (useful right after dropping the key, instead of
+   waiting for `OnBootSec=30s`/the next boot). No sudoers file, no `sudo` grant —
+   there's nothing to grant; the console only reads the tmpfs file this timer writes.
+3. **Smoke-test:**
+   ```bash
+   test -s /run/bubble-cockpit-approver/token          # the timer minted something
+   sudo -u claude test -r /run/bubble-cockpit-approver/token   # console can read it
+   ```
+   then approve a throwaway structural PR from the cockpit (either the home-page
    button or a `/pr/{owner}/{repo}/{number}` link) and confirm the guard flips to pass.
 
 ## Making the check required
