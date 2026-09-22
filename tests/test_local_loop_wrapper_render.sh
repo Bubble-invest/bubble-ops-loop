@@ -29,6 +29,16 @@
 #   T9  the hermes branch cd's + sets PATH inline (tmux server env != wrapper env).
 #   T10 NO secret VALUE is ever embedded — only `${VAR:-}` runtime refs (rendered
 #       under `env -i`).
+#   T13 board #1275: secrets are loaded via _lll_load_secrets_safe (rendered into
+#       every wrapper), NEVER a bare `source`/`.` of untrusted decrypted content —
+#       for both the vault path and the no-vault legacy-.env-only path.
+#   T14 board #1275: a malformed secret value (unquoted spaces — the exact shape
+#       that crashed Ellie's loop, exit 127) does NOT abort the safe loader under
+#       `set -e`, and well-formed values (plain / double-quoted / single-quoted)
+#       still load correctly (working case preserved).
+#   T15 board #1275: a synthetic render using the accountant's exact production
+#       knobs (RUNBOOK-748) is valid bash (bash -n) — proof the render lib does
+#       not emit the line-74-class syntax error for that dept's shape.
 # =============================================================================
 set -uo pipefail
 
@@ -114,6 +124,64 @@ want "T12a full-title match (not the changelog substring)" "auto mode your defau
 want "T12b single-shot guard present"  "_am_done" "$TMP/flags.sh"
 want "T12c declines (2nd option)"      "decline (2nd option)" "$TMP/flags.sh"
 nowant "T12d not present without --continue" "auto mode your default" "$TMP/generic.sh"
+
+echo "== board #1275: safe secrets loading (no bare source of untrusted content) =="
+# vault path
+want   "T13a vault: safe loader defined"        "_lll_load_secrets_safe() {" "$TMP/vault.sh"
+want   "T13b vault: safe loader called on \$_sec"  '_lll_load_secrets_safe "$_sec"'      "$TMP/vault.sh"
+want   "T13c vault: safe loader called on legacy"  '_lll_load_secrets_safe "$LEGACY_ENV"' "$TMP/vault.sh"
+nowant "T13d vault: no bare source of \$_sec"      '. "$_sec"'                            "$TMP/vault.sh"
+nowant "T13e vault: no bare source of LEGACY_ENV"  '. "$LEGACY_ENV"'                      "$TMP/vault.sh"
+# no-vault (legacy-.env-only) path
+want   "T13f no-vault: safe loader defined"     "_lll_load_secrets_safe() {" "$TMP/generic.sh"
+want   "T13g no-vault: safe loader called"      "_lll_load_secrets_safe \"/tmp/tg/.env\"" "$TMP/generic.sh"
+nowant "T13h no-vault: no bare source"          '. "/tmp/tg/.env"'            "$TMP/generic.sh"
+
+echo "== board #1275: safe loader survives a malformed secret value =="
+# Extract just the rendered _lll_load_secrets_safe function and exercise it
+# under set -e against a secrets file shaped exactly like the Ellie crash
+# (an unquoted value containing display-format app-password spaces), plus
+# quoted/plain well-formed values (the working case must be preserved).
+sed -n '/^_lll_load_secrets_safe() {/,/^}/p' "$TMP/vault.sh" > "$TMP/loader_only.sh"
+cat > "$TMP/secrets_malformed.env" <<'ENVEOF'
+TELEGRAM_BOT_TOKEN=1234:ABCDEF
+IMAP_PASSWORD=klcn xxxx xxxx xxxx
+QUOTED_VAL="hello world"
+SINGLE_QUOTED='foo bar'
+# a comment line
+
+THIS IS NOT VALID
+NOTION_API_KEY=secret_abc123
+ENVEOF
+cat > "$TMP/functest.sh" <<FUNCEOF
+#!/bin/bash
+set -e
+source "$TMP/loader_only.sh"
+_lll_load_secrets_safe "$TMP/secrets_malformed.env"
+echo "SURVIVED"
+[ "\$TELEGRAM_BOT_TOKEN" = "1234:ABCDEF" ] || { echo "BAD TELEGRAM_BOT_TOKEN"; exit 1; }
+[ "\$IMAP_PASSWORD" = "klcn xxxx xxxx xxxx" ] || { echo "BAD IMAP_PASSWORD [\$IMAP_PASSWORD]"; exit 1; }
+[ "\$QUOTED_VAL" = "hello world" ] || { echo "BAD QUOTED_VAL"; exit 1; }
+[ "\$SINGLE_QUOTED" = "foo bar" ] || { echo "BAD SINGLE_QUOTED"; exit 1; }
+[ "\$NOTION_API_KEY" = "secret_abc123" ] || { echo "BAD NOTION_API_KEY"; exit 1; }
+FUNCEOF
+bash "$TMP/functest.sh" >"$TMP/functest.out" 2>"$TMP/functest.err"
+ok "T14a malformed secret value does not abort the loop (set -e survives)" $?
+want "T14b well-formed values still load (working case preserved)" "SURVIVED" "$TMP/functest.out"
+nowant "T14c decrypted VALUE never logged (only file/key names)" "klcn xxxx" "$TMP/functest.err"
+
+echo "== board #1275: accountant's exact production knobs render valid bash =="
+# Mirrors docs/RUNBOOK-748-mac-launcher-alignment.md's M5/accountant install
+# command (vault + model pin + --chrome --continue + inline-env + env-unset +
+# extra-export PYTHONPATH) — the exact shape whose STALE (pre-#748) M5 render
+# carried the line-74 syntax error. Proves the CURRENT lib renders clean.
+LOOP_VAULT_PATH="/v/secrets.sops.env" LOOP_AGE_KEY_FILE="/k/age.txt" \
+LOOP_MODEL="claude-opus-4-8[1m]" LOOP_CHROME=1 LOOP_CONTINUE=1 \
+LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN NOTION_API_KEY QONTO_LOGIN QONTO_SECRET_KEY IMAP_PASSWORD_FIRM YOUSIGN_API_KEY" \
+LOOP_ENV_UNSET="CLAUDE_CODE_OAUTH_TOKEN" \
+LOOP_EXTRA_EXPORTS='PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' \
+  render /tmp/dept accountant /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/accountant.sh"
+bash -n "$TMP/accountant.sh"; ok "T15 accountant-shaped render is valid bash (bash -n)" $?
 
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
