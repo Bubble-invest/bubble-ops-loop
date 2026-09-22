@@ -14,6 +14,13 @@
 # the L4 `session_handoff` mission wrote HANDOFF.md, which the layer prompts read at
 # STEP 0 on the fresh session's first tick.
 #
+# WHY archive-and-restart rather than the existing tony.once marker: bubble-agent-
+# prepare ALREADY has a forced-fresh primitive (BUBBLE_AGENT_FORCE_FRESH_ONCE + the
+# root-owned `tony.once` marker), but it is hardcoded `slug == tony` and lives INSIDE
+# the fund-critical prepare path. Generalizing it fleet-wide would mean editing that
+# path; this script reaches the identical outcome (gate sees zero *.jsonl -> no
+# --continue -> fresh) from OUTSIDE it, for every dept, without that edit.
+#
 # FAIL-SAFE: only rotate if a FRESH HANDOFF.md exists (< HANDOFF_MAX_AGE_H). Without
 # it the fresh session would start context-blind, so we SKIP the rotation and keep
 # the current session (a bloated-but-working session beats a fresh-but-blind one;
