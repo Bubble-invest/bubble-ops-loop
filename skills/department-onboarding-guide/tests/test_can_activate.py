@@ -94,6 +94,34 @@ def _write_dept(path: Path, with_trade_mission: bool = False) -> None:
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
 
 
+def _write_core_dept_shape(root: Path) -> None:
+    """Write the standard dept shape (MANDATE.md + layer prompts + mission
+    declaration) matching `_write_dept`'s dept.yaml (card #1268)."""
+    (root / "MANDATE.md").write_text(
+        "# Mandat de Miranda\n\n"
+        "Je m'occupe du contenu et je publie sous supervision. "
+        "Je ne conseille jamais en direct sans validation humaine.\n",
+        encoding="utf-8",
+    )
+    for n in (1, 2, 3, 4):
+        layer_dir = root / "layers" / str(n)
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        (layer_dir / "PROMPT.md").write_text(
+            f"# Layer {n} prompt stub\n\nRole description for layer {n}.\n",
+            encoding="utf-8",
+        )
+    missions_dir = root / "missions"
+    missions_dir.mkdir(parents=True, exist_ok=True)
+    (missions_dir / "echo_heartbeat.yaml").write_text(
+        yaml.safe_dump({
+            "id": "echo_heartbeat", "layer": 1, "cadence": "every_2h",
+            "description": "Heartbeat mission.",
+            "output_queue": "queues/research/", "creates": ["echo_task"],
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def _full_repo(root: Path, **state_overrides) -> Path:
     """Make a happy-path repo. Returns the state-yaml path."""
     (root / "onboarding").mkdir(parents=True, exist_ok=True)
@@ -105,6 +133,7 @@ def _full_repo(root: Path, **state_overrides) -> Path:
                 "inbox/decisions", "tests", "missions",
                 "layers/1", "layers/2", "layers/3", "layers/4"):
         (root / sub).mkdir(parents=True, exist_ok=True)
+    _write_core_dept_shape(root)
     return state
 
 
@@ -174,6 +203,50 @@ def test_can_activate_returns_actionable_reasons(tmp_path):
         # each reason is a string and non-trivial
         assert isinstance(r, str)
         assert len(r) > 10
+
+
+def test_can_activate_rejects_missing_mandate_md(tmp_path):
+    """Card #1268 — the Géraldine incident: validated_steps said "mandate"
+    was done, but MANDATE.md was never committed. can_activate() must
+    re-verify the file actually exists, independent of STATE.yaml."""
+    state = _full_repo(tmp_path)
+    (tmp_path / "MANDATE.md").unlink()
+    ok, reasons = can_activate(state, tmp_path)
+    assert ok is False
+    assert any("MANDATE.md" in r for r in reasons)
+
+
+def test_can_activate_rejects_empty_mandate_md(tmp_path):
+    """A committed-but-placeholder MANDATE.md must also fail-closed."""
+    state = _full_repo(tmp_path)
+    (tmp_path / "MANDATE.md").write_text("# Mandat de Miranda\n", encoding="utf-8")
+    ok, reasons = can_activate(state, tmp_path)
+    assert ok is False
+    assert any("MANDATE.md" in r and "placeholder" in r for r in reasons)
+
+
+def test_can_activate_rejects_missing_layer_prompt(tmp_path):
+    state = _full_repo(tmp_path)
+    (tmp_path / "layers" / "2" / "PROMPT.md").unlink()
+    ok, reasons = can_activate(state, tmp_path)
+    assert ok is False
+    assert any("layers/2/PROMPT.md" in r for r in reasons)
+
+
+def test_can_activate_rejects_missing_declared_mission_file(tmp_path):
+    state = _full_repo(tmp_path)
+    (tmp_path / "missions" / "echo_heartbeat.yaml").unlink()
+    ok, reasons = can_activate(state, tmp_path)
+    assert ok is False
+    assert any("missions/echo_heartbeat.yaml" in r for r in reasons)
+
+
+def test_can_activate_succeeds_for_well_formed_dept(tmp_path):
+    """Sanity check: a fully well-formed dept (MANDATE.md + all 4 layer
+    prompts + declared mission file) still activates cleanly."""
+    state = _full_repo(tmp_path)
+    ok, reasons = can_activate(state, tmp_path)
+    assert ok is True, f"expected True, got reasons={reasons}"
 
 
 def test_can_activate_is_pure_no_side_effects(tmp_path):
