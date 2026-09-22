@@ -7,12 +7,17 @@
 # context per turn, NOT the .jsonl; --continue re-parses the whole file, so a
 # forever-session inevitably overflows (maya @12MB, ben @16.7MB, 2026-09-21).
 #
-# Mechanism (NO edit to the fund-critical bubble-agent-prepare): archive the dept's
-# session transcripts out of the projects dir, then restart the unit. The EXISTING
-# fresh-fallback gate (bubble-agent-prepare: --continue only if a *.jsonl exists in
-# the cwd's project dir) then starts a FRESH session. Context is preserved because
-# the L4 `session_handoff` mission wrote HANDOFF.md, which the layer prompts read at
-# STEP 0 on the fresh session's first tick.
+# Mechanism (NO edit to the fund-critical bubble-agent-prepare): STOP the unit
+# (so the agent flushes its complete transcript on graceful shutdown), THEN archive
+# the dept's session transcripts out of the projects dir, THEN start the unit. The
+# EXISTING fresh-fallback gate (bubble-agent-prepare: --continue only if a *.jsonl
+# exists in the cwd's project dir) then starts a FRESH session. Context is preserved
+# because the L4 `session_handoff` mission wrote HANDOFF.md, which the layer prompts
+# read at STEP 0 on the fresh session's first tick.
+#
+# STOP-BEFORE-ARCHIVE is load-bearing (see the action section) — archiving while the
+# agent runs lets its shutdown flush rewrite a PARTIAL transcript that crash-loops
+# the next start (found on the tony prototype, 2026-09-22).
 #
 # WHY archive-and-restart rather than the existing tony.once marker: bubble-agent-
 # prepare ALREADY has a forced-fresh primitive (BUBBLE_AGENT_FORCE_FRESH_ONCE + the
@@ -62,31 +67,50 @@ if (( ! force )); then
   log "$slug: HANDOFF.md present + fresh (${age_h}h) — proceeding"
 fi
 
-# Archive all of the dept's transcripts OUT of the projects tree so the
-# fresh-fallback gate finds none -> starts fresh. (_session-archive is a sibling
-# of projects/, never matched by the gate's projects/<dir>/*.jsonl glob.)
 arch="${home}/.claude/_session-archive/$(date -u +%Y-%m-%dT%H%M%SZ)"
 shopt -s nullglob
+
+if (( dry )); then
+  mapfile -t jsonls < <(find "$proj" -maxdepth 2 -name '*.jsonl' -type f 2>/dev/null)
+  log "DRY-RUN $slug: would stop $svc, archive ${#jsonls[@]} transcript(s) -> $arch, restart"
+  exit 0
+fi
+
+# ORDER IS LOAD-BEARING — STOP FIRST, THEN ARCHIVE (bug found on the tony prototype
+# 2026-09-22). Claude flushes its session transcript on graceful shutdown (SIGTERM).
+# If we archive (mv) the .jsonl while the agent is still running, the shutdown then
+# REWRITES a PARTIAL transcript (same session UUID) back into the projects dir; the
+# next start's fresh-fallback gate sees that truncated file, adds --continue, and
+# claude chokes on the incomplete transcript -> exit 1 -> crash loop. Stopping first
+# lets the agent write its COMPLETE transcript, which we then archive with nothing
+# holding it open or able to recreate it.
+log "$slug: stopping $svc (lets the agent flush its transcript) ..."
+systemctl stop "$svc" || true
+sleep 5
+
+# Now archive every transcript OUT of the projects tree so the gate finds none ->
+# fresh start. (_session-archive is a sibling of projects/, never matched by the
+# gate's projects/<dir>/*.jsonl glob.) Re-scan AFTER the stop so the shutdown flush
+# is included.
 mapfile -t jsonls < <(find "$proj" -maxdepth 2 -name '*.jsonl' -type f 2>/dev/null)
 if (( ${#jsonls[@]} == 0 )); then
-  log "$slug: no live transcripts to archive (already fresh?) — restart only"
+  log "$slug: no transcripts to archive (already fresh?)"
 else
-  if (( dry )); then
-    log "DRY-RUN $slug: would archive ${#jsonls[@]} transcript(s) -> $arch and restart $svc"
-    exit 0
-  fi
   mkdir -p "$arch"
   moved=0
   for f in "${jsonls[@]}"; do mv -- "$f" "$arch/" 2>/dev/null && moved=$((moved+1)) || true; done
   log "$slug: archived ${moved}/${#jsonls[@]} transcript(s) -> $arch"
 fi
 
-if (( dry )); then log "DRY-RUN $slug: would restart $svc"; exit 0; fi
+# Safety assert: the projects dir must hold no *.jsonl before we start, else the
+# start would --continue a leftover and defeat the rotation.
+leftover=$(find "$proj" -maxdepth 2 -name '*.jsonl' -type f 2>/dev/null | wc -l)
+if (( leftover != 0 )); then
+  log "FATAL $slug: ${leftover} transcript(s) still present after archive — NOT starting (avoids a bad --continue). Investigate."
+  exit 3
+fi
 
-# DEEP restart (stop+start, not restart) — the reliable teardown for the session
-# (see wiki vps-dept-silence-session-wedge-fix). boot_rearm re-arms the loop; the
-# first tick reads HANDOFF.md.
-systemctl stop "$svc" || true
-sleep 5
+# Start -> prepare's fresh-fallback gate finds no transcript -> fresh session.
+# boot_rearm re-arms the loop; the first tick reads HANDOFF.md.
 systemctl start "$svc"
 log "$slug: rotated to a fresh session (restarted $svc)"
