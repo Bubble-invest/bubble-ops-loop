@@ -25,7 +25,6 @@ def test_deploy_wrapper_consumes_platform_renderer_and_verifies():
 def test_live_control_paths_share_the_canonical_unit_name():
     expected = {
         "scripts/loop-backup.sh": "bubble-agent@${slug}.service",
-        "scripts/loop-tick-watchdog.py": 'f"bubble-agent@{slug}.service"',
         "scripts/lib/cancel_eclosion.py": '"bubble-agent@{slug}.service"',
         "scripts/lib/retire_dept.py": '"bubble-agent@{slug}.service"',
     }

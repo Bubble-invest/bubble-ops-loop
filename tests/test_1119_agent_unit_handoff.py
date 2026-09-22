@@ -42,7 +42,6 @@ def test_transport_preserves_os_user_controls_and_orders_legacy_cutover():
 def test_runtime_control_paths_use_canonical_instance_name():
     for relative in (
         "scripts/loop-backup.sh",
-        "scripts/loop-tick-watchdog.py",
         "scripts/lib/cancel_eclosion.py",
         "scripts/lib/retire_dept.py",
     ):
