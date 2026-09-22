@@ -2658,9 +2658,10 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     Priority order (highest to lowest), each gated by a Paris-local MINIMUM
     fire time (L1>=07:00, L2>=12:00, L3>=16:00, L4>=19:00) — a minimum, not a
     window; a layer stays eligible to end of day and may re-fire if there is work:
-      C.1 — Layer 4 if time>=19:00 Paris AND L1 fired today AND (L2 fired
-            OR no research items) AND (L3 fired OR no inbox decisions —
-            no-trade day) AND L4 not yet run (aggregator last)
+      C.1 — Layer 4 if time>=19:00 Paris AND (L2 fired OR no research items)
+            AND (L3 fired OR no inbox decisions — no-trade day) AND L4 not
+            yet run (aggregator last). #1407: NOT hard-gated on L1 having
+            fired today — see the C.1 code comment for the fence + why.
       C.3 — Layer 3 if time>=16:00 Paris AND inbox decisions have items
       C.2 — Layer 2 if time>=12:00 Paris AND research queue has items
       C.mgmt — Layer 1 if time>=07:00 Paris AND unconsumed management notes
@@ -2708,19 +2709,40 @@ def decide_dispatch(ctx: dict[str, Any]) -> str:
     # (Paris-local), not a window — eligible from then to end of day, and may
     # re-fire later if there is work. Two layers carry a prerequisite gate ON
     # TOP of the time check:
-    #   • L4 may fire once L1 has fired >=1x today AND (L2 has fired
-    #     OR no research items — quiet day) AND (L3 has fired OR no inbox
-    #     decisions — no-trade day). This sequences the aggregator after all
-    #     work is done — with or without research or trades.)
+    #   • L4 may fire once (L2 has fired OR no research items — quiet day) AND
+    #     (L3 has fired OR no inbox decisions — no-trade day). This sequences
+    #     the aggregator after all work is done — with or without research or
+    #     trades. (#1407: no longer ALSO requires `l1_fired` — see below.)
     #   • L1's re-consolidation fires once the other layers have completed a
     #     fresh cycle since L1 last ran (its morning floor fires unconditionally
     #     once 07:00 Paris is reached and it has not run yet today).
     # Priority: L4 (debrief, end of day) > L3 > L2 > L1, each guarded by time.
 
-    # C.1 — Layer 4: time reached AND L1 fired today AND (L2 fired OR no research items — quiet day) AND (L3 fired OR no inbox decisions — no-trade day) AND not yet run.
+    # #1407 (Chesterton's fence): L4 originally also required `l1_fired` — the
+    # INTENT was to sequence the aggregator strictly after L1's same-day
+    # situation_brief.md exists, so the evening debrief reads a same-day
+    # morning brief rather than nothing. THE BUG: that made `l1_fired` a HARD
+    # block, and it is a lower priority than nothing at all when L1 genuinely
+    # never fires (dept down/quiet all morning) — L1's own daily-floor
+    # catch-up (C.0 below, `not l1_fired`) is the LOWEST-priority branch in
+    # this function, so on a day with few ticks it can consume the day's only
+    # remaining tick, and the self-paced /loop's wake-arming (scaffold.py:
+    # "a one-shot for tomorrow 08:03 Paris once all 4 layers are done")
+    # then defers the NEXT check to tomorrow — L4 silently never runs that
+    # day, no export, nothing to show Tony. THE FIX: drop the `l1_fired`
+    # requirement from L4's OWN eligibility. This does not remove L1's daily
+    # guarantee — C.0 is untouched and keeps giving L1 its own dispatch slot
+    # regardless of whether L4 already ran. When L1 DID fire today (the
+    # normal case), `l1_fired` was already True, so this change is a no-op
+    # for that path — ordering is unchanged. When L1 did NOT fire, L4 now
+    # degrades gracefully: it dispatches on whatever L1 output exists (or
+    # none) instead of blocking the whole evening debrief on a signal that
+    # may never arrive.
+    #
+    # C.1 — Layer 4: time reached AND (L2 fired OR no research items — quiet day) AND (L3 fired OR no inbox decisions — no-trade day) AND not yet run.
     if (
         _time_reached(now_paris_t, 4)
-        and l1_fired and (l2_fired or not has_research) and (l3_fired or not has_decisions)
+        and (l2_fired or not has_research) and (l3_fired or not has_decisions)
         and not l4_fired
     ):
         return "layer_4"
@@ -2822,8 +2844,11 @@ def _layer_eligible_from_signals(
     stamp → next tick re-dispatched → double-publish loop (bug #375).
 
     Layer semantics (mirrors decide_dispatch / _mission_layer_eligible exactly):
-      L4: time>=19:00 AND l1_fired AND (l2_fired OR not has_research)
+      L4: time>=19:00 AND (l2_fired OR not has_research)
                        AND (l3_fired OR not has_decisions)
+                       — #1407: no `l1_fired` requirement (dropped; see
+                       decide_dispatch's C.1 comment for the fence + why a
+                       genuinely-missed L1 must not hard-block the debrief)
       L3: time>=07:00 AND has_decisions          ← 07:00, NOT 16:00
       L2: time>=12:00 AND has_research
       L1: time>=07:00 AND (not l1_fired         ← daily floor
@@ -2833,7 +2858,6 @@ def _layer_eligible_from_signals(
     if layer == 4:
         return (
             _time_reached(now_paris_t, 4)
-            and l1_fired
             and (l2_fired or not has_research)
             and (l3_fired or not has_decisions)
         )
