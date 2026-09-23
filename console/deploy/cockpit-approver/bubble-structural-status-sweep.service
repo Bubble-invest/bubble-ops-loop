@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=claude
-Group=claude
-WorkingDirectory=/home/claude/bubble-ops-loop
+User=bubble-console
+Group=bubble-console
+WorkingDirectory=/opt/bubble-ops-loop
 ExecStart=/usr/local/bin/bubble-structural-status-sweep.sh

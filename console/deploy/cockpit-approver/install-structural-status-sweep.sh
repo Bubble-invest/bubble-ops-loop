@@ -4,15 +4,22 @@
 #
 # Separate installer from install-cockpit-approver-refresh.sh on purpose: that
 # one installs ROOT-ONLY pieces (the minter holds the SOPS-decrypt path to the
-# App's private key, root:root 0750 — must never be claude-executable). This
-# one installs a `claude`-run wrapper (it only calls the GitHub API with an
-# already-minted token) — different owning group, different unit `User=`, so
-# keeping them as two small scripts avoids one install script quietly needing
-# two different trust levels.
+# App's private key, root:root 0750 — must never be bubble-console-executable).
+# This one installs a `bubble-console`-run wrapper (it only calls the GitHub
+# API with an already-minted token) — different owning group, different unit
+# `User=`, so keeping them as two small scripts avoids one install script
+# quietly needing two different trust levels.
+#
+# Board #1463: runs as the dedicated `bubble-console` uid, NOT `claude` — the
+# whole point of #1463's isolation is that `claude` (which also runs
+# cloud-wiki-compile's agentic session) cannot read the approver token; a
+# sweep running as `claude` would reopen that hole. Mirrors the console unit's
+# own uid + WorkingDirectory (/opt/bubble-ops-loop, root-owned read-only infra
+# clone — see console/deploy/bubble-ops-console.service.template).
 #
 # WHAT IT INSTALLS
-#   /usr/local/bin/bubble-structural-status-sweep.sh (root:claude, 0750 — claude-executable)
-#   /etc/systemd/system/bubble-structural-status-sweep.service (0644, User=claude)
+#   /usr/local/bin/bubble-structural-status-sweep.sh (root:bubble-console, 0750)
+#   /etc/systemd/system/bubble-structural-status-sweep.service (0644, User=bubble-console)
 #   /etc/systemd/system/bubble-structural-status-sweep.timer  (0644)
 #   then `systemctl daemon-reload` + `enable --now` the timer.
 #
@@ -57,8 +64,8 @@ for f in "$WRAPPER_NAME" "$SERVICE_NAME" "$TIMER_NAME"; do
     [[ -f "$SCRIPT_DIR/$f" ]] || { echo "ERR: missing $SCRIPT_DIR/$f" >&2; exit 2; }
 done
 
-say "installing wrapper -> $BIN_DIR (root:claude, 0750 — claude-executable)"
-run "install -o root -g claude -m 0750 '$SCRIPT_DIR/$WRAPPER_NAME' '$BIN_DIR/$WRAPPER_NAME'"
+say "installing wrapper -> $BIN_DIR (root:bubble-console, 0750)"
+run "install -o root -g bubble-console -m 0750 '$SCRIPT_DIR/$WRAPPER_NAME' '$BIN_DIR/$WRAPPER_NAME'"
 
 say "installing unit + timer -> $SYSTEMD_DIR (0644)"
 run "install -o root -g root -m 0644 '$SCRIPT_DIR/$SERVICE_NAME' '$SYSTEMD_DIR/$SERVICE_NAME'"

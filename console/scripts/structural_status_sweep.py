@@ -24,8 +24,11 @@ shorter interval than the ~45min token-refresh timer it sits beside — this
 script does no secret decryption, it only reads the already-minted token and
 calls the GitHub API). Needs no root: the App token is read from the same
 tmpfs file `pr_approver.py` already reads
-(`/run/bubble-cockpit-approver/token`, 0640 root:claude) — this script runs
-as the `claude` user, same as the console itself.
+(`/run/bubble-cockpit-approver/token`, 0640 root:bubble-console) — this
+script runs as the `bubble-console` user, same as the console itself (board
+#1463 — NOT `claude`; the general-purpose `claude` uid must not be able to
+read the approver token or post a status as this App, so a sweep running as
+`claude` would defeat the uid isolation #1462/#1463 exist to build).
 
 Fails CLOSED: no token yet -> prints one line, exits 0 (expected before the
 App key is provisioned; nothing is posted for anyone, for any PR). A

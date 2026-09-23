@@ -71,9 +71,14 @@ change and `console/services/structural_status.py` for the evaluation logic.
       than the cockpit.
     - `console/deploy/cockpit-approver/install-structural-status-sweep.sh` —
       idempotent installer for the sweep's wrapper + unit + timer (runs as
-      `claude`, not root — it only reads the already-minted token file, same
-      as the console itself; see the script's own header for why this is a
-      SEPARATE installer from the token-refresh one above).
+      `bubble-console`, not root and not `claude` — board #1463: the whole
+      point of the uid split is that the general-purpose `claude` uid can't
+      read the approver token, so a sweep running as `claude` would reopen
+      that hole. It only reads the already-minted token file, same as the
+      console itself, and runs from the same root-owned read-only infra
+      clone `/opt/bubble-ops-loop` the console unit runs from — see the
+      script's own header for why this is a SEPARATE installer from the
+      token-refresh one above).
 
 ### Why a timer + tmpfs file, not `sudo -n` at request time
 
