@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# bubble-cockpit-approver-token.sh — mint a SHORT-LIVED, pull_requests:write GitHub
-# App token for the `cockpit-approver` App, so the cockpit can submit an APPROVED
-# review on a structural/mission-path PR AS the App (board #1432 option C2).
+# bubble-cockpit-approver-token.sh — mint a SHORT-LIVED, pull_requests:write +
+# statuses:write GitHub App token for the `cockpit-approver` App, so the
+# cockpit can (a) submit an APPROVED review on a structural/mission-path PR
+# AS the App (board #1432 option C2) and (b) POST the App-only
+# `structural-approval` commit status (board #1462) — the unforgeable
+# required-check the fleet's own workflow-editable `guard` check cannot be.
 # Prints ONLY the token (ghs_...) to stdout.
 #
 # Why a separate App (not bubble-ops-bot): the guard (.github/workflows/
@@ -12,7 +15,12 @@
 # `cockpit-approver[bot]` proves it came through Joris's authenticated cockpit action.
 #
 # Sibling of bubble-ops-contents-token.sh / bubble-board-token.sh — same JWT→installation
-# -token flow, different App + narrower scope (pull_requests:write only).
+# -token flow, different App + narrower scope (pull_requests:write + statuses:write
+# + metadata:read). `statuses:write` added for board #1462 — Joris granted +
+# accepted "Commit statuses: write" on the App installation; without it, the
+# App token gets a 403 "Resource not accessible by integration" on
+# `POST /repos/{owner}/{repo}/statuses/{sha}` (console/services/
+# structural_status.py's `post_status`).
 set -euo pipefail
 
 APP_ID=5019127
@@ -35,10 +43,12 @@ P=$(printf '{"iat":%d,"exp":%d,"iss":%d}' $((NOW-60)) $((NOW+540)) "$APP_ID" | b
 S=$(printf '%s' "$H.$P" | openssl dgst -sha256 -sign "$PEM" -binary | b64)
 JWT="$H.$P.$S"
 
-# Scope to the minimum needed to submit a PR review: pull_requests:write + metadata:read.
+# Scope to the minimum needed to submit a PR review AND post the
+# `structural-approval` commit status: pull_requests:write + statuses:write +
+# metadata:read.
 RESP=$(curl -s -X POST \
   -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" \
-  -d '{"permissions":{"pull_requests":"write","metadata":"read"}}' \
+  -d '{"permissions":{"pull_requests":"write","statuses":"write","metadata":"read"}}' \
   "https://api.github.com/app/installations/$INST_ID/access_tokens")
 TOKEN=$(printf '%s' "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the structural-approval status sweep every 2 minutes (board #1462)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -1,14 +1,30 @@
 # cockpit-approver — App-signed structural-PR approval (board #1432, option C2)
+# + the unforgeable `structural-approval` status (board #1462)
 
 The cockpit approves structural/mission-path PRs AS the `cockpit-approver` GitHub App,
-so the `structural-merge-guard` check accepts an approval the fleet's agents cannot forge
-(they are `vdk888` with `repo` scope and could self-review; only the cockpit holds this
-App's key).
+so the merge gate accepts an approval the fleet's agents cannot forge (they are
+`vdk888` with `repo` + `workflow` scope and could self-review; only the cockpit
+holds this App's key).
+
+**Board #1462 (read this if you're here after #1432):** the original gate — a
+GitHub Actions job named `guard` required in the ruleset — turned out to be
+forgeable too: `structural-merge-guard.yml` checks out the PR's OWN ref and
+runs the PR's OWN `.github/scripts/structural_merge_guard.py`, and `vdk888`'s
+`workflow` scope lets a PR edit either file (or add a fake job literally named
+`guard`) to satisfy the check regardless of what it verifies. The fix is to
+move the REQUIRED check to a commit status — context `structural-approval` —
+that only the App can author (a ruleset can require `integration_id=5019127`
+on a status, and nothing PR-editable can mint that App's installation token).
+See "Making the check required (board #1462)" below for the exact ruleset
+change and `console/services/structural_status.py` for the evaluation logic.
 
 ## Pieces
 
-- `bubble-cockpit-approver-token.sh` — root-owned; mints a ~1h `pull_requests:write`
-  installation token for App `cockpit-approver` (app_id 5019127, installation 163454332).
+- `bubble-cockpit-approver-token.sh` — root-owned; mints a ~1h `pull_requests:write` +
+  `statuses:write` + `metadata:read` installation token for App `cockpit-approver`
+  (app_id 5019127, installation 163454332). `statuses:write` (board #1462) lets the
+  App post the unforgeable `structural-approval` commit status; Joris has granted +
+  accepted that permission on the installation.
 - `bubble-cockpit-approver-token-refresh.{sh,service,timer}` — a root-owned systemd
   TIMER (every ~45min) that calls the minter above and writes the token to
   `/run/bubble-cockpit-approver/token` (tmpfs, 0640 root:bubble-console — group-readable by
@@ -32,6 +48,37 @@ App's key).
   the file the timer writes.
 - `.github/workflows/structural-merge-guard.yml` (already merged) — requires an `APPROVED`
   review by `cockpit-approver[bot]` on the head SHA for any PR touching structural paths.
+  **Board #1462: this Actions check stays INFORMATIONAL only** (see below) — it is
+  no longer the required gate, precisely because a PR can edit it.
+- `console/services/structural_status.py` (board #1462) — `evaluate(owner, repo,
+  number)` re-reads the PR's files + reviews via the App token and POSTs the
+  `structural-approval` commit status: `success` ("not structural") when no
+  structural path is touched, `success` ("approved by cockpit on <sha>") when a
+  `cockpit-approver[bot]` `APPROVED` review is pinned to the CURRENT head SHA,
+  else `pending` ("needs Joris's cockpit approval"). Idempotent (`post_status`
+  skips an unchanged status) and fails CLOSED (no App token -> posts nothing).
+  Called from two places:
+    - `console/routes/pr.py`'s `approve_structural_pr`, right after
+      `pr_approver.submit_structural_pr_approval()` returns `"approved"`, so
+      an Approve click reflects on the PR immediately;
+    - `console/scripts/structural_status_sweep.py`, run every ~2min by
+      `bubble-structural-status-sweep.{service,timer}` — lists every open PR on
+      every `Bubble-invest/bubble-ops-*` repo the App is installed on (via
+      `GET /installation/repositories`, so a newly-spawned dept repo is picked
+      up automatically) and (re-)evaluates each one. This is what gives a
+      NON-structural PR (nobody ever clicks Approve on those) its own `success`
+      status, and what catches a structural PR approved from raw GitHub rather
+      than the cockpit.
+    - `console/deploy/cockpit-approver/install-structural-status-sweep.sh` —
+      idempotent installer for the sweep's wrapper + unit + timer (runs as
+      `bubble-console`, not root and not `claude` — board #1463: the whole
+      point of the uid split is that the general-purpose `claude` uid can't
+      read the approver token, so a sweep running as `claude` would reopen
+      that hole. It only reads the already-minted token file, same as the
+      console itself, and runs from the same root-owned read-only infra
+      clone `/opt/bubble-ops-loop` the console unit runs from — see the
+      script's own header for why this is a SEPARATE installer from the
+      token-refresh one above).
 
 ### Why a timer + tmpfs file, not `sudo -n` at request time
 
@@ -109,12 +156,42 @@ false approval).
    sudo -u claude test -r /run/bubble-cockpit-approver/token && echo BAD-READABLE || echo "OK — claude denied"
    ```
    then approve a throwaway structural PR from the cockpit (either the home-page
-   button or a `/pr/{owner}/{repo}/{number}` link) and confirm the guard flips to pass.
+   button or a `/pr/{owner}/{repo}/{number}` link) and confirm a `structural-approval`
+   status posts on the PR (board #1462 — see step 4 below for making it required).
+4. **Install the periodic sweep** (board #1462, so non-structural PRs and PRs
+   approved outside the cockpit also get a status):
+   `bash console/deploy/cockpit-approver/install-structural-status-sweep.sh --run-now`
+   (root, on the VPS — run AFTER step 2/3 above, the sweep is a no-op until the
+   token file exists). Verify with
+   `journalctl -u bubble-structural-status-sweep.service -n 40 --no-pager`.
 
-## Making the check required
+## Making the check required (board #1462)
 
-After the workflow has run once on a PR (so GitHub knows the check name), add
-`structural-merge-guard / guard` to `main`'s required status checks (rulesets) on each
-bubble-ops-* repo. Do NOT enable branch-wide "require a pull request before merging" — that
-would block the loops' routine runtime direct-pushes; a required *status check* gates PR
-merges only.
+**Do not require the `guard` Actions check** (board #1462: it is forgeable — a
+PR can edit `.github/workflows/structural-merge-guard.yml` or
+`.github/scripts/structural_merge_guard.py`, or add its own job literally named
+`guard`, since the fleet's `vdk888` identity holds `workflow` scope). Require
+the App-posted status instead:
+
+1. After `structural_status.evaluate()` has posted at least once on a PR (so
+   GitHub knows the context name — approve or sweep a throwaway PR first, see
+   step 3 above), open the repo's ruleset (Settings → Rules → Rulesets) that
+   protects `main`.
+2. Under "Require status checks to pass", add a check with:
+   - **Context:** `structural-approval`
+   - **Integration:** `cockpit-approver` (app id `5019127`) — GitHub lets you
+     pin a required status check to a specific App/integration ID, which is
+     the whole point: a status posted by any OTHER identity (including
+     `vdk888`, including a forged Actions job) does not satisfy this
+     requirement, even if it uses the exact same context string.
+3. **Remove** `structural-merge-guard / guard` from the required list on the
+   same ruleset (keep the workflow file itself — it stays informational, a
+   second opinion in the PR checks tab, just no longer load-bearing).
+4. Repeat on every `Bubble-invest/bubble-ops-*` repo the App is installed on
+   (same rollout scope board #1432 already used).
+5. Do NOT enable branch-wide "require a pull request before merging" — that
+   would block the loops' routine runtime direct-pushes; a required *status
+   check* gates PR merges only.
+
+Joris makes this ruleset change by hand (GitHub Settings UI/API, not this repo) —
+nothing in this PR does it automatically.
