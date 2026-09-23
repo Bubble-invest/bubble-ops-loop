@@ -880,3 +880,5 @@ if [ "$GH_OK" -eq 0 ]; then
 fi
 
 exit 0
+
+# (#1432 cockpit-approve smoke test — PR will be closed, never merged)
