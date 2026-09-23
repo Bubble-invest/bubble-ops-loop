@@ -184,6 +184,14 @@ dept_host() {
 # preserve_hide_markers <dir> <stash_dir>: copy inbox/decisions/* (if any) out
 # of the mirror into a throwaway stash dir, so a reset/clean cannot touch them.
 # Returns the count copied (0 if the dir doesn't exist / is empty).
+#
+# Board #1463 incident (14:15Z prod 500): `cp -a "$src/." "$stash/"` — the
+# trailing "/." merge-into-existing-dir idiom — applies $src's OWN directory
+# mode to $dest (here: $stash) as a side effect of -a, not just the copied
+# entries' attributes. Symmetric with restore_hide_markers below: copy each
+# top-level entry of $src by NAME instead (dotfiles included — find lists
+# them by default, no glob needed), so $stash's own attributes are never
+# touched by this copy.
 preserve_hide_markers() {
     local dir="$1" stash="$2"
     local src="${dir}/inbox/decisions"
@@ -192,7 +200,7 @@ preserve_hide_markers() {
     n="$(find "$src" -type f 2>/dev/null | wc -l | tr -d ' ')"
     if [[ "${n:-0}" -gt 0 ]]; then
         mkdir -p "$stash"
-        cp -a "$src/." "$stash/" 2>/dev/null
+        find "$src" -mindepth 1 -maxdepth 1 -exec cp -a {} "$stash/" \; 2>/dev/null
     fi
     echo "${n:-0}"
 }
@@ -281,12 +289,21 @@ quarantine_endangered_state() {
 # and must win — restoring the stashed (pre-sync, local-only) copy over it
 # would silently revert an upstream update. cp -n only fills back paths that
 # are STILL absent after the reset/clean (i.e. still genuinely untracked).
+#
+# Board #1463 follow-up (prod incident, 14:15Z cockpit 500): `cp -an
+# "$stash/." "$dest/"` — the trailing "/." merge-into-existing-dir idiom —
+# applies $stash's OWN directory mode (mktemp -d, 0700) to $dest as a side
+# effect of -a, on EVERY sync (~15min), zeroing the POSIX ACL mask the
+# board #1463 follow-up's `setfacl` grant depends on and EACCES-ing
+# bubble-console out of inbox/decisions. Fix: copy each top-level entry of
+# $stash by NAME instead (dotfiles included — find lists them by default),
+# still no-clobber, so $dest's own mode/ACL are never touched by this copy.
 restore_hide_markers() {
     local dir="$1" stash="$2"
     [[ -d "$stash" ]] || return 0
     local dest="${dir}/inbox/decisions"
     mkdir -p "$dest"
-    cp -an "$stash/." "$dest/" 2>/dev/null
+    find "$stash" -mindepth 1 -maxdepth 1 -exec cp -an {} "$dest/" \; 2>/dev/null
     rm -rf "$stash"
 }
 

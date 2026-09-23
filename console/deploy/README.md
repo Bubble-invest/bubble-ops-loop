@@ -63,6 +63,22 @@ full verification checklist are in the board #1463 PR's runbook — this is an
 uid/ownership change on the live console, so it is applied by an operator,
 not by merging code.
 
+**Follow-up (board #1463, found during the #489 rollout): scoped ACL.**
+Group membership alone was not enough — dept dirs under `/home/claude/agents`
+are often `0700`/`0755`, so the console 500'd reaching e.g.
+`inbox/decisions`. `scripts/deploy-console-to-vps.sh` now also applies (as
+root, before restarting the service) a POSIX ACL scoped to exactly that
+directory: `setfacl -R -m g:bubble-console:rwX /home/claude/agents` plus a
+recursive default ACL (`setfacl -R -d -m g:bubble-console:rwX
+/home/claude/agents`) so newly-onboarded depts inherit the grant too. This
+is idempotent and narrower than the DAC-wide `claude`-group membership (an
+independent security reviewer's suggested follow-up on the original PR) —
+the group membership is left in place, the ACL is additive belt-and-suspenders
+scoping. The board token file used by the Mac emitter fallback and VPS
+claude-uid emitters (`/run/bubble-board/token`) is unrelated to this uid and
+stays `root:claude`, as before #489 — it was briefly moved to
+`root:bubble-console` during the rollout and reverted.
+
 ### Rick (`rnd`) read-mirror registration — post-merge only
 
 Rick runs on Joris's Mac M4. The VPS paths are read-only views, never a second

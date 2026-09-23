@@ -41,10 +41,13 @@
 #                                board #1463: the root-owned infra clone, so a
 #                                claude-writable checkout can never feed content into
 #                                a root-installed unit file)
+#   CONSOLE_AGENTS_DIR           dir the board #1463 follow-up scoped ACL is applied
+#                                to (default: /home/claude/agents; test harness only)
 #
 # Requires:
 #   - SSH alias to the box, OR run on the box itself
-#   - sudo NOPASSWD on the box for: install, systemctl daemon-reload/enable/restart
+#   - sudo NOPASSWD on the box for: install, systemctl daemon-reload/enable/restart,
+#     setfacl (board #1463 follow-up — scoped bubble-console ACL on $CONSOLE_AGENTS_DIR)
 #   - the box already has a bubble-ops-loop clone at $CONSOLE_WORKDIR
 #     (this script installs the UNIT; it does not clone the repo)
 
@@ -83,6 +86,54 @@ run_remote() {
   if [[ "$ON_MORTY" == "1" ]]; then bash -c "$1"; else ssh "$SSH_HOST" "$1"; fi
 }
 
+# Board #1463 follow-up: scoped ACL for bubble-console on /home/claude/agents.
+#
+# The console runs as the dedicated `bubble-console` uid (board #1463) and is
+# a supplementary member of the `claude` unix group so it can read+write
+# dept state there. During the #489 rollout that group membership alone was
+# NOT enough — `/home/claude/agents/*` dirs are commonly 0700/0755 (owned by
+# each dept's own agent-<dept> uid, group `claude` not always on the dir's
+# own mode bits the way a fresh dir created by `claude` expects), so the
+# console 500'd trying to reach `inbox/decisions` under one. The live fix
+# (an independent security reviewer's suggested follow-up, narrower than
+# relying on DAC-wide group membership) was a POSIX ACL scoped to exactly
+# this directory: `setfacl -R -m g:bubble-console:rwX` grants read/write/
+# conditional-execute (capital X: traverse dirs, don't chmod +x plain files)
+# recursively on everything that exists today, and a recursive DEFAULT ACL
+# (`setfacl -R -d -m g:bubble-console:rwX`) makes every directory — including
+# ones created later, e.g. a new dept's onboarding scaffold — inherit the
+# same grant automatically, so this does not need re-running after every
+# `bootstrap-dept.sh` éclosion.
+#
+# Idempotent: `setfacl -m` sets (not appends) the named entry, so re-running
+# this against a directory that already has the grant is a no-op change in
+# effect. Best-effort: the target dir not existing yet (a fresh box before
+# any dept has been onboarded) is not treated as fatal.
+#
+# CONSOLE_AGENTS_DIR overrides the target (test harness only; production is
+# always /home/claude/agents).
+apply_console_agents_acl() {
+  local target="${CONSOLE_AGENTS_DIR:-/home/claude/agents}"
+  if [[ "$DRY" == "1" ]]; then
+    echo "[deploy-console-unit] DRY RUN — would apply: setfacl -R -m g:bubble-console:rwX $target (+ default ACL)"
+    return 0
+  fi
+  echo "[deploy-console-unit] Applying scoped ACL (g:bubble-console:rwX) on $target …"
+  if ! run_remote "
+set -eu
+if [ ! -d '$target' ]; then
+  echo '[deploy-console-unit] $target does not exist yet — skipping ACL (nothing onboarded)' >&2
+  exit 0
+fi
+sudo -n setfacl -R -m g:bubble-console:rwX '$target'
+sudo -n setfacl -R -d -m g:bubble-console:rwX '$target'
+"; then
+    echo "ERR: failed to apply the bubble-console ACL on $target (need sudo NOPASSWD setfacl, and the 'acl' package installed on the box)." >&2
+    exit 5
+  fi
+  echo "[deploy-console-unit] ✓ ACL applied (access + recursive default) on $target."
+}
+
 TEMPLATE_ABS="$WORKDIR/$TEMPLATE_REL"
 if ! NEW_UNIT="$(run_remote "cat '$TEMPLATE_ABS'")"; then
   echo "ERR: could not read template at $TEMPLATE_ABS on the box." >&2
@@ -93,6 +144,7 @@ CURRENT_UNIT="$(run_remote "sudo -n cat '$UNIT_PATH' 2>/dev/null || true")"
 
 if [[ "$NEW_UNIT" == "$CURRENT_UNIT" ]]; then
   echo "[deploy-console-unit] $UNIT_PATH already matches the checked-in template — nothing to install."
+  apply_console_agents_acl
   exit 0
 fi
 
@@ -112,6 +164,8 @@ sudo -n install -o root -g root -m 0644 /tmp/${SERVICE}.service.new '$UNIT_PATH'
 rm -f /tmp/${SERVICE}.service.new
 sudo -n systemctl daemon-reload"
 echo "[deploy-console-unit] Installed + daemon-reload done."
+
+apply_console_agents_acl
 
 if [[ "$NO_RESTART" == "1" ]]; then
   echo "[deploy-console-unit] --no-restart passed — skipping enable/restart."

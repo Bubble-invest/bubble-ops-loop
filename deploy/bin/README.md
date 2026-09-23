@@ -44,8 +44,12 @@ kanban control plane (`Bubble-invest/bubble-ops-board`) and prints it.
 ## bubble-board-token-refresh.sh
 
 Mints a fresh board token into `/run/bubble-board/token` (tmpfs, `0640`,
-`bubble-console`-readable — board #1463, was claude-readable) every ~45 min
-via a systemd timer.
+`claude`-readable) every ~45 min via a systemd timer. This token is
+issues:write-only (not the structural-approval credential) and is read by
+the Mac emitter fallback (`ssh claude@… cat /run/bubble-board/token`) and
+VPS claude-uid emitters — it briefly moved to `bubble-console`-readable
+during #489's console uid-isolation rollout, which broke both of those
+readers, and was reverted to `claude`-readable by the board #1463 follow-up.
 
 - **Why it matters:** the cockpit runs `NoNewPrivileges=yes` so it cannot `sudo`
   at request time; it reads the pre-minted short-lived token from tmpfs instead.
