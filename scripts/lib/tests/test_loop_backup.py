@@ -318,6 +318,77 @@ def test_latest_heartbeat_picks_newest_across_formats(tmp_path):
     assert got.day == 4
 
 
+# ── Regression: #1456 — colon-less UTC offset must not crash the whole read ──
+# Confirmed LIVE incident (content dept, jade-m1, 2026-09-23): a heartbeat.log
+# line in the colon-less "+0200" offset form (_ISO_RE deliberately matches it
+# via `[+-]\d{2}:?\d{2}`) raised an uncaught ValueError out of
+# datetime.fromisoformat() on Python 3.9 (the pinned interpreter; 3.11+ would
+# have accepted it) — the try/except here only ever caught OSError, so the
+# error propagated out of latest_heartbeat_epoch entirely. The caller
+# (is_heartbeat_stale's fail-safe) then reported "stale" unconditionally,
+# regardless of the true, actually-fresh heartbeat — which is what produced
+# the observed every-~15-minute "run one full tick" re-inject spam: the dept
+# WAS ticking every ~15 minutes, but the floor could never see it.
+#
+# CI runs Python 3.12, which accepts the colon-less form natively — so the two
+# latest_heartbeat_epoch() tests below would pass even WITHOUT the fix on this
+# CI interpreter (they only prove the bug/fix on 3.9/3.10, the actual pinned
+# fleet interpreter). test_normalize_iso_offset_* directly unit-tests the
+# string transform itself (no datetime parsing involved), so the fix stays
+# covered by a genuinely interpreter-independent assertion regardless of
+# which Python version CI happens to run.
+
+def test_normalize_iso_offset_inserts_missing_colon():
+    from scripts.lib.loop_backup import _normalize_iso_offset
+    assert _normalize_iso_offset("2026-09-11T01:57:35+0200") == "2026-09-11T01:57:35+02:00"
+    assert _normalize_iso_offset("2026-09-11T01:57:35-0500") == "2026-09-11T01:57:35-05:00"
+
+
+def test_normalize_iso_offset_is_a_noop_on_already_good_forms():
+    from scripts.lib.loop_backup import _normalize_iso_offset
+    # Already-colon offset: untouched.
+    assert _normalize_iso_offset("2026-09-11T01:57:35+02:00") == "2026-09-11T01:57:35+02:00"
+    # Microsecond + colon offset: untouched.
+    assert (_normalize_iso_offset("2026-06-02T13:30:35.931407+00:00")
+            == "2026-06-02T13:30:35.931407+00:00")
+    # Z-suffix: normalized to +00:00 (pre-existing behavior, same normalizer).
+    assert _normalize_iso_offset("2026-06-04T08:40:28Z") == "2026-06-04T08:40:28+00:00"
+
+
+def test_latest_heartbeat_parses_colonless_offset_form(tmp_path):
+    from scripts.lib.loop_backup import latest_heartbeat_epoch
+    import datetime as _dt
+    d = tmp_path / "2026-09-11"
+    d.mkdir()
+    (d / "heartbeat.log").write_text(
+        "2026-09-11T01:57:35+0200 tick ok\n", encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    assert ep is not None
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    # 01:57:35 +02:00 == 23:57:35 UTC the prior day (2026-09-10).
+    assert (got.year, got.month, got.day, got.hour, got.minute) == (2026, 9, 10, 23, 57)
+
+
+def test_latest_heartbeat_colonless_offset_does_not_hide_a_newer_good_line(tmp_path):
+    """The #1456 bug's worst effect: ONE old malformed line anywhere among the
+    scanned files must never blind latest_heartbeat_epoch to a genuinely
+    fresher, well-formed heartbeat in another file (which is exactly the
+    every-15-minute incident — a fresh line existed but was never reached)."""
+    from scripts.lib.loop_backup import latest_heartbeat_epoch
+    import datetime as _dt
+    (tmp_path / "2026-09-11").mkdir()
+    (tmp_path / "2026-09-11" / "heartbeat.log").write_text(
+        "2026-09-11T01:57:35+0200 tick ok\n", encoding="utf-8")
+    (tmp_path / "2026-09-23").mkdir()
+    (tmp_path / "2026-09-23" / "heartbeat.log").write_text(
+        "2026-09-23T09:28:18Z tick quiet phase=heartbeat due=[] gates=0 decisions=0\n",
+        encoding="utf-8")
+    ep = latest_heartbeat_epoch(str(tmp_path))
+    assert ep is not None
+    got = _dt.datetime.fromtimestamp(ep, _dt.timezone.utc)
+    assert (got.year, got.month, got.day, got.hour, got.minute) == (2026, 9, 23, 9, 28)
+
+
 # ── Truthful external heartbeat (Rick 2026-06-19) ─────────────────────────
 #
 # When the live loop is stale the floor writes a TRUTHFUL liveness line into
