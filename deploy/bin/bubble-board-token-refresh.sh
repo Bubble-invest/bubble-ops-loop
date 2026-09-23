@@ -12,8 +12,9 @@
 # set on the sandboxed process, so `sudo -n bubble-board-token.sh` (the other
 # fallback in emit_kanban_item.sh) can never work there regardless of any
 # sudoers grant — reading a pre-minted file is the ONLY sandbox-safe path.
-# The shared /run/bubble-board/token file is group `claude`-only, which
-# excludes every agent-<dept> uid (post-#1120 isolation) — this is a
+# The shared /run/bubble-board/token file is group `bubble-console`-only
+# (board #1463; was `claude`-only), which excludes every agent-<dept> uid
+# (post-#1120 isolation) — this is a
 # read-only-file-visibility fix, NOT a broadened credential: each per-dept
 # copy is readable ONLY by that same dept's own uid, which already holds an
 # explicit NOPASSWD sudoers grant to mint this exact token itself
@@ -143,8 +144,9 @@ mv -f "$DEST.tmp" "$DEST"
 # Per-dept copies (board #1251 — sandbox-safe token path). Best-effort per
 # dept: a dept whose unix group doesn't exist on this box (e.g. a dev/test
 # host, or a dept not yet spawned) is skipped with a stderr note, never
-# treated as a refresh failure — the shared claude-readable token above is
-# already written and must not be held hostage by one missing dept group.
+# treated as a refresh failure — the shared bubble-console-readable token
+# above is already written and must not be held hostage by one missing dept
+# group.
 for _dept in $DEPT_LIST; do
   # Authorization gate (r2 review — the check that actually matters): only
   # enforced when a real roster exists on this host at all (ROSTER_PRESENT),

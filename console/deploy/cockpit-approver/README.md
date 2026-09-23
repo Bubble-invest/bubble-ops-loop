@@ -106,6 +106,7 @@ false approval).
    ```bash
    test -s /run/bubble-cockpit-approver/token          # the timer minted something
    sudo -u bubble-console test -r /run/bubble-cockpit-approver/token   # console can read it (board #1463)
+   sudo -u claude test -r /run/bubble-cockpit-approver/token && echo BAD-READABLE || echo "OK — claude denied"
    ```
    then approve a throwaway structural PR from the cockpit (either the home-page
    button or a `/pr/{owner}/{repo}/{number}` link) and confirm the guard flips to pass.
