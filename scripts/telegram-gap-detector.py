@@ -22,12 +22,14 @@ WHAT IT WATCHES
   same gap/wedge is not re-alerted every tick.
 
 WHY THIS AND NOT THE EXISTING WATCHDOGS
-  telegram-kick-watchdog (Mac) / telegram-watchdog-<dept> + loop-tick-watchdog
-  (VPS) only check LIVENESS ("is the poller up / is the tick progressing?").
-  None of them checks COMPLETENESS ("did every update Telegram accepted reach the
-  session?"). The 19 lost Claudette messages were invisible to all of them. This
-  detector adds the missing completeness signal, reusing the same kick/notify
-  side-effect shape.
+  telegram-kick-watchdog (Mac) / telegram-watchdog-<dept> + fleet_liveness_check
+  (VPS wedge detection, #1436) only check LIVENESS ("is the poller up / is the
+  dept progressing?"). loop-tick-watchdog covered the same ground and was
+  retired 2026-09-22 as redundant with fleet_liveness_check + the L1-L4 floors
+  (board #1455). None of these checks COMPLETENESS ("did every update Telegram
+  accepted reach the session?"). The 19 lost Claudette messages were invisible
+  to all of them. This detector adds the missing completeness signal, reusing
+  the same kick/notify side-effect shape.
 
 EVERY side effect is behind an overridable hook so this runs hermetically under
 test / dry-run:

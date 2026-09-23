@@ -8,8 +8,8 @@ Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/scripts
 Unit=telegram-gap-detector.service
 OnBootSec=4min
 OnUnitActiveSec=5min
-# Offset from the 90s telegram-watchdog-*.timer and the 45s loop-tick-watchdog
-# jitter so the probes do not all land on the same second.
+# Offset from the 90s telegram-watchdog-*.timer jitter so the probes do not
+# all land on the same second (loop-tick-watchdog retired 2026-09-22, #1455).
 RandomizedDelaySec=30s
 Persistent=false
 

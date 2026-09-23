@@ -43,6 +43,11 @@ The existing watchdogs only check **liveness**, never **completeness**:
 
 A silent inbound drop is therefore invisible to the entire watchdog fleet.
 
+> **Update (2026-09-22, board #1455):** `loop-tick-watchdog` (referenced above)
+> was retired — superseded by `fleet_liveness_check`'s wedge detection (#1436)
+> plus the L1-L4 floors + boot rearm. This RCA is left as written for history;
+> the liveness gap it describes is now covered by that mechanism instead.
+
 ## The fix (this PR)
 
 A **delivery-gap detector** — completeness, not liveness — extending the
