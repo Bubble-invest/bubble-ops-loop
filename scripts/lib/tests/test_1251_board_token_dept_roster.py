@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE = REPO_ROOT / "deploy/bin/bubble-board-token-refresh.sh"
 SYNTHETIC_TOKEN = "ghs_synthetic_roster_test_credential_must_not_be_logged"
 
-INSTALL_PATTERN = re.compile(r'install -d -m (\d+) -o root -g bubble-console "\$DEST_DIR"')
+INSTALL_PATTERN = re.compile(r'install -d -m (\d+) -o root -g claude "\$DEST_DIR"')
 DEPT_CHOWN = 'chown "root:${_dept_group}" "${_dept_dest}.tmp"'
 
 
@@ -50,22 +50,25 @@ def runnable(tmp_path):
     assert "MINTER=/usr/local/bin/bubble-board-token.sh" in script_text
     assert "DEST_DIR=/run/bubble-board" in script_text
 
-    # Board #1463: the shared (console-facing) copy moved from group `claude`
-    # to the dedicated `bubble-console` uid. Assert the negative explicitly
-    # so a future accidental revert to `-g claude` / `root:claude` fails
-    # loudly here instead of silently passing — `claude` must never again be
-    # able to read this file.
-    assert "-g claude" not in script_text, (
-        f"{SOURCE} still grants dir ownership to group `claude` — board #1463 "
-        f"moved the console-facing token file to group `bubble-console`."
+    # Board #1463 follow-up: this token (issues:write-only, NOT the
+    # structural-approval credential) was briefly moved to group
+    # `bubble-console` during #489's rollout alongside the OTHER
+    # console-facing tokens, which broke the Mac emitter fallback + VPS
+    # claude-uid emitters — reverted to `root:claude`. Assert the negative
+    # explicitly so a future accidental re-move to `-g bubble-console` /
+    # `root:bubble-console` fails loudly here instead of silently passing.
+    assert "-g bubble-console" not in script_text, (
+        f"{SOURCE} grants dir ownership to group `bubble-console` — board "
+        f"#1463 follow-up reverted the shared board token to `root:claude` "
+        f"(it is not a console-facing token)."
     )
-    assert "chown root:claude" not in script_text, (
-        f"{SOURCE} still chowns the shared token file to `root:claude` — "
-        f"board #1463 moved it to `root:bubble-console`."
+    assert "chown root:bubble-console" not in script_text, (
+        f"{SOURCE} chowns the shared token file to `root:bubble-console` — "
+        f"board #1463 follow-up reverted it to `root:claude`."
     )
 
     assert INSTALL_PATTERN.search(script_text), (
-        "expected the shared install -d -m <mode> -o root -g bubble-console "
+        "expected the shared install -d -m <mode> -o root -g claude "
         "line — did the ownership-flag syntax change?"
     )
     assert DEPT_CHOWN in script_text, (
@@ -82,7 +85,7 @@ def runnable(tmp_path):
         1,
     )
     script_text = INSTALL_PATTERN.sub(r'install -d -m \1 "$DEST_DIR"', script_text, count=1)
-    script_text = script_text.replace('chown root:bubble-console "$DEST.tmp"', ":", 1)
+    script_text = script_text.replace('chown root:claude "$DEST.tmp"', ":", 1)
     script_text = script_text.replace(DEPT_CHOWN, ":", 1)
 
     runnable_path = tmp_path / SOURCE.name

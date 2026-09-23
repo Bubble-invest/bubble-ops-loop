@@ -45,6 +45,14 @@
 # so a compromised claude-uid session still cannot read the approver token or
 # edit the policy source. See console/deploy/README.md "uid isolation" and
 # board #1463 for the full rationale + rollout runbook.
+#
+# Board #1463 follow-up (found during the #489 rollout): the group
+# membership above was not sufficient on its own — /home/claude/agents/*
+# dirs are often 0700/0755, which 500'd the console reaching e.g.
+# inbox/decisions. scripts/deploy-console-to-vps.sh now also applies a
+# scoped POSIX ACL (`setfacl -R -m g:bubble-console:rwX
+# /home/claude/agents` + a recursive default ACL) as root, before any
+# restart — narrower than the DAC-wide group grant, additive to it.
 
 [Unit]
 Description=bubble-ops-console (operational frontend for bubble-ops-loop)
