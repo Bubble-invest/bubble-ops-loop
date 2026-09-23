@@ -49,6 +49,20 @@ Fails CLOSED throughout, same contract as `pr_approver`:
     verified yet to report).
 Idempotent: `post_status` skips the POST when an identical `structural-
 approval` status (same state + description) already sits on that sha.
+
+Pagination (security review, board #1462 PR #485): `evaluate()` fully
+paginates the files/reviews lists via `_paginate` below rather than trusting
+a single `per_page=100` page. A PR author is the adversary this whole feature
+defends against — padding a PR with >100 trivial file changes ahead of the
+real structural path (alphabetically or otherwise) must not hide that path
+from a single-page fetch. `_paginate` is the ONE pagination implementation
+for the App-token flows in this feature; `console/scripts/
+structural_status_sweep.py` imports and reuses THIS function for its own
+repo/PR listings rather than keeping a second copy (it briefly had one; see
+that module's history). `_structural_paths_touched` also checks
+`previous_filename` for a renamed file, not just its new `filename` — a
+rename-with-edit in the same diff entry must not let a structural file
+escape detection just because its NEW path isn't globbed.
 """
 from __future__ import annotations
 
@@ -60,6 +74,73 @@ _API = "https://api.github.com"
 # The required-status-check context this module owns end to end (evaluate,
 # post, and the ruleset entry Joris configures per the README).
 STATUS_CONTEXT = "structural-approval"
+
+# GitHub's documented hard cap on `/pulls/{n}/files`: PRs with more than 3000
+# changed files return AT MOST 3000, with no indication in the response body
+# itself that the list was truncated (paginating further just yields nothing
+# more, indistinguishable from "there really are exactly 3000 files"). A
+# structural file entirely past that cap would be silently invisible to any
+# amount of pagination — so hitting the cap itself is the fail-closed signal:
+# treat it as "cannot fully verify" rather than trusting what WAS returned.
+_FILES_HARD_CAP = 3000
+
+
+def _paginate(url: str, token: str, *, item_key: str | None = None,
+              per_page: int = 100, max_pages: int = 50) -> list | None:
+    """Fetch EVERY page of a GitHub list endpoint via `pr_approver._get` (the
+    App token), following `page=N` until a short (or empty) page — the
+    `per_page`-driven equivalent of following the `Link` header, without
+    needing to parse it (this codebase's `_get` doesn't surface headers).
+
+    `item_key` is set for an endpoint that wraps its list in an object (e.g.
+    `GET /installation/repositories` -> `{"repositories": [...], ...}`);
+    left `None` for an endpoint whose page body IS the list directly (e.g.
+    `/pulls/{n}/files`, `/pulls/{n}/reviews`, `/pulls?state=open`).
+
+    Returns `None` on ANY page's fetch error or unexpected shape — the
+    caller MUST treat that as "could not verify", never as "empty list"
+    (an empty list and "couldn't check" are very different security
+    postures for a feature whose whole job is refusing to trust an
+    unverified diff).
+
+    This is the ONE pagination implementation for the App-token GitHub list
+    calls in this feature — `structural_status_sweep.py` imports and calls
+    THIS function too, rather than keeping its own copy of the same loop.
+    """
+    items: list = []
+    sep = "&" if "?" in url else "?"
+    for page in range(1, max_pages + 1):
+        status, body = pr_approver._get(f"{url}{sep}per_page={per_page}&page={page}", token)
+        if status != 200:
+            return None
+        batch = body.get(item_key) if item_key else body
+        if not isinstance(batch, list):
+            return None
+        items.extend(batch)
+        if len(batch) < per_page:
+            break
+    return items
+
+
+def _structural_paths_touched(files: list[dict], repo: str) -> list[str]:
+    """Which of `files` (a `/pulls/{n}/files` page) touch a structural path.
+
+    Checks BOTH `filename` (the current/destination path — covers added,
+    modified, and removed files, which GitHub reports under `filename`) AND
+    `previous_filename` (set only on a `status: "renamed"` entry) — a PR that
+    renames a structural file to a non-globbed path WHILE ALSO editing its
+    content in that same diff entry must still be caught: GitHub reports that
+    as a single `renamed` file whose new `filename` may not match any policy
+    glob at all, with the structural OLD path only visible via
+    `previous_filename`.
+    """
+    hits: set[str] = set()
+    for f in files:
+        for key in ("filename", "previous_filename"):
+            path = f.get(key)
+            if path and is_structural_for_repo(path, repo):
+                hits.add(path)
+    return sorted(hits)
 
 
 def _latest_status(owner: str, repo: str, sha: str, token: str) -> dict | None:
@@ -127,7 +208,9 @@ def evaluate(owner: str, repo: str, number: int, token: str | None = None) -> tu
                            APPROVED review pinned (`commit_id`) to the
                            CURRENT head SHA.
       "pending"         — the PR touches a structural path and no such
-                           approval exists yet.
+                           approval exists yet, OR the files list could not
+                           be fully verified (GitHub's own 3000-file cap on
+                           `/pulls/{n}/files` was hit — see `_FILES_HARD_CAP`).
       "error"           — could not fetch the PR / its files / its reviews
                            from GitHub, or the status POST itself failed.
                            Nothing is posted for a fetch failure — there is
@@ -146,32 +229,36 @@ def evaluate(owner: str, repo: str, number: int, token: str | None = None) -> tu
     if not head_sha:
         return ("error", f"PR #{number} has no head sha.")
 
-    status, files = pr_approver._get(
-        f"{_API}/repos/{owner}/{repo}/pulls/{number}/files?per_page=100", token)
-    if status != 200 or not isinstance(files, list):
+    files = _paginate(f"{_API}/repos/{owner}/{repo}/pulls/{number}/files", token)
+    if files is None:
         return ("error", f"could not fetch PR #{number}'s changed files.")
-    paths = [f.get("filename") for f in files if f.get("filename")]
-    structural_paths = sorted(p for p in paths if is_structural_for_repo(p, repo))
 
-    if not structural_paths:
-        state, description = "success", "not structural"
+    if len(files) >= _FILES_HARD_CAP:
+        # GitHub's own hard cap on this endpoint (see `_FILES_HARD_CAP`'s
+        # docstring) — a file past it could be structural and we would never
+        # see it. Fail CLOSED: treat as structural/pending rather than trust
+        # a list that might be silently incomplete.
+        state, description = "pending", "too many files to verify"
     else:
-        status, reviews = pr_approver._get(
-            f"{_API}/repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", token)
-        if status != 200 or not isinstance(reviews, list):
-            return ("error", f"could not fetch PR #{number}'s reviews.")
-        approved = any(
-            (r.get("state") == "APPROVED")
-            and ((r.get("user") or {}).get("login") == pr_approver.APPROVER_BOT)
-            and (r.get("commit_id") == head_sha)
-            for r in reviews
-        )
-        if approved:
-            state = "success"
-            description = f"approved by cockpit on {head_sha[:12]}"
+        structural_paths = _structural_paths_touched(files, repo)
+        if not structural_paths:
+            state, description = "success", "not structural"
         else:
-            state = "pending"
-            description = "needs Joris's cockpit approval"
+            reviews = _paginate(f"{_API}/repos/{owner}/{repo}/pulls/{number}/reviews", token)
+            if reviews is None:
+                return ("error", f"could not fetch PR #{number}'s reviews.")
+            approved = any(
+                (r.get("state") == "APPROVED")
+                and ((r.get("user") or {}).get("login") == pr_approver.APPROVER_BOT)
+                and (r.get("commit_id") == head_sha)
+                for r in reviews
+            )
+            if approved:
+                state = "success"
+                description = f"approved by cockpit on {head_sha[:12]}"
+            else:
+                state = "pending"
+                description = "needs Joris's cockpit approval"
 
     posted, msg = post_status(owner, repo, head_sha, state, description, token=token)
     if not posted:

@@ -238,24 +238,42 @@ def _fetch_is_structural(repo: str, number: int, token: str) -> bool:
     """Best-effort: does this PR touch a structural/mission path (board #1432)?
 
     Reuses the SHARED `is_structural_for_repo` policy (see
-    `structural_paths.py`) — the same truth `structural-merge-guard` enforces
-    — over the PR's changed-files list. Only called for PRs that are ALREADY
-    merge-ready (a small, already-filtered set — see `_compute_merge_ready`),
-    so this adds at most one extra API call per genuinely new/changed
-    merge-ready PR, not per open PR in the org. Any fetch error → False (the
+    `structural_paths.py`) — the same truth `structural-merge-guard`/the
+    App-posted `structural-approval` status (board #1462) enforce — over the
+    PR's changed-files list. Only called for PRs that are ALREADY merge-ready
+    (a small, already-filtered set — see `_compute_merge_ready`), so this
+    adds at most one extra API call per genuinely new/changed merge-ready PR,
+    not per open PR in the org. Any fetch error → False (the
     Approve-(structural) button simply doesn't show; it never blocks the
-    existing "Ouvrir sur GitHub" flow).
+    existing "Ouvrir sur GitHub" flow — this is a UI hint only, NOT the
+    enforced gate, which lives in `structural_status.py`).
+
+    Fully paginates (board #1462 security review): a PR padded past 100
+    files must not hide a structural file on a later page from even this
+    UI hint. Checks BOTH `filename` and `previous_filename` per file, same
+    as `structural_status._structural_paths_touched`, so a rename-with-edit
+    out of a structural path isn't missed either. Short-circuits (returns
+    True) the moment a hit is found rather than always walking every page.
     """
-    try:
-        files = _get_json(
-            f"https://api.github.com/repos/{_ORG}/{repo}/pulls/{number}/files"
-            f"?per_page=100",
-            token,
-        )
-    except Exception as exc:  # noqa: BLE001 — a UI hint, never fatal to the card
-        _log.info("merge_ready_reader: files fetch failed for %s#%s: %s", repo, number, exc)
-        return False
-    return any(is_structural_for_repo(f.get("filename") or "", repo) for f in files)
+    url = f"https://api.github.com/repos/{_ORG}/{repo}/pulls/{number}/files"
+    page = 1
+    while page <= 50:  # 5000 files — GitHub's own /files cap is 3000
+        try:
+            batch = _get_json(f"{url}?per_page=100&page={page}", token)
+        except Exception as exc:  # noqa: BLE001 — a UI hint, never fatal to the card
+            _log.info("merge_ready_reader: files fetch failed for %s#%s: %s", repo, number, exc)
+            return False
+        if not isinstance(batch, list):
+            return False
+        for f in batch:
+            for key in ("filename", "previous_filename"):
+                path = f.get(key)
+                if path and is_structural_for_repo(path, repo):
+                    return True
+        if len(batch) < 100:
+            return False
+        page += 1
+    return False
 
 
 def _build_card(repo: str, pr: dict, marker: str, now: Optional[datetime],

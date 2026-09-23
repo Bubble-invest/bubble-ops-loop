@@ -5,8 +5,12 @@ Lists every open PR on every `Bubble-invest/bubble-ops-*` repo the
 cockpit-approver App is installed on, and (re-)evaluates + posts the
 `structural-approval` commit status for each one's current head SHA via
 `console.services.structural_status.evaluate()` — the SAME evaluation used
-inline right after an operator's Approve click
-(`pr_approver._post_structural_success_status`).
+inline right after an operator's Approve click (`console/routes/pr.py`'s
+`approve_structural_pr`).
+
+Repo/PR listing below reuses `structural_status._paginate` (the SAME fully-
+paginating helper `evaluate()` itself uses for files/reviews) rather than
+keeping a second copy of the same page-loop.
 
 This sweep is what keeps the required check honest for the two cases the
 inline post doesn't cover:
@@ -46,47 +50,22 @@ def list_installed_repos(token: str) -> list[dict]:
     installed" (board #1462 point 3), via GitHub's own installation-scoped
     listing rather than a hardcoded repo list that would silently go stale
     as new bubble-ops-* repos are spawned (dept-spawner). Any fetch problem
-    returns whatever was already collected (best-effort, never fatal).
+    returns [] (best-effort listing — a bad page here means "sweep nothing
+    this tick", never a partial repo list mistaken for a complete one).
     """
-    repos: list[dict] = []
-    page = 1
-    while True:
-        try:
-            status, body = pr_approver._get(
-                f"{_API}/installation/repositories?per_page=100&page={page}", token)
-        except Exception:  # noqa: BLE001 — best-effort listing, never fatal
-            break
-        if status != 200 or not isinstance(body, dict):
-            break
-        batch = body.get("repositories") or []
-        repos.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return repos
+    repos = structural_status._paginate(
+        f"{_API}/installation/repositories", token, item_key="repositories")
+    return repos if repos is not None else []
 
 
 def list_open_prs(owner: str, repo: str, token: str) -> list[dict]:
-    """Open PRs for one repo. Any fetch problem returns whatever was already
-    collected (best-effort — one repo's listing failure must not abort the
-    whole sweep)."""
-    prs: list[dict] = []
-    page = 1
-    while True:
-        try:
-            status, body = pr_approver._get(
-                f"{_API}/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}",
-                token,
-            )
-        except Exception:  # noqa: BLE001
-            break
-        if status != 200 or not isinstance(body, list):
-            break
-        prs.extend(body)
-        if len(body) < 100:
-            break
-        page += 1
-    return prs
+    """Open PRs for one repo. Any fetch problem returns [] (best-effort — one
+    repo's listing failure must not abort the whole sweep, and a partial PR
+    list here isn't a security-relevant omission the way a partial FILES list
+    inside `evaluate()` would be — the next tick simply re-lists)."""
+    prs = structural_status._paginate(
+        f"{_API}/repos/{owner}/{repo}/pulls?state=open", token)
+    return prs if prs is not None else []
 
 
 def sweep(owner_filter: str = "Bubble-invest", repo_prefix: str = "bubble-ops-") -> int:

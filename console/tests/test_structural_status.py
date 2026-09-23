@@ -178,3 +178,106 @@ def test_evaluate_pr_fetch_error_posts_nothing(monkeypatch):
     state, msg = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 999)
     assert state == "error"
     assert called["n"] == 0
+
+
+# ── Security review follow-up (PR #485 REQUEST_CHANGES): full pagination +
+# rename-aware structural detection ─────────────────────────────────────────
+
+def _page_of(url: str) -> int:
+    import urllib.parse
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    return int(qs.get("page", ["1"])[0])
+
+
+def _stub_get_pages(monkeypatch, *, files_pages: list[list[dict]],
+                     reviews: list[dict] | None = None, head_sha: str = _SHA):
+    """Like `_stub_get`, but serves `/files` across MULTIPLE pages (one list
+    per page, in order) — for testing that `evaluate()` fully paginates
+    rather than trusting a single page."""
+    def fake_get(url, token):
+        if url.endswith("/status"):
+            return 200, {"statuses": []}
+        if "/files" in url:
+            page = _page_of(url)
+            batch = files_pages[page - 1] if page <= len(files_pages) else []
+            return 200, batch
+        if "/reviews" in url:
+            return 200, reviews or []
+        return 200, {"head": {"sha": head_sha}}
+    monkeypatch.setattr(pr_approver, "_get", fake_get)
+
+
+def test_structural_file_on_page_two_is_still_caught(monkeypatch):
+    """Board #1462 security review (PR #485, blocking): a PR padded with
+    >100 trivial files ahead of the real structural path must NOT hide that
+    path from a single-page fetch. 100 non-structural files on page 1, the
+    structural file alone on page 2 (a short page, ends pagination)."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    page1 = [{"filename": f"docs/note_{i}.md"} for i in range(100)]
+    page2 = [{"filename": ".claude/agents/rnd.md"}]
+    _stub_get_pages(monkeypatch, files_pages=[page1, page2], reviews=[])
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 601)
+    assert state == "pending"
+    assert "needs Joris" in description
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_rename_out_of_structural_path_is_still_structural(monkeypatch):
+    """A file renamed OUT of a structural path (its NEW `filename` is no
+    longer globbed, but `previous_filename` was) must still count — GitHub
+    reports a rename-with-edit as one `status: "renamed"` entry."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    renamed = [{
+        "filename": "docs/moved_policy.py",
+        "previous_filename": "token-broker/src/policy.py",
+        "status": "renamed",
+    }]
+    _stub_get_pages(monkeypatch, files_pages=[renamed], reviews=[])
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 602)
+    assert state == "pending"  # structural (else it would be "success"/"not structural")
+    assert "needs Joris" in description
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_truncated_files_list_at_github_cap_is_pending(monkeypatch):
+    """GitHub's `/pulls/{n}/files` hard-caps at 3000 with no in-band
+    truncation flag: 30 full pages of 100, then an empty page (GitHub's real
+    behavior past the cap) — must fail CLOSED to pending rather than trust
+    that "nothing structural found in the first 3000" means "not structural"."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    full_pages = [[{"filename": f"docs/note_{p}_{i}.md"} for i in range(100)]
+                  for p in range(30)]
+    _stub_get_pages(monkeypatch, files_pages=full_pages, reviews=[])
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 603)
+    assert state == "pending"
+    assert "too many files" in description
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_paginate_stops_on_fetch_error_returns_none(monkeypatch):
+    """`_paginate` must return None (not a partial list) the moment any page
+    fetch fails — callers rely on None to mean "couldn't verify"."""
+    calls = {"n": 0}
+    def fake_get(url, token):
+        calls["n"] += 1
+        if _page_of(url) == 1:
+            return 200, [{"filename": f"a{i}"} for i in range(100)]
+        return 500, {"message": "boom"}
+    monkeypatch.setattr(pr_approver, "_get", fake_get)
+
+    result = structural_status._paginate(
+        "https://api.github.com/repos/o/r/pulls/1/files", "ghs_fake")
+    assert result is None
+    assert calls["n"] == 2  # tried page 2, got the error, stopped there

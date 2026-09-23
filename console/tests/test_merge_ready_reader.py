@@ -406,7 +406,7 @@ def test_card_flags_structural_pr_from_changed_files(monkeypatch):
     monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
 
     def fake_get_json(url, token):
-        if url.endswith("/files?per_page=100"):
+        if "/files" in url:
             return files
         if "/pulls" in url and "/pulls/" not in url:
             return pulls
@@ -436,7 +436,7 @@ def test_card_not_structural_when_no_structural_files(monkeypatch):
     monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
 
     def fake_get_json(url, token):
-        if url.endswith("/files?per_page=100"):
+        if "/files" in url:
             return files
         if "/pulls" in url and "/pulls/" not in url:
             return pulls
@@ -464,7 +464,7 @@ def test_files_fetch_error_defaults_to_not_structural(monkeypatch):
     monkeypatch.setattr(mrr, "_read_board_token", lambda: "fake-token")
 
     def fake_get_json(url, token):
-        if url.endswith("/files?per_page=100"):
+        if "/files" in url:
             raise RuntimeError("network blip")
         if "/pulls" in url and "/pulls/" not in url:
             return pulls
@@ -475,6 +475,38 @@ def test_files_fetch_error_defaults_to_not_structural(monkeypatch):
     cards = mrr._compute_merge_ready(mrr._DEFAULT_REPOS)
     assert len(cards) == 1
     assert cards[0]["is_structural"] is False
+
+
+def _page_num(url: str) -> int:
+    import urllib.parse
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    return int(qs.get("page", ["1"])[0])
+
+
+def test_fetch_is_structural_finds_file_on_page_two(monkeypatch):
+    """Board #1462 security review: `_fetch_is_structural` must fully
+    paginate, not just check page 1 — a padded PR must not hide its
+    structural file from even this UI hint."""
+    page1 = [{"filename": f"docs/note_{i}.md"} for i in range(100)]
+    page2 = [{"filename": ".claude/agents/rnd.md"}]
+
+    def fake_get_json(url, token):
+        return page2 if _page_num(url) == 2 else page1
+
+    monkeypatch.setattr(mrr, "_get_json", fake_get_json)
+    assert mrr._fetch_is_structural("bubble-ops-loop", 45, "fake-token") is True
+
+
+def test_fetch_is_structural_true_for_rename_out_of_structural_path(monkeypatch):
+    """A rename whose NEW filename isn't globbed but whose OLD
+    `previous_filename` was must still count (board #1462 security review)."""
+    renamed = [{
+        "filename": "docs/moved_policy.py",
+        "previous_filename": "token-broker/src/policy.py",
+        "status": "renamed",
+    }]
+    monkeypatch.setattr(mrr, "_get_json", lambda url, token: renamed)
+    assert mrr._fetch_is_structural("bubble-ops-loop", 46, "fake-token") is True
 
 
 def test_home_shows_approve_button_only_for_structural_pr(client, monkeypatch):
