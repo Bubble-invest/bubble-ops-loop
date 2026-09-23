@@ -78,7 +78,7 @@
      message rendered in place instead of a silent no-op. #}
   <div style="margin-top:8px;">
     <button type="button" class="btn-ochre"
-            onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'pr-detail-approve-result')">
+            onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'pr-detail-approve-result', '{{ pr.head_sha }}')">
       Approve (structural)
     </button>
     <div id="pr-detail-approve-result" style="margin-top:8px; font-size:14px;"></div>

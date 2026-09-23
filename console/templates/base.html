@@ -148,22 +148,36 @@
      deep-link page (pr_detail.html) — one function, not duplicated in
      two templates. Plain fetch(), NOT htmx: POST /pr/<owner>/<repo>/<n>/
      approve returns JSON (not an HTML fragment) with a `detail` message
-     present on EVERY outcome (200 approved, 503 not_provisioned, 502
-     error, 403 unauthorized — see console/routes/pr.py), so this reads
-     `body.detail` uniformly instead of branching on status code. Using
-     fetch (not an hx-post form) also sidesteps the global
-     htmx:responseError handler above, which would otherwise clobber a
-     4xx/5xx response with the generic French toast and hide the actual
-     — deliberately readable — message (e.g. "approver key not
-     provisioned yet"). #}
+     present on EVERY outcome (200 approved, 503 not_provisioned, 409
+     stale, 502 error, 403 unauthorized, 400 missing/bad sha — see
+     console/routes/pr.py), so this reads `body.detail` uniformly instead
+     of branching on status code. Using fetch (not an hx-post form) also
+     sidesteps the global htmx:responseError handler above, which would
+     otherwise clobber a 4xx/5xx response with the generic French toast
+     and hide the actual — deliberately readable — message (e.g.
+     "approver key not provisioned yet" or "PR changed since you loaded
+     this page").
+
+     `headSha` (board #1432 review, blocking finding): the exact commit
+     SHA the caller displayed as this PR's head — REQUIRED. Without it,
+     an operator could review one commit on the page then, if the PR's
+     own author pushed a new one before the click landed, silently
+     approve a diff they never saw. The server independently re-verifies
+     this against the PR's live head before posting anything (never
+     trusts the client-sent value alone) — this is just what makes that
+     check possible. #}
   <script>
-    function bubbleApprovePR(btn, owner, repo, number, resultId) {
+    function bubbleApprovePR(btn, owner, repo, number, resultId, headSha) {
       var resultEl = document.getElementById(resultId);
       btn.disabled = true;
       var prevLabel = btn.textContent;
       btn.textContent = '…';
-      fetch('/pr/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo)
-            + '/' + encodeURIComponent(number) + '/approve', {method: 'POST'})
+      var url = '/pr/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo)
+            + '/' + encodeURIComponent(number) + '/approve';
+      if (headSha) {
+        url += '?head_sha=' + encodeURIComponent(headSha);
+      }
+      fetch(url, {method: 'POST'})
         .then(function (r) {
           return r.json().catch(function () { return {}; }).then(function (body) {
             return {ok: r.ok, body: body};

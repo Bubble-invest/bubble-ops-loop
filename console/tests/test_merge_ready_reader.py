@@ -398,7 +398,7 @@ def test_card_flags_structural_pr_from_changed_files(monkeypatch):
         "number": 42, "title": "fix: x",
         "html_url": "https://github.com/Bubble-invest/bubble-ops-loop/pull/42",
         "created_at": "2026-07-02T09:00:00Z", "updated_at": "2026-07-02T10:00:00Z",
-        "body": "",
+        "body": "", "head": {"sha": "d" * 40},
     }]
     comments = {42: [{"body": "Merge-ready for Joris"}]}
     files = [{"filename": ".claude/agents/rnd.md"}, {"filename": "console/main.py"}]
@@ -418,6 +418,9 @@ def test_card_flags_structural_pr_from_changed_files(monkeypatch):
     assert len(cards) == 1
     assert cards[0]["owner"] == "Bubble-invest"
     assert cards[0]["is_structural"] is True
+    # board #1432 review: the head SHA the Approve button will pin its
+    # request to must be the PR's actual head — not silently blank.
+    assert cards[0]["head_sha"] == "d" * 40
 
 
 def test_card_not_structural_when_no_structural_files(monkeypatch):
@@ -481,12 +484,16 @@ def test_home_shows_approve_button_only_for_structural_pr(client, monkeypatch):
         "title": "fix: x", "html_url": "https://github.com/o/r/pull/99",
         "created_at": "2026-07-02T09:00:00Z", "age": "il y a 2 h",
         "explanation": "PR structurelle.", "chips": [], "is_structural": True,
+        "head_sha": "e" * 40,
     }]
     monkeypatch.setattr(home.merge_ready_reader, "list_merge_ready", lambda *a, **k: stub)
     r = client.get("/")
     assert r.status_code == 200
     assert "Approve (structural)" in r.text
     assert 'href="/pr/Bubble-invest/bubble-ops-loop/99"' in r.text
+    # board #1432 review: the button must thread the head SHA through, not
+    # just the owner/repo/number.
+    assert f"'{'e' * 40}'" in r.text
 
 
 def test_home_hides_approve_button_for_non_structural_pr(client, monkeypatch):

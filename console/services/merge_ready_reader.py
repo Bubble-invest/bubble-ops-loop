@@ -273,6 +273,11 @@ def _build_card(repo: str, pr: dict, marker: str, now: Optional[datetime],
         "age": _age_human(pr.get("created_at") or "", now=now),
         "explanation": _explanation(title, pr.get("body") or ""),
         "chips": _chips(marker),
+        # board #1432 review: the Approve button must pin its request to the
+        # exact commit shown here (TOCTOU guard against a new push landing
+        # between page-load and click) — already present on every /pulls
+        # list item, no extra fetch needed.
+        "head_sha": ((pr.get("head") or {}).get("sha")) or "",
         # board #1432: only known-structural PRs get the in-cockpit Approve
         # button (see console/templates/home.html) — cheap to compute here
         # since this card is already being built for a merge-ready PR.

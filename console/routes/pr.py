@@ -15,10 +15,19 @@ the same principal + RBAC check as gate decisions (only a real cockpit
 operator, never an agent token, may submit an approval) — the GET view is
 read-only and open to any authenticated viewer, mirroring gate_card.html
 (the gate detail page has no RBAC check either; only its POST /decide does).
+
+`head_sha` (board #1432 review, blocking finding): the POST REQUIRES the exact
+commit SHA the operator saw on the GET page. Without this, a PR's own author
+(an explicitly adversarial fleet agent in this design) could push a new commit
+between "Joris reads the diff" and "Joris clicks Approve", and the click would
+silently authorize a diff he never reviewed. `pr_approver.py` re-verifies this
+against the PR's live head before posting anything.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+import re
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from console.services import gate_rbac, pr_approver, pr_detail_reader
@@ -28,6 +37,29 @@ router = APIRouter()
 # Structural approval is an operator/infra authority; gate it on decide-rights for the
 # rnd (infra) department, where the merge-guard + this control live.
 _GUARD_DEPT = "rnd"
+
+# A full, lower/upper-case-tolerant git commit SHA — nothing else is accepted
+# as `head_sha` (board #1432 review: reject missing/malformed input at the
+# route boundary with a clear 400, before ever touching GitHub).
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+# Scope both routes to the repos the structural-merge-guard workflow is
+# deployed on today (bubble-ops-loop) and is named to roll out to fleet-wide
+# (board #1432 thread: "repeat 3-5 across the other bubble-ops-* repos") —
+# the Bubble-invest/bubble-ops-* convention used throughout this codebase
+# (see e.g. console/routes/kanban.py's `_repo_for_dept`). NOT a security
+# boundary by itself (the App-installation-scoped token can't produce a
+# valid review on a repo it isn't installed on regardless) — this closes the
+# repo-existence probe the GET route's 404-vs-degraded-fields behavior would
+# otherwise allow against arbitrary owner/repo strings (board #1432 review).
+_ALLOWED_OWNER = "bubble-invest"
+_ALLOWED_REPO_RE = re.compile(r"^bubble-ops-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$", re.IGNORECASE)
+
+
+def _is_allowed_repo(owner: str, repo: str) -> bool:
+    return (owner or "").strip().lower() == _ALLOWED_OWNER and bool(
+        _ALLOWED_REPO_RE.match((repo or "").strip())
+    )
 
 
 def _require_operator(request: Request) -> str:
@@ -44,10 +76,14 @@ def pr_detail(owner: str, repo: str, number: int, request: Request):
 
     Read-only: no RBAC check here (same convention as gate_card.html), only
     the POST /approve below enforces gate_rbac.may_decide. 404s (rather than
-    500s) when the PR can't be resolved at all (missing board token, or the
-    PR/repo genuinely doesn't exist) — the secondary fields (files, guard
-    status) degrade individually instead, see pr_detail_reader.
+    500s) when the PR can't be resolved at all (missing board token, the
+    owner/repo isn't on the allowlist, or the PR/repo genuinely doesn't
+    exist — one opaque outcome for all three, no existence oracle) — the
+    secondary fields (files, guard status) degrade individually instead, see
+    pr_detail_reader.
     """
+    if not _is_allowed_repo(owner, repo):
+        raise HTTPException(404, f"PR not found: {owner}/{repo}#{number}")
     detail = pr_detail_reader.fetch_pr_detail(owner, repo, number)
     if detail is None:
         raise HTTPException(404, f"PR not found: {owner}/{repo}#{number}")
@@ -58,14 +94,28 @@ def pr_detail(owner: str, repo: str, number: int, request: Request):
 
 
 @router.post("/pr/{owner}/{repo}/{number}/approve")
-def approve_structural_pr(owner: str, repo: str, number: int, request: Request):
+def approve_structural_pr(
+    owner: str, repo: str, number: int, request: Request,
+    head_sha: str | None = Query(None),
+):
     actor = _require_operator(request)
+    if not _is_allowed_repo(owner, repo):
+        raise HTTPException(404, f"PR not found: {owner}/{repo}#{number}")
+    if not head_sha or not _SHA_RE.match(head_sha):
+        raise HTTPException(
+            400,
+            "head_sha must be the 40-character commit SHA shown on the PR page "
+            "(reload the page and try again).",
+        )
     status, message = pr_approver.submit_structural_pr_approval(
-        owner=owner, repo=repo, number=number, actor=actor
+        owner=owner, repo=repo, number=number, actor=actor, head_sha=head_sha,
     )
     if status == "approved":
         return {"ok": True, "status": status, "detail": message}
     if status == "not_provisioned":
         # 503: the feature exists but the App key isn't installed yet (pre-provisioning).
         raise HTTPException(503, message)
+    if status == "stale":
+        # 409: the request conflicts with the PR's current state (it moved).
+        raise HTTPException(409, message)
     raise HTTPException(502, message)

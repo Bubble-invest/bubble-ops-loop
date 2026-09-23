@@ -254,7 +254,7 @@
       {% if pr.is_structural %}
       <div style="margin-top:10px;">
         <button type="button" class="btn-ochre"
-                onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'merge-ready-approve-result-{{ pr.repo }}-{{ pr.number }}')">
+                onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'merge-ready-approve-result-{{ pr.repo }}-{{ pr.number }}', '{{ pr.head_sha }}')">
           Approve (structural)
         </button>
         <div id="merge-ready-approve-result-{{ pr.repo }}-{{ pr.number }}"

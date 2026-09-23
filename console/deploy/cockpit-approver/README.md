@@ -60,6 +60,26 @@ mirrors the contents-token shape 1:1 instead.
   which POSTs to the existing `/pr/.../approve` route and renders its `detail`
   message in place — including the clean "approver key not provisioned yet" state
   before step 1 below is done.
+- `GET`/`POST` are both scoped to `Bubble-invest/bubble-ops-*` (`_is_allowed_repo`
+  in `console/routes/pr.py`) — not a security boundary on its own (the App
+  installation token can't produce a valid review on a repo it isn't installed
+  on regardless), but it closes a repo-existence probe an arbitrary owner/repo
+  could otherwise use against the GET view's 404-vs-degraded-fields behaviour.
+
+### Head-SHA pinning (board #1432 review, blocking finding)
+
+The Approve button sends the EXACT commit SHA displayed on the page it was
+clicked from (`head_sha`, a query param on the POST) — REQUIRED: the route
+400s if it's missing or not a 40-hex-char SHA. `pr_approver.py` then
+independently re-fetches the PR's CURRENT head and refuses (`"stale"` -> HTTP
+409, nothing posted) if it no longer matches, before finally posting the
+review with `commit_id` pinned to that SHA. This closes a TOCTOU window: a
+PR's own author (an explicitly adversarial fleet agent in this design) could
+otherwise push a new commit between "Joris reads the diff" and "Joris clicks
+Approve," and an un-pinned review would silently land on GitHub's THEN-current
+HEAD — a diff Joris never saw — since `structural_merge_guard.py` accepts any
+`cockpit-approver[bot]` `APPROVED` review whose `commit_id` matches the head at
+guard-run time.
 
 ## One-time operator steps — provision the App private key (deferred until Joris is home)
 
