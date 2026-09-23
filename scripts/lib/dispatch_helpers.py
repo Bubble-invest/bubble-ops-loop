@@ -1369,6 +1369,71 @@ def next_pending_mission_time_today(
 
 
 # ---------------------------------------------------------------------------
+# session_handoff wake guard (board #1469, 2026-09-23)
+# ---------------------------------------------------------------------------
+
+SESSION_HANDOFF_MISSION_ID = "session_handoff"
+
+
+def session_handoff_incomplete_today(
+    missions: "list[dict]",
+    *,
+    now: datetime,
+    last_run_lookup,
+) -> bool:
+    """True iff this dept defines the fleet-standard `session_handoff` mission
+    (board #1195) and it has NOT completed for TODAY's Paris-local period yet.
+
+    WHY this exists (#1469, 2026-09-23 finding): `next_pending_mission_time_today`
+    (#508) and the live-tick catch-up fallback both intentionally scope to
+    `time:`-bearing daily/weekly missions ONLY — their own docstrings/comments
+    say so. `session_handoff` is deliberately defined WITHOUT a `time:` (it is
+    meant to run LAST in the day, after every other L4 mission, not at a fixed
+    slot — see agents/ben/dept.yaml) — so it falls through BOTH of those
+    existing safety nets by construction, not by omission. Concretely: ben's
+    20:32Z tick on 2026-09-22 saw L4 already "fired" (risk_control had run) and
+    self-armed straight to tomorrow 06:03, because neither #508's nor #757's
+    fallback ever considers a `time:`-less mission. No HANDOFF.md was written,
+    and the ~05:30Z rotation SKIPPED ben outright (board #1469).
+
+    FIX: before taking the "all layers done -> arm tomorrow" branch, the loop
+    calls this function. If it returns True, that branch must NOT be taken
+    this tick — run `session_handoff` now instead (it is always safe to run
+    immediately: reaching this check already means every other layer/mission
+    is done for the day) or arm one short interim wake and re-check, mirroring
+    #508's own "interim wake instead of tomorrow" pattern.
+
+    A dept that does not define a `session_handoff` mission (most depts don't —
+    it is opt-in fleet-standard, board #1195) always gets False here, so its
+    wake-arming is completely unaffected and behaves exactly as before.
+
+    Args:
+      missions        — the dept's `recurring_missions` list from dept.yaml
+                         (or any subset — callers may pass the full list).
+      now             — tz-aware UTC "now".
+      last_run_lookup — callable(mission_id) -> datetime | None, mirrors the
+                         same injected callable `next_pending_mission_time_today`
+                         takes, e.g. a thin wrapper around `_mission_last_fired`/
+                         `read_last_run` for the caller's ctx, or (for a
+                         due-dispatch dept) the watermark's
+                         `last_success_period` lookup.
+    """
+    mission = next(
+        (m for m in missions if m.get("id") == SESSION_HANDOFF_MISSION_ID),
+        None,
+    )
+    if mission is None:
+        return False
+    if mission.get("cadence") != "daily":
+        return False  # not the fleet-standard shape — do not guess at intent
+    last_fired = last_run_lookup(SESSION_HANDOFF_MISSION_ID)
+    if last_fired is None:
+        return True
+    now_paris = _to_paris(now)
+    return _to_paris(last_fired).date() < now_paris.date()
+
+
+# ---------------------------------------------------------------------------
 # Materialization helper
 # ---------------------------------------------------------------------------
 

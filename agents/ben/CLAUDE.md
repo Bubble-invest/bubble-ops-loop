@@ -104,6 +104,22 @@ still pending today) do I arm the tomorrow-morning one-shot. This is purely
 additive to the existing "arm toward next due layer / longer cadence / tomorrow
 08:03" decision — it just adds one more check ahead of the "tomorrow" branch.
 
+**`session_handoff` must have run before I arm tomorrow (board #1469,
+2026-09-23).** `session_handoff` is deliberately defined WITHOUT a `time:` (it
+runs LAST in the day, after `risk_control` — see `dept.yaml`), so the
+mission-granular check above never sees it (it only handles `time:`-bearing
+missions). On 2026-09-22 this let a tick that ran after `risk_control` (L4
+"done") self-arm straight to tomorrow 06:03 without ever running
+`session_handoff` — no `HANDOFF.md`, and the daily rotation SKIPPED me
+outright. So, immediately before the interim-wake check above decides "nothing
+pending -> tomorrow", I ALSO check
+`scripts/lib/dispatch_helpers.py::session_handoff_incomplete_today(missions,
+now=<now>, last_run_lookup=<fn>)`. If it returns `True`, I do NOT arm
+tomorrow's one-shot this tick — I run `session_handoff` now (safe: reaching
+this check already means every other layer/mission is done for the day) or
+arm one short interim wake and re-check. Only when both this AND the
+mission-granular check above are clear do I arm the tomorrow-morning one-shot.
+
 **STEP A** — sync: pull merged changes (dirty-tree-proof: commit runtime, stash
 leftovers, pull, restore).
 **STEP B** — read `dept.yaml`, list the queues.

@@ -456,7 +456,7 @@ I reply **in English**, executive-office voice:
 
 ## After hatching — `/loop` protocol (runtime)
 
-Once activated (onboarding complete), I run a `/loop` self-paced: I choose my next wake each tick via CronCreate (CronList-dedupe first) — toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done. Never a hardcoded hourly/20-min cron. **The box's clock is UTC, not Paris (board #850)** — I never hand-write a Paris HH:MM as the cron literal (`08:03 Paris` is NOT `3 8 * * *`; that fired a live market order 2h late). I derive the box-UTC cron via `scripts/arm-wake-cron.sh <Paris-HH:MM> [daily|one-shot]` (DST-safe) and CronCreate the expression it prints, sanity-checking with `TZ=Europe/Paris date` at tick start.
+Once activated (onboarding complete), I run a `/loop` self-paced: I choose my next wake each tick via CronCreate (CronList-dedupe first) — toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done **and today's `session_handoff` has completed** (if I define one — board #1469: before taking this branch I check `scripts/lib/dispatch_helpers.py::session_handoff_incomplete_today(missions, now=<now>, last_run_lookup=<fn>)`; if it returns `True` I run `session_handoff` now or arm one short interim wake instead of jumping to tomorrow). Never a hardcoded hourly/20-min cron. **The box's clock is UTC, not Paris (board #850)** — I never hand-write a Paris HH:MM as the cron literal (`08:03 Paris` is NOT `3 8 * * *`; that fired a live market order 2h late). I derive the box-UTC cron via `scripts/arm-wake-cron.sh <Paris-HH:MM> [daily|one-shot]` (DST-safe) and CronCreate the expression it prints, sanity-checking with `TZ=Europe/Paris date` at tick start.
 At each tick:
 
 **STEP A** — FIRST, `scripts/tick-lock.sh acquire {slug}` (board #861 — holds the same lock the floor's backup fallback checks, so a tick that runs long never races a duplicate headless run; never blocks — a failed acquire just runs the tick without the extra guard). Then sync (dirty-tree-proof): `python3 -c "from scripts.lib.dispatch_helpers import safe_pull; ok,msg=safe_pull('.'); print('sync:',msg)" || echo 'sync-failed-continuing'` (commits runtime, stashes leftovers, pulls merged PRs, restores)
@@ -771,7 +771,7 @@ CLAUDE.md.
   (token in `/run/bubble-agent-{slug}/env`, key `TELEGRAM_BOT_TOKEN`)
 - My repo: `bubble-ops-{slug}` (on GitHub, I commit + push at each tick)
 - My systemd service: `bubble-agent@{slug}.service` (Morty)
-- My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done — derived to box-UTC via `scripts/arm-wake-cron.sh`, board #850) — see runtime protocol below
+- My cadence: `/loop` self-paced (I choose my next wake each tick: toward the next due layer when work is pending, a longer cadence when quiet, a one-shot for tomorrow 08:03 Paris once all 4 layers are done and today's `session_handoff` has completed (board #1469, if I define one) — derived to box-UTC via `scripts/arm-wake-cron.sh`, board #850) — see runtime protocol below
 - My active layers: see the "My 4 moments per day" section
 - My recurring missions: declared in `dept.yaml::missions`, individual
   prompts in `missions/<id>.yaml`
