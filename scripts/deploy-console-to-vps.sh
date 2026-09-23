@@ -36,8 +36,11 @@
 # Env overrides:
 #   SSH_HOST / BUBBLE_VPS_HOST   ssh alias to the box (default: morty)
 #   SERVICE                      systemd unit name, no .service (default: bubble-ops-console)
-#   CONSOLE_WORKDIR              path to the bubble-ops-loop clone on the box
-#                                (default: /home/claude/bubble-ops-loop)
+#   CONSOLE_WORKDIR              path to the bubble-ops-loop clone whose checked-in
+#                                template is read (default: /opt/bubble-ops-loop —
+#                                board #1463: the root-owned infra clone, so a
+#                                claude-writable checkout can never feed content into
+#                                a root-installed unit file)
 #
 # Requires:
 #   - SSH alias to the box, OR run on the box itself
@@ -49,7 +52,7 @@ set -euo pipefail
 
 SSH_HOST="${SSH_HOST:-${BUBBLE_VPS_HOST:-morty}}"
 SERVICE="${SERVICE:-bubble-ops-console}"
-WORKDIR="${CONSOLE_WORKDIR:-/home/claude/bubble-ops-loop}"
+WORKDIR="${CONSOLE_WORKDIR:-/opt/bubble-ops-loop}"
 TEMPLATE_REL="console/deploy/bubble-ops-console.service.template"
 UNIT_PATH="/etc/systemd/system/${SERVICE}.service"
 DRY=0

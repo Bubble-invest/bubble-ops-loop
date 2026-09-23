@@ -14,6 +14,37 @@
 # No secrets live here: ExecStartPre resolves them at service-start time from
 # /etc/bubble/secrets.sops.env (path only, decrypted into tmpfs under
 # RuntimeDirectory). Nothing here needs operator substitution before install.
+#
+# Board #1463 (security review of PR #485): the console used to run as the
+# general-purpose `claude` uid from the claude-WRITABLE git checkout
+# (/home/claude/bubble-ops-loop) — the same uid `cloud-wiki-compile@*` runs an
+# agentic `claude -p --dangerously-skip-permissions` session as, and the same
+# uid Rick's own `claude@` SSH access sits in. That put the cockpit's
+# App-signed structural-approval token (/run/bubble-cockpit-approver/token,
+# 0640 root:claude) and the structural-path policy source
+# (token-broker/src/policy.py) inside a prompt-injectable trust domain — a
+# compromised compile session could read the approval token or hand-edit the
+# structural-path list on disk (no git/PR) with no isolation from the console.
+#
+# Fix: a dedicated `bubble-console` system uid, and WorkingDirectory pointed
+# at the EXISTING root-owned, read-only infra clone `/opt/bubble-ops-loop`
+# (board #1150/#1305's "framework-source" — already git-pulled every 15min,
+# root:root, by `bubble-deploy-infra.timer` running `bubble-deploy.sh
+# --infra-only`; the same clone the isolated per-dept loop-layer floor
+# (deploy/INSTALL.md step 4) already reads instead of the retired shared
+# `claude` identity) — NOT a new bespoke deploy copy, and NOT the
+# claude-writable checkout. `claude` is not a member of the `root` group, so
+# it cannot write there; `bubble-console` reads it read-only under
+# ProtectSystem=strict. The claude-writable checkout at
+# /home/claude/bubble-ops-loop keeps existing for Rick's own git operations
+# (loop scripts, PR workflow) — it is no longer what the console RUNS from.
+# `bubble-console` is added as a supplementary member of the existing
+# `claude` unix group ONLY (one-directional) so it can read+write
+# /home/claude/agents (dept state, gate decisions, onboarding scaffolds) the
+# same way the console always has — `claude` is NOT added to `bubble-console`,
+# so a compromised claude-uid session still cannot read the approver token or
+# edit the policy source. See console/deploy/README.md "uid isolation" and
+# board #1463 for the full rationale + rollout runbook.
 
 [Unit]
 Description=bubble-ops-console (operational frontend for bubble-ops-loop)
@@ -22,12 +53,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=claude
-Group=claude
-WorkingDirectory=/home/claude/bubble-ops-loop
+User=bubble-console
+Group=bubble-console
+WorkingDirectory=/opt/bubble-ops-loop
 
-# RuntimeDirectory: systemd creates /run/bubble-ops-console as claude:claude 0750
-# automatically before namespace setup. Removes the chicken-and-egg with ExecStartPre.
+# RuntimeDirectory: systemd creates /run/bubble-ops-console as
+# bubble-console:bubble-console 0750 automatically before namespace setup.
+# Removes the chicken-and-egg with ExecStartPre.
 RuntimeDirectory=bubble-ops-console
 RuntimeDirectoryMode=0750
 
@@ -36,16 +68,17 @@ ExecStartPre=+/bin/sh -c "SOPS_AGE_KEY_FILE=/etc/age/key.txt /usr/local/bin/sops
 ExecStartPre=+/bin/mv /run/bubble-ops-console/env.tmp /run/bubble-ops-console/env
 ExecStartPre=+/bin/sh -c 'grep -q "^GH_TOKEN=" /run/bubble-ops-console/env || sed -n "s/^GITHUB_TOKEN=/GH_TOKEN=/p" /run/bubble-ops-console/env >> /run/bubble-ops-console/env'
 ExecStartPre=+/bin/chmod 0400 /run/bubble-ops-console/env
-ExecStartPre=+/bin/chown claude:claude /run/bubble-ops-console/env
+ExecStartPre=+/bin/chown bubble-console:bubble-console /run/bubble-ops-console/env
 
-Environment="PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 EnvironmentFile=-/run/bubble-ops-console/env
 Environment="READ_FROM_DISK=/home/claude/agents"
 Environment="CONSOLE_BIND_HOST=127.0.0.1"
 Environment="CONSOLE_BIND_PORT=8642"
-Environment="PYTHONPATH=/home/claude/bubble-ops-loop"
+Environment="PYTHONPATH=/opt/bubble-ops-loop"
+Environment="PYTHONDONTWRITEBYTECODE=1"
 
-ExecStart=/home/claude/bubble-ops-loop/venv/bin/python -m uvicorn console.main:app --host 127.0.0.1 --port 8642 --workers 1
+ExecStart=/opt/bubble-ops-loop/venv/bin/python -m uvicorn console.main:app --host 127.0.0.1 --port 8642 --workers 1
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -61,8 +94,9 @@ ReadWritePaths=/home/claude/agents
 # Persistent, writable state dir for the cockpit login sessions DB (board #997).
 # The service runs with ProtectHome=read-only, so the default
 # PROJECT_ROOT/state/console-sessions.db path is unwritable. StateDirectory gives
-# a systemd-managed persistent dir (/var/lib/bubble-ops-console, claude:claude)
-# that survives across restarts/redeploys (board #1074).
+# a systemd-managed persistent dir (/var/lib/bubble-ops-console,
+# bubble-console:bubble-console) that survives across restarts/redeploys
+# (board #1074).
 StateDirectory=bubble-ops-console
 Environment=CONSOLE_SESSION_DB=/var/lib/bubble-ops-console/sessions.db
 

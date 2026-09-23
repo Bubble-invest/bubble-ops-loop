@@ -2,7 +2,8 @@
 # bubble-board-token-refresh.sh — mint a fresh board token into /run for the
 # cockpit to read WITHOUT sudo (the cockpit runs NoNewPrivileges=yes, so it
 # cannot sudo at request time). Run as root by a systemd timer every ~45min.
-# Writes /run/bubble-board/token (tmpfs, 0640, claude-readable) — short-lived,
+# Writes /run/bubble-board/token (tmpfs, 0640,
+# bubble-console-readable — board #1463, was claude-readable) — short-lived,
 # never persisted to disk, min-scope (issues:read via the existing minter).
 #
 # Board #1251: ALSO drops a per-dept copy at /run/bubble-board/token.<dept>
@@ -120,16 +121,22 @@ while true; do
 done
 
 # Board #1251: dir mode 0751 (rwxr-x--x) instead of 0750 — the extra `--x`
-# for "other" lets a non-claude-group uid (a dept's own agent-<dept>) TRAVERSE
-# into the dir to open its own named per-dept token file below. It grants no
-# read/listing: `ls` here still fails for anyone outside group claude, and a
-# uid can only open a file whose exact name it already knows AND which it
-# separately has read permission on (its own token.<dept> copy, chmod 0640
-# root:agent-<dept> below) — the shared `token` file stays claude-group-only.
-install -d -m 0751 -o root -g claude "$DEST_DIR"
+# for "other" lets a non-bubble-console-group uid (a dept's own agent-<dept>)
+# TRAVERSE into the dir to open its own named per-dept token file below. It
+# grants no read/listing: `ls` here still fails for anyone outside group
+# bubble-console, and a uid can only open a file whose exact name it already
+# knows AND which it separately has read permission on (its own token.<dept>
+# copy, chmod 0640 root:agent-<dept> below) — the shared `token` file stays
+# bubble-console-group-only.
+#
+# Board #1463: group root:bubble-console (was root:claude) on the SHARED
+# `token` file only — the console (the sole reader of that file) now runs as
+# the dedicated `bubble-console` uid, not `claude`. Per-dept copies below are
+# unaffected (they were never claude-group in the first place).
+install -d -m 0751 -o root -g bubble-console "$DEST_DIR"
 umask 027
 printf '%s' "$TOK" > "$DEST.tmp"
-chown root:claude "$DEST.tmp"
+chown root:bubble-console "$DEST.tmp"
 chmod 0640 "$DEST.tmp"
 mv -f "$DEST.tmp" "$DEST"
 

@@ -2,7 +2,8 @@
 # bubble-ops-contents-token-refresh.sh — mint a fresh contents:write token into
 # /run for the cockpit to read WITHOUT sudo (console runs NoNewPrivileges=yes, so
 # it cannot sudo at request time). Run as root by a systemd timer every ~45min.
-# Writes /run/bubble-ops-contents/token (tmpfs, 0640, claude-readable) —
+# Writes /run/bubble-ops-contents/token (tmpfs, 0640,
+# bubble-console-readable — board #1463, was claude-readable) —
 # short-lived, never persisted to disk, contents:write+metadata scope.
 #
 # Sibling of bubble-board-token-refresh.sh (which serves the issues-only board
@@ -52,9 +53,11 @@ while true; do
   BACKOFF_SECONDS=$((BACKOFF_SECONDS * 2))
 done
 
-install -d -m 0750 -o root -g claude "$DEST_DIR"
+# Board #1463: group root:bubble-console (was root:claude) — the console now
+# runs as the dedicated `bubble-console` uid, not `claude`.
+install -d -m 0750 -o root -g bubble-console "$DEST_DIR"
 umask 027
 printf '%s' "$TOK" > "$DEST.tmp"
-chown root:claude "$DEST.tmp"
+chown root:bubble-console "$DEST.tmp"
 chmod 0640 "$DEST.tmp"
 mv -f "$DEST.tmp" "$DEST"
