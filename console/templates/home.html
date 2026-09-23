@@ -242,7 +242,25 @@
         {% for chip in pr.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
       </div>
       {% endif %}
-      <a href="{{ pr.html_url }}" target="_blank" rel="noopener" class="card-cta">Ouvrir sur GitHub →</a>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+        <a href="{{ pr.html_url }}" target="_blank" rel="noopener" class="card-cta">Ouvrir sur GitHub →</a>
+        <a href="/pr/{{ pr.owner }}/{{ pr.repo }}/{{ pr.number }}" class="card-cta">Voir la fiche PR →</a>
+      </div>
+      {# board #1432: PRs touching structural/mission paths can be App-signed
+         approved right here (structural-merge-guard requirement) — see
+         bubbleApprovePR() in base.html + POST /pr/.../approve. Non-structural
+         merge-ready PRs don't need this (an ordinary review is enough), so
+         the button only shows when merge_ready_reader flagged it structural. #}
+      {% if pr.is_structural %}
+      <div style="margin-top:10px;">
+        <button type="button" class="btn-ochre"
+                onclick="bubbleApprovePR(this, '{{ pr.owner }}', '{{ pr.repo }}', {{ pr.number }}, 'merge-ready-approve-result-{{ pr.repo }}-{{ pr.number }}', '{{ pr.head_sha }}')">
+          Approve (structural)
+        </button>
+        <div id="merge-ready-approve-result-{{ pr.repo }}-{{ pr.number }}"
+             style="margin-top:6px; font-size:13px;"></div>
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

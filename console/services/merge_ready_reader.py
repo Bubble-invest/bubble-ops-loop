@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from console.routes.kanban import _read_board_token
+from console.services.structural_paths import is_structural_for_repo
 
 _ORG = "Bubble-invest"
 _DEFAULT_REPOS = ["bubble-ops-loop"]
@@ -233,18 +234,54 @@ def _find_marker_comment(comments: list[dict]) -> Optional[str]:
     return last_verdict_body if _comment_is_merge_ready(last_verdict_body) else None
 
 
-def _build_card(repo: str, pr: dict, marker: str, now: Optional[datetime]) -> dict:
+def _fetch_is_structural(repo: str, number: int, token: str) -> bool:
+    """Best-effort: does this PR touch a structural/mission path (board #1432)?
+
+    Reuses the SHARED `is_structural_for_repo` policy (see
+    `structural_paths.py`) — the same truth `structural-merge-guard` enforces
+    — over the PR's changed-files list. Only called for PRs that are ALREADY
+    merge-ready (a small, already-filtered set — see `_compute_merge_ready`),
+    so this adds at most one extra API call per genuinely new/changed
+    merge-ready PR, not per open PR in the org. Any fetch error → False (the
+    Approve-(structural) button simply doesn't show; it never blocks the
+    existing "Ouvrir sur GitHub" flow).
+    """
+    try:
+        files = _get_json(
+            f"https://api.github.com/repos/{_ORG}/{repo}/pulls/{number}/files"
+            f"?per_page=100",
+            token,
+        )
+    except Exception as exc:  # noqa: BLE001 — a UI hint, never fatal to the card
+        _log.info("merge_ready_reader: files fetch failed for %s#%s: %s", repo, number, exc)
+        return False
+    return any(is_structural_for_repo(f.get("filename") or "", repo) for f in files)
+
+
+def _build_card(repo: str, pr: dict, marker: str, now: Optional[datetime],
+                token: str) -> dict:
     """Assemble the home-card payload for one merge-ready PR."""
     title = pr.get("title") or ""
+    number = pr.get("number")
     return {
+        "owner": _ORG,
         "repo": repo,
-        "number": pr.get("number"),
+        "number": number,
         "title": title.strip(),
         "html_url": pr.get("html_url") or "",
         "created_at": pr.get("created_at") or "",
         "age": _age_human(pr.get("created_at") or "", now=now),
         "explanation": _explanation(title, pr.get("body") or ""),
         "chips": _chips(marker),
+        # board #1432 review: the Approve button must pin its request to the
+        # exact commit shown here (TOCTOU guard against a new push landing
+        # between page-load and click) — already present on every /pulls
+        # list item, no extra fetch needed.
+        "head_sha": ((pr.get("head") or {}).get("sha")) or "",
+        # board #1432: only known-structural PRs get the in-cockpit Approve
+        # button (see console/templates/home.html) — cheap to compute here
+        # since this card is already being built for a merge-ready PR.
+        "is_structural": _fetch_is_structural(repo, number, token) if number else False,
     }
 
 
@@ -300,7 +337,7 @@ def _compute_merge_ready(repos: list[str], now: Optional[datetime] = None) -> li
                 if not marker:
                     fresh_memo[key] = (updated_at, None)
                     continue
-                card = _build_card(repo, pr, marker, now)
+                card = _build_card(repo, pr, marker, now, token)
                 fresh_memo[key] = (updated_at, card)
                 cards.append(card)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError,

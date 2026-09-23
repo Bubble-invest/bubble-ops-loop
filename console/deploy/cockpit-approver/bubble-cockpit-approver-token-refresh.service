@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh the short-lived pull_requests:write token for the cockpit (/run/bubble-cockpit-approver/token)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bubble-cockpit-approver-token-refresh.sh
