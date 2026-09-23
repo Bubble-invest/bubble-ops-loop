@@ -11,3 +11,8 @@
 #
 # Install: <repo-root>/.venv/bin/pip install -r scripts/requirements.txt
 pyyaml>=6.0
+# scripts/lib/decision_signing.py (board #1476) — Ed25519 verify_decision()
+# is what EXECUTORS (ben trade path, directive_emit, tony's gcal_create.py,
+# ...) import, so this needs to land in every venv that runs scripts/lib/*,
+# not just the console's. Same version token-broker/requirements.txt pins.
+cryptography>=42
