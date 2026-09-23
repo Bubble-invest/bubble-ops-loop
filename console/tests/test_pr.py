@@ -115,6 +115,32 @@ def test_approve_success(client, monkeypatch):
     assert "detail" in body
 
 
+def test_approve_success_also_posts_structural_approval_status(client, monkeypatch):
+    """Board #1462: a successful Approve click must immediately post the
+    unforgeable `structural-approval` commit status on the same sha too —
+    not just the review — so the required check flips right away instead of
+    waiting for the periodic sweep's next ~2min tick."""
+    pr_route = _pr_route()
+    monkeypatch.setattr(
+        pr_route.pr_approver, "submit_structural_pr_approval",
+        lambda owner, repo, number, actor, head_sha: (
+            "approved", f"Approved {owner}/{repo}#{number}"),
+    )
+    posted = {}
+    def fake_post_status(owner, repo, sha, state, description, token=None):
+        posted.update(owner=owner, repo=repo, sha=sha, state=state, description=description)
+        return (True, "posted")
+    monkeypatch.setattr(pr_route.structural_status, "post_status", fake_post_status)
+
+    resp = client.post(f"/pr/Bubble-invest/bubble-ops-loop/501/approve?head_sha={_SHA}")
+    assert resp.status_code == 200
+    assert posted["owner"] == "Bubble-invest"
+    assert posted["repo"] == "bubble-ops-loop"
+    assert posted["sha"] == _SHA
+    assert posted["state"] == "success"
+    assert _SHA[:12] in posted["description"]
+
+
 def test_approve_not_provisioned_is_503_with_clean_message(client, monkeypatch):
     pr_route = _pr_route()
     monkeypatch.setattr(

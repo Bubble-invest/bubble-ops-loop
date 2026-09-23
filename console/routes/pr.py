@@ -30,7 +30,7 @@ import re
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from console.services import gate_rbac, pr_approver, pr_detail_reader
+from console.services import gate_rbac, pr_approver, pr_detail_reader, structural_status
 
 router = APIRouter()
 
@@ -111,6 +111,17 @@ def approve_structural_pr(
         owner=owner, repo=repo, number=number, actor=actor, head_sha=head_sha,
     )
     if status == "approved":
+        # Board #1462: immediately reflect the approval as the unforgeable
+        # `structural-approval` commit status too, so the PR's REQUIRED check
+        # flips right away instead of waiting for the periodic sweep's next
+        # ~2min tick (console/scripts/structural_status_sweep.py). Best-effort:
+        # a failure here never turns a successful approval into an error
+        # response — the sweep will re-post the same status idempotently on
+        # its next tick regardless.
+        structural_status.post_status(
+            owner, repo, head_sha, "success",
+            f"approved by cockpit on {head_sha[:12]}",
+        )
         return {"ok": True, "status": status, "detail": message}
     if status == "not_provisioned":
         # 503: the feature exists but the App key isn't installed yet (pre-provisioning).

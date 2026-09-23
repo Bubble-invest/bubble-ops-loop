@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# bubble-cockpit-approver-token-refresh.sh — mint a fresh pull_requests:write
-# App-installation token into /run for the cockpit to read WITHOUT sudo
-# (console runs NoNewPrivileges=yes, so it cannot sudo at request time). Run
-# as root by a systemd timer every ~45min. Writes
+# bubble-cockpit-approver-token-refresh.sh — mint a fresh pull_requests:write +
+# statuses:write App-installation token into /run for the cockpit to read
+# WITHOUT sudo (console runs NoNewPrivileges=yes, so it cannot sudo at
+# request time). Run as root by a systemd timer every ~45min. Writes
 # /run/bubble-cockpit-approver/token (tmpfs, 0640, claude-readable) —
-# short-lived, never persisted to disk, pull_requests:write+metadata scope.
+# short-lived, never persisted to disk, pull_requests:write+statuses:write
+# +metadata scope (statuses:write added board #1462, for the App-posted
+# `structural-approval` commit status).
 #
 # 1:1 sibling of bubble-ops-contents-token-refresh.sh (board #1432 follow-up —
 # the cockpit-approver minter originally shipped with a request-time `sudo -n`
@@ -14,7 +16,7 @@
 set -euo pipefail
 DEST_DIR=/run/bubble-cockpit-approver
 DEST=$DEST_DIR/token
-MINTER=/usr/local/bin/bubble-cockpit-approver-token.sh   # root-only; mints pull_requests:write+metadata
+MINTER=/usr/local/bin/bubble-cockpit-approver-token.sh   # root-only; mints pull_requests:write+statuses:write+metadata
 MAX_ATTEMPTS=4
 BACKOFF_SECONDS=5
 
