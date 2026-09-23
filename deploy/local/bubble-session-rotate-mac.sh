@@ -21,11 +21,15 @@
 # FAIL-SAFE: only rotate if a FRESH HANDOFF.md exists (< HANDOFF_MAX_AGE_H) — else a
 # fresh session would start context-blind, so SKIP and keep the current session.
 #
+# #1469: tightened from ~24h to 12h (override via HANDOFF_MAX_AGE_H) — a stale-day
+# handoff must SKIP, not rotate into a context-thin session. Every SKIP now alerts
+# (see _alert_skip below) instead of failing silently.
+#
 # Runs AS the dept's Mac user (its launchd gui domain). Usage:
 #   bubble-session-rotate-mac.sh <slug> [--workdir DIR] [--force] [--dry-run]
 set -euo pipefail
 
-HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-20}"
+HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-12}"   # handoff must be newer than this (#1469: 20->12)
 
 slug="${1:?usage: bubble-session-rotate-mac.sh <slug> [--workdir DIR] [--force] [--dry-run]}"; shift || true
 workdir=""; force=0; dry=0
@@ -50,17 +54,61 @@ TMUX_BIN="${TMUX_BIN:-/opt/homebrew/bin/tmux}"
 
 log() { printf '[session-rotate-mac] %s\n' "$*"; }
 
+# ── #1469: SKIP alert (Mac twin of scripts/bubble-session-rotate.sh) ───────
+# Reuse the fleet's existing kanban emitter rather than invent a new channel:
+# it already dedupes on task+title (repeat SKIPs today collapse to one card)
+# and already falls back to a best-effort Telegram ping when the board is
+# unreachable. Best-effort only — never turns a SKIP into a crash.
+_resolve_emit_kanban() {
+  local here cand
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for cand in \
+    "${EMIT_KANBAN_ITEM:-}" \
+    "${workdir}/tools/kanban/emit_kanban_item.sh" \
+    "${here}/../../tools/kanban/emit_kanban_item.sh" \
+    "$HOME/claude-workspaces/Rick_RnD/tools/kanban/emit_kanban_item.sh" \
+  ; do
+    [[ -n "$cand" && -x "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# _alert_skip REASON — emit a board card for a SKIP. Title is per-slug-per-
+# day so repeat SKIPs today collapse to one card (dedup key = task+title).
+_alert_skip() {
+  local reason="$1" emitter
+  if emitter="$(_resolve_emit_kanban)"; then
+    log "$slug: alerting SKIP via $emitter"
+    BUBBLE_AGENT_WORKDIR="$workdir" "$emitter" \
+      task="session-rotate" \
+      title="session-rotate SKIP: ${slug} ($(date -u +%Y-%m-%d))" \
+      body="$reason" \
+      type=incident \
+      priority=normal \
+      owner="$slug" \
+      budget=10 \
+      actions="investigate,retry" \
+    || log "$slug: WARN — SKIP alert emit did not reach the board (see stderr above); SKIP still stands"
+  else
+    log "$slug: WARN — no emit_kanban_item.sh found (checked workdir/framework/Rick-dev paths) — SKIP alert NOT sent"
+  fi
+}
+
 [[ -d "$workdir" ]] || { log "FATAL: $slug workdir $workdir missing"; exit 2; }
 [[ -f "$plist" ]]   || { log "FATAL: $slug plist $plist missing"; exit 2; }
 
 # FAIL-SAFE handoff gate.
 if (( ! force )); then
   if [[ ! -f "$handoff" ]]; then
-    log "SKIP $slug: no HANDOFF.md — refusing to rotate into a context-blind session"; exit 0
+    log "SKIP $slug: no HANDOFF.md — refusing to rotate into a context-blind session"
+    _alert_skip "no HANDOFF.md at ${handoff} — refusing to rotate into a context-blind session."
+    exit 0
   fi
   age_h=$(( ( $(date +%s) - $(stat -f %m "$handoff") ) / 3600 ))
   if (( age_h > HANDOFF_MAX_AGE_H )); then
-    log "SKIP $slug: HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h) — refusing to rotate"; exit 0
+    log "SKIP $slug: HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h) — refusing to rotate"
+    _alert_skip "HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h threshold) at ${handoff} — refusing to rotate into a context-thin session."
+    exit 0
   fi
   log "$slug: HANDOFF.md present + fresh (${age_h}h) — proceeding"
 fi

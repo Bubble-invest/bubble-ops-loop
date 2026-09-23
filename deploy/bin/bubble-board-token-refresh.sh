@@ -5,6 +5,20 @@
 # Writes /run/bubble-board/token (tmpfs, 0640, claude-readable) — short-lived,
 # never persisted to disk, min-scope (issues:read via the existing minter).
 #
+# Board #1463 follow-up: during the #489 rollout, this file's group was
+# briefly moved to root:bubble-console alongside the OTHER console-facing
+# tokens (approver, contents). That broke two consumers that are NOT the
+# console and were never meant to move: the Mac emitter fallback
+# (`ssh claude@… cat /run/bubble-board/token` in
+# tools/kanban/emit_kanban_item.sh) and the VPS claude-uid emitters — this
+# token is issues:write-only (NOT the structural-approval credential), so it
+# was never part of #1463's trust-boundary problem. Reverted here to
+# root:claude, its pre-#489 owner. A live stopgap drop-in
+# (/etc/systemd/system/bubble-board-token-refresh.service.d/10-claude-group.conf,
+# ExecStartPost chgrp claude) covered the gap on joris-cx33 in the meantime —
+# remove that drop-in once this fix is deployed and the refresh script is
+# reinstalled (it becomes redundant, not harmful, if left in place).
+#
 # Board #1251: ALSO drops a per-dept copy at /run/bubble-board/token.<dept>
 # (tmpfs, 0640, owned root:agent-<dept>) for every uid-isolated dept agent.
 # Why: a dept's own Claude-Code Bash-tool session runs with NoNewPrivileges
@@ -12,7 +26,8 @@
 # fallback in emit_kanban_item.sh) can never work there regardless of any
 # sudoers grant — reading a pre-minted file is the ONLY sandbox-safe path.
 # The shared /run/bubble-board/token file is group `claude`-only, which
-# excludes every agent-<dept> uid (post-#1120 isolation) — this is a
+# excludes every agent-<dept> uid
+# (post-#1120 isolation) — this is a
 # read-only-file-visibility fix, NOT a broadened credential: each per-dept
 # copy is readable ONLY by that same dept's own uid, which already holds an
 # explicit NOPASSWD sudoers grant to mint this exact token itself
@@ -120,12 +135,19 @@ while true; do
 done
 
 # Board #1251: dir mode 0751 (rwxr-x--x) instead of 0750 — the extra `--x`
-# for "other" lets a non-claude-group uid (a dept's own agent-<dept>) TRAVERSE
-# into the dir to open its own named per-dept token file below. It grants no
-# read/listing: `ls` here still fails for anyone outside group claude, and a
-# uid can only open a file whose exact name it already knows AND which it
-# separately has read permission on (its own token.<dept> copy, chmod 0640
-# root:agent-<dept> below) — the shared `token` file stays claude-group-only.
+# for "other" lets a non-claude-group uid (a dept's own agent-<dept>)
+# TRAVERSE into the dir to open its own named per-dept token file below. It
+# grants no read/listing: `ls` here still fails for anyone outside group
+# claude, and a uid can only open a file whose exact name it already
+# knows AND which it separately has read permission on (its own token.<dept>
+# copy, chmod 0640 root:agent-<dept> below) — the shared `token` file stays
+# claude-group-only.
+#
+# Board #1463 follow-up: group root:claude (reverted from a brief
+# root:bubble-console stint during #489's rollout) on the SHARED `token`
+# file only — this token is read by the Mac emitter fallback and VPS
+# claude-uid emitters, not by the console. Per-dept copies below are
+# unaffected either way (they were never claude-group in the first place).
 install -d -m 0751 -o root -g claude "$DEST_DIR"
 umask 027
 printf '%s' "$TOK" > "$DEST.tmp"
@@ -136,8 +158,9 @@ mv -f "$DEST.tmp" "$DEST"
 # Per-dept copies (board #1251 — sandbox-safe token path). Best-effort per
 # dept: a dept whose unix group doesn't exist on this box (e.g. a dev/test
 # host, or a dept not yet spawned) is skipped with a stderr note, never
-# treated as a refresh failure — the shared claude-readable token above is
-# already written and must not be held hostage by one missing dept group.
+# treated as a refresh failure — the shared bubble-console-readable token
+# above is already written and must not be held hostage by one missing dept
+# group.
 for _dept in $DEPT_LIST; do
   # Authorization gate (r2 review — the check that actually matters): only
   # enforced when a real roster exists on this host at all (ROSTER_PRESENT),

@@ -27,8 +27,8 @@ change and `console/services/structural_status.py` for the evaluation logic.
   accepted that permission on the installation.
 - `bubble-cockpit-approver-token-refresh.{sh,service,timer}` — a root-owned systemd
   TIMER (every ~45min) that calls the minter above and writes the token to
-  `/run/bubble-cockpit-approver/token` (tmpfs, 0640 root:claude — group-readable by
-  the console's `claude` user, **never** via `sudo`). **1:1 mirror of
+  `/run/bubble-cockpit-approver/token` (tmpfs, 0640 root:bubble-console — group-readable by
+  the console's dedicated `bubble-console` user (board #1463; was `claude`), **never** via `sudo`). **1:1 mirror of
   `console/deploy/contents-token/`** — same file layout, same perms, same cadence,
   same fail-closed behaviour when the key isn't provisioned yet.
 - `console/services/pr_approver.py` — READS that token file (no subprocess, no sudo),
@@ -147,7 +147,8 @@ false approval).
 3. **Smoke-test:**
    ```bash
    test -s /run/bubble-cockpit-approver/token          # the timer minted something
-   sudo -u claude test -r /run/bubble-cockpit-approver/token   # console can read it
+   sudo -u bubble-console test -r /run/bubble-cockpit-approver/token   # console can read it (board #1463)
+   sudo -u claude test -r /run/bubble-cockpit-approver/token && echo BAD-READABLE || echo "OK — claude denied"
    ```
    then approve a throwaway structural PR from the cockpit (either the home-page
    button or a `/pr/{owner}/{repo}/{number}` link) and confirm a `structural-approval`

@@ -83,8 +83,29 @@ def _make_ready_dept(fixture_root: Path, slug: str = "ready") -> Path:
             ],
         }, sort_keys=False), encoding="utf-8")
     for sub in ("outputs", "queues/research", "inbox/decisions",
-                "missions", "tests"):
+                "missions", "tests",
+                "layers/1", "layers/2", "layers/3", "layers/4"):
         (repo / sub).mkdir(parents=True, exist_ok=True)
+    # Card #1268: can_activate() fails closed when a dept's core files
+    # (MANDATE.md, layer prompts, declared mission files) aren't actually
+    # on disk, even if STATE.yaml/dept.yaml claim the step is done. Write
+    # the well-formed shape here so this fixture stays "Ready to activate".
+    (repo / "MANDATE.md").write_text(
+        "# Mandat du dept ready\n\n"
+        "Je produis un heartbeat de test avec des KPIs vérifiables. "
+        "Je ne publie jamais sans validation humaine.\n",
+        encoding="utf-8",
+    )
+    for n in (1, 2, 3, 4):
+        (repo / "layers" / str(n) / "PROMPT.md").write_text(
+            f"# Layer {n} prompt stub\n\nRole description for layer {n}.\n",
+            encoding="utf-8",
+        )
+    for m in dept.get("recurring_missions") or []:
+        mission_id = m.get("id")
+        if mission_id:
+            (repo / "missions" / f"{mission_id}.yaml").write_text(
+                yaml.safe_dump(m, sort_keys=False), encoding="utf-8")
     return repo
 
 

@@ -3,7 +3,8 @@
 # statuses:write App-installation token into /run for the cockpit to read
 # WITHOUT sudo (console runs NoNewPrivileges=yes, so it cannot sudo at
 # request time). Run as root by a systemd timer every ~45min. Writes
-# /run/bubble-cockpit-approver/token (tmpfs, 0640, claude-readable) —
+# /run/bubble-cockpit-approver/token (tmpfs, 0640,
+# bubble-console-readable — board #1463, was claude-readable) —
 # short-lived, never persisted to disk, pull_requests:write+statuses:write
 # +metadata scope (statuses:write added board #1462, for the App-posted
 # `structural-approval` commit status).
@@ -66,9 +67,13 @@ while true; do
   BACKOFF_SECONDS=$((BACKOFF_SECONDS * 2))
 done
 
-install -d -m 0750 -o root -g claude "$DEST_DIR"
+# Board #1463: group root:bubble-console (was root:claude) — the console now
+# runs as the dedicated `bubble-console` uid, not the general-purpose
+# `claude` uid, so `claude` (incl. cloud-wiki-compile's agentic session) can
+# no longer read this token at all.
+install -d -m 0750 -o root -g bubble-console "$DEST_DIR"
 umask 027
 printf '%s' "$TOK" > "$DEST.tmp"
-chown root:claude "$DEST.tmp"
+chown root:bubble-console "$DEST.tmp"
 chmod 0640 "$DEST.tmp"
 mv -f "$DEST.tmp" "$DEST"
