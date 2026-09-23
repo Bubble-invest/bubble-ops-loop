@@ -45,6 +45,24 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 
 Canonical unit source: `deploy/bubble-ops-console.service.template` — kept in sync with what production actually runs (board #1081). Install/update it on a box with `scripts/deploy-console-to-vps.sh` (see `deploy/INSTALL.md` step 2); `scripts/deploy-console-to-morty.sh` re-syncs it automatically on every ongoing git-pull deploy. Full `bubble-vps-platform` pyinfra integration is still a follow-up (UX-5).
 
+### uid isolation (board #1463)
+
+The console runs as a dedicated `bubble-console` system uid, **not** the
+general-purpose `claude` uid — see the template's own header comment for the
+full rationale (the App-signed structural-approval token and the
+structural-path policy source must not sit in the same trust domain as
+`cloud-wiki-compile@*`'s agentic `claude -p` session). `WorkingDirectory` is
+the existing root-owned infra clone `/opt/bubble-ops-loop` (already kept
+current every 15 min by `bubble-deploy-infra.timer`), not the claude-writable
+checkout at `/home/claude/bubble-ops-loop` — that checkout still exists for
+Rick's own git operations, it's just no longer what the console runs from.
+`bubble-console` is a supplementary member of the `claude` unix group ONLY
+(one-directional) so it can still read+write `/home/claude/agents`; `claude`
+is not a member of `bubble-console`. One-time provisioning commands and the
+full verification checklist are in the board #1463 PR's runbook — this is an
+uid/ownership change on the live console, so it is applied by an operator,
+not by merging code.
+
 ### Rick (`rnd`) read-mirror registration — post-merge only
 
 Rick runs on Joris's Mac M4. The VPS paths are read-only views, never a second

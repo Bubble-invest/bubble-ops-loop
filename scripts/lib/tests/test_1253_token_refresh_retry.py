@@ -80,22 +80,39 @@ printf '%s' "$TEST_TOKEN"
     script_text = script_text.replace(
         minter_assignment, f"MINTER={shlex.quote(str(minter))}", 1
     ).replace(dest_assignment, f"DEST_DIR={shlex.quote(str(dest_dir))}", 1)
+    # Board #1463: the console-facing copy these wrappers write moved from
+    # group `claude` to the dedicated `bubble-console` uid — `claude` must
+    # never again be the group on either the install -d dir or the chown'd
+    # token file. Assert the negative explicitly (not just "the new pattern
+    # matches") so a future accidental revert to `-g claude` fails loudly
+    # here instead of silently passing.
+    assert "-g claude" not in script_text, (
+        f"{source} still grants dir ownership to group `claude` — board #1463 "
+        f"moved the console-facing token file to group `bubble-console`; "
+        f"`claude` must not be able to read it."
+    )
+    assert "chown root:claude" not in script_text, (
+        f"{source} still chowns the token file to `root:claude` — board #1463 "
+        f"moved it to `root:bubble-console`."
+    )
+
     # The retry/validation/atomic-write behavior does not require root. Remove
     # only ownership arguments from the isolated test copy. A regex (not an
     # exact-mode string literal) so this survives either wrapper's own dir
     # mode changing independently (board #1251 r2 bumped bubble-board's to
     # 0751; contents-token stays 0750) without silently no-op'ing and
-    # leaking `-o root -g claude` into a non-root test run.
+    # leaking `-o root -g bubble-console` into a non-root test run.
     install_pattern = re.compile(
-        r'install -d -m (\d+) -o root -g claude "\$DEST_DIR"'
+        r'install -d -m (\d+) -o root -g bubble-console "\$DEST_DIR"'
     )
     assert install_pattern.search(script_text), (
-        f"expected an 'install -d -m <mode> -o root -g claude \"$DEST_DIR\"' "
-        f"line in {source} — did its ownership-flag syntax change?"
+        f"expected an 'install -d -m <mode> -o root -g bubble-console "
+        f"\"$DEST_DIR\"' line in {source} — did its ownership-flag syntax "
+        f"change?"
     )
     script_text = install_pattern.sub(
         r'install -d -m \1 "$DEST_DIR"', script_text, count=1
-    ).replace('chown root:claude "$DEST.tmp"', ":", 1)
+    ).replace('chown root:bubble-console "$DEST.tmp"', ":", 1)
     runnable = tmp_path / source.name
     runnable.write_text(script_text, encoding="utf-8")
     runnable.chmod(0o755)

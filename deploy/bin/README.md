@@ -44,7 +44,8 @@ kanban control plane (`Bubble-invest/bubble-ops-board`) and prints it.
 ## bubble-board-token-refresh.sh
 
 Mints a fresh board token into `/run/bubble-board/token` (tmpfs, `0640`,
-claude-readable) every ~45 min via a systemd timer.
+`bubble-console`-readable — board #1463, was claude-readable) every ~45 min
+via a systemd timer.
 
 - **Why it matters:** the cockpit runs `NoNewPrivileges=yes` so it cannot `sudo`
   at request time; it reads the pre-minted short-lived token from tmpfs instead.

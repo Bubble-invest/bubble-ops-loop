@@ -2,8 +2,9 @@
 
 The cockpit must commit an operator's gate decision to a **host=local** dept's
 GitHub repo (e.g. `Bubble-invest/bubble-ops-content`) so that dept's loop (on its
-own Mac) pulls it. The console runs as `claude` with `NoNewPrivileges=yes` and no
-`gh auth` — so it cannot authenticate to GitHub on its own.
+own Mac) pulls it. The console runs as the dedicated `bubble-console` uid (board #1463; was
+`claude`) with `NoNewPrivileges=yes` and no `gh auth` — so it cannot
+authenticate to GitHub on its own.
 
 This mirrors the existing **board token** mechanism (`bubble-board-token*`, which
 mints an *issues*-only token for the kanban) but mints a **contents:write** token
@@ -11,7 +12,7 @@ into a tmpfs file the console reads.
 
 ```
 bubble-ops-contents-token.sh          → mints contents:write+metadata token (root-only)
-bubble-ops-contents-token-refresh.sh  → writes it to /run/bubble-ops-contents/token (0640 root:claude)
+bubble-ops-contents-token-refresh.sh  → writes it to /run/bubble-ops-contents/token (0640 root:bubble-console)
 bubble-ops-contents-token-refresh.{service,timer} → re-mint every 45 min
 ```
 
@@ -44,10 +45,10 @@ systemctl daemon-reload
 systemctl enable --now bubble-ops-contents-token-refresh.timer
 systemctl start bubble-ops-contents-token-refresh.service   # mint immediately
 
-# 4. Verify the token landed and is claude-readable without printing it
+# 4. Verify the token landed and is bubble-console-readable without printing it (board #1463)
 ls -l /run/bubble-ops-contents/token
 test -s /run/bubble-ops-contents/token
-sudo -u claude test -r /run/bubble-ops-contents/token
+sudo -u bubble-console test -r /run/bubble-ops-contents/token
 ```
 
 For the post-#1253 update of both existing refresh wrappers, use the exact
@@ -57,7 +58,7 @@ install and verification sequence in
 ## Verify end-to-end (after the console is redeployed at the new code)
 
 ```bash
-# As the claude service user, the cockpit's PUT should now succeed:
+# As the bubble-console service user (board #1463), the cockpit's PUT should now succeed:
 GH_TOKEN=$(cat /run/bubble-ops-contents/token) \
   gh api repos/Bubble-invest/bubble-ops-content --jq .full_name
 # → Bubble-invest/bubble-ops-content   (was: auth error before this change)
@@ -67,7 +68,8 @@ GH_TOKEN=$(cat /run/bubble-ops-contents/token) \
 - The App PEM stays root-only (SOPS-encrypted at
   `/srv/bubble-secrets/github-app-bubble-ops-bot.private-key.sops.pem`).
 - The minted token is **contents:write + metadata:read only**, ~1h-lived, on
-  tmpfs, never persisted to disk, group-readable by `claude` only.
+  tmpfs, never persisted to disk, group-readable by `bubble-console` only
+  (board #1463 — was `claude`).
 - This grants the cockpit write access to repo *contents* across the
   Bubble-invest installation. That is the capability required to deliver
   decisions to any host=local dept repo. If tighter per-repo scoping is wanted
