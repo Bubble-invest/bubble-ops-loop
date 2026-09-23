@@ -35,7 +35,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Override via repo variable APPROVER_BOT once the App's bot login is known.
-          APPROVER_BOT: ${{ vars.APPROVER_BOT || 'bubble-cockpit-approver[bot]' }}
+          APPROVER_BOT: ${{ vars.APPROVER_BOT || 'cockpit-approver[bot]' }}
         run: |
           set -euo pipefail
           # Paginate both lists (PRs can exceed one page of files/reviews).

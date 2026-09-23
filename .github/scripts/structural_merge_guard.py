@@ -47,7 +47,7 @@ def main() -> int:
     ap.add_argument("--head-sha", required=True, help="PR head commit SHA")
     ap.add_argument(
         "--approver-bot",
-        default=os.environ.get("APPROVER_BOT", "bubble-cockpit-approver[bot]"),
+        default=os.environ.get("APPROVER_BOT", "cockpit-approver[bot]"),
         help="login of the trusted cockpit App bot whose APPROVED review authorizes structural merges",
     )
     args = ap.parse_args()

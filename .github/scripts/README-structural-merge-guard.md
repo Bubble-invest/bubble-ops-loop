@@ -15,7 +15,7 @@ check:
    the runtime push guard already enforces, so PR and push protection never drift.
 2. If none are structural → **pass** (ordinary PRs are unaffected).
 3. If some are → it requires an **APPROVED review authored by the cockpit App bot**
-   (`vars.APPROVER_BOT`, default `bubble-cockpit-approver[bot]`), bound to the
+   (`vars.APPROVER_BOT`, default `cockpit-approver[bot]`), bound to the
    **current head SHA** (so an approve-then-push-a-structural-change cannot slip
    past). A review by any other identity — **including `vdk888`** — does not count.
 
@@ -25,9 +25,9 @@ through a PR, so they are untouched by this check.
 
 ## Enabling it (operator / Joris steps — account & settings, not code)
 
-1. **Create the GitHub App** (e.g. `bubble-cockpit-approver`). Give it, per repo,
+1. **Create the GitHub App** (slug `cockpit-approver`). Give it, per repo,
    Pull requests: **Read & write** (to submit reviews). Install it on the
-   bubble-ops-* repos. Its review author login will be `bubble-cockpit-approver[bot]`
+   bubble-ops-* repos. Its review author login is `cockpit-approver[bot]`
    (set `vars.APPROVER_BOT` if you name it differently).
 2. **Cockpit "approve PR" action**: add a control in the cockpit that, when Joris
    approves a structural PR, uses the App's key to submit an `APPROVED` review on
@@ -53,7 +53,7 @@ dept repos vendor it, or reference the reusable workflow in bubble-ops-loop.
 echo '{"files":[{"path":"MANDATE.md"}],"reviews":[]}' \
   | python3 .github/scripts/structural_merge_guard.py --repo Bubble-invest/bubble-ops-loop --head-sha abc
 # structural path, App approval on head -> exit 0 (allowed)
-echo '{"files":[{"path":"MANDATE.md"}],"reviews":[{"user":{"login":"bubble-cockpit-approver[bot]"},"state":"APPROVED","commit_id":"abc"}]}' \
+echo '{"files":[{"path":"MANDATE.md"}],"reviews":[{"user":{"login":"cockpit-approver[bot]"},"state":"APPROVED","commit_id":"abc"}]}' \
   | python3 .github/scripts/structural_merge_guard.py --repo Bubble-invest/bubble-ops-loop --head-sha abc
 # non-structural path -> exit 0 (allowed)
 echo '{"files":[{"path":"outputs/x.md"}],"reviews":[]}' \

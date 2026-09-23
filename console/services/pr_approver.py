@@ -43,7 +43,7 @@ _APPROVER_TOKEN_FILE = os.environ.get(
 # Matches structural_merge_guard.py's own default literal (`--approver-bot`'s
 # default) — this only affects the human-readable success message below, but a
 # reviewer flagged the mismatch as worth aligning (board #1432 review).
-APPROVER_BOT = os.environ.get("APPROVER_BOT", "bubble-cockpit-approver[bot]")
+APPROVER_BOT = os.environ.get("APPROVER_BOT", "cockpit-approver[bot]")
 _API = "https://api.github.com"
 
 
