@@ -40,6 +40,37 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 _ISO_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
 )
+# Trailing colon-less UTC offset ("+0200") — see _normalize_iso_offset below.
+_COLONLESS_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")
+
+
+def _normalize_iso_offset(raw: str) -> str:
+    """Normalize an ISO-8601 timestamp string for ``datetime.fromisoformat``.
+
+    #1456 (confirmed live incident, content dept on jade-m1): ``_ISO_RE``
+    deliberately matches BOTH a colon-form UTC offset ("+00:00") and a
+    colon-less one ("+0200", via ``[+-]\\d{2}:?\\d{2}``) — the latter to
+    tolerate whatever an agent's stdlib ``strftime('%z')`` happens to emit.
+    But ``datetime.fromisoformat()`` on Python 3.9/3.10 (the pinned Mac/VPS
+    interpreter — confirmed 3.9.6 on the incident host) REJECTS the
+    colon-less form outright (3.11+ silently accepts it, which is why this
+    bug is invisible in a CI environment pinned to 3.12: the interpreter gap
+    is exactly what makes this a *production* incident and not a test
+    failure there). Before this normalizer existed, a single OLD
+    heartbeat.log line in the colon-less form raised an uncaught
+    ``ValueError`` out of ``latest_heartbeat_epoch`` entirely (the
+    surrounding ``try/except`` only ever caught ``OSError``), which the
+    caller's fail-safe then turned into "ALWAYS stale, regardless of true
+    freshness" — content dept's Mac wake-catch re-injected "run one full
+    tick" every ~15 minutes for hours even though its heartbeat was, in
+    truth, only ~15 minutes old each time.
+
+    Also normalizes a trailing ``Z`` to ``+00:00`` (pre-existing behavior,
+    kept here so every offset form funnels through one normalizer).
+    Idempotent and a no-op on an already-colon offset or a bare local time.
+    """
+    raw = raw.replace("Z", "+00:00")
+    return _COLONLESS_OFFSET_RE.sub(r"\1:\2", raw)
 
 
 class HarnessSelectorError(ValueError):
@@ -704,10 +735,17 @@ def latest_heartbeat_epoch(outputs_dir: str) -> Optional[float]:
                 m = _ISO_RE.search(line)
                 if not m:
                     continue
-                # Normalise trailing Z → +00:00 so fromisoformat() (3.9) accepts
-                # both the "...SSZ" and "...SS.ffffff+00:00" forms agents emit.
-                raw = m.group(1).replace("Z", "+00:00")
-                dt = _dt.datetime.fromisoformat(raw)
+                # #1456: normalize both the Z-suffix and colon-less-offset wire
+                # forms — see _normalize_iso_offset's docstring for why this is
+                # needed on the pinned Python 3.9/3.10 interpreter. A line that
+                # is STILL unparseable after normalizing falls through to
+                # `continue` (try the next older line) rather than crashing
+                # the whole liveness read.
+                raw = _normalize_iso_offset(m.group(1))
+                try:
+                    dt = _dt.datetime.fromisoformat(raw)
+                except ValueError:
+                    continue
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=_dt.timezone.utc)
                 ts_epoch = dt.timestamp()
