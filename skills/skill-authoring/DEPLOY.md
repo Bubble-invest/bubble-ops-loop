@@ -40,15 +40,39 @@ skill registry + transcript corpus, not the wiki).
 
 ## Manual deploy
 
+Board #1493: the installer's per-mode headless-skill-visibility step (below)
+calls `sudo install`/`ln`/`chown`/`readlink` against the root-owned
+`/var/lib/bubble-headless-claude/` parent — none of those commands are in
+`claude`'s passwordless sudoers on joris-cx33 (only specific systemctl/
+journalctl/helper-script invocations are; confirmed via `sudo -n -l`). This
+step (and therefore the whole installer, as of #1493) must run as the
+**literal root user**, not `claude` even with sudo:
+
 ```bash
-# on joris-cx33, as claude (sudo for the systemd bits):
-cd /path/to/bubble-ops-loop
-./scripts/install-cloud-wiki-compile.sh   # now also installs the skill-authoring SKILL + skillsmith timer
+# from a machine with the root SSH key (Rick: `ssh hetzner-root`):
+ssh hetzner-root
+cd /path/to/bubble-ops-loop   # or wherever this repo is checked out on the box
+./scripts/install-cloud-wiki-compile.sh   # installs the skill-authoring SKILL + skillsmith timer + per-mode skill symlinks/seeds
 ```
 
-Idempotent. Installs the launcher (0755), both SKILLs, the skill-authoring lib
-scripts (0755), the four timers + templated service, then `daemon-reload` +
-`enable --now`.
+If root SSH isn't available, an operator with root can instead pre-create just
+the missing piece by hand (equivalent to what the installer's step 8 does for
+skillsmith specifically):
+```bash
+install -d -m 0700 -o claude -g claude /var/lib/bubble-headless-claude/cloud-wiki-compile-skillsmith/skills
+ln -sfn /home/claude/.claude/skills/skill-authoring /var/lib/bubble-headless-claude/cloud-wiki-compile-skillsmith/skills/skill-authoring
+chown -h claude:claude /var/lib/bubble-headless-claude/cloud-wiki-compile-skillsmith/skills/skill-authoring
+install -m 0600 -o claude -g claude /dev/stdin /var/lib/bubble-headless-claude/cloud-wiki-compile-skillsmith/.config.json.seed <<'JSON'
+{
+  "resumeReturnDismissed": true
+}
+JSON
+```
+
+Idempotent either way. Installs the launcher (0755), both SKILLs, the
+skill-authoring lib scripts (0755), each mode's `$CLAUDE_CONFIG_DIR/skills/`
+symlink + `.config.json.seed` (never overwriting an existing seed), the four
+timers + templated service, then `daemon-reload` + `enable --now`.
 
 Smoke test after install (a real run — costs a little Haiku budget):
 ```bash

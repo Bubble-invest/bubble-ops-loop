@@ -5,8 +5,9 @@
 # Installs: the launcher script, intent audit + backfill mission, the
 # memory-hygiene notifier (invoked by the pruning step), BOTH SKILLs
 # (cloud-wiki-compile + the #1222 skill-authoring skill
-# it now also drives via the `skillsmith` mode), the templated service, and the
-# four timers (compile nightly; synthesis + pruning + skillsmith weekly).
+# it now also drives via the `skillsmith` mode), each mode's per-headless-run
+# skill-visibility symlink (board #1493), the templated service, and the four
+# timers (compile nightly; synthesis + pruning + skillsmith weekly).
 #
 # Run ON the VPS (joris-cx33) as a user with sudo (typically `claude`).
 set -euo pipefail
@@ -38,55 +39,129 @@ SKILLSMITH_DST="$DEPLOY_HOME/.claude/skills/skill-authoring"
 
 install -d -m 0755 "$DEPLOY_HOME/scripts"
 
-echo "[1/10] launcher script -> $SCRIPT_DST"
+echo "[1/11] launcher script -> $SCRIPT_DST"
 install -m 0755 "$SKILL_SRC/scripts/cloud-wiki-compile.sh" "$SCRIPT_DST"
 
-echo "[2/10] delta planner + citation lint -> $DELTA_DST, $CITATION_LINT_DST"
+echo "[2/11] delta planner + citation lint -> $DELTA_DST, $CITATION_LINT_DST"
 install -m 0755 "$SKILL_SRC/scripts/wiki_delta.py" "$DELTA_DST"
 install -m 0755 "$SKILL_SRC/scripts/wiki_citation_lint.py" "$CITATION_LINT_DST"
 
-echo "[3/10] intent audit -> $INTENT_AUDIT_DST"
+echo "[3/11] intent audit -> $INTENT_AUDIT_DST"
 install -m 0755 "$SKILL_SRC/scripts/wiki_intent_audit.py" "$INTENT_AUDIT_DST"
 install -m 0755 "$REPO_ROOT/tools/propose_operator_intents.py" "$INTENT_PROPOSER_DST"
 
-echo "[4/10] intent backfill mission -> $INTENT_MISSION_DST"
+echo "[4/11] intent backfill mission -> $INTENT_MISSION_DST"
 install -d -m 0755 "$(dirname "$INTENT_MISSION_DST")"
 install -m 0644 "$SKILL_SRC/missions/intent-backfill.md" "$INTENT_MISSION_DST"
 
-echo "[5/10] memory-hygiene notifier -> $MEM_HYGIENE_DST"
+echo "[5/11] memory-hygiene notifier -> $MEM_HYGIENE_DST"
 install -m 0755 "$SKILL_SRC/scripts/memory_hygiene_notify.py" "$MEM_HYGIENE_DST"
 
-echo "[6/10] wiki SKILL -> $SKILL_DST"
+echo "[6/11] wiki SKILL -> $SKILL_DST"
 install -d -m 0755 "$(dirname "$SKILL_DST")"
 install -m 0644 "$SKILL_SRC/SKILL.md" "$SKILL_DST"
 
-echo "[7/10] skill-authoring SKILL (#1222) -> $SKILLSMITH_DST"
+echo "[7/11] skill-authoring SKILL (#1222) -> $SKILLSMITH_DST"
 install -d -m 0755 "$SKILLSMITH_DST/scripts/lib"
 install -m 0644 "$SKILLSMITH_SRC/SKILL.md" "$SKILLSMITH_DST/SKILL.md"
 install -m 0755 "$SKILLSMITH_SRC/scripts/lib/"*.py "$SKILLSMITH_DST/scripts/lib/"
 
+# Board #1493: `--setting-sources user` resolves each headless run's skills
+# from $CLAUDE_CONFIG_DIR/skills, NOT from the shared $SKILLSMITH_DST/$SKILL_DST
+# just installed above. The systemd unit's headless.conf drop-in (VPS-side,
+# not tracked in this repo — see `systemctl cat cloud-wiki-compile@.service`)
+# points CLAUDE_CONFIG_DIR at a per-mode state dir,
+# /var/lib/bubble-headless-claude/cloud-wiki-compile-<mode>, root-owned
+# (0755 root:root) so `claude` cannot even mkdir a missing one itself. compile/
+# synthesis/pruning had a skills/<name> symlink into the shared dir hand-
+# provisioned at some point outside this installer; skillsmith's was never
+# created at all, so that run saw zero custom skills (only the built-in stock
+# ones) and silently no-op'd — the actual #1493 root cause. Provision it here,
+# for every mode, idempotently, so this can't drift/be-forgotten again.
+#
+# Also provisions .config.json.seed (board #1493 review): every existing
+# per-mode dir (compile/synthesis/pruning) AND the separate morty-agentic-audit
+# headless dir carry an identical, hand-provisioned
+# /var/lib/bubble-headless-claude/<job>/.config.json.seed containing exactly
+# `{"resumeReturnDismissed": true}` — repair-shared-config.sh's ExecStartPre
+# restores CONFIG_FILE from this seed when both the live .config.json AND its
+# .config.json.good backup are absent/corrupt (i.e. on a brand-new config dir,
+# which skillsmith's always was — it never had ANY of these three files).
+# Without it, repair-shared-config.sh's own fallback is to leave .config.json
+# absent and let claude write a fresh default (not fatal — the script's
+# fail-safe contract never blocks the boot either way) — but that means
+# skillsmith's first-ever run would start from an un-dismissed resume-return
+# state that every other headless job deliberately pre-empts. Match the
+# existing fleet-wide convention instead of leaving skillsmith the one
+# undocumented exception. NEVER overwrites an existing seed (an operator may
+# have hand-edited it) — only creates it if absent.
+#
+# CONFIG_ROOT (like DEPLOY_HOME above) is sandboxed under CLOUD_WIKI_INSTALL_ROOT
+# for tests, so this step's real logic — not a reimplementation of it — is what
+# tests/test_1493_skillsmith_skill_visibility.sh exercises, with no sudo/root
+# needed in that sandboxed mode.
+#
+# PRODUCTION NOTE: `install`/`ln`/`chown`/`readlink` are NOT in claude's
+# passwordless sudoers list on joris-cx33 (only specific systemctl/journalctl/
+# helper-script invocations are — confirmed via `sudo -n -l`). This step's
+# `sudo <cmd>` calls therefore only work when the SCRIPT ITSELF is run as the
+# literal root user (e.g. `ssh hetzner-root`), not as `claude` even with sudo.
+# See DEPLOY.md / the PR body for the exact deploy command.
+CONFIG_ROOT="${INSTALL_ROOT%/}/var/lib/bubble-headless-claude"
+AS_ROOT=()
+CHOWN_OWNER=()
+if [ -z "$INSTALL_ROOT" ]; then
+    AS_ROOT=(sudo)
+    CHOWN_OWNER=(-o claude -g claude)
+fi
+SEED_TMP="$(mktemp)"
+trap 'rm -f "$SEED_TMP"' EXIT
+printf '{\n  "resumeReturnDismissed": true\n}\n' > "$SEED_TMP"
+echo "[8/11] per-mode headless skill visibility -> $CONFIG_ROOT/cloud-wiki-compile-<mode>/skills"
+for mode_skill in compile:cloud-wiki-compile synthesis:cloud-wiki-compile pruning:cloud-wiki-compile skillsmith:skill-authoring; do
+    mode="${mode_skill%%:*}"
+    skill="${mode_skill#*:}"
+    mode_dir="$CONFIG_ROOT/cloud-wiki-compile-$mode"
+    target="$DEPLOY_HOME/.claude/skills/$skill"
+    link="$mode_dir/skills/$skill"
+    seed="$mode_dir/.config.json.seed"
+    "${AS_ROOT[@]}" install -d -m 0700 "${CHOWN_OWNER[@]}" "$mode_dir"
+    "${AS_ROOT[@]}" install -d -m 0700 "${CHOWN_OWNER[@]}" "$mode_dir/skills"
+    if [ "$("${AS_ROOT[@]}" readlink "$link" 2>/dev/null || true)" != "$target" ]; then
+        "${AS_ROOT[@]}" ln -sfn "$target" "$link"
+        if [ -z "$INSTALL_ROOT" ]; then
+            sudo chown -h claude:claude "$link"
+        fi
+        echo "  linked $mode -> $skill"
+    fi
+    if [ ! -e "$seed" ]; then
+        "${AS_ROOT[@]}" install -m 0600 "${CHOWN_OWNER[@]}" "$SEED_TMP" "$seed"
+        echo "  seeded $mode -> .config.json.seed"
+    fi
+done
+
 if [ -n "$INSTALL_ROOT" ]; then
-    echo "[8/10] systemd units skipped (CLOUD_WIKI_INSTALL_ROOT test layout)"
-    echo "[9/10] timer enable skipped (CLOUD_WIKI_INSTALL_ROOT test layout)"
-    echo "[10/10] installed test layout under $INSTALL_ROOT"
+    echo "[9/11] systemd units skipped (CLOUD_WIKI_INSTALL_ROOT test layout)"
+    echo "[10/11] timer enable skipped (CLOUD_WIKI_INSTALL_ROOT test layout)"
+    echo "[11/11] installed test layout under $INSTALL_ROOT"
     exit 0
 fi
 
-echo "[8/10] systemd units -> $UNIT_DIR (needs sudo)"
+echo "[9/11] systemd units -> $UNIT_DIR (needs sudo)"
 sudo install -m 0644 "$DEPLOY/templates/cloud-wiki-compile@.service"         "$UNIT_DIR/cloud-wiki-compile@.service"
 sudo install -m 0644 "$DEPLOY/templates/cloud-wiki-compile-compile.timer"    "$UNIT_DIR/cloud-wiki-compile-compile.timer"
 sudo install -m 0644 "$DEPLOY/templates/cloud-wiki-compile-synthesis.timer"  "$UNIT_DIR/cloud-wiki-compile-synthesis.timer"
 sudo install -m 0644 "$DEPLOY/templates/cloud-wiki-compile-pruning.timer"    "$UNIT_DIR/cloud-wiki-compile-pruning.timer"
 sudo install -m 0644 "$DEPLOY/templates/cloud-wiki-compile-skillsmith.timer" "$UNIT_DIR/cloud-wiki-compile-skillsmith.timer"
 
-echo "[9/10] daemon-reload + enable timers"
+echo "[10/11] daemon-reload + enable timers"
 sudo systemctl daemon-reload
 sudo systemctl enable --now cloud-wiki-compile-compile.timer
 sudo systemctl enable --now cloud-wiki-compile-synthesis.timer
 sudo systemctl enable --now cloud-wiki-compile-pruning.timer
 sudo systemctl enable --now cloud-wiki-compile-skillsmith.timer
 
-echo "[10/10] done. Timers:"
+echo "[11/11] done. Timers:"
 systemctl list-timers --all --no-pager | grep cloud-wiki-compile || true
 echo
 echo "Manual smoke test (one compile now):"

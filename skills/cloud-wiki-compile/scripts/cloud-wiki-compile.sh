@@ -71,6 +71,17 @@ if [ ! -f "${SKILL_DIR}/SKILL.md" ]; then
     log "FATAL: ${SKILL_DIR}/SKILL.md missing."
     exit 1
 fi
+# NOTE (board #1493): this only checks the SKILL.md exists in the SHARED
+# /home/claude/.claude/skills — it does NOT prove the model running THIS
+# headless invocation can see it as an available skill. `--setting-sources
+# user` below resolves skills from $CLAUDE_CONFIG_DIR/skills (set per-mode by
+# the systemd unit's headless.conf drop-in to
+# /var/lib/bubble-headless-claude/cloud-wiki-compile-<mode>), which is a
+# SEPARATE, per-mode directory containing symlinks back into this shared dir.
+# install-cloud-wiki-compile.sh provisions that symlink for every mode
+# (previously only compile/synthesis/pruning had it hand-provisioned;
+# skillsmith's was simply never created, so it silently ran with zero custom
+# skills visible — #1493's actual root cause).
 
 # Wiki must be a git clone (cloud-wiki-sync keeps it synced) — required only for
 # the wiki modes. skillsmith does not touch the shared wiki (it works the skill
@@ -304,6 +315,48 @@ PY
             fi
             unset REPORT_BOT_TOKEN
         fi
+    fi
+fi
+
+# Board #1493: skillsmith previously exited 0/is_error=false/subtype=success
+# while never having loaded the skill-authoring skill at all (it replied "I
+# don't see a 'skill-authoring' skill") — a silent no-op that went undetected
+# for weeks. Same "necessary but not sufficient" two-phase idea as COMPILE's
+# WIKI_COMPILE_RECEIPT watermark above: claude's zero exit is not proof of
+# work done. Require the exact SKILLSMITH_DONE:<date> marker (SKILL.md's
+# "Completion marker" section) to be PRESENT in the JSON result text; a
+# "successful" run without it is turned into a launcher failure so this can't
+# silently pass again. Deliberately substring (not exact-match like COMPILE's
+# receipt) — skillsmith runs on a cheap model and may prefix a short summary.
+if [ "$MODE" = "skillsmith" ] && [ "$EXIT" -eq 0 ]; then
+    SKILLSMITH_MARKER="SKILLSMITH_DONE:${DATE_STAMP}"
+    if [ ! -s "$RUN_LOG" ]; then
+        log "FATAL: skillsmith produced no result envelope — treating a zero exit as FAILURE (missing completion marker ${SKILLSMITH_MARKER})."
+        EXIT=1
+    elif ! SKILLSMITH_MARKER="$SKILLSMITH_MARKER" python3 - "$RUN_LOG" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+marker = os.environ["SKILLSMITH_MARKER"]
+lines = [line.strip() for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+for line in reversed(lines):
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(value, dict) or value.get("type") != "result":
+        continue
+    ok = (not value.get("is_error", True)) and marker in str(value.get("result", ""))
+    raise SystemExit(0 if ok else 1)
+raise SystemExit(1)
+PY
+    then
+        log "FATAL: skillsmith result missing the required completion marker ${SKILLSMITH_MARKER} (or is_error=true, or no valid JSON result envelope) — treating a 'successful' exit as FAILURE (#1493: this is exactly how the silent no-op passed undetected before)."
+        EXIT=1
+    else
+        log "skillsmith completion marker verified: ${SKILLSMITH_MARKER}"
     fi
 fi
 

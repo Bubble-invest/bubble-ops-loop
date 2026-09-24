@@ -168,6 +168,32 @@ Post ONE Telegram line at the end **only if** you authored/proposed a skill OR
 flagged a prune (i.e. real output). On a quiet week, be silent. Format:
 `🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q`.
 
+## Completion marker (required — the launcher fails loudly without it, #1493)
+The launcher (`cloud-wiki-compile.sh skillsmith`) validates this run the same
+way COMPILE mode validates `WIKI_COMPILE_RECEIPT`: a "successful" exit
+(`is_error=false`) without the exact marker below is treated as FAILURE, not
+silently accepted. This closes board #1493 — a prior run returned
+`is_error=false`/`success` while this skill had never actually loaded (it
+replied "I don't see a 'skill-authoring' skill"), and that no-op went
+undetected for weeks.
+
+The invoking prompt tells you today's date (e.g. "Today is 2026-09-24 (UTC)").
+Once you have completed BOTH arms end-to-end (including filing/nudging and the
+Telegram report step per the Reporting rule above — or correctly determined
+there is nothing to do this week), your final response must CONTAIN, on its
+own line:
+
+```
+SKILLSMITH_DONE:<today's date, YYYY-MM-DD>
+```
+
+e.g. `SKILLSMITH_DONE:2026-09-24`. It may follow a short summary — the launcher
+only requires the exact string to be present in the result text, not that it
+be the entire response. If you cannot find or load this skill, cannot
+complete ARM A or ARM B, or hit an error partway through, do NOT print this
+line — say plainly what went wrong instead, so the run fails loudly instead
+of silently no-op'ing again.
+
 ## Cost profile (why this stays cheap)
 One weekly pass, Haiku, bounded. The A0/A2/B1 deterministic pre-passes burn ~0
 model tokens and kill most candidates before any reasoning. Eval subagents fire
