@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -29,6 +30,17 @@ import yaml
 from console import settings
 from console.services.dept_registry import repo_path, runtime_repo_path
 from console.services.humanize import humanize_queue_item
+
+# Make the repo-root `scripts` namespace package importable so we can sign
+# decisions with scripts/lib/decision_signing.py (single source of truth,
+# shared with the executor-side verify_decision() — board #1476). Mirrors
+# the existing console/services/mgmt_note_state.py + backup_history.py
+# precedent for importing scripts.lib.* from the console.
+_PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJ_ROOT))
+
+from scripts.lib import decision_signing  # noqa: E402  (see sys.path setup above)
 
 _log = logging.getLogger("console.github_reader")
 
@@ -1511,6 +1523,45 @@ def read_chat_log(slug: str, step_num: int, step_name: str) -> Optional[str]:
     return None
 
 
+def _sign_decision(slug: str, gate_id: str, decision: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort Ed25519-sign `decision` (board #1476). Returns a NEW dict
+    (decision_signing.sign_decision never mutates its input) with `dept`,
+    `gate_hash`, `key_id`, `signature` added — or the ORIGINAL `decision`,
+    unchanged, if signing isn't possible right now (key not provisioned yet,
+    the gate's raw YAML can't be read, or any other signing error).
+
+    Deliberately fail-open here, not fail-closed: this is the WRITE path —
+    refusing to write a decision because signing failed would strand the
+    operator's approval entirely (worse than an unsigned decision, which the
+    verify side's DECISION_SIGNATURES=warn default already degrades
+    gracefully). The read/verify side (scripts/lib/decision_signing.
+    verify_decision, called by executors) is where fail-closed belongs, via
+    DECISION_SIGNATURES=enforce once a dept has adopted it.
+    """
+    gate_content = load_gate_raw(slug, gate_id)
+    if gate_content is None:
+        _log.warning(
+            "gate decision signing skipped for %s/%s: gate YAML unreadable "
+            "(writing unsigned decision)", slug, gate_id)
+        return decision
+    try:
+        private_key = decision_signing.load_private_key()
+    except Exception as exc:  # noqa: BLE001 — key not provisioned yet is expected pre-rollout
+        _log.warning(
+            "gate decision signing skipped for %s/%s: private key unavailable (%s) "
+            "(writing unsigned decision)", slug, gate_id, exc)
+        return decision
+    try:
+        return decision_signing.sign_decision(
+            decision, gate_content=gate_content, dept=slug, private_key=private_key,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let a signing bug block a decision write
+        _log.warning(
+            "gate decision signing failed for %s/%s: %s (writing unsigned decision)",
+            slug, gate_id, exc)
+        return decision
+
+
 def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
                          ) -> Optional[Path]:
     """Land the operator's approval in inbox/decisions/<gate_id>.yaml where the
@@ -1537,6 +1588,14 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
     reusing the existing host=local mechanism for a host=vps dept once its
     disk-write path is known to be a dead end.
     """
+    # Sign BEFORE the host branching below, so every delivery path (disk,
+    # host=local GitHub commit, uid-isolated GitHub commit) carries the same
+    # signed decision — board #1476. Best-effort: a cockpit that can't sign
+    # (key not provisioned yet, or any signing failure) must still be able to
+    # write the decision — DECISION_SIGNATURES=warn on the verify side is
+    # exactly the degrade path for that, not a write-time hard failure here.
+    decision = _sign_decision(slug, gate_id, decision)
+
     # Resolve the dept's host (default vps). Reference the function through the
     # MODULE (dept_registry.get_department) rather than a `from … import` binding,
     # so a test's monkeypatch on the module attribute is always honoured.

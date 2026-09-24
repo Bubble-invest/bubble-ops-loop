@@ -15,3 +15,8 @@ nh3==0.3.5
 # jsonschema is required by the dry-run simulator (activate-dept path).
 # ModuleNotFoundError was masking 409 responses during activation tests.
 jsonschema>=4.0.0
+# Ed25519 signing of inbox/decisions/*.yaml gate decisions (board #1476) —
+# console/services/github_reader.py imports scripts.lib.decision_signing.
+# Same package token-broker/requirements.txt already pins (>=42); pinned
+# exact here to match console's own == convention.
+cryptography==50.0.0
