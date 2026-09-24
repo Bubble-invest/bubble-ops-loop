@@ -20,6 +20,10 @@ __pycache__/
 *.pem
 *.key
 *.private*
+# Decision-signing Ed25519 PUBLIC key (board #1476/#1498) — content is safe
+# to commit (only the matching PRIVATE key, SOPS-encrypted VPS-only, can
+# produce a signature it accepts); see scripts/keys/README.md.
+!scripts/keys/decision-signing-ed25519.pub.pem
 
 # Local lock/state
 *.lock

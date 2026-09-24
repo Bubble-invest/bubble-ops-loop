@@ -37,6 +37,11 @@ jobs:
       # silently. Gate them here.
       - name: Deploy hooks tests
         run: python3 -m pytest deploy/hooks/ -q --tb=short
+      # Board #1498: hermetic contract test for the decision-signing key's
+      # boot-time decrypt installer (render-only-by-default, --activate).
+      # No real root/systemd/VPS involved — see the test file's own header.
+      - name: Decision-signing key installer test
+        run: bash tests/test_1498_decision_signing_key_install.sh
 
   console-tests:
     runs-on: ubuntu-latest
