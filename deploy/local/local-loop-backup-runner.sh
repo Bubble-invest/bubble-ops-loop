@@ -116,6 +116,31 @@ if [[ -f "$DEPT_DIR/dept.yaml" ]] && grep -q '^[[:space:]]*due_dispatch:' "$DEPT
         exit 1
     fi
     log "due mission plan attached to wake"
+else
+    # #1491: Miranda/content (jade-m1) and Géraldine/accountant (jade-m5) use the
+    # `recurring_missions:{id,layer,cadence,time}` schema, not loop.due_dispatch's
+    # calendar-period/lease schema above — so the grep gate never matches and this
+    # floor's own idle-nudge kept injecting the generic WAKE_MESSAGE free text even
+    # after due_missions.py grew a `wake-prompt` generator for that exact schema
+    # (#1487). ops-loop#501 already wired the VPS twin of this same idle-nudge
+    # (loop-backup.sh::inject_live_loop, via _inject_wake_text) to try the generator
+    # first and fall back to the historical free text, UNCHANGED, on any refusal or
+    # error — never fatal. Mirror that here, verbatim in spirit: unlike the
+    # loop.due_dispatch branch above (which fails closed — "no wake queued" — because
+    # that schema's lease/claims-token bookkeeping makes a swallowed error unsafe),
+    # this branch has no lease state to corrupt, so a refusal/error just means
+    # "nothing new to say" and the generic WAKE_MESSAGE set above stands.
+    DUE_PLANNER="${LLL_REPO_ROOT}/scripts/due_missions.py"
+    if [[ -f "$DUE_PLANNER" ]]; then
+        if GENERATED_WAKE="$(cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" wake-prompt \
+                --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH" 2>/dev/null)" \
+                && [[ -n "$GENERATED_WAKE" ]]; then
+            WAKE_MESSAGE="$GENERATED_WAKE"
+            log "inject using generated DUE_MISSIONS wake-prompt (#1487/#1491)"
+        else
+            log "wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback free-text nudge, unchanged"
+        fi
+    fi
 fi
 
 # A fresh M1 heartbeat proves the session is alive, not that its slower missions

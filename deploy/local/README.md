@@ -24,7 +24,7 @@ pushes via the operator's own **`gh`/git credential**.
 |------|------|
 | `install-local-loop.sh` | Install the **main `/loop` runner** as a **KeepAlive** launchd agent (`com.bubble.ops-loop-<slug>`) supervising a generic wrapper. The systemd-unit twin. |
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
-| `local-loop-backup-runner.sh` | The per-tick body: optional due-mission plan from `dept.yaml` → heartbeat-staleness check (overridden once by due periodic work) → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
+| `local-loop-backup-runner.sh` | The per-tick body: optional due-mission plan from `dept.yaml` (`loop.due_dispatch` lease/claims schema, or — board #1491 — a `due_missions.py wake-prompt` envelope for the `recurring_missions` schema, falling back to the historical generic wake text unchanged on any refusal/error) → heartbeat-staleness check (overridden once by due periodic work) → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
 | `bubble-deploy-mac.sh` | Board #1477: keeps the Mac's `bubble-ops-loop` **framework checkout itself** (`~/claude-workspaces/bubble-ops-loop`) current — `git fetch` + `merge --ff-only origin/main`, only on a clean `main` checkout. Mac twin of `scripts/bubble-deploy.sh --infra-only`. Refuses (ALERT + exit 1, worktree untouched) on a dirty tree, a non-`main` branch, or a diverged (ahead) checkout. Board #1488 widened its "never execute from the pulled tree" contract for one explicit, hard-coded, allow-listed installer — see below. |
 | `install-mac-loop-deploy.sh` | Installs `bubble-deploy-mac.sh` as a **StartInterval** launchd agent (`com.bubble.mac-loop-deploy`, default 15 min — mirrors `bubble-deploy-infra.timer`'s `*:0/15`). One instance per Mac (not per-slug): it updates the shared framework checkout every local dept's installers run out of. |
@@ -124,6 +124,7 @@ bash tests/test_local_loop_staleness.sh   deploy/local/lib/local_loop_lib.sh dep
 bash tests/test_local_loop_plist_render.sh deploy/local/install-local-loop.sh deploy/local/install-local-loop-backup.sh
 bash tests/test_local_loop_injection_floor.sh deploy/local/local-loop-backup-runner.sh
 bash tests/test_rnd_due_mission_floor.sh deploy/local/local-loop-backup-runner.sh
+bash tests/test_1491_mac_recurring_wake_inject.sh deploy/local/local-loop-backup-runner.sh
 python3 -m pytest -q scripts/lib/tests/test_due_missions.py
 ```
 
@@ -359,6 +360,17 @@ per due mission and advances only the missions that actually succeeded. Before
 append, the floor atomically claims each periodic mission-period for the
 manifest's bounded `pending_lease_seconds`; competing floor agents suppress an
 unexpired claim, and any failed append releases only the caller's claim.
+
+For a dept with `recurring_missions` but no `loop.due_dispatch` block —
+Miranda/content (jade-m1) and Géraldine/accountant (jade-m5), the same schema
+ben/tony/maya use on the VPS — board #1491 wires this same runner to
+`due_missions.py wake-prompt --dept-dir <dept>` (the generator board #1487
+built for that schema, already trusted by the VPS floor's own idle-nudge,
+`scripts/loop-backup.sh::inject_live_loop`). It has no lease/claims concept to
+reuse (VPS-style completion is a timestamp ledger, not a calendar-period
+watermark), so on any refusal or error (unrecognized schema, nothing due this
+instant, hard error) the runner falls back to the historical generic wake
+text, byte-for-byte unchanged — never fatal.
 
 ### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
 
