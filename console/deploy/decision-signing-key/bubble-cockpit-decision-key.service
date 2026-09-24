@@ -1,0 +1,36 @@
+[Unit]
+Description=Decrypt the cockpit's static Ed25519 decision-signing private key to tmpfs (board #1498)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/blob/main/console/deploy/decision-signing-key/README.md
+# Boot ordering only (not a hard Requires=): bubble-ops-console already
+# degrades gracefully (writes decisions UNSIGNED, DECISION_SIGNATURES=warn)
+# when the key file isn't there yet, so a failure here must never block the
+# console from starting — only make sure that, on a fresh boot, the decrypt
+# has a chance to run first.
+Before=bubble-ops-console.service
+
+[Service]
+Type=oneshot
+# RemainAfterExit: after the decrypt succeeds, `systemctl status` should show
+# "active", not "inactive (dead)" — this is a one-time boot step that leaves
+# durable state (the tmpfs key file) behind, not a transient action.
+RemainAfterExit=yes
+User=root
+Group=bubble-console
+
+# systemd creates/owns /run/bubble-cockpit-decision-key as root:bubble-console
+# 0750 before the ExecStart runs (RuntimeDirectory=<name> -> /run/<name>).
+# RuntimeDirectoryPreserve=yes is REQUIRED here: the default (`no`) removes
+# the directory (and the key inside it) the moment THIS oneshot unit is
+# considered "stopped" — which happens immediately after ExecStart exits for
+# a Type=oneshot service. `yes` keeps it until the box actually reboots, so
+# the decrypted key survives across bubble-ops-console restarts (a console
+# restart never touches this unit's own RuntimeDirectory) without needing a
+# hard After=/BindsTo= dependency between the two units.
+RuntimeDirectory=bubble-cockpit-decision-key
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+
+ExecStart=/usr/local/bin/bubble-cockpit-decision-key-decrypt.sh
+
+[Install]
+WantedBy=multi-user.target
