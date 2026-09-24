@@ -362,3 +362,164 @@ def test_completion_command_is_pinned_to_sys_executable_not_bare_python3():
     assert f"COMPLETE weekly_scan => {sys.executable} " in prompt
     assert "=> python3 " not in prompt
     assert sys.executable.startswith("/")  # never a bare, PATH-resolved name
+
+
+# ── wake-prompt (#1484: the self-wake CronCreate prompt is GENERATED, never
+# agent-authored free text — see #1483's audit of Ben's uncited "be
+# cost-conscious" drift) ──────────────────────────────────────────────────────
+
+
+def test_dept_label_reads_department_display_name_or_slug_with_generic_fallback():
+    from scripts.due_missions import _dept_label
+
+    assert _dept_label({"department": {"display_name": "Rick", "slug": "rnd"}}) == "Rick's"
+    assert _dept_label({"department": {"slug": "maya"}}) == "maya's"
+    assert _dept_label({}) == "the dept's"
+    assert _dept_label({"department": "not-a-mapping"}) == "the dept's"
+
+
+def test_wake_prompt_reuses_the_exact_floor_envelope_and_is_never_empty_due_missions():
+    from scripts.due_missions import _prompt, _wake_prompt
+
+    plan = [
+        {
+            "id": "weekly_scan",
+            "cadence": "weekly",
+            "period": "2026-W37",
+            "layers": [4],
+            "mission_file": "missions/weekly-scan.md",
+        }
+    ]
+    dept_dir = Path("/tmp/dept")
+    floor_prompt = _prompt(plan, dept_dir, "maya's")
+    wake = _wake_prompt(plan, dept_dir, "maya's")
+    # The wake prompt is the SAME envelope the floor/backup tick already
+    # renders, verbatim, plus the fixed footer appended — not a re-derivation.
+    assert wake.startswith(floor_prompt)
+    assert wake == floor_prompt + require_wake_prompt_footer()
+
+
+def test_wake_prompt_still_emits_full_envelope_with_no_due_missions():
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert "DUE_MISSIONS=[]" in wake
+    assert "Resume the dept's OODA loop and run one full tick now." in wake
+    assert wake.endswith(require_wake_prompt_footer())
+
+
+def test_wake_prompt_carries_the_handoff_pointer_and_citation_rule():
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert "WORKING_MEMORY/HANDOFF.md" in wake
+    assert "must cite a msg id / tg id / dated source" in wake
+    assert "never carry forward an unsourced operator-intent claim" in wake
+
+
+def test_wake_prompt_is_never_a_bare_slash_command_and_forbids_free_text():
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert not wake.lstrip().startswith("/")
+    # The prompt itself states there is no free-text slot for the agent to
+    # fill in — the citation/no-improvisation contract this card is about.
+    assert "never compose, paraphrase, edit, or append your own wording" in wake
+    assert "pass this exact text to CronCreate verbatim" in wake
+
+
+def test_wake_prompt_is_a_pure_deterministic_function_of_its_inputs():
+    from scripts.due_missions import _wake_prompt
+
+    plan = [
+        {
+            "id": "board",
+            "cadence": "continuous",
+            "period": "continuous",
+            "layers": [1, 2, 3, 4],
+            "mission_file": "missions/board.md",
+        }
+    ]
+    first = _wake_prompt(plan, Path("/tmp/dept"), "Rick's")
+    second = _wake_prompt(plan, Path("/tmp/dept"), "Rick's")
+    assert first == second  # same inputs -> byte-identical output, always
+
+
+def require_wake_prompt_footer() -> str:
+    from scripts.due_missions import WAKE_PROMPT_FOOTER
+
+    return WAKE_PROMPT_FOOTER
+
+
+def test_command_wake_prompt_cli_end_to_end(tmp_path: Path, capsys):
+    import yaml
+
+    from scripts.due_missions import command_wake_prompt, parser
+
+    dept_dir = tmp_path / "maya"
+    (dept_dir / "missions").mkdir(parents=True)
+    (dept_dir / "layers" / "1").mkdir(parents=True)
+    (dept_dir / "layers" / "1" / "PROMPT.md").write_text("# layer 1\n", encoding="utf-8")
+    (dept_dir / "missions" / "board.md").write_text("# board\n", encoding="utf-8")
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": "maya", "display_name": "Maya"},
+                "loop": {
+                    "due_dispatch": {
+                        "mission_ids": ["board"],
+                        "watermark": "monitoring/due.json",
+                        "pending_lease_seconds": 21600,
+                    }
+                },
+                "layers": {"subscribed": [1]},
+                "recurring_missions": [
+                    {
+                        "id": "board",
+                        "layer": 1,
+                        "status": "live",
+                        "cadence": "continuous",
+                        "due": {"policy": "every_tick"},
+                        "mission_file": "missions/board.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
+    )
+    rc = command_wake_prompt(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Resume Maya's OODA loop and run one full tick now." in out
+    assert "DUE_MISSIONS=[board{cadence=continuous" in out
+    assert "WORKING_MEMORY/HANDOFF.md" in out
+    # Same invocation, same clock -> byte-identical stdout (determinism holds
+    # through the full CLI path, not just the pure helper functions above).
+    rc2 = command_wake_prompt(args)
+    out2 = capsys.readouterr().out
+    assert rc2 == 0
+    assert out2 == out
+
+
+def test_command_wake_prompt_cli_legacy_manifest_without_due_dispatch(tmp_path: Path, capsys):
+    import yaml
+
+    from scripts.due_missions import command_wake_prompt, parser
+
+    dept_dir = tmp_path / "legacy"
+    dept_dir.mkdir()
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump({"department": {"slug": "legacy"}, "recurring_missions": []}),
+        encoding="utf-8",
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
+    )
+    rc = command_wake_prompt(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DUE_MISSIONS=[]" in out
+    assert "Resume legacy's OODA loop and run one full tick now." in out

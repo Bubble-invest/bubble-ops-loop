@@ -11,6 +11,20 @@ The telegram plugin delivers it as a session turn → the agent runs a tick +
 re-arms its self-paced cron. No-op (exit 0) in any other case, including a human
 interactive `/compact`.
 
+**Self-wake prompt is generated, not authored (#1483/#1484).** `REARM_TURN` (and
+`boot_rearm.ts`'s `content`) instruct the agent to arm its NEXT CronCreate wake
+by running `scripts/due_missions.py wake-prompt --dept-dir <dept repo>` and
+passing its stdout to CronCreate verbatim — never to compose its own tick-protocol
+prose. That command reuses the exact deterministic envelope the floor/backup tick
+already renders (`due_missions.py`'s `_prompt()` — DUE_MISSIONS + per-mission
+COMPLETE commands, or `DUE_MISSIONS=[]` for a dept that hasn't adopted
+`loop.due_dispatch`), plus a fixed footer pointing at WORKING_MEMORY/HANDOFF.md
+and requiring a citation on any operator-intent claim. This closes the channel
+through which Ben's uncited "operator flagged spend — be cost-conscious" note
+self-reinforced across ~36 wake prompts and silently dropped a mission
+deliverable for 12 days (see board #1483's audit). The agent still chooses WHEN
+(the cron time/cadence) — never WHAT the prompt says.
+
 ### Reliability (#754 durable fix, 2026-09)
 - **Dedupe on the re-arm sentinel, not on "inject non-empty".** The first version
   skipped whenever ANY content was pending in the inject file. But the inject is a
