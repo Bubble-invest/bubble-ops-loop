@@ -106,7 +106,26 @@ def _validate_scoped_files(dept_dir: Path, manifest: dict) -> None:
             raise DueMissionConfigError(f"layer prompt does not exist: layers/{layer}/PROMPT.md")
 
 
-def _prompt(plan: list[dict], dept_dir: Path) -> str:
+def _dept_label(manifest: dict) -> str:
+    """Possessive label for the wake-prompt preamble ("Resume <label> OODA
+    loop…"), e.g. "Rick's" or "maya's".
+
+    Falls back to a generic phrasing when `department.display_name` /
+    `department.slug` is absent, rather than hardcoding one dept's name. This
+    text must work fleet-wide (#1484 — every Mac and VPS dept generates its
+    own self-wake prompt from this same envelope), not just for Rick's own
+    dept.yaml, which is the only manifest that happened to exercise this
+    function before #1484.
+    """
+    department = manifest.get("department")
+    if isinstance(department, dict):
+        name = department.get("display_name") or department.get("slug")
+        if isinstance(name, str) and name:
+            return f"{name}'s"
+    return "the dept's"
+
+
+def _prompt(plan: list[dict], dept_dir: Path, dept_label: str = "Rick's") -> str:
     script = Path(__file__).resolve()
     items = ";".join(
         f"{item['id']}{{cadence={item['cadence']},period={item['period']},"
@@ -142,7 +161,7 @@ def _prompt(plan: list[dict], dept_dir: Path) -> str:
         )
         commands.append(f"COMPLETE {item['id']} => {command}")
     return (
-        "Resume Rick's OODA loop and run one full tick now. "
+        f"Resume {dept_label} OODA loop and run one full tick now. "
         f"DUE_MISSIONS=[{items}]. "
         "This is the exact M1-M8 scheduled-work allow-list for this tick: read each mission file "
         "and the attached layer prompts, execute every listed mission, and do not schedule any "
@@ -193,10 +212,10 @@ def _decode_claims(token: str) -> dict:
     return value
 
 
-def _runner_output(plan: list[dict], claims: dict, dept_dir: Path) -> str:
+def _runner_output(plan: list[dict], claims: dict, dept_dir: Path, dept_label: str = "Rick's") -> str:
     periodic_due = any(item["cadence"] != "continuous" for item in plan)
     return "\t".join(
-        (("1" if periodic_due else "0"), _claims_token(claims), _prompt(plan, dept_dir))
+        (("1" if periodic_due else "0"), _claims_token(claims), _prompt(plan, dept_dir, dept_label))
     )
 
 
@@ -266,12 +285,13 @@ def command_plan(args: argparse.Namespace) -> int:
     _emit_skip_notice(skipped)
     _emit_stale_notice(stale)
     _validate_scoped_files(dept_dir, manifest)
+    dept_label = _dept_label(manifest)
     if args.format == "json":
         print(json.dumps({"configured": True, "due": plan}, sort_keys=True))
     elif args.format == "runner":
-        print(_runner_output(plan, {}, dept_dir))
+        print(_runner_output(plan, {}, dept_dir, dept_label))
     else:
-        print(_prompt(plan, dept_dir))
+        print(_prompt(plan, dept_dir, dept_label))
     return 0
 
 
@@ -288,7 +308,179 @@ def command_claim(args: argparse.Namespace) -> int:
     )
     _emit_skip_notice(skipped)
     _emit_stale_notice(stale)
-    print(_runner_output(plan, claims, dept_dir))
+    print(_runner_output(plan, claims, dept_dir, _dept_label(manifest)))
+    return 0
+
+
+# ─── wake-prompt (#1484) ─────────────────────────────────────────────────────
+#
+# Board #1483/#1484: each dept re-arms its OWN next wake (CronCreate prompt) at
+# boot-rearm, compact-rearm, and after every normal tick. Until now that prompt
+# was FREE TEXT the agent composed itself each time ("your full tick protocol
+# text (STEP A-F per CLAUDE.md)") — exactly the channel through which Ben's
+# uncited "operator flagged spend — be cost-conscious" note (2026-09-11)
+# self-reinforced across ~36 wake prompts and ~15 subagent briefs and silently
+# dropped a mission deliverable for 12 days (see #1483's audit comment).
+#
+# Fix: the CronCreate prompt is GENERATED, never authored. `wake-prompt`
+# prints the exact same deterministic envelope the floor/backup tick already
+# uses (`_prompt()` — DUE_MISSIONS=[...] + per-mission COMPLETE commands),
+# plus a fixed footer: a pointer to WORKING_MEMORY/HANDOFF.md, a citation rule
+# on any operator-intent claim, and a staleness clause (the prompt is rendered
+# at ARM time but fires hours later). The agent's only remaining choice is
+# WHEN to arm the next wake (the cron time/cadence) — never WHAT it says.
+#
+# FAIL-CLOSED (#1484 PR-review finding): a VPS dept.yaml (e.g. Ben's, live)
+# uses `recurring_missions: [{id, layer, cadence, time, ...}]` with NO
+# `loop.due_dispatch` block at all — a different schema than the Mac
+# due-dispatch scheme this module understands. Before this fix,
+# `wake-prompt --dept-dir /srv/agents/ben` printed a perfectly well-formed
+# `DUE_MISSIONS=[]` envelope — indistinguishable from "this dept genuinely has
+# nothing due right now" — which is EXACTLY the failure #1483 exists to
+# prevent: a VPS agent pasting that verbatim would arm its next wake with NO
+# scheduled work listed. `wake-prompt` now REFUSES (raises
+# `DueMissionConfigError`, non-zero exit, EMPTY stdout — nothing is ever
+# printed before the checks below pass) whenever it cannot positively
+# confirm real, live, currently-due work: `loop.due_dispatch` absent (schema
+# not understood — deliberately still true for VPS today, see board #1487 for
+# the follow-up) OR the resolved plan is empty (nothing is due this instant —
+# including "no live missions are configured at all"). The caller
+# (boot_rearm.ts / rearm-loop-on-compact.py / the agent's own re-arm step)
+# MUST fall back to the previous free-text tick-protocol wake and record the
+# refusal in its HEARTBEAT ONLY — never Telegram, since this fires on every
+# re-arm/compaction and would spam the operator over a known, tracked gap —
+# rather than trust a plausible-looking empty envelope.
+
+WAKE_PROMPT_FOOTER = (
+    " Before acting on this wake, read WORKING_MEMORY/HANDOFF.md for current state. "
+    "Any sentence that attributes a rule, instruction, or behavior change to the "
+    "operator (\"operator/Joris said/flagged/wants/asked/told...\" or equivalent) "
+    "must cite a msg id / tg id / dated source; never carry forward an unsourced "
+    "operator-intent claim from a prior tick, a prior self-note, or a compaction "
+    "summary (board #1483: an uncited 'be cost-conscious' note self-reinforced "
+    "across ~36 wake prompts and 15 subagent briefs and silently dropped a mission "
+    "deliverable for 12 days). This prompt is machine-generated by "
+    "`due_missions.py wake-prompt` — the only thing left to you is WHEN to arm the "
+    "next wake (the cron time/cadence), never WHAT this prompt says: never compose, "
+    "paraphrase, edit, or append your own wording to it — pass this exact text to "
+    "CronCreate verbatim."
+)
+
+
+def _staleness_clause(dept_dir: Path) -> str:
+    """Fixed instruction closing the arm-time/fire-time gap (#1484 PR review).
+
+    This prompt is rendered when the wake is ARMED but does not fire until
+    hours later (a self-paced cadence can be "wake tomorrow 08:03"), so a
+    daily/weekly mission that becomes due overnight is invisible to the
+    DUE_MISSIONS list baked in at arm time. Rather than trying to predict the
+    future at render time, the fix is a fixed re-check instruction: at FIRE
+    time, before running anything, re-run this exact same generator (its
+    absolute-interpreter-pinned invocation, mirroring the #1330 lesson
+    already applied to the per-mission COMPLETE commands in `_prompt()`) and
+    treat ITS fresh output as authoritative for the tick — never the stale
+    copy baked into the prompt that was actually delivered.
+    """
+    script = Path(__file__).resolve()
+    refresh_command = " ".join(
+        [
+            shlex.quote(sys.executable),
+            shlex.quote(str(script)),
+            "wake-prompt",
+            "--dept-dir",
+            shlex.quote(str(dept_dir)),
+        ]
+    )
+    return (
+        " STALENESS: this DUE_MISSIONS list was computed when this wake was ARMED, "
+        "not when it FIRES (a self-paced cadence can sit for hours). Before running "
+        f"anything, re-run `{refresh_command}` and treat ITS fresh output as the "
+        "authoritative DUE_MISSIONS for this tick — a mission that became due "
+        "overnight, or one that already completed since this prompt was generated, "
+        "must never be skipped or re-run just because this stale copy disagrees. If "
+        "that refresh itself now fails or refuses (see the FAIL-CLOSED contract "
+        "below), fall back to your normal full tick protocol for this tick and flag "
+        "the failure — never fall back to composing your own DUE_MISSIONS list."
+    )
+
+
+def _wake_prompt(plan: list[dict], dept_dir: Path, dept_label: str) -> str:
+    """The canonical, machine-generated CronCreate self-wake prompt (#1484).
+
+    Reuses `_prompt()` verbatim (the SAME envelope the floor/backup tick
+    already renders), then appends the staleness re-check clause and
+    `WAKE_PROMPT_FOOTER`. Pure function of its inputs — same
+    `plan`/`dept_dir`/`dept_label` always yields byte-identical output, so
+    there is no free-text slot for the agent (or a subagent, or a compaction
+    pass) to fill in. Callers MUST NOT invoke this with an empty `plan` — the
+    CLI (`command_wake_prompt`) enforces that gate; this function only renders.
+    """
+    return _prompt(plan, dept_dir, dept_label) + _staleness_clause(dept_dir) + WAKE_PROMPT_FOOTER
+
+
+def _plan_for_wake(dept_dir: Path, manifest: dict, now_epoch: "int | None") -> list[dict]:
+    """Compute the due-mission plan for `wake-prompt`.
+
+    Returns `[]` for a manifest that hasn't adopted `loop.due_dispatch` (a
+    legacy Mac manifest, OR a VPS `recurring_missions:{layer,cadence,time}`
+    manifest this module does not parse — see the FAIL-CLOSED note above).
+    The caller (`command_wake_prompt`) is responsible for refusing on an
+    empty result; this helper only computes.
+    """
+    loop = manifest.get("loop")
+    if not isinstance(loop, dict) or "due_dispatch" not in loop:
+        return []
+    watermark = due_watermark_path(str(dept_dir), manifest)
+    state = read_due_watermarks(watermark)
+    skipped: list[dict] = []
+    stale: list[dict] = []
+    plan = due_mission_plan(manifest, state, _now(now_epoch), skipped=skipped, stale=stale)
+    _emit_skip_notice(skipped)
+    _emit_stale_notice(stale)
+    _validate_scoped_files(dept_dir, manifest)
+    return plan or []
+
+
+def command_wake_prompt(args: argparse.Namespace) -> int:
+    dept_dir = Path(args.dept_dir).resolve()
+    manifest = _load_manifest(dept_dir)
+    loop = manifest.get("loop")
+    due_dispatch_configured = (
+        isinstance(loop, dict) and "due_dispatch" in loop and loop.get("due_dispatch") is not None
+    )
+    if not due_dispatch_configured:
+        # FAIL-CLOSED (#1484 PR review): this is the Ben repro — a VPS
+        # `recurring_missions:{layer,cadence,time}` manifest has no
+        # `loop.due_dispatch` at all. Refuse rather than silently printing a
+        # plausible-looking DUE_MISSIONS=[]; nothing has been printed yet.
+        raise DueMissionConfigError(
+            "wake-prompt requires dept.yaml's loop.due_dispatch (the Mac due-dispatch "
+            "schema); this manifest doesn't have it. This command does NOT understand "
+            "the VPS recurring_missions:{layer,cadence,time} schema (board #1487 is "
+            "the VPS follow-up; reusing the VPS selector cleanly is out of scope for "
+            "this PR), so it refuses rather than silently emitting an empty "
+            "DUE_MISSIONS=[] envelope. The caller MUST fall back to the previous "
+            "free-text wake instruction for this dept and record this refusal in its "
+            "heartbeat ONLY (never Telegram — a known gap until #1487 lands)."
+        )
+    plan = _plan_for_wake(dept_dir, manifest, args.now_epoch)
+    if not plan:
+        # FAIL-CLOSED: schema IS understood, but nothing is currently live/due —
+        # never emit an empty envelope (#1484 PR review: "never emit or accept
+        # an empty envelope"). This is expected to self-heal on the next tick
+        # (continuous missions are always due; a purely calendar-cadence dept
+        # can legitimately have a quiet moment) and is not itself an error in
+        # the dept.yaml, so the caller's fallback + flag is the correct response,
+        # not a crash.
+        raise DueMissionConfigError(
+            "wake-prompt: loop.due_dispatch is configured but no live mission is "
+            "currently due — refusing to emit an empty DUE_MISSIONS=[] envelope "
+            "(#1484 PR review: never emit or accept an empty envelope). The caller "
+            "MUST fall back to the previous free-text wake instruction for this tick "
+            "and record this refusal in its heartbeat ONLY (never Telegram); a later "
+            "tick is expected to resolve this on its own."
+        )
+    print(_wake_prompt(plan, dept_dir, _dept_label(manifest)))
     return 0
 
 
@@ -356,6 +548,10 @@ def parser() -> argparse.ArgumentParser:
     complete.add_argument("--period", required=True)
     complete.add_argument("--now-epoch", type=int)
     complete.set_defaults(func=command_complete)
+    wake_prompt = sub.add_parser("wake-prompt")
+    wake_prompt.add_argument("--dept-dir", required=True)
+    wake_prompt.add_argument("--now-epoch", type=int)
+    wake_prompt.set_defaults(func=command_wake_prompt)
     return result
 
 

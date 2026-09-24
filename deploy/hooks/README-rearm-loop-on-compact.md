@@ -11,6 +11,37 @@ The telegram plugin delivers it as a session turn → the agent runs a tick +
 re-arms its self-paced cron. No-op (exit 0) in any other case, including a human
 interactive `/compact`.
 
+**Self-wake prompt is generated, not authored (#1483/#1484).** `REARM_TURN` (and
+`boot_rearm.ts`'s `content`) instruct the agent to arm its NEXT CronCreate wake
+by running `scripts/due_missions.py wake-prompt --dept-dir <dept repo>`. That
+command reuses the exact deterministic envelope the floor/backup tick already
+renders (`due_missions.py`'s `_prompt()` — DUE_MISSIONS + per-mission COMPLETE
+commands), plus a staleness re-check clause and a fixed footer pointing at
+WORKING_MEMORY/HANDOFF.md and requiring a citation on any operator-intent claim.
+**If it exits 0**, the agent passes its stdout to CronCreate verbatim — never
+composes or appends its own tick-protocol prose. **It is FAIL-CLOSED by
+design**: it refuses (non-zero exit, empty stdout) whenever it cannot positively
+confirm real, live, due work — e.g. a dept.yaml that doesn't (yet) use the
+`loop.due_dispatch` schema this generator understands (this is the case for
+every VPS dept today, which use the `recurring_missions:{layer,cadence,time}`
+schema instead — see board card #1487 for the VPS follow-up and why VPS reuse
+isn't in this PR),
+or a `loop.due_dispatch`-configured dept with nothing currently due. On that
+refusal the agent falls back to composing its OWN full tick protocol text for
+that one arm (the pre-#1484 behavior) and records the refusal in its HEARTBEAT
+ONLY, **never Telegram** — this is a KNOWN gap on VPS until the follow-up
+lands (board #1487), and firing on Telegram on every re-arm/compaction (daily
+rotation + every compaction, for ben/tony/maya) would spam the operator. It
+never treats empty/failed output as "nothing to do," it just doesn't page
+anyone about an already-known, already-tracked gap.
+This closes the channel through which Ben's uncited "operator flagged spend —
+be cost-conscious" note self-reinforced across ~36 wake prompts and silently
+dropped a mission deliverable for 12 days (see board #1483's audit), without
+ever letting the generator itself arm a wake with an empty/wrong mission list
+(the earlier draft of this PR did exactly that against Ben's real dept.yaml —
+see the PR review). The agent still chooses WHEN (the cron time/cadence) —
+never WHAT the prompt says.
+
 ### Reliability (#754 durable fix, 2026-09)
 - **Dedupe on the re-arm sentinel, not on "inject non-empty".** The first version
   skipped whenever ANY content was pending in the inject file. But the inject is a

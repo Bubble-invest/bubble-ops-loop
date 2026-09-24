@@ -362,3 +362,337 @@ def test_completion_command_is_pinned_to_sys_executable_not_bare_python3():
     assert f"COMPLETE weekly_scan => {sys.executable} " in prompt
     assert "=> python3 " not in prompt
     assert sys.executable.startswith("/")  # never a bare, PATH-resolved name
+
+
+# ── wake-prompt (#1484: the self-wake CronCreate prompt is GENERATED, never
+# agent-authored free text — see #1483's audit of Ben's uncited "be
+# cost-conscious" drift) ──────────────────────────────────────────────────────
+
+
+def test_dept_label_reads_department_display_name_or_slug_with_generic_fallback():
+    from scripts.due_missions import _dept_label
+
+    assert _dept_label({"department": {"display_name": "Rick", "slug": "rnd"}}) == "Rick's"
+    assert _dept_label({"department": {"slug": "maya"}}) == "maya's"
+    assert _dept_label({}) == "the dept's"
+    assert _dept_label({"department": "not-a-mapping"}) == "the dept's"
+
+
+def test_wake_prompt_reuses_the_exact_floor_envelope_then_staleness_then_footer():
+    from scripts.due_missions import _prompt, _staleness_clause, _wake_prompt
+
+    plan = [
+        {
+            "id": "weekly_scan",
+            "cadence": "weekly",
+            "period": "2026-W37",
+            "layers": [4],
+            "mission_file": "missions/weekly-scan.md",
+        }
+    ]
+    dept_dir = Path("/tmp/dept")
+    floor_prompt = _prompt(plan, dept_dir, "maya's")
+    wake = _wake_prompt(plan, dept_dir, "maya's")
+    # The wake prompt is the SAME envelope the floor/backup tick already
+    # renders, verbatim, then the staleness re-check clause, then the fixed
+    # footer — not a re-derivation of any of the three.
+    assert wake.startswith(floor_prompt)
+    assert wake == floor_prompt + _staleness_clause(dept_dir) + require_wake_prompt_footer()
+
+
+def test_wake_prompt_still_emits_full_envelope_with_no_due_missions():
+    """`_wake_prompt` itself is a pure renderer with no gate — it is legal to
+    call it with an empty plan (e.g. from a test, or a future caller with its
+    own reason to). The FAIL-CLOSED refusal on an empty plan lives in the CLI
+    (`command_wake_prompt`), tested separately below; this only pins that the
+    renderer's own output stays well-formed either way."""
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert "DUE_MISSIONS=[]" in wake
+    assert "Resume the dept's OODA loop and run one full tick now." in wake
+    assert wake.endswith(require_wake_prompt_footer())
+
+
+def test_wake_prompt_carries_the_handoff_pointer_and_citation_rule():
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert "WORKING_MEMORY/HANDOFF.md" in wake
+    assert "must cite a msg id / tg id / dated source" in wake
+    assert "never carry forward an unsourced operator-intent claim" in wake
+
+
+def test_wake_prompt_carries_the_staleness_re_check_instruction():
+    """#1484 PR review: the prompt is rendered at ARM time but fires hours
+    later, so a mission that becomes due overnight is invisible to the
+    DUE_MISSIONS list baked in at arm time. The fixed fix: instruct the agent
+    to re-run the SAME generator at fire time and trust that fresh output."""
+    import sys
+
+    from scripts.due_missions import _wake_prompt
+
+    dept_dir = Path("/tmp/dept")
+    wake = _wake_prompt([], dept_dir, "the dept's")
+    assert "STALENESS" in wake
+    assert "ARMED" in wake and "FIRES" in wake
+    assert f"{sys.executable} " in wake  # #1330: pinned interpreter, not bare python3
+    assert "wake-prompt --dept-dir" in wake
+    assert "authoritative DUE_MISSIONS for this tick" in wake
+
+
+def test_wake_prompt_is_never_a_bare_slash_command_and_forbids_free_text():
+    from scripts.due_missions import _wake_prompt
+
+    wake = _wake_prompt([], Path("/tmp/dept"), "the dept's")
+    assert not wake.lstrip().startswith("/")
+    # The prompt itself states there is no free-text slot for the agent to
+    # fill in — the citation/no-improvisation contract this card is about.
+    assert "never compose, paraphrase, edit, or append your own wording" in wake
+    assert "pass this exact text to CronCreate verbatim" in wake
+
+
+def test_wake_prompt_is_a_pure_deterministic_function_of_its_inputs():
+    from scripts.due_missions import _wake_prompt
+
+    plan = [
+        {
+            "id": "board",
+            "cadence": "continuous",
+            "period": "continuous",
+            "layers": [1, 2, 3, 4],
+            "mission_file": "missions/board.md",
+        }
+    ]
+    first = _wake_prompt(plan, Path("/tmp/dept"), "Rick's")
+    second = _wake_prompt(plan, Path("/tmp/dept"), "Rick's")
+    assert first == second  # same inputs -> byte-identical output, always
+
+
+def require_wake_prompt_footer() -> str:
+    from scripts.due_missions import WAKE_PROMPT_FOOTER
+
+    return WAKE_PROMPT_FOOTER
+
+
+def _mission_centric_dept_yaml(dept_dir: Path, slug: str, display_name: str) -> None:
+    """A minimal, VALID Mac-style due_dispatch manifest with one always-due
+    continuous mission — the happy-path fixture shared by the CLI tests
+    below."""
+    import yaml
+
+    (dept_dir / "missions").mkdir(parents=True)
+    (dept_dir / "layers" / "1").mkdir(parents=True)
+    (dept_dir / "layers" / "1" / "PROMPT.md").write_text("# layer 1\n", encoding="utf-8")
+    (dept_dir / "missions" / "board.md").write_text("# board\n", encoding="utf-8")
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": slug, "display_name": display_name},
+                "loop": {
+                    "due_dispatch": {
+                        "mission_ids": ["board"],
+                        "watermark": "monitoring/due.json",
+                        "pending_lease_seconds": 21600,
+                    }
+                },
+                "layers": {"subscribed": [1]},
+                "recurring_missions": [
+                    {
+                        "id": "board",
+                        "layer": 1,
+                        "status": "live",
+                        "cadence": "continuous",
+                        "due": {"policy": "every_tick"},
+                        "mission_file": "missions/board.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_command_wake_prompt_cli_end_to_end(tmp_path: Path, capsys):
+    from scripts.due_missions import command_wake_prompt, parser
+
+    dept_dir = tmp_path / "maya"
+    _mission_centric_dept_yaml(dept_dir, "maya", "Maya")
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
+    )
+    rc = command_wake_prompt(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Resume Maya's OODA loop and run one full tick now." in out
+    assert "DUE_MISSIONS=[board{cadence=continuous" in out
+    assert "WORKING_MEMORY/HANDOFF.md" in out
+    assert "STALENESS" in out
+    # Same invocation, same clock -> byte-identical stdout (determinism holds
+    # through the full CLI path, not just the pure helper functions above).
+    rc2 = command_wake_prompt(args)
+    out2 = capsys.readouterr().out
+    assert rc2 == 0
+    assert out2 == out
+
+
+# ── FAIL-CLOSED (#1484 PR review) ───────────────────────────────────────────
+#
+# Repro that triggered this: `due_missions.py wake-prompt --dept-dir
+# /srv/agents/ben` (a LIVE VPS dept.yaml, `recurring_missions:
+# [{id,layer,cadence,time,...}]`, no `loop.due_dispatch` at all) printed a
+# well-formed `DUE_MISSIONS=[]` — indistinguishable from "genuinely nothing
+# due" — exactly the failure #1483 exists to prevent. `wake-prompt` must now
+# refuse (raise, non-zero exit via `main()`, EMPTY stdout) whenever it cannot
+# positively confirm real, live, due work.
+
+
+def test_command_wake_prompt_fails_closed_on_vps_recurring_missions_schema(tmp_path: Path, capsys):
+    """The exact Ben repro shape: `recurring_missions` uses the VPS
+    layer/cadence/time schema, with NO `loop.due_dispatch` block at all."""
+    import yaml
+
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": "ben", "display_name": "Ben"},
+                "layers": {"subscribed": [1, 2, 3, 4]},
+                "recurring_missions": [
+                    {
+                        "id": "data_update",
+                        "layer": 1,
+                        "cadence": "daily",
+                        "time": "07:30",
+                        "description": "Layer 1 (Observe). Sync positions/cash/P&L.",
+                        "output_queue": "queues/research/",
+                        "creates": ["situation_brief"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
+    )
+    with pytest.raises(DueMissionConfigError, match="loop.due_dispatch"):
+        command_wake_prompt(args)
+    # Nothing was ever printed — the refusal happens before any stdout write.
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_fails_closed_when_nothing_is_currently_due(tmp_path: Path, capsys):
+    """Schema IS understood (loop.due_dispatch present) but the single scoped
+    mission's own watermark already covers this period — plan resolves to
+    empty. Must still refuse rather than print DUE_MISSIONS=[]."""
+    import yaml
+
+    from scripts.due_missions import (
+        DueMissionConfigError,
+        command_complete,
+        command_wake_prompt,
+        parser,
+    )
+
+    dept_dir = tmp_path / "quiet"
+    dept_dir.mkdir()
+    (dept_dir / "missions").mkdir()
+    (dept_dir / "missions" / "weekly.md").write_text("# weekly\n", encoding="utf-8")
+    (dept_dir / "layers" / "4").mkdir(parents=True)
+    (dept_dir / "layers" / "4" / "PROMPT.md").write_text("# layer 4\n", encoding="utf-8")
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": "quiet"},
+                "loop": {
+                    "due_dispatch": {
+                        "mission_ids": ["weekly_only"],
+                        "watermark": "monitoring/due.json",
+                        "pending_lease_seconds": 21600,
+                    }
+                },
+                "layers": {"subscribed": [4]},
+                "recurring_missions": [
+                    {
+                        "id": "weekly_only",
+                        "layer": 4,
+                        "status": "live",
+                        "cadence": "weekly",
+                        "due": {"policy": "calendar_period", "timezone": "Europe/Paris"},
+                        "mission_file": "missions/weekly.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    now_epoch = 1789300800  # 2026-09-13T12:00:00Z -> 2026-W37
+    complete_args = parser().parse_args(
+        [
+            "complete",
+            "--dept-dir",
+            str(dept_dir),
+            "--mission",
+            "weekly_only",
+            "--period",
+            "2026-W37",
+            "--now-epoch",
+            str(now_epoch),
+        ]
+    )
+    assert command_complete(complete_args) == 0
+    capsys.readouterr()  # discard the "completed ..." line
+
+    wake_args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", str(now_epoch)]
+    )
+    with pytest.raises(DueMissionConfigError, match="no live mission is currently due"):
+        command_wake_prompt(wake_args)
+    assert capsys.readouterr().out == ""
+
+
+def test_wake_prompt_cli_subprocess_fails_closed_with_empty_stdout_on_vps_schema(tmp_path: Path):
+    """End-to-end via a real subprocess (mirrors the exact reviewer repro
+    command) — non-zero exit AND byte-empty stdout, not just an empty-ish
+    string, and the reason lands on stderr, never stdout."""
+    import subprocess
+    import sys
+
+    import yaml
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": "ben", "display_name": "Ben"},
+                "layers": {"subscribed": [1, 2, 3, 4]},
+                "recurring_missions": [
+                    {
+                        "id": "data_update",
+                        "layer": 1,
+                        "cadence": "daily",
+                        "time": "07:30",
+                        "description": "Sync positions/cash/P&L across brokers.",
+                        "output_queue": "queues/research/",
+                        "creates": ["situation_brief"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = Path(__file__).resolve().parents[2] / "due_missions.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "wake-prompt", "--dept-dir", str(dept_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "loop.due_dispatch" in proc.stderr
