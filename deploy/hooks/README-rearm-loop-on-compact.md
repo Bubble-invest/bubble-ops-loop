@@ -24,11 +24,16 @@ design**: it refuses (non-zero exit, empty stdout) whenever it cannot positively
 confirm real, live, due work — e.g. a dept.yaml that doesn't (yet) use the
 `loop.due_dispatch` schema this generator understands (this is the case for
 every VPS dept today, which use the `recurring_missions:{layer,cadence,time}`
-schema instead — see the #1484 PR for why VPS reuse is a separate follow-up),
+schema instead — see board card #1487 for the VPS follow-up and why VPS reuse
+isn't in this PR),
 or a `loop.due_dispatch`-configured dept with nothing currently due. On that
 refusal the agent falls back to composing its OWN full tick protocol text for
-that one arm (the pre-#1484 behavior) and flags the refusal loudly in its
-heartbeat/Telegram — it never treats empty/failed output as "nothing to do."
+that one arm (the pre-#1484 behavior) and records the refusal in its HEARTBEAT
+ONLY, **never Telegram** — this is a KNOWN gap on VPS until the follow-up
+lands (board #1487), and firing on Telegram on every re-arm/compaction (daily
+rotation + every compaction, for ben/tony/maya) would spam the operator. It
+never treats empty/failed output as "nothing to do," it just doesn't page
+anyone about an already-known, already-tracked gap.
 This closes the channel through which Ben's uncited "operator flagged spend —
 be cost-conscious" note self-reinforced across ~36 wake prompts and silently
 dropped a mission deliverable for 12 days (see board #1483's audit), without

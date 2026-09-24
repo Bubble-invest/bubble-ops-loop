@@ -342,13 +342,14 @@ def command_claim(args: argparse.Namespace) -> int:
 # `DueMissionConfigError`, non-zero exit, EMPTY stdout — nothing is ever
 # printed before the checks below pass) whenever it cannot positively
 # confirm real, live, currently-due work: `loop.due_dispatch` absent (schema
-# not understood — deliberately still true for VPS today; see the PR for the
-# scoped-to-Mac decision) OR the resolved plan is empty (nothing is due this
-# instant — including "no live missions are configured at all"). The caller
+# not understood — deliberately still true for VPS today, see board #1487 for
+# the follow-up) OR the resolved plan is empty (nothing is due this instant —
+# including "no live missions are configured at all"). The caller
 # (boot_rearm.ts / rearm-loop-on-compact.py / the agent's own re-arm step)
-# MUST fall back to the previous free-text tick-protocol wake and flag the
-# refusal loudly (heartbeat/Telegram) rather than trust a plausible-looking
-# empty envelope.
+# MUST fall back to the previous free-text tick-protocol wake and record the
+# refusal in its HEARTBEAT ONLY — never Telegram, since this fires on every
+# re-arm/compaction and would spam the operator over a known, tracked gap —
+# rather than trust a plausible-looking empty envelope.
 
 WAKE_PROMPT_FOOTER = (
     " Before acting on this wake, read WORKING_MEMORY/HANDOFF.md for current state. "
@@ -455,11 +456,12 @@ def command_wake_prompt(args: argparse.Namespace) -> int:
         raise DueMissionConfigError(
             "wake-prompt requires dept.yaml's loop.due_dispatch (the Mac due-dispatch "
             "schema); this manifest doesn't have it. This command does NOT understand "
-            "the VPS recurring_missions:{layer,cadence,time} schema (#1484 PR review — "
-            "reusing the VPS selector cleanly is a separate follow-up), so it refuses "
-            "rather than silently emitting an empty DUE_MISSIONS=[] envelope. The "
-            "caller MUST fall back to the previous free-text wake instruction for this "
-            "dept and flag this refusal in its heartbeat/Telegram."
+            "the VPS recurring_missions:{layer,cadence,time} schema (board #1487 is "
+            "the VPS follow-up; reusing the VPS selector cleanly is out of scope for "
+            "this PR), so it refuses rather than silently emitting an empty "
+            "DUE_MISSIONS=[] envelope. The caller MUST fall back to the previous "
+            "free-text wake instruction for this dept and record this refusal in its "
+            "heartbeat ONLY (never Telegram — a known gap until #1487 lands)."
         )
     plan = _plan_for_wake(dept_dir, manifest, args.now_epoch)
     if not plan:
@@ -475,8 +477,8 @@ def command_wake_prompt(args: argparse.Namespace) -> int:
             "currently due — refusing to emit an empty DUE_MISSIONS=[] envelope "
             "(#1484 PR review: never emit or accept an empty envelope). The caller "
             "MUST fall back to the previous free-text wake instruction for this tick "
-            "and flag this refusal in its heartbeat/Telegram; a later tick is expected "
-            "to resolve this on its own."
+            "and record this refusal in its heartbeat ONLY (never Telegram); a later "
+            "tick is expected to resolve this on its own."
         )
     print(_wake_prompt(plan, dept_dir, _dept_label(manifest)))
     return 0
