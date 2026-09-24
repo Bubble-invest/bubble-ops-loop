@@ -26,6 +26,12 @@ WRAPPERS = (
         "MINTER=/usr/local/bin/bubble-board-token.sh",
         "DEST_DIR=/run/bubble-board",
         "bubble-board-token-refresh",
+        # Board #1463 follow-up: this token (issues:write-only, NOT the
+        # structural-approval credential) is read by the Mac emitter
+        # fallback + VPS claude-uid emitters, not the console — it was
+        # briefly moved to `bubble-console` during #489's rollout (breaking
+        # those readers) and is reverted here to `claude`.
+        "claude",
     ),
     (
         REPO_ROOT
@@ -33,6 +39,9 @@ WRAPPERS = (
         "MINTER=/usr/local/bin/bubble-ops-contents-token.sh",
         "DEST_DIR=/run/bubble-ops-contents",
         "bubble-ops-contents-token-refresh",
+        # This one IS console-facing (board #1463's actual trust-boundary
+        # fix) and stays on `bubble-console` — untouched by the follow-up.
+        "bubble-console",
     ),
 )
 
@@ -42,7 +51,8 @@ OLD_SYNTHETIC_TOKEN = "ghs_existing_synthetic_token"
 
 @pytest.fixture(params=WRAPPERS, ids=("board", "contents"))
 def wrapper(request, tmp_path):
-    source, minter_assignment, dest_assignment, log_name = request.param
+    source, minter_assignment, dest_assignment, log_name, expect_group = request.param
+    other_group = "bubble-console" if expect_group == "claude" else "claude"
     minter = tmp_path / "fake-minter.sh"
     minter.write_text(
         """#!/usr/bin/env bash
@@ -80,22 +90,41 @@ printf '%s' "$TEST_TOKEN"
     script_text = script_text.replace(
         minter_assignment, f"MINTER={shlex.quote(str(minter))}", 1
     ).replace(dest_assignment, f"DEST_DIR={shlex.quote(str(dest_dir))}", 1)
+    # Board #1463 (+ follow-up): each wrapper's console-facing-or-not status
+    # pins which group it must use. contents-token is console-facing (the
+    # actual trust-boundary fix) and stays `bubble-console`; the board token
+    # is issues:write-only, read by the Mac emitter fallback + VPS
+    # claude-uid emitters (not the console), and was reverted to `claude`
+    # after briefly moving to `bubble-console` broke those readers during
+    # #489's rollout. Assert the negative explicitly for the OTHER group so
+    # a future accidental cross-wire fails loudly here instead of silently
+    # passing.
+    assert f"-g {other_group}" not in script_text, (
+        f"{source} grants dir ownership to group `{other_group}` — expected "
+        f"`{expect_group}` for this wrapper."
+    )
+    assert f"chown root:{other_group}" not in script_text, (
+        f"{source} chowns the token file to `root:{other_group}` — expected "
+        f"`root:{expect_group}` for this wrapper."
+    )
+
     # The retry/validation/atomic-write behavior does not require root. Remove
     # only ownership arguments from the isolated test copy. A regex (not an
     # exact-mode string literal) so this survives either wrapper's own dir
     # mode changing independently (board #1251 r2 bumped bubble-board's to
     # 0751; contents-token stays 0750) without silently no-op'ing and
-    # leaking `-o root -g claude` into a non-root test run.
+    # leaking `-o root -g {expect_group}` into a non-root test run.
     install_pattern = re.compile(
-        r'install -d -m (\d+) -o root -g claude "\$DEST_DIR"'
+        r'install -d -m (\d+) -o root -g ' + re.escape(expect_group) + r' "\$DEST_DIR"'
     )
     assert install_pattern.search(script_text), (
-        f"expected an 'install -d -m <mode> -o root -g claude \"$DEST_DIR\"' "
-        f"line in {source} — did its ownership-flag syntax change?"
+        f"expected an 'install -d -m <mode> -o root -g {expect_group} "
+        f"\"$DEST_DIR\"' line in {source} — did its ownership-flag syntax "
+        f"change?"
     )
     script_text = install_pattern.sub(
         r'install -d -m \1 "$DEST_DIR"', script_text, count=1
-    ).replace('chown root:claude "$DEST.tmp"', ":", 1)
+    ).replace(f'chown root:{expect_group} "$DEST.tmp"', ":", 1)
     runnable = tmp_path / source.name
     runnable.write_text(script_text, encoding="utf-8")
     runnable.chmod(0o755)
@@ -223,8 +252,8 @@ def test_exhausted_empty_output_keeps_previous_token_and_is_sanitized(wrapper):
     assert OLD_SYNTHETIC_TOKEN not in result.stderr
 
 
-@pytest.mark.parametrize("source,_,__,___", WRAPPERS, ids=("board", "contents"))
-def test_production_wrapper_has_valid_bash_syntax(source, _, __, ___):
+@pytest.mark.parametrize("source,_,__,___,____", WRAPPERS, ids=("board", "contents"))
+def test_production_wrapper_has_valid_bash_syntax(source, _, __, ___, ____):
     result = subprocess.run(
         ["bash", "-n", str(source)], capture_output=True, text=True, check=False
     )

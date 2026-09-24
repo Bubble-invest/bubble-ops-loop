@@ -23,8 +23,9 @@
 #     the minter — and so the refresh timer — fails closed ("private key not
 #     provisioned"); pr_approver.py reports "not_provisioned", no false approval.
 #   - Does not grant any sudo/sudoers rule — there is nothing to grant. The
-#     console (`claude`, NoNewPrivileges=true) only ever READS the tmpfs
-#     token file this timer writes; it never invokes the minter itself.
+#     console (`bubble-console` — board #1463, was `claude` —
+#     NoNewPrivileges=true) only ever READS the tmpfs token file this timer
+#     writes; it never invokes the minter itself.
 #   - Does not start the one-shot mint immediately by default (pass --mint-now
 #     to also run `systemctl start` once you've placed the key) and does not
 #     smoke-test the result (see README.md step 3 for that).
@@ -87,5 +88,5 @@ say "  - no sudoers grant is needed (the console only READS the token file)"
 if [[ "$MINT_NOW" != "1" ]]; then
     say "  - no mint has run yet — pass --mint-now once the key is dropped, or wait for OnBootSec=30s"
 fi
-say "verify (after the key is dropped): test -s /run/bubble-cockpit-approver/token && sudo -u claude test -r /run/bubble-cockpit-approver/token"
+say "verify (after the key is dropped, board #1463): test -s /run/bubble-cockpit-approver/token && sudo -u bubble-console test -r /run/bubble-cockpit-approver/token && ! sudo -u claude test -r /run/bubble-cockpit-approver/token"
 say "next: drop the .pem (SOPS), then follow README.md's remaining steps."

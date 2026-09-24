@@ -1315,32 +1315,54 @@ print('index.md regenerated')
 PYEOF
 ```
 
-## STEP 10 — Report (Telegram, ONLY if real knowledge was written)
+## STEP 10 — Report (best-effort notification QUEUE, ONLY if real knowledge was written)
+
+**This step is a best-effort NOTIFICATION, not a compile step.** You do not
+have the credential to send it, and that is by design: the bot token lives in
+`/run/claude-agent/env`, which this headless session's sandbox deliberately
+denies you (same boundary as `/srv/bubble-secrets`, `/etc/bubble`, `/root`).
+Do not try to read that file, source it, `awk` it, or reach for a Telegram MCP
+tool (that would also risk booting a poller on the claude-user token — Morty's
+bot token, #1425/#1406). Your only job is to **queue the message text as a
+plain file**; the launcher (`cloud-wiki-compile.sh`), which already holds the
+pre-filtered token outside your sandbox, sends it with a single HTTP POST
+after it independently confirms your STEP 11 receipt — see that script's
+final block. This decouples "did the report send" from "did the compile
+succeed": a send failure (or this step failing outright) must never affect
+STEP 11, and must never appear in your final response — see the note in
+STEP 11 below.
 
 **Silent on quiet nights** (quiet-gate fired) and on any run where synthesis
-wrote nothing. Otherwise post ONE concise summary to Joris via the bot token in
-`/run/claude-agent/env`. If STEP 4.6 ran (Sunday) and wrote a non-empty
-`candidates.md`, append its one-line summary (candidate count + dropped
-counts) to this same message rather than sending a second Telegram message —
-this stays a report-only artifact, never its own alert. **Likewise append the
-one-line summaries from STEP 4.7 (claimed_vs_done), STEP 8
+wrote nothing: on a quiet night, do NOT write the queue file at all (remove it
+first if a stale one somehow exists, so a prior run's message can't be
+resent). Otherwise compose ONE concise summary for Joris. If STEP 4.6 ran
+(Sunday) and wrote a non-empty `candidates.md`, append its one-line summary
+(candidate count + dropped counts) to this same message rather than queuing a
+second one — this stays a report-only artifact, never its own alert.
+**Likewise append the one-line summaries from STEP 4.7 (claimed_vs_done), STEP 8
 (intent_backfill), and — on Sunday — STEP 4.8 (intent_drift) and STEP 4.9
-(compliance_drift)** to this same message when it
-fires. Do NOT raise a Telegram message on a quiet night just because 4.7 emitted
-verification cards — the cards themselves are the signal; append their count only
-when the message is already firing for real knowledge:
+(compliance_drift)** to this same message when it fires. Do NOT queue a
+message on a quiet night just because 4.7 emitted verification cards — the
+cards themselves are the signal; append their count only when the message is
+already firing for real knowledge:
 
 ```bash
-ENV_FILE=/run/claude-agent/env
-BOT_TOKEN=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "$ENV_FILE" 2>/dev/null)
-JORIS_TG=6532205130
-if [ -n "${BOT_TOKEN:-}" ]; then
-  curl -s --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -d chat_id="$JORIS_TG" \
-    -d text="🧠 wiki compile $(date -u +%Y-%m-%d): <synthesis summary> · <claimed_vs_done line><, on Sunday: + skill-gap: N candidates (M dropped) · intent_drift line · compliance_drift line>" >/dev/null 2>&1
-fi
-unset BOT_TOKEN
+REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt
+# Quiet night / nothing to report: make sure no stale message lingers.
+rm -f "$REPORT_FILE"
+# Otherwise, atomically queue the composed message text (plain UTF-8, no
+# secrets, no shell metacharacters this step needs to worry about — the
+# launcher passes it through --data-urlencode, not shell interpolation):
+TMP_REPORT="$(mktemp "${REPORT_FILE}.XXXXXX")"
+printf '%s' "🧠 wiki compile $(date -u +%Y-%m-%d): <synthesis summary> · <claimed_vs_done line><, on Sunday: + skill-gap: N candidates (M dropped) · intent_drift line · compliance_drift line>" > "$TMP_REPORT"
+mv -f "$TMP_REPORT" "$REPORT_FILE"
 ```
+
+If this write itself fails (disk full, permission oddity — all unexpected), do
+NOT retry it as a blocker and do NOT surface it in your final response; at
+most note it in your own reasoning/scratch work, which never reaches the
+final turn. Then continue to STEP 11 exactly as if STEP 10 had succeeded —
+reaching STEP 11 with every OTHER step done is still a successful compile.
 
 ## STEP 11 — FINAL COMPLETION RECEIPT (compile mode only)
 
@@ -1359,7 +1381,24 @@ No prefix, suffix, Markdown fence, summary, or second line. Do not return this
 receipt after any partial step, tool error, failed architecture refresh, or
 uncertainty about completion. The launcher requires the exact planned run ID in
 the Claude JSON result envelope before it acknowledges queued semantic chunks.
-An exit code or `is_error=false` without this receipt is deliberately rejected.
+An exit code or `is_error=false` without this receipt is deliberately rejected —
+`result_is_success()` in `wiki_delta.py` compares the result field for EXACT
+string equality, not "starts with" or "contains". A single stray character,
+word, or sentence anywhere in the response — even a true, helpful, one-line
+caveat about STEP 10 — fails that comparison exactly like a hallucinated
+result would, and the whole run is discarded (this is the deliberate fence:
+the receipt means "every step succeeded," never "most of it did, here's what
+didn't").
+
+**Any status, caveat, explanation, or apology — about STEP 10's report queue
+or anything else — belongs BEFORE this final turn, never IN it.** If something
+is worth recording (a degrade path taken, a step skipped by design, a queue
+write that failed), it goes into a wiki page, a log, the report queue file
+itself, or your own intermediate turns — anywhere except the string you end
+on. Your literal last output must be the receipt and only the receipt: no
+markdown, no "note:", no trailing sentence explaining a best-effort step you
+couldn't complete. STEP 10 in particular is explicitly best-effort and its
+failure is never a reason to write anything else here.
 
 Then exit. **Do NOT git push** — cloud-wiki-sync handles it.
 

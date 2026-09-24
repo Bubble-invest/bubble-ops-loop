@@ -122,23 +122,36 @@ def fetch_pr_detail(owner: str, repo: str, number: int) -> dict | None:
     files: list[dict] = []
     files_error = ""
     try:
-        raw_files = _get_json(
-            f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}/files"
-            f"?per_page=100",
-            token,
-        )
-        for f in raw_files:
-            path = f.get("filename") or ""
-            if not path:
-                continue
-            files.append({
-                "path": path,
-                "structural": is_structural_for_repo(path, repo),
-                "status": f.get("status") or "",
-            })
+        # Fully paginate (board #1462 security review): a PR padded past 100
+        # files must not hide a structural file — on a later page, or reached
+        # only via `previous_filename` on a renamed entry — from this list.
+        page = 1
+        while page <= 50:  # 5000 files — GitHub's own /files cap is 3000
+            raw_files = _get_json(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}/files"
+                f"?per_page=100&page={page}",
+                token,
+            )
+            for f in raw_files:
+                path = f.get("filename") or ""
+                if not path:
+                    continue
+                previous_path = f.get("previous_filename") or ""
+                structural = is_structural_for_repo(path, repo) or (
+                    bool(previous_path) and is_structural_for_repo(previous_path, repo)
+                )
+                files.append({
+                    "path": path,
+                    "structural": structural,
+                    "status": f.get("status") or "",
+                })
+            if len(raw_files) < 100:
+                break
+            page += 1
     except Exception as exc:  # noqa: BLE001 — files list is a nice-to-have, not fatal
         _log.info("pr_detail_reader: files fetch failed for %s/%s#%s: %s",
                   owner, repo, number, exc)
+        files = []  # an error mid-pagination must not show a PARTIAL file list
         files_error = "Liste des fichiers indisponible."
 
     structural = any(f["structural"] for f in files)

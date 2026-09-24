@@ -49,9 +49,27 @@ def runnable(tmp_path):
 
     assert "MINTER=/usr/local/bin/bubble-board-token.sh" in script_text
     assert "DEST_DIR=/run/bubble-board" in script_text
+
+    # Board #1463 follow-up: this token (issues:write-only, NOT the
+    # structural-approval credential) was briefly moved to group
+    # `bubble-console` during #489's rollout alongside the OTHER
+    # console-facing tokens, which broke the Mac emitter fallback + VPS
+    # claude-uid emitters — reverted to `root:claude`. Assert the negative
+    # explicitly so a future accidental re-move to `-g bubble-console` /
+    # `root:bubble-console` fails loudly here instead of silently passing.
+    assert "-g bubble-console" not in script_text, (
+        f"{SOURCE} grants dir ownership to group `bubble-console` — board "
+        f"#1463 follow-up reverted the shared board token to `root:claude` "
+        f"(it is not a console-facing token)."
+    )
+    assert "chown root:bubble-console" not in script_text, (
+        f"{SOURCE} chowns the shared token file to `root:bubble-console` — "
+        f"board #1463 follow-up reverted it to `root:claude`."
+    )
+
     assert INSTALL_PATTERN.search(script_text), (
-        "expected the shared install -d -m <mode> -o root -g claude line — "
-        "did the ownership-flag syntax change?"
+        "expected the shared install -d -m <mode> -o root -g claude "
+        "line — did the ownership-flag syntax change?"
     )
     assert DEPT_CHOWN in script_text, (
         "expected the per-dept chown line — did the per-dept copy loop change?"

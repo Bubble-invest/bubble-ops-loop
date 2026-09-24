@@ -270,6 +270,40 @@ PY
     elif ! python3 "$DELTA_SCRIPT" commit --plan "$DELTA_PLAN" --marker "$DELTA_MARKER"; then
         log "FATAL: success marker could not be committed; watermark not advanced."
         EXIT=1
+    else
+        # Real success: the plan-bound receipt was verified and the watermark
+        # committed. STEP 10 of the SKILL is deliberately best-effort and
+        # cannot send this itself (its sandbox denies reading /run/claude-agent/env
+        # by design — board #1482); it only QUEUES the composed message as a
+        # plain file. Sending it is the launcher's job, done here, OUTSIDE the
+        # model's sandbox, using the token this unit's own
+        # ExecStartPre (filter-headless-env.py) already allow-listed into
+        # /run/bubble-headless-cloud-wiki-<mode>/env — no secret file read by
+        # the model, no Telegram MCP/poller involved, just one plain HTTP POST.
+        REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt
+        if [ -s "$REPORT_FILE" ]; then
+            HEADLESS_ENV="/run/bubble-headless-cloud-wiki-${MODE}/env"
+            REPORT_BOT_TOKEN=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "$HEADLESS_ENV" 2>/dev/null)
+            # Fallback: whatever this process already inherited (e.g. a
+            # manual/test invocation outside the templated unit).
+            if [ -z "${REPORT_BOT_TOKEN:-}" ]; then
+                REPORT_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+            fi
+            JORIS_TG=6532205130
+            if [ -n "$REPORT_BOT_TOKEN" ]; then
+                if curl -s --max-time 10 "https://api.telegram.org/bot${REPORT_BOT_TOKEN}/sendMessage" \
+                    --data-urlencode chat_id="$JORIS_TG" \
+                    --data-urlencode "text@${REPORT_FILE}" >/dev/null 2>&1; then
+                    rm -f "$REPORT_FILE"
+                    log "telegram report sent and queue cleared"
+                else
+                    log "WARN: telegram report send failed (curl/network error); report file left queued for next successful run"
+                fi
+            else
+                log "WARN: no TELEGRAM_BOT_TOKEN resolved; report file left queued for next successful run"
+            fi
+            unset REPORT_BOT_TOKEN
+        fi
     fi
 fi
 

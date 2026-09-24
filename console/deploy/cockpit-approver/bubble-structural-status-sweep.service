@@ -1,0 +1,10 @@
+[Unit]
+Description=Sweep open PRs and (re-)post the App-signed structural-approval commit status (board #1462)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bubble-console
+Group=bubble-console
+WorkingDirectory=/opt/bubble-ops-loop
+ExecStart=/usr/local/bin/bubble-structural-status-sweep.sh

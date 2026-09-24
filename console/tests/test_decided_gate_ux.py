@@ -263,6 +263,22 @@ def test_home_no_tray_when_no_decisions(client):
 
 class TestModifyNotTerminal:
 
+    # #1285 changed list_pending_gates() to read
+    # `runtime_repo_path(slug) or repo_path(slug)` instead of `repo_path(slug)`
+    # alone. `runtime_repo_path()` (console/services/dept_registry.py) falls
+    # back to ITS OWN module-level `repo_path`, not `github_reader.repo_path`,
+    # so patching only `github_reader.repo_path` (the old, pre-#1285 pattern)
+    # is silently bypassed. Use the pattern console/tests/test_1285_gate_canonical_root.py
+    # already established for this: pin `settings.READ_FROM_DISK` to the
+    # fixture root and point CANONICAL_AGENTS_ROOT at an absent dir so
+    # runtime_repo_path() falls through to repo_path(), which then resolves
+    # against the pinned READ_FROM_DISK.
+
+    def _pin_disk_root(self, tmp_path, monkeypatch):
+        from console import settings
+        monkeypatch.setattr(settings, "READ_FROM_DISK", str(tmp_path))
+        monkeypatch.setenv("CANONICAL_AGENTS_ROOT", str(tmp_path / "absent"))
+
     def test_modify_decision_keeps_gate_in_list(self, tmp_path, monkeypatch):
         """A gate with action=modify in inbox/decisions/ must still appear in
         list_pending_gates (it is pending-but-awaiting-redraft)."""
@@ -270,7 +286,7 @@ class TestModifyNotTerminal:
         repo = _make_dept_repo(tmp_path)
         _write_gate(repo, "gate-modify")
         _write_decision(repo, "gate-modify", action="modify", comment="please revise")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+        self._pin_disk_root(tmp_path, monkeypatch)
         gates = github_reader.list_pending_gates("fixture")
         ids = [g.get("id") for g in gates]
         assert "gate-modify" in ids, "gate with modify decision must remain in list_pending_gates"
@@ -281,7 +297,7 @@ class TestModifyNotTerminal:
         repo = _make_dept_repo(tmp_path)
         _write_gate(repo, "gate-modify-flag")
         _write_decision(repo, "gate-modify-flag", action="modify", comment="needs update")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+        self._pin_disk_root(tmp_path, monkeypatch)
         gates = github_reader.list_pending_gates("fixture")
         mod_gates = [g for g in gates if g.get("id") == "gate-modify-flag"]
         assert len(mod_gates) == 1
@@ -295,7 +311,7 @@ class TestModifyNotTerminal:
         repo = _make_dept_repo(tmp_path)
         _write_gate(repo, "gate-approve")
         _write_decision(repo, "gate-approve", action="approve")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+        self._pin_disk_root(tmp_path, monkeypatch)
         gates = github_reader.list_pending_gates("fixture")
         ids = [g.get("id") for g in gates]
         assert "gate-approve" not in ids, "gate with approve decision must be hidden"
@@ -306,7 +322,7 @@ class TestModifyNotTerminal:
         repo = _make_dept_repo(tmp_path)
         _write_gate(repo, "gate-reject")
         _write_decision(repo, "gate-reject", action="reject")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+        self._pin_disk_root(tmp_path, monkeypatch)
         gates = github_reader.list_pending_gates("fixture")
         ids = [g.get("id") for g in gates]
         assert "gate-reject" not in ids
@@ -317,7 +333,7 @@ class TestModifyNotTerminal:
         repo = _make_dept_repo(tmp_path)
         _write_gate(repo, "gate-defer")
         _write_decision(repo, "gate-defer", action="defer")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+        self._pin_disk_root(tmp_path, monkeypatch)
         gates = github_reader.list_pending_gates("fixture")
         ids = [g.get("id") for g in gates]
         assert "gate-defer" not in ids

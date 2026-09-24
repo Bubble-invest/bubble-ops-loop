@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# bubble-cockpit-approver-token-refresh.sh — mint a fresh pull_requests:write
-# App-installation token into /run for the cockpit to read WITHOUT sudo
-# (console runs NoNewPrivileges=yes, so it cannot sudo at request time). Run
-# as root by a systemd timer every ~45min. Writes
-# /run/bubble-cockpit-approver/token (tmpfs, 0640, claude-readable) —
-# short-lived, never persisted to disk, pull_requests:write+metadata scope.
+# bubble-cockpit-approver-token-refresh.sh — mint a fresh pull_requests:write +
+# statuses:write App-installation token into /run for the cockpit to read
+# WITHOUT sudo (console runs NoNewPrivileges=yes, so it cannot sudo at
+# request time). Run as root by a systemd timer every ~45min. Writes
+# /run/bubble-cockpit-approver/token (tmpfs, 0640,
+# bubble-console-readable — board #1463, was claude-readable) —
+# short-lived, never persisted to disk, pull_requests:write+statuses:write
+# +metadata scope (statuses:write added board #1462, for the App-posted
+# `structural-approval` commit status).
 #
 # 1:1 sibling of bubble-ops-contents-token-refresh.sh (board #1432 follow-up —
 # the cockpit-approver minter originally shipped with a request-time `sudo -n`
@@ -14,7 +17,7 @@
 set -euo pipefail
 DEST_DIR=/run/bubble-cockpit-approver
 DEST=$DEST_DIR/token
-MINTER=/usr/local/bin/bubble-cockpit-approver-token.sh   # root-only; mints pull_requests:write+metadata
+MINTER=/usr/local/bin/bubble-cockpit-approver-token.sh   # root-only; mints pull_requests:write+statuses:write+metadata
 MAX_ATTEMPTS=4
 BACKOFF_SECONDS=5
 
@@ -64,9 +67,13 @@ while true; do
   BACKOFF_SECONDS=$((BACKOFF_SECONDS * 2))
 done
 
-install -d -m 0750 -o root -g claude "$DEST_DIR"
+# Board #1463: group root:bubble-console (was root:claude) — the console now
+# runs as the dedicated `bubble-console` uid, not the general-purpose
+# `claude` uid, so `claude` (incl. cloud-wiki-compile's agentic session) can
+# no longer read this token at all.
+install -d -m 0750 -o root -g bubble-console "$DEST_DIR"
 umask 027
 printf '%s' "$TOK" > "$DEST.tmp"
-chown root:claude "$DEST.tmp"
+chown root:bubble-console "$DEST.tmp"
 chmod 0640 "$DEST.tmp"
 mv -f "$DEST.tmp" "$DEST"

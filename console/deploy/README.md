@@ -45,6 +45,40 @@ The console binds **only to `127.0.0.1`**. Tailscale terminates TLS and tunnels 
 
 Canonical unit source: `deploy/bubble-ops-console.service.template` — kept in sync with what production actually runs (board #1081). Install/update it on a box with `scripts/deploy-console-to-vps.sh` (see `deploy/INSTALL.md` step 2); `scripts/deploy-console-to-morty.sh` re-syncs it automatically on every ongoing git-pull deploy. Full `bubble-vps-platform` pyinfra integration is still a follow-up (UX-5).
 
+### uid isolation (board #1463)
+
+The console runs as a dedicated `bubble-console` system uid, **not** the
+general-purpose `claude` uid — see the template's own header comment for the
+full rationale (the App-signed structural-approval token and the
+structural-path policy source must not sit in the same trust domain as
+`cloud-wiki-compile@*`'s agentic `claude -p` session). `WorkingDirectory` is
+the existing root-owned infra clone `/opt/bubble-ops-loop` (already kept
+current every 15 min by `bubble-deploy-infra.timer`), not the claude-writable
+checkout at `/home/claude/bubble-ops-loop` — that checkout still exists for
+Rick's own git operations, it's just no longer what the console runs from.
+`bubble-console` is a supplementary member of the `claude` unix group ONLY
+(one-directional) so it can still read+write `/home/claude/agents`; `claude`
+is not a member of `bubble-console`. One-time provisioning commands and the
+full verification checklist are in the board #1463 PR's runbook — this is an
+uid/ownership change on the live console, so it is applied by an operator,
+not by merging code.
+
+**Follow-up (board #1463, found during the #489 rollout): scoped ACL.**
+Group membership alone was not enough — dept dirs under `/home/claude/agents`
+are often `0700`/`0755`, so the console 500'd reaching e.g.
+`inbox/decisions`. `scripts/deploy-console-to-vps.sh` now also applies (as
+root, before restarting the service) a POSIX ACL scoped to exactly that
+directory: `setfacl -R -m g:bubble-console:rwX /home/claude/agents` plus a
+recursive default ACL (`setfacl -R -d -m g:bubble-console:rwX
+/home/claude/agents`) so newly-onboarded depts inherit the grant too. This
+is idempotent and narrower than the DAC-wide `claude`-group membership (an
+independent security reviewer's suggested follow-up on the original PR) —
+the group membership is left in place, the ACL is additive belt-and-suspenders
+scoping. The board token file used by the Mac emitter fallback and VPS
+claude-uid emitters (`/run/bubble-board/token`) is unrelated to this uid and
+stays `root:claude`, as before #489 — it was briefly moved to
+`root:bubble-console` during the rollout and reverted.
+
 ### Rick (`rnd`) read-mirror registration — post-merge only
 
 Rick runs on Joris's Mac M4. The VPS paths are read-only views, never a second

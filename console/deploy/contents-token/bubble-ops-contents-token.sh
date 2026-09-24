@@ -3,7 +3,8 @@
 # token for committing gate decisions to host=local dept repos (e.g.
 # Bubble-invest/bubble-ops-content). Prints ONLY the token to stdout.
 #
-# WHY: the cockpit (console, user `claude`, NoNewPrivileges) must commit an
+# WHY: the cockpit (console, user `bubble-console` — board #1463, was
+# `claude` — NoNewPrivileges) must commit an
 # operator's decision to a host=local dept's GitHub repo so the dept's Mac loop
 # pulls it (host=local delivery — Miranda/content). It has no `gh auth` and must
 # NOT hold the bubble-ops-bot App private key (root-only). So this root-owned

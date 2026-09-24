@@ -32,10 +32,15 @@
 # the #1436 wedge check + this next run will catch/retry it). Run as root (needs
 # systemctl restart + to move the agent-uid-owned transcripts).
 #
+# #1469: the 24h-ish window let a SKIP slide (Rick rotated on an 18h-old HANDOFF
+# the same day his own late wake didn't run) and let a real SKIP go unnoticed for
+# a full day (ben, no late wake -> no HANDOFF.md -> silent SKIP). Tightened to
+# 12h (override via HANDOFF_MAX_AGE_H) and every SKIP now alerts (see below).
+#
 # Usage: bubble-session-rotate.sh <slug> [--force] [--dry-run]
 set -euo pipefail
 
-HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-20}"   # handoff must be newer than this
+HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-12}"   # handoff must be newer than this (#1469: 20->12)
 
 slug="${1:?usage: bubble-session-rotate.sh <slug> [--force] [--dry-run]}"; shift || true
 force=0; dry=0
@@ -51,17 +56,64 @@ svc="bubble-agent@${slug}.service"
 
 log() { printf '[session-rotate] %s\n' "$*"; }
 
+# ── #1469: SKIP alert ─────────────────────────────────────────────────────
+# A silent SKIP is exactly what let ben's 2026-09-23 05:34Z no-HANDOFF skip
+# go unnoticed for a full day. Reuse the fleet's existing kanban emitter
+# (tools/kanban/emit_kanban_item.sh — same tool the emit-kanban-task skill
+# wraps) instead of inventing a new alert channel: it already dedupes on
+# task+title (an open issue for the same key is not re-created) and already
+# falls back to a best-effort Telegram ping when the board is unreachable.
+# Best-effort only — an alert failure must never turn a SKIP into a crash.
+_resolve_emit_kanban() {
+  local here cand
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for cand in \
+    "${EMIT_KANBAN_ITEM:-}" \
+    "${workdir}/tools/kanban/emit_kanban_item.sh" \
+    "${here}/../tools/kanban/emit_kanban_item.sh" \
+    "/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh" \
+    "/home/claude/scripts/emit_kanban_item.sh" \
+    "$HOME/claude-workspaces/Rick_RnD/tools/kanban/emit_kanban_item.sh" \
+  ; do
+    [[ -n "$cand" && -x "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# _alert_skip REASON — emit a board card for a SKIP. Title is per-slug-per-
+# day so repeat SKIPs today collapse to one card (dedup key = task+title).
+_alert_skip() {
+  local reason="$1" emitter
+  if emitter="$(_resolve_emit_kanban)"; then
+    log "$slug: alerting SKIP via $emitter"
+    BUBBLE_AGENT_WORKDIR="$workdir" "$emitter" \
+      task="session-rotate" \
+      title="session-rotate SKIP: ${slug} ($(date -u +%Y-%m-%d))" \
+      body="$reason" \
+      type=incident \
+      priority=normal \
+      owner="$slug" \
+      budget=10 \
+      actions="investigate,retry" \
+    || log "$slug: WARN — SKIP alert emit did not reach the board (see stderr above); SKIP still stands"
+  else
+    log "$slug: WARN — no emit_kanban_item.sh found (checked workdir/framework/Rick-dev paths) — SKIP alert NOT sent"
+  fi
+}
+
 [[ -d "$workdir" && -d "$proj" ]] || { log "FATAL: $slug workdir/proj missing"; exit 2; }
 
 # FAIL-SAFE handoff gate (skippable only with --force).
 if (( ! force )); then
   if [[ ! -f "$handoff" ]]; then
     log "SKIP $slug: no HANDOFF.md — refusing to rotate into a context-blind session"
+    _alert_skip "no HANDOFF.md at ${handoff} — refusing to rotate into a context-blind session."
     exit 0
   fi
   age_h=$(( ( $(date +%s) - $(stat -c %Y "$handoff") ) / 3600 ))
   if (( age_h > HANDOFF_MAX_AGE_H )); then
     log "SKIP $slug: HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h) — refusing to rotate"
+    _alert_skip "HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h threshold) at ${handoff} — refusing to rotate into a context-thin session."
     exit 0
   fi
   log "$slug: HANDOFF.md present + fresh (${age_h}h) — proceeding"
