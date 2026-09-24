@@ -281,3 +281,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+# #1462 arming smoke test — throwaway, close without merge
