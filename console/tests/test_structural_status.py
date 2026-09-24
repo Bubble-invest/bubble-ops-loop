@@ -19,10 +19,12 @@ def _files(*paths: str) -> list[dict]:
     return [{"filename": p} for p in paths]
 
 
-def _reviews(*, login: str = "", state: str = "", commit_id: str = "") -> list[dict]:
+def _reviews(*, login: str = "", user_type: str = "Bot", user_id: int = 331993040,
+             state: str = "", commit_id: str = "") -> list[dict]:
     if not login:
         return []
-    return [{"user": {"login": login}, "state": state, "commit_id": commit_id}]
+    return [{"user": {"login": login, "type": user_type, "id": user_id},
+             "state": state, "commit_id": commit_id}]
 
 
 def _stub_get(monkeypatch, *, files: list[dict], reviews: list[dict] | None = None,
@@ -87,7 +89,8 @@ def test_structural_pr_approved_on_old_sha_is_pending(monkeypatch):
     _stub_get(
         monkeypatch,
         files=_files(".claude/agents/rnd.md"),
-        reviews=_reviews(login=pr_approver.APPROVER_BOT, state="APPROVED", commit_id=_OTHER_SHA),
+        reviews=_reviews(login=pr_approver.APPROVER_BOT, user_id=pr_approver.APPROVER_BOT_ID,
+                          state="APPROVED", commit_id=_OTHER_SHA),
         head_sha=_SHA,
     )
     posted = {}
@@ -104,7 +107,8 @@ def test_structural_pr_approved_on_head_is_success(monkeypatch):
     _stub_get(
         monkeypatch,
         files=_files(".claude/agents/rnd.md"),
-        reviews=_reviews(login=pr_approver.APPROVER_BOT, state="APPROVED", commit_id=_SHA),
+        reviews=_reviews(login=pr_approver.APPROVER_BOT, user_id=pr_approver.APPROVER_BOT_ID,
+                          state="APPROVED", commit_id=_SHA),
         head_sha=_SHA,
     )
     posted = {}
@@ -115,6 +119,140 @@ def test_structural_pr_approved_on_head_is_success(monkeypatch):
     assert state == "success"
     assert f"approved by cockpit on {_SHA[:12]}" == description
     assert posted["payload"]["state"] == "success"
+
+
+def test_structural_pr_approved_by_real_rest_literal_bot_and_id_is_success(monkeypatch):
+    """Board #1461 live incident regression: `test_structural_pr_approved_
+    on_head_is_success` above stubs the review's login as
+    `pr_approver.APPROVER_BOT` — the SAME constant `evaluate()` reads, so it
+    would pass even if that constant were wrong (exactly how the live bug
+    slipped through: `APPROVER_BOT` defaulted to the WRONG login
+    `bubble-cockpit-approver[bot]`, and every review the sweep ever fetched
+    from GitHub carries the REAL identity `login: "cockpit-approver[bot]"`,
+    `type: "Bot"`, `id: 331993040` — a mismatch this shape of test can't
+    see). This test pins the exact literal shape GitHub's REST API actually
+    returns today (confirmed live via `gh api repos/Bubble-invest/
+    bubble-ops-loop/pulls/494/reviews`), independent of whatever
+    `APPROVER_BOT`/`APPROVER_BOT_ID` happen to default to, so a future
+    default drift fails this test instead of silently resetting a real
+    approval back to "pending" in production."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver[bot]", user_type="Bot", user_id=331993040,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 505)
+    assert state == "success"
+    assert f"approved by cockpit on {_SHA[:12]}" == description
+    assert posted["payload"]["state"] == "success"
+
+
+def test_structural_pr_approved_by_suffixless_human_login_is_still_pending(monkeypatch):
+    """Board #1461 review follow-up (2026-09-24): the gate #1462 exists to
+    make unforgeable must NOT be satisfiable by a plain GitHub USER account
+    registered as `cockpit-approver` (no `[bot]` suffix). An earlier revision
+    of the matching helper normalized the suffix off both sides and would
+    have wrongly accepted this — pin that it stays "pending" instead."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver", user_type="User", user_id=999,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 506)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_structural_pr_approved_by_bot_suffixed_human_login_is_still_pending(monkeypatch):
+    """Even the exact `[bot]`-suffixed login string alone is not enough —
+    `type` must also be `"Bot"`."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver[bot]", user_type="User", user_id=999,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 507)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_structural_pr_approved_with_right_login_wrong_id_is_still_pending(monkeypatch):
+    """login + type match, but `id` does not — must not be accepted."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver[bot]", user_type="Bot", user_id=1,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 508)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_structural_pr_approved_by_case_variant_login_is_still_pending(monkeypatch):
+    """No normalization anywhere — matching is exact, including case."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="Cockpit-Approver[Bot]", user_type="Bot", user_id=331993040,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 509)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
+
+
+def test_structural_pr_approved_by_other_bot_is_still_pending(monkeypatch):
+    """An unrelated identity (even another legitimate `[bot]`, e.g.
+    dependabot) must still fail closed to "pending"."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="dependabot[bot]", user_type="Bot", user_id=49699333,
+                          state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 510)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
 
 
 def test_no_token_post_status_posts_nothing(monkeypatch):

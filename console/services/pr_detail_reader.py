@@ -41,6 +41,19 @@ def _get_json(url: str, token: str):
         return json.load(resp)
 
 
+def _is_guard_check_name(name: str) -> bool:
+    """True for the structural-merge-guard's check-run name.
+
+    The workflow is named "structural-merge-guard" but its single job has no
+    explicit `name:` — GitHub reports the check-run under the JOB id, which is
+    `guard` (see `.github/workflows/structural-merge-guard.yml`). Match on
+    `guard` but keep accepting the workflow-name spelling too, in case a repo
+    ever names its job differently.
+    """
+    name = (name or "").lower()
+    return name == "guard" or "structural-merge-guard" in name
+
+
 def _guard_status(owner: str, repo: str, head_sha: str, token: str) -> str:
     """Best-effort status of the `structural-merge-guard / guard` check on
     `head_sha`. Returns "pass" / "fail" / "pending" / "unknown" — "unknown"
@@ -57,12 +70,19 @@ def _guard_status(owner: str, repo: str, head_sha: str, token: str) -> str:
                    owner, repo, head_sha[:12], exc)
         return "unknown"
     runs = [r for r in (data.get("check_runs") or [])
-            if "structural-merge-guard" in (r.get("name") or "").lower()]
+            if _is_guard_check_name(r.get("name"))]
     if not runs:
         return "unknown"
-    # Most recent run for the name wins (GitHub returns newest first already,
-    # but don't rely on ordering — pick by started_at if present).
-    run = runs[0]
+    # The check can legitimately re-run on the same head SHA (e.g. a failing
+    # run on `pull_request`, then a passing re-run triggered by
+    # `pull_request_review` once the App approval lands) — GitHub does not
+    # guarantee `check-runs` list ordering, so pick the run that finished (or
+    # started, if still in progress) most recently rather than trusting index
+    # 0.
+    def _recency(r: dict) -> str:
+        return r.get("completed_at") or r.get("started_at") or ""
+
+    run = max(runs, key=_recency)
     status = run.get("status")
     conclusion = run.get("conclusion")
     if status != "completed":

@@ -35,13 +35,21 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Override via repo variable APPROVER_BOT once the App's bot login is known.
-          APPROVER_BOT: ${{ vars.APPROVER_BOT || 'bubble-cockpit-approver[bot]' }}
+          APPROVER_BOT: ${{ vars.APPROVER_BOT || 'cockpit-approver[bot]' }}
+          # The App's bot ACCOUNT id (not the App id 5019127 — a different
+          # number; see pr_approver.APPROVER_BOT_ID's docstring). Override
+          # via repo variable if the App's bot account is ever recreated.
+          APPROVER_BOT_ID: ${{ vars.APPROVER_BOT_ID || '331993040' }}
         run: |
           set -euo pipefail
           # Paginate both lists (PRs can exceed one page of files/reviews).
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '[.[]|{path:.filename}]')
-          reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '[.[]|{user:{login:.user.login},state:.state,commit_id:.commit_id}]')
+          # Board #1461 review follow-up: `type` and `id` are REQUIRED here,
+          # not just `login` — the guard script now matches all three (login
+          # exact + type=="Bot" + id) so a plain human account cannot satisfy
+          # the gate merely by registering a same-named GitHub username.
+          reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '[.[]|{user:{login:.user.login,type:.user.type,id:.user.id},state:.state,commit_id:.commit_id}]')
           jq -n --argjson files "$files" --argjson reviews "$reviews" \
             '{files:$files, reviews:$reviews}' \
           | python3 .github/scripts/structural_merge_guard.py \
-              --repo "$REPO" --head-sha "$HEAD_SHA"
+              --repo "$REPO" --head-sha "$HEAD_SHA" --approver-bot-id "$APPROVER_BOT_ID"

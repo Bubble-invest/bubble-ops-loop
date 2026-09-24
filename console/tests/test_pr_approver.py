@@ -138,3 +138,97 @@ class TestTokenFileReading:
         monkeypatch.setenv("GH_TOKEN", "ghs_envtoken")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_alsoset")
         assert pr_approver._mint_token() is None
+
+
+class TestIsApproverReview:
+    """Board #1461 live incident + review follow-up (2026-09-24).
+
+    Incident: `APPROVER_BOT` used to default to the WRONG login
+    (`bubble-cockpit-approver[bot]`), so every strict `==` match keyed off it
+    (the sweep, the merge-guard workflow) silently never matched a real
+    APPROVED review from the App — an operator's cockpit approval kept
+    getting reported as "pending" by the next sweep tick. The default is now
+    `cockpit-approver[bot]` (verified live via `gh api repos/Bubble-invest/
+    bubble-ops-loop/pulls/494/reviews` — REST returns exactly that as
+    `user.login`, plus `user.type: "Bot"` and `user.id: 331993040`).
+
+    Review follow-up: an EARLIER version of this fix (`is_approver_bot_login`)
+    normalized the `[bot]` suffix off both sides before comparing logins —
+    which weakens the gate #1462 exists to make unforgeable: it would let a
+    plain GitHub USER account literally named `cockpit-approver` (no suffix;
+    anyone can register that username) satisfy the structural-approval match.
+    `is_approver_review` replaces it: EXACT login match to `APPROVER_BOT`
+    (no normalization) AND `type == "Bot"` AND `id == APPROVER_BOT_ID`. All
+    three must match; no GraphQL-suffix-less form is accepted anywhere (no
+    caller needs it — this codebase only ever calls REST)."""
+
+    def test_exact_rest_literal_plus_bot_plus_id_matches(self):
+        """The exact shape GitHub's REST API returns today for this App
+        (confirmed live, not derived from `APPROVER_BOT`/`APPROVER_BOT_ID` —
+        a test that compared against the module's own constants would pass
+        even if they were wrong again, exactly how board #1461 slipped
+        through)."""
+        assert pr_approver.is_approver_review(
+            {"login": "cockpit-approver[bot]", "type": "Bot", "id": 331993040}
+        ) is True
+
+    def test_suffixless_login_with_type_user_does_not_match(self):
+        """The exact attack #1462 exists to prevent: a plain human account
+        registered as `cockpit-approver` (no `[bot]` suffix, `type: "User"`)
+        must NOT satisfy the gate."""
+        assert pr_approver.is_approver_review(
+            {"login": "cockpit-approver", "type": "User", "id": 999}
+        ) is False
+
+    def test_bot_suffixed_login_with_type_user_does_not_match(self):
+        """Even if a human account somehow carried the literal `[bot]`-suffixed
+        login string, `type` must still be `"Bot"` — login alone is not
+        sufficient."""
+        assert pr_approver.is_approver_review(
+            {"login": "cockpit-approver[bot]", "type": "User", "id": 999}
+        ) is False
+
+    def test_right_login_and_type_but_wrong_id_does_not_match(self):
+        """The id pins the specific bot ACCOUNT — a different bot somehow
+        sharing the login+type shape (e.g. after an App recreation with the
+        same slug) must not be silently accepted without the id also
+        matching."""
+        assert pr_approver.is_approver_review(
+            {"login": "cockpit-approver[bot]", "type": "Bot", "id": 1}
+        ) is False
+
+    def test_case_variant_login_does_not_match(self):
+        """No normalization at all — matching is exact, including case."""
+        assert pr_approver.is_approver_review(
+            {"login": "Cockpit-Approver[Bot]", "type": "Bot", "id": 331993040}
+        ) is False
+
+    def test_other_bots_do_not_match(self):
+        assert pr_approver.is_approver_review(
+            {"login": "dependabot[bot]", "type": "Bot", "id": 49699333}
+        ) is False
+        assert pr_approver.is_approver_review(
+            {"login": "some-other-app[bot]", "type": "Bot", "id": 331993040}
+        ) is False
+
+    def test_human_reviewer_does_not_match(self):
+        assert pr_approver.is_approver_review(
+            {"login": "vdk888", "type": "User", "id": 1}
+        ) is False
+
+    def test_none_and_empty_do_not_match(self):
+        assert pr_approver.is_approver_review(None) is False
+        assert pr_approver.is_approver_review({}) is False
+
+    def test_tracks_overridden_approver_bot_and_id_env(self, monkeypatch):
+        """If a repo ever sets `vars.APPROVER_BOT`/`APPROVER_BOT_ID` to a
+        different identity (the workflow's own documented escape hatch), the
+        helper must compare against THOSE values, not hardcoded literals."""
+        monkeypatch.setattr(pr_approver, "APPROVER_BOT", "some-other-approver[bot]")
+        monkeypatch.setattr(pr_approver, "APPROVER_BOT_ID", 42)
+        assert pr_approver.is_approver_review(
+            {"login": "some-other-approver[bot]", "type": "Bot", "id": 42}
+        ) is True
+        assert pr_approver.is_approver_review(
+            {"login": "cockpit-approver[bot]", "type": "Bot", "id": 331993040}
+        ) is False
