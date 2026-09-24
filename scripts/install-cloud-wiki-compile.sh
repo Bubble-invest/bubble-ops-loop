@@ -79,11 +79,34 @@ install -m 0755 "$SKILLSMITH_SRC/scripts/lib/"*.py "$SKILLSMITH_DST/scripts/lib/
 # ones) and silently no-op'd — the actual #1493 root cause. Provision it here,
 # for every mode, idempotently, so this can't drift/be-forgotten again.
 #
+# Also provisions .config.json.seed (board #1493 review): every existing
+# per-mode dir (compile/synthesis/pruning) AND the separate morty-agentic-audit
+# headless dir carry an identical, hand-provisioned
+# /var/lib/bubble-headless-claude/<job>/.config.json.seed containing exactly
+# `{"resumeReturnDismissed": true}` — repair-shared-config.sh's ExecStartPre
+# restores CONFIG_FILE from this seed when both the live .config.json AND its
+# .config.json.good backup are absent/corrupt (i.e. on a brand-new config dir,
+# which skillsmith's always was — it never had ANY of these three files).
+# Without it, repair-shared-config.sh's own fallback is to leave .config.json
+# absent and let claude write a fresh default (not fatal — the script's
+# fail-safe contract never blocks the boot either way) — but that means
+# skillsmith's first-ever run would start from an un-dismissed resume-return
+# state that every other headless job deliberately pre-empts. Match the
+# existing fleet-wide convention instead of leaving skillsmith the one
+# undocumented exception. NEVER overwrites an existing seed (an operator may
+# have hand-edited it) — only creates it if absent.
+#
 # CONFIG_ROOT (like DEPLOY_HOME above) is sandboxed under CLOUD_WIKI_INSTALL_ROOT
 # for tests, so this step's real logic — not a reimplementation of it — is what
-# test_cloud_wiki_skill_visibility.sh exercises, with no sudo/root needed.
-# In production (INSTALL_ROOT unset) it runs against the real, root-owned
-# path via sudo; ownership is only forced to claude:claude in that case.
+# tests/test_1493_skillsmith_skill_visibility.sh exercises, with no sudo/root
+# needed in that sandboxed mode.
+#
+# PRODUCTION NOTE: `install`/`ln`/`chown`/`readlink` are NOT in claude's
+# passwordless sudoers list on joris-cx33 (only specific systemctl/journalctl/
+# helper-script invocations are — confirmed via `sudo -n -l`). This step's
+# `sudo <cmd>` calls therefore only work when the SCRIPT ITSELF is run as the
+# literal root user (e.g. `ssh hetzner-root`), not as `claude` even with sudo.
+# See DEPLOY.md / the PR body for the exact deploy command.
 CONFIG_ROOT="${INSTALL_ROOT%/}/var/lib/bubble-headless-claude"
 AS_ROOT=()
 CHOWN_OWNER=()
@@ -91,6 +114,9 @@ if [ -z "$INSTALL_ROOT" ]; then
     AS_ROOT=(sudo)
     CHOWN_OWNER=(-o claude -g claude)
 fi
+SEED_TMP="$(mktemp)"
+trap 'rm -f "$SEED_TMP"' EXIT
+printf '{\n  "resumeReturnDismissed": true\n}\n' > "$SEED_TMP"
 echo "[8/11] per-mode headless skill visibility -> $CONFIG_ROOT/cloud-wiki-compile-<mode>/skills"
 for mode_skill in compile:cloud-wiki-compile synthesis:cloud-wiki-compile pruning:cloud-wiki-compile skillsmith:skill-authoring; do
     mode="${mode_skill%%:*}"
@@ -98,6 +124,7 @@ for mode_skill in compile:cloud-wiki-compile synthesis:cloud-wiki-compile prunin
     mode_dir="$CONFIG_ROOT/cloud-wiki-compile-$mode"
     target="$DEPLOY_HOME/.claude/skills/$skill"
     link="$mode_dir/skills/$skill"
+    seed="$mode_dir/.config.json.seed"
     "${AS_ROOT[@]}" install -d -m 0700 "${CHOWN_OWNER[@]}" "$mode_dir"
     "${AS_ROOT[@]}" install -d -m 0700 "${CHOWN_OWNER[@]}" "$mode_dir/skills"
     if [ "$("${AS_ROOT[@]}" readlink "$link" 2>/dev/null || true)" != "$target" ]; then
@@ -106,6 +133,10 @@ for mode_skill in compile:cloud-wiki-compile synthesis:cloud-wiki-compile prunin
             sudo chown -h claude:claude "$link"
         fi
         echo "  linked $mode -> $skill"
+    fi
+    if [ ! -e "$seed" ]; then
+        "${AS_ROOT[@]}" install -m 0600 "${CHOWN_OWNER[@]}" "$SEED_TMP" "$seed"
+        echo "  seeded $mode -> .config.json.seed"
     fi
 done
 

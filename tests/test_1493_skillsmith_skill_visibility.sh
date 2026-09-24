@@ -9,6 +9,12 @@
 # happened to skillsmith: exit 0 / is_error=false / subtype=success while the
 # model never saw skill-authoring at all).
 #
+# Also covers the review follow-up: every existing per-mode dir carries an
+# identical, hand-provisioned .config.json.seed ({"resumeReturnDismissed":
+# true}) that skillsmith's dir never had (it didn't exist at all). The
+# installer must create that seed for every mode too, and must NEVER
+# overwrite an existing one (an operator may have hand-edited it).
+#
 # Hermetic, no sudo/root needed: CLOUD_WIKI_INSTALL_ROOT sandboxes BOTH
 # DEPLOY_HOME (/home/claude) and the new CONFIG_ROOT
 # (/var/lib/bubble-headless-claude) under a tmp dir, so this test exercises
@@ -56,6 +62,29 @@ for mode in compile synthesis pruning; do
     [ -f "$link/SKILL.md" ] || fail "$mode symlink does not resolve to a real SKILL.md"
 done
 
+# --- .config.json.seed: every mode (including skillsmith) must get the same
+#     fleet-wide seed content every other headless job already carries ---
+EXPECTED_SEED='{
+  "resumeReturnDismissed": true
+}
+'
+for mode in compile synthesis pruning skillsmith; do
+    seed="$CONFIG_ROOT/cloud-wiki-compile-$mode/.config.json.seed"
+    [ -f "$seed" ] || fail "$mode .config.json.seed was not created: $seed"
+    [ "$(cat "$seed")" = "$(printf '%s' "$EXPECTED_SEED")" ] \
+        || fail "$mode .config.json.seed content does not match the fleet-wide convention"
+    PERMS=$(stat -f '%Lp' "$seed" 2>/dev/null || stat -c '%a' "$seed" 2>/dev/null)
+    [ "$PERMS" = "600" ] || fail "$mode .config.json.seed is mode $PERMS, expected 600"
+done
+
+# --- never overwrite an existing seed (an operator may have hand-edited it) ---
+SKILLSMITH_SEED="$CONFIG_ROOT/cloud-wiki-compile-skillsmith/.config.json.seed"
+printf '{\n  "resumeReturnDismissed": false,\n  "handEdited": true\n}\n' > "$SKILLSMITH_SEED"
+chmod 600 "$SKILLSMITH_SEED"
+run_install
+[ "$(cat "$SKILLSMITH_SEED")" = "$(printf '{\n  "resumeReturnDismissed": false,\n  "handEdited": true\n}\n')" ] \
+    || fail "re-install clobbered a hand-edited .config.json.seed instead of leaving it alone"
+
 # --- idempotency: re-running the installer must not fail or duplicate/relink ---
 BEFORE_INODE=$(ls -di "$SKILLSMITH_LINK" | awk '{print $1}')
 run_install
@@ -64,4 +93,4 @@ AFTER_INODE=$(ls -di "$SKILLSMITH_LINK" | awk '{print $1}')
 [ "$(readlink "$SKILLSMITH_LINK")" = "$SKILLSMITH_TARGET" ] || fail "re-install broke the skillsmith symlink target"
 [ "$BEFORE_INODE" = "$AFTER_INODE" ] || fail "re-install churned the symlink unnecessarily (not idempotent)"
 
-echo "PASS: install-cloud-wiki-compile.sh provisions the per-mode skill-visibility symlink for every mode, including skillsmith (#1493), idempotently"
+echo "PASS: install-cloud-wiki-compile.sh provisions the per-mode skill-visibility symlink AND .config.json.seed for every mode, including skillsmith (#1493), idempotently and without clobbering hand-edits"

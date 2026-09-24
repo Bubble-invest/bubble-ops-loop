@@ -112,7 +112,12 @@ this card — do not confuse it with `cloud-wiki-compile`.
 ## Manual deploy (until wired into the automatic vendor/revendor path)
 
 ```bash
-# on joris-cx33, as claude (with sudo for the systemd bits):
+# Board #1493: run as the LITERAL root user (e.g. `ssh hetzner-root`), not
+# `claude` even with sudo — the installer's per-mode headless-skill-visibility
+# step needs `install`/`ln`/`chown`, none of which are in claude's
+# passwordless sudoers on joris-cx33 (only specific systemctl/journalctl/
+# helper-script invocations are).
+ssh hetzner-root
 cd /path/to/bubble-ops-loop
 ./scripts/install-cloud-wiki-compile.sh
 ```
