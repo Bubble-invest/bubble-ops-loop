@@ -547,19 +547,24 @@ def test_command_wake_prompt_cli_end_to_end(tmp_path: Path, capsys):
 # positively confirm real, live, due work.
 
 
-def test_command_wake_prompt_fails_closed_on_vps_recurring_missions_schema(tmp_path: Path, capsys):
-    """The exact Ben repro shape: `recurring_missions` uses the VPS
-    layer/cadence/time schema, with NO `loop.due_dispatch` block at all."""
+def _recurring_missions_dept_yaml(dept_dir: Path, slug: str = "ben", display_name: str = "Ben") -> None:
+    """The exact Ben repro shape (#1487): `recurring_missions` uses the VPS
+    layer/cadence/time schema, with NO `loop.due_dispatch` block at all — one
+    Layer-1 `daily@07:30` mission, no prior `.last-run` (so it is due as soon
+    as the floor's own 07:00 Paris minimum and the mission's own 07:30 are
+    both reached)."""
     import yaml
 
-    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
-
-    dept_dir = tmp_path / "ben"
-    dept_dir.mkdir()
+    (dept_dir / "missions" / "data_update").mkdir(parents=True)
+    (dept_dir / "missions" / "data_update" / "PROMPT.md").write_text(
+        "# data_update\n", encoding="utf-8"
+    )
+    (dept_dir / "layers" / "1").mkdir(parents=True)
+    (dept_dir / "layers" / "1" / "PROMPT.md").write_text("# layer 1\n", encoding="utf-8")
     (dept_dir / "dept.yaml").write_text(
         yaml.safe_dump(
             {
-                "department": {"slug": "ben", "display_name": "Ben"},
+                "department": {"slug": slug, "display_name": display_name},
                 "layers": {"subscribed": [1, 2, 3, 4]},
                 "recurring_missions": [
                     {
@@ -576,12 +581,91 @@ def test_command_wake_prompt_fails_closed_on_vps_recurring_missions_schema(tmp_p
         ),
         encoding="utf-8",
     )
+
+
+# ── recurring_missions / VPS schema (#1487) ─────────────────────────────────
+#
+# #1484 shipped `wake-prompt` for the Mac `loop.due_dispatch` schema only,
+# and deliberately FAILED CLOSED for the VPS `recurring_missions` schema
+# (ben/tony/maya, plus content/accountant — see board #1487) because no
+# selector reused it yet. #1487 closes that: `select_due_missions` +
+# `build_dispatch_ctx(materialize=False)` (the SAME primitive the live
+# /loop's STEP C already calls every tick) now back a second `wake-prompt`
+# branch for this schema. These tests replace the old
+# "always fails closed for recurring_missions" pair (that invariant no
+# longer holds by design) with: succeeds when something is due, still fails
+# closed when nothing is due right now, and a THIRD, narrower fail-closed
+# case for a manifest with neither schema at all.
+
+
+def test_command_wake_prompt_succeeds_on_vps_recurring_missions_schema_when_due(
+    tmp_path: Path, capsys
+):
+    from scripts.due_missions import command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml(dept_dir)
+    # 2026-09-13T12:00:00Z == 14:00 Paris (CEST) — past both the mission's own
+    # 07:30 and Layer 1's 07:00 floor; no prior .last-run anywhere, so C.0
+    # ("morning floor not yet run today") is the only eligible branch.
     args = parser().parse_args(
         ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
     )
-    with pytest.raises(DueMissionConfigError, match="loop.due_dispatch"):
+    rc = command_wake_prompt(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Resume Ben's OODA loop and run one full tick now." in out
+    assert "DUE_MISSIONS=[data_update{cadence=daily,layer=1,file=" in out
+    assert "COMPLETE data_update =>" in out
+    # The VPS completion path is commit_dispatch, never the Mac watermark CLI.
+    assert "scripts.lib.dispatch_helpers.commit_dispatch" in out
+    assert "due_missions.py complete" not in out
+    assert "STALENESS" in out
+    assert "WORKING_MEMORY/HANDOFF.md" in out
+    # Still an authoritative WHAT-is-due list, not a replacement for HOW the
+    # tick executes (Chesterton's fence, card #1487 item 4).
+    assert "decide_dispatch" in out
+
+
+def test_command_wake_prompt_fails_closed_on_vps_recurring_missions_schema_when_nothing_due(
+    tmp_path: Path, capsys
+):
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml(dept_dir)
+    # 2026-09-13T04:00:00Z == 06:00 Paris — before Layer 1's own 07:00 floor
+    # (and every other layer's, with no queues populated either), so nothing
+    # is eligible: a genuine heartbeat tick.
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    with pytest.raises(DueMissionConfigError, match="select_due_missions has nothing due"):
         command_wake_prompt(args)
-    # Nothing was ever printed — the refusal happens before any stdout write.
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_fails_closed_on_unrecognized_manifest_schema(tmp_path: Path, capsys):
+    """Neither `loop.due_dispatch` (Mac) nor a non-empty `recurring_missions`
+    (VPS/content/accountant, #1487) is present — the narrowed catch-all that
+    replaces #1484's original "any recurring_missions manifest fails closed"
+    refusal now that the VPS schema itself is understood."""
+    import yaml
+
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "mystery"
+    dept_dir.mkdir()
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump({"department": {"slug": "mystery"}}), encoding="utf-8"
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789300800"]
+    )
+    with pytest.raises(DueMissionConfigError, match="this manifest has neither"):
+        command_wake_prompt(args)
     assert capsys.readouterr().out == ""
 
 
@@ -655,36 +739,50 @@ def test_command_wake_prompt_fails_closed_when_nothing_is_currently_due(tmp_path
     assert capsys.readouterr().out == ""
 
 
-def test_wake_prompt_cli_subprocess_fails_closed_with_empty_stdout_on_vps_schema(tmp_path: Path):
+def test_wake_prompt_cli_subprocess_succeeds_on_vps_recurring_missions_schema(tmp_path: Path):
+    """End-to-end via a real subprocess (mirrors production's exact
+    `due_missions.py wake-prompt --dept-dir` invocation) — the VPS
+    `recurring_missions` schema now succeeds when something is due: exit 0,
+    non-empty stdout carrying the DUE_MISSIONS envelope, nothing on stderr."""
+    import subprocess
+    import sys
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml(dept_dir)
+    script = Path(__file__).resolve().parents[2] / "due_missions.py"
+    proc = subprocess.run(
+        [
+            sys.executable, str(script), "wake-prompt",
+            "--dept-dir", str(dept_dir), "--now-epoch", "1789300800",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "DUE_MISSIONS=[data_update{cadence=daily,layer=1,file=" in proc.stdout
+    assert proc.stderr == ""
+
+
+def test_wake_prompt_cli_subprocess_fails_closed_with_empty_stdout_on_unrecognized_schema(
+    tmp_path: Path,
+):
     """End-to-end via a real subprocess (mirrors the exact reviewer repro
     command) — non-zero exit AND byte-empty stdout, not just an empty-ish
-    string, and the reason lands on stderr, never stdout."""
+    string, and the reason lands on stderr, never stdout. Uses a manifest
+    with NEITHER schema (the narrowed catch-all — see the module note above
+    `_recurring_missions_dept_yaml`); the VPS `recurring_missions` schema
+    itself is no longer a universal-refusal case as of #1487."""
     import subprocess
     import sys
 
     import yaml
 
-    dept_dir = tmp_path / "ben"
+    dept_dir = tmp_path / "mystery"
     dept_dir.mkdir()
     (dept_dir / "dept.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "department": {"slug": "ben", "display_name": "Ben"},
-                "layers": {"subscribed": [1, 2, 3, 4]},
-                "recurring_missions": [
-                    {
-                        "id": "data_update",
-                        "layer": 1,
-                        "cadence": "daily",
-                        "time": "07:30",
-                        "description": "Sync positions/cash/P&L across brokers.",
-                        "output_queue": "queues/research/",
-                        "creates": ["situation_brief"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+        yaml.safe_dump({"department": {"slug": "mystery"}}), encoding="utf-8"
     )
     script = Path(__file__).resolve().parents[2] / "due_missions.py"
     proc = subprocess.run(
@@ -695,4 +793,4 @@ def test_wake_prompt_cli_subprocess_fails_closed_with_empty_stdout_on_vps_schema
     )
     assert proc.returncode != 0
     assert proc.stdout == ""
-    assert "loop.due_dispatch" in proc.stderr
+    assert "this manifest has neither" in proc.stderr

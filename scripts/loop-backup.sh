@@ -997,6 +997,45 @@ except HarnessSelectorError as exc:
 PYEOF
 }
 
+# ── Idle-nudge wake text (#1487) ─────────────────────────────────────────────
+# The floor's idle-nudge (inject_live_loop, below) used to be ONE hardcoded
+# free-text prompt — "run decide_dispatch and figure out what's due yourself"
+# — for every dept, every time. That is exactly the channel #1483/#1484
+# closed for the Mac self-arm path (an uncited note self-reinforcing across
+# ~36 wake prompts). This dept's twin gap: ben/tony/maya's `recurring_missions`
+# schema now has a generator (`due_missions.py wake-prompt`, #1487) that
+# renders the SAME kind of deterministic DUE_MISSIONS envelope the floor's
+# FORCE_LAYER tick already trusts (`build_mission_tick_prompt`). Try it FIRST;
+# fall back to the historical free text, UNCHANGED, on any refusal or error
+# (unknown schema, nothing due right now, or a hard error) — never fatal, and
+# never silently different: `_inject_wake_text` always returns non-empty text.
+_inject_wake_now_epoch() {
+    if [[ "${BUBBLE_BACKUP_TEST_UID_OK:-0}" == "1" && -n "${BUBBLE_BACKUP_TEST_NOW_UTC:-}" ]]; then
+        "$PY" -c 'import sys, datetime
+print(int(datetime.datetime.fromisoformat(sys.argv[1]).timestamp()))' "$BUBBLE_BACKUP_TEST_NOW_UTC" 2>/dev/null && return 0
+    fi
+    date -u +%s
+}
+
+_inject_wake_fallback_text() {
+    printf 'Resume your OODA loop (self-paced). Run your full tick now: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log. Then arm your OWN next wake via a single CronCreate (CronList first, dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 - treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet, or run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot if all 4 layers are done. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).'
+}
+
+_inject_wake_text() {
+    local slug="$1" workdir="$2"
+    local planner="${REPO_ROOT}/scripts/due_missions.py"
+    local generated
+    if [[ -f "$planner" ]] && generated="$("$PY" "$planner" wake-prompt \
+            --dept-dir "$workdir" --now-epoch "$(_inject_wake_now_epoch)" 2>/dev/null)" \
+            && [[ -n "$generated" ]]; then
+        log "$slug: inject using generated DUE_MISSIONS wake-prompt (#1487)"
+        printf '%s' "$generated"
+        return 0
+    fi
+    log "$slug: wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback free-text nudge, unchanged"
+    _inject_wake_fallback_text
+}
+
 inject_live_loop() {
     local slug="$1"
     local svc="bubble-agent@${slug}.service"
@@ -1017,13 +1056,14 @@ inject_live_loop() {
     local state_dir="${HOME}/.claude/channels/telegram-${slug}"
     local inject="${state_dir}/inject"
     [[ -d "$state_dir" ]] || return 1
-    local today hb
+    local today hb workdir
     today="$(primary_paris_day)" || return 1
-    hb="$(_dept_workdir "$slug")/outputs/${today}/heartbeat.log"
+    workdir="$(_dept_workdir "$slug")"
+    hb="${workdir}/outputs/${today}/heartbeat.log"
     local before; before=$(mtime_epoch "$hb")
 
     log "$slug: live session alive — injecting 'run your loop' (no -p spawn)"
-    printf 'Resume your OODA loop (self-paced). Run your full tick now: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log. Then arm your OWN next wake via a single CronCreate (CronList first, dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 - treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet, or run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot if all 4 layers are done. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).\n' >> "$inject" 2>/dev/null || return 1
+    printf '%s\n' "$(_inject_wake_text "$slug" "$workdir")" >> "$inject" 2>/dev/null || return 1
 
     # Wait up to ~240s for the live session to tick (heartbeat mtime advances).
     # 90s was too short: the inject IS delivered but a quiet session can take a

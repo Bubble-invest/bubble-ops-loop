@@ -441,6 +441,149 @@ def _plan_for_wake(dept_dir: Path, manifest: dict, now_epoch: "int | None") -> l
     return plan or []
 
 
+# ─── wake-prompt: recurring_missions / VPS schema (#1487) ──────────────────
+#
+# Board #1487 (child of #1484/#1483): #1484 built `wake-prompt` for the Mac
+# `loop.due_dispatch` schema only and FAILED CLOSED for every VPS dept
+# (ben/tony/maya) plus the two Mac depts that never adopted due_dispatch
+# either (Miranda/content, Géraldine/accountant) — all five use the plain
+# `recurring_missions: [{id, layer, cadence, time/day, ...}]` shape with no
+# `loop:` block at all. Their steady-state self-wake (and the floor's
+# `inject_live_loop` idle-nudge) stayed FREE TEXT — "run decide_dispatch and
+# figure it out" — exactly the channel #1483 closed for Mac.
+#
+# This section closes it for `recurring_missions` too, WITHOUT a second
+# parser: `_plan_for_wake_recurring` reuses `select_due_missions` +
+# `build_dispatch_ctx(materialize=False)` from `dispatch_helpers.py` —
+# the SAME primitive the live /loop's STEP C already calls every tick (its
+# read-only-probe discipline mirrors `select_due_missions_for_forced_layer`,
+# the floor's sibling caller — see that function's docstring). The generator
+# never re-implements cadence/eligibility/round-counter logic; it only asks
+# the existing selector "what would decide_dispatch pick right now" and
+# renders that answer as the fixed DUE_MISSIONS envelope.
+#
+# Two honest divergences from the Mac envelope shape (`_prompt()`), because
+# the underlying schema genuinely differs — not a second free-text slot:
+#   1. `layer` (singular int, straight from the mission dict) replaces Mac's
+#      `layers` (a list — an artifact of `loop.due_dispatch`'s schema letting
+#      a mission span more than one layer; `recurring_missions` never does).
+#      There is no `period` field: the VPS completion ledger
+#      (`commit_dispatch` → `outputs/<today>/dispatch.json`) is keyed by
+#      mission id + `dispatched_at`/`completed_at` timestamps, not a
+#      Mac-style calendar `period` string watermark.
+#   2. The per-mission `COMPLETE` line cannot be a static, copy-pasteable
+#      shell command the way Mac's `due_missions.py complete --period ...`
+#      is: VPS completion (`commit_dispatch`) REQUIRES the real, in-memory
+#      dispatch-start time and the subagent's actual verified artifact
+#      paths — values that do not exist yet when this envelope is rendered,
+#      only after the subagent returns. Baking in a fake/placeholder value
+#      would be worse than no command at all (a wrong `dispatched_at` breaks
+#      `commit_dispatch`'s ordering/idempotence checks). So `COMPLETE <id> =>`
+#      is a precise instruction to call the exact same primitive the floor
+#      tick's `build_mission_tick_prompt` already tells the agent to call —
+#      this is not a new completion mechanism, it is the existing one, named
+#      explicitly instead of left implicit in "run decide_dispatch".
+#
+# Chesterton's fence (card #1487, item 4): `select_due_missions` picks the
+# ONE highest-priority eligible layer's due missions this tick (same as
+# `decide_dispatch`'s own priority walk) — it does not perform the dispatch
+# itself (spawning subagents, materializing queue hand-offs, incrementing
+# round/cycle counters, writing the dispatch ledger). The envelope therefore
+# explicitly tells the agent to STILL run STEP C (`decide_dispatch`) and the
+# normal per-mission dispatch path for EXECUTION — this generator only
+# replaces the WHAT-is-due free-text guess with a deterministic, selector-
+# computed list; it does not replace the existing dispatch machinery.
+
+
+def _plan_for_wake_recurring(
+    dept_dir: Path, manifest: dict, now_epoch: "int | None"
+) -> list[dict]:
+    """Compute the due-mission list for a `recurring_missions` manifest.
+
+    Returns `[]` when the manifest has no (non-empty) `recurring_missions`
+    list, or when the live selector currently has nothing due. The caller
+    (`command_wake_prompt`) is responsible for refusing on an empty result;
+    this helper only computes, and is deliberately read-only
+    (`build_dispatch_ctx(..., materialize=False)`) — generating a wake
+    prompt must never stamp a `.last-run`/`.last-materialized` marker or
+    write the dispatch ledger as a side effect (#454's read-only-probe
+    discipline, the same one `select_due_missions_for_forced_layer` follows).
+
+    The `import` is local, not module-level: `dispatch_helpers.py` imports
+    `yaml` unconditionally at import time, which would defeat the #1330
+    fail-LOUD guard above (`_require_yaml`) if this ran before `_load_manifest`
+    had already proven the running interpreter has `yaml`. By the time this
+    function is called, `command_wake_prompt` has already called
+    `_load_manifest` (which calls `_require_yaml`), so the interpreter is
+    known-good here.
+    """
+    missions = manifest.get("recurring_missions")
+    if not isinstance(missions, list) or not missions:
+        return []
+    from scripts.lib.dispatch_helpers import build_dispatch_ctx, select_due_missions
+
+    now = _now(now_epoch)
+    ctx = build_dispatch_ctx(dept_dir, now_utc=now, materialize=False)
+    return select_due_missions(ctx, missions) or []
+
+
+def _prompt_recurring(plan: list[dict], dept_dir: Path, dept_label: str = "the dept's") -> str:
+    """The `recurring_missions`-schema counterpart to `_prompt()` (#1487).
+
+    Same envelope grammar (`DUE_MISSIONS=[...]` + `COMPLETE <id> => ...`
+    lines), but each field is honest about what this schema actually has —
+    see the divergences documented in the section header above.
+    """
+    from scripts.lib.dispatch_helpers import resolve_mission_prompt
+
+    items = ";".join(
+        f"{item.get('id')}{{cadence={item.get('cadence', '')},"
+        f"layer={item.get('layer', '')},file={resolve_mission_prompt(dept_dir, item)}}}"
+        for item in plan
+    )
+    commands = []
+    for item in plan:
+        mission_id = item.get("id", "")
+        commands.append(
+            f"COMPLETE {mission_id} => only after {mission_id}'s subagent has actually "
+            "returned and its output is verified (never during DECIDE, never before it "
+            "returns), call scripts.lib.dispatch_helpers.commit_dispatch(repo_dir, the "
+            f"recurring_missions entry for '{mission_id}', dispatched_at=<the UTC time you "
+            "noted right before spawning its subagent>, completed_at=<now>, "
+            "artifacts=[<its real verified output paths>]) — the exact same primitive the "
+            "layer-floor tick's build_mission_tick_prompt already uses; do not write "
+            "outputs/<today>/dispatch.json by any other path."
+        )
+    return (
+        f"Resume {dept_label} OODA loop and run one full tick now. "
+        f"DUE_MISSIONS=[{items}]. "
+        "This is the exact allow-list of missions the live dispatch selector "
+        "(select_due_missions — the same primitive STEP C's decide_dispatch priority walk "
+        "relies on) confirms due THIS tick: read each mission's file (falls back to its "
+        "layer's PROMPT.md when no per-mission file exists) and execute it. This envelope "
+        "is the authoritative WHAT-is-due; it does not replace HOW you execute — still run "
+        "STEP C (decide_dispatch) and the normal per-mission dispatch/materialize path so "
+        "queue hand-offs, round/cycle counters, and the dispatch ledger are written exactly "
+        "as before. Do not schedule or run any recurring mission not listed here. Preserve "
+        "every human-approval gate and the PR-to-Joris-only self-modification guardrail; "
+        "never self-merge mission/mandate/loop/agent-def changes. "
+        + " | ".join(commands)
+        + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
+    )
+
+
+def _wake_prompt_recurring(plan: list[dict], dept_dir: Path, dept_label: str) -> str:
+    """`_wake_prompt()`'s counterpart for the `recurring_missions` schema (#1487).
+
+    Reuses the SAME `_staleness_clause` and `WAKE_PROMPT_FOOTER` as the Mac
+    path (both are schema-agnostic — the staleness re-check re-invokes this
+    same `wake-prompt --dept-dir <dir>` CLI regardless of which schema it
+    resolves to, and the footer's HANDOFF pointer + citation rule apply
+    fleet-wide). Only the DUE_MISSIONS body (`_prompt_recurring`) differs.
+    """
+    return _prompt_recurring(plan, dept_dir, dept_label) + _staleness_clause(dept_dir) + WAKE_PROMPT_FOOTER
+
+
 def command_wake_prompt(args: argparse.Namespace) -> int:
     dept_dir = Path(args.dept_dir).resolve()
     manifest = _load_manifest(dept_dir)
@@ -448,40 +591,62 @@ def command_wake_prompt(args: argparse.Namespace) -> int:
     due_dispatch_configured = (
         isinstance(loop, dict) and "due_dispatch" in loop and loop.get("due_dispatch") is not None
     )
-    if not due_dispatch_configured:
-        # FAIL-CLOSED (#1484 PR review): this is the Ben repro — a VPS
-        # `recurring_missions:{layer,cadence,time}` manifest has no
-        # `loop.due_dispatch` at all. Refuse rather than silently printing a
-        # plausible-looking DUE_MISSIONS=[]; nothing has been printed yet.
-        raise DueMissionConfigError(
-            "wake-prompt requires dept.yaml's loop.due_dispatch (the Mac due-dispatch "
-            "schema); this manifest doesn't have it. This command does NOT understand "
-            "the VPS recurring_missions:{layer,cadence,time} schema (board #1487 is "
-            "the VPS follow-up; reusing the VPS selector cleanly is out of scope for "
-            "this PR), so it refuses rather than silently emitting an empty "
-            "DUE_MISSIONS=[] envelope. The caller MUST fall back to the previous "
-            "free-text wake instruction for this dept and record this refusal in its "
-            "heartbeat ONLY (never Telegram — a known gap until #1487 lands)."
-        )
-    plan = _plan_for_wake(dept_dir, manifest, args.now_epoch)
-    if not plan:
-        # FAIL-CLOSED: schema IS understood, but nothing is currently live/due —
-        # never emit an empty envelope (#1484 PR review: "never emit or accept
-        # an empty envelope"). This is expected to self-heal on the next tick
-        # (continuous missions are always due; a purely calendar-cadence dept
-        # can legitimately have a quiet moment) and is not itself an error in
-        # the dept.yaml, so the caller's fallback + flag is the correct response,
-        # not a crash.
-        raise DueMissionConfigError(
-            "wake-prompt: loop.due_dispatch is configured but no live mission is "
-            "currently due — refusing to emit an empty DUE_MISSIONS=[] envelope "
-            "(#1484 PR review: never emit or accept an empty envelope). The caller "
-            "MUST fall back to the previous free-text wake instruction for this tick "
-            "and record this refusal in its heartbeat ONLY (never Telegram); a later "
-            "tick is expected to resolve this on its own."
-        )
-    print(_wake_prompt(plan, dept_dir, _dept_label(manifest)))
-    return 0
+    if due_dispatch_configured:
+        # Mac schema (#1484) — UNCHANGED behaviour from #1484, byte-for-byte.
+        plan = _plan_for_wake(dept_dir, manifest, args.now_epoch)
+        if not plan:
+            # FAIL-CLOSED: schema IS understood, but nothing is currently live/due —
+            # never emit an empty envelope (#1484 PR review: "never emit or accept
+            # an empty envelope"). This is expected to self-heal on the next tick
+            # (continuous missions are always due; a purely calendar-cadence dept
+            # can legitimately have a quiet moment) and is not itself an error in
+            # the dept.yaml, so the caller's fallback + flag is the correct response,
+            # not a crash.
+            raise DueMissionConfigError(
+                "wake-prompt: loop.due_dispatch is configured but no live mission is "
+                "currently due — refusing to emit an empty DUE_MISSIONS=[] envelope "
+                "(#1484 PR review: never emit or accept an empty envelope). The caller "
+                "MUST fall back to the previous free-text wake instruction for this tick "
+                "and record this refusal in its heartbeat ONLY (never Telegram); a later "
+                "tick is expected to resolve this on its own."
+            )
+        print(_wake_prompt(plan, dept_dir, _dept_label(manifest)))
+        return 0
+
+    recurring = manifest.get("recurring_missions")
+    if isinstance(recurring, list) and recurring:
+        # VPS / content / accountant schema (#1487).
+        plan = _plan_for_wake_recurring(dept_dir, manifest, args.now_epoch)
+        if not plan:
+            # FAIL-CLOSED, same never-emit-empty contract as the Mac branch above
+            # (#1484 PR review) — nothing is currently due per select_due_missions
+            # (a true heartbeat tick, or every eligible layer's own cadence/time
+            # gate is not yet reached). This is expected to self-heal on a later
+            # tick and is not itself a dept.yaml error.
+            raise DueMissionConfigError(
+                "wake-prompt: recurring_missions is configured (VPS/content/accountant "
+                "schema, board #1487) but select_due_missions has nothing due right now "
+                "— refusing to emit an empty DUE_MISSIONS=[] envelope (same never-emit-"
+                "empty contract as #1484). The caller MUST fall back to the previous "
+                "free-text wake instruction for this tick and record this refusal in its "
+                "heartbeat ONLY (never Telegram); a later tick is expected to resolve "
+                "this on its own."
+            )
+        print(_wake_prompt_recurring(plan, dept_dir, _dept_label(manifest)))
+        return 0
+
+    # FAIL-CLOSED: neither schema this module understands is present. Refuse
+    # rather than silently printing a plausible-looking DUE_MISSIONS=[];
+    # nothing has been printed yet.
+    raise DueMissionConfigError(
+        "wake-prompt requires either dept.yaml's loop.due_dispatch (the Mac due-dispatch "
+        "schema) or a non-empty recurring_missions list (the VPS/content/accountant "
+        "schema, board #1487); this manifest has neither. This command does not "
+        "understand any other manifest shape, so it refuses rather than silently "
+        "emitting an empty DUE_MISSIONS=[] envelope. The caller MUST fall back to the "
+        "previous free-text wake instruction for this dept and record this refusal in "
+        "its heartbeat ONLY (never Telegram)."
+    )
 
 
 def command_release(args: argparse.Namespace) -> int:
