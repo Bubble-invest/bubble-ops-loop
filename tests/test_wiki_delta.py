@@ -458,3 +458,53 @@ def test_skill_contract_separates_shared_wiki_proposal_pr_from_vault():
     assert "Joris reviews/merges that proposal PR" in skill
     assert "separately and manually" in skill
     assert "no agent performs a CORE/wiki" in skill
+
+
+def test_skill_step10_never_reads_the_denied_secret_and_only_queues_a_file():
+    """Board #1482: STEP 10 must not attempt to read /run/claude-agent/env (the
+    sandboxed headless session is denied that path) or call Telegram itself —
+    it only queues plain report text to a file for the launcher to send."""
+    skill = (REPO / "skills/cloud-wiki-compile/SKILL.md").read_text()
+    step10 = skill.split("## STEP 10", 1)[1].split("## STEP 11", 1)[0]
+    assert "best-effort" in step10
+    # The path may be MENTIONED (to explain the boundary), but no code in
+    # this step may actually read it or hit the Telegram API directly.
+    assert "awk -F= '/^TELEGRAM_BOT_TOKEN" not in step10
+    assert "api.telegram.org" not in step10
+    assert "curl" not in step10
+    assert "REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt" in step10
+    # Quiet-night behavior must clear, never resend, a stale queued message.
+    assert 'rm -f "$REPORT_FILE"' in step10
+    # A queue-write failure must never block STEP 11 or be surfaced in the
+    # final response.
+    assert "do NOT surface it in your final response" in step10
+
+
+def test_skill_step11_forbids_any_caveat_in_the_final_turn():
+    """Board #1482 hardening: STEP 11 must say explicitly that ANY status or
+    caveat (about STEP 10 or anything else) belongs before the final turn,
+    never inside it — the exact-string receipt check has zero tolerance for a
+    trailing sentence, even a true and helpful one."""
+    skill = (REPO / "skills/cloud-wiki-compile/SKILL.md").read_text()
+    step11 = skill.split("## STEP 11", 1)[1]
+    normalized = " ".join(step11.split())
+    assert "belongs BEFORE this final turn, never IN it" in normalized
+    assert "EXACT string equality" in normalized
+    assert "STEP 10" in step11
+
+
+def test_launcher_report_send_happens_only_after_commit_succeeds():
+    """Board #1482: the launcher's telegram-send block must live in the
+    success branch of the two-phase watermark check (only after accept-result
+    AND commit both succeed), never unconditionally and never before the
+    receipt is verified."""
+    script = (REPO / "skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh").read_text()
+    commit_idx = script.index('python3 "$DELTA_SCRIPT" commit --plan "$DELTA_PLAN" --marker "$DELTA_MARKER"')
+    send_idx = script.index("REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt")
+    else_idx = script.rindex("else", commit_idx, send_idx)
+    assert commit_idx < else_idx < send_idx, "report send must be in the commit success (else) branch"
+    # Must read the already-filtered, non-secret headless env — never the raw
+    # /run/claude-agent/env the model itself is denied.
+    tail = script[send_idx:]
+    assert '/run/bubble-headless-cloud-wiki-${MODE}/env' in tail
+    assert 'rm -f "$REPORT_FILE"' in tail
