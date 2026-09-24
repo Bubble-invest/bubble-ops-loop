@@ -41,23 +41,31 @@ except Exception as exc:  # pragma: no cover - fail CLOSED if policy can't load
     sys.exit(1)
 
 
-def _normalize_bot_login(login: str | None) -> str:
-    """Lowercase, `[bot]`-suffix-stripped form of a GitHub Actor login.
+def _is_approver_review(user: dict | None, approver_bot: str, approver_bot_id: int) -> bool:
+    """True when `user` (a review's `user` object, exactly as GitHub's REST
+    `/pulls/{n}/reviews` returns it) identifies the trusted cockpit App bot —
+    and ONLY that App, never a same-named human account.
 
-    Mirrors `console.services.pr_approver._normalize_bot_login` (this script
+    Mirrors `console.services.pr_approver.is_approver_review` (this script
     can't import that module — it runs standalone in the Actions runner, no
-    `console` on its path). REST (what this script's caller feeds it, from
-    `/pulls/{n}/reviews`) reports a GitHub App's bot login as
-    `cockpit-approver[bot]`; GraphQL's `author.login` on the same identity
-    drops the suffix. Board #1461: a strict `==` against one hardcoded shape
-    is exactly the bug class that made the sweep (structural_status.py)
-    silently never match a real APPROVED review — match on the normalized
-    form here too, not just where that incident was found.
+    `console` on its path). Requires ALL THREE, exact (no normalization):
+    `login == approver_bot` (App-bot logins always carry the `[bot]` suffix
+    on REST), `type == "Bot"`, and `id == approver_bot_id`.
+
+    Board #1461 review follow-up (2026-09-24): an earlier revision of this
+    guard normalized the `[bot]` suffix off both sides before comparing —
+    which would let a plain GitHub USER account literally named
+    `cockpit-approver` (no suffix; anyone can register that username)
+    satisfy this gate, defeating the entire point of #1462 (only the App's
+    key can ever produce this identity). No normalization here; all three
+    fields must match exactly.
     """
-    login = (login or "").strip().lower()
-    if login.endswith("[bot]"):
-        login = login[: -len("[bot]")]
-    return login
+    user = user or {}
+    return (
+        user.get("login") == approver_bot
+        and user.get("type") == "Bot"
+        and user.get("id") == approver_bot_id
+    )
 
 
 def main() -> int:
@@ -68,6 +76,16 @@ def main() -> int:
         "--approver-bot",
         default=os.environ.get("APPROVER_BOT", "cockpit-approver[bot]"),
         help="login of the trusted cockpit App bot whose APPROVED review authorizes structural merges",
+    )
+    ap.add_argument(
+        "--approver-bot-id",
+        type=int,
+        # The App's bot ACCOUNT id (not the App id 5019127 — a different
+        # number; see pr_approver.APPROVER_BOT_ID's docstring). Confirmed
+        # live via `gh api repos/Bubble-invest/bubble-ops-loop/pulls/494/
+        # reviews`.
+        default=int(os.environ.get("APPROVER_BOT_ID", "331993040")),
+        help="numeric user id of the trusted cockpit App bot account (second, id-based identity check)",
     )
     args = ap.parse_args()
 
@@ -92,8 +110,7 @@ def main() -> int:
     # cannot slip past — the stale approval no longer matches the head).
     approved = any(
         (r.get("state") == "APPROVED")
-        and (_normalize_bot_login((r.get("user") or {}).get("login"))
-             == _normalize_bot_login(args.approver_bot))
+        and _is_approver_review(r.get("user"), args.approver_bot, args.approver_bot_id)
         and (r.get("commit_id") == args.head_sha)
         for r in reviews
     )

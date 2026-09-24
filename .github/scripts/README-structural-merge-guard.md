@@ -17,7 +17,14 @@ check:
 3. If some are → it requires an **APPROVED review authored by the cockpit App bot**
    (`vars.APPROVER_BOT`, default `cockpit-approver[bot]`), bound to the
    **current head SHA** (so an approve-then-push-a-structural-change cannot slip
-   past). A review by any other identity — **including `vdk888`** — does not count.
+   past). A review by any other identity — **including `vdk888`, and including a
+   plain GitHub user account that happens to be named `cockpit-approver`** — does
+   not count: the match requires the review's `user.login` to equal
+   `APPROVER_BOT` exactly (no `[bot]`-suffix normalization), `user.type` to equal
+   `"Bot"`, AND `user.id` to equal `vars.APPROVER_BOT_ID` (default `331993040`,
+   the App's bot *account* id — not the App id `5019127`, a different number).
+   All three must match; this is what makes the identity unforgeable by simply
+   registering a similarly-named account.
 
 Only the cockpit holds the App's key, so an approval by the App bot is a signal
 the fleet's agents provably cannot forge. Runtime direct-pushes to `main` never go
@@ -52,8 +59,13 @@ dept repos vendor it, or reference the reusable workflow in bubble-ops-loop.
 # structural path, no App approval -> exit 1 (blocked)
 echo '{"files":[{"path":"MANDATE.md"}],"reviews":[]}' \
   | python3 .github/scripts/structural_merge_guard.py --repo Bubble-invest/bubble-ops-loop --head-sha abc
-# structural path, App approval on head -> exit 0 (allowed)
-echo '{"files":[{"path":"MANDATE.md"}],"reviews":[{"user":{"login":"cockpit-approver[bot]"},"state":"APPROVED","commit_id":"abc"}]}' \
+# structural path, App approval (login + type + id all match) on head -> exit 0 (allowed)
+echo '{"files":[{"path":"MANDATE.md"}],"reviews":[{"user":{"login":"cockpit-approver[bot]","type":"Bot","id":331993040},"state":"APPROVED","commit_id":"abc"}]}' \
+  | python3 .github/scripts/structural_merge_guard.py --repo Bubble-invest/bubble-ops-loop --head-sha abc
+# structural path, review from a plain USER account named "cockpit-approver"
+# (no [bot] suffix, type "User") -> exit 1 (blocked) — proves the gate isn't
+# satisfied by merely registering a same-named human account
+echo '{"files":[{"path":"MANDATE.md"}],"reviews":[{"user":{"login":"cockpit-approver","type":"User","id":999},"state":"APPROVED","commit_id":"abc"}]}' \
   | python3 .github/scripts/structural_merge_guard.py --repo Bubble-invest/bubble-ops-loop --head-sha abc
 # non-structural path -> exit 0 (allowed)
 echo '{"files":[{"path":"outputs/x.md"}],"reviews":[]}' \

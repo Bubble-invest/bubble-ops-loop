@@ -53,39 +53,53 @@ _APPROVER_TOKEN_FILE = os.environ.get(
 # "pending" by the next sweep tick even though GitHub genuinely carried an
 # APPROVED review from the App. Confirmed live via
 # `gh api repos/Bubble-invest/bubble-ops-loop/pulls/494/reviews` — REST
-# returns `user.login: "cockpit-approver[bot]"`, `user.type: "Bot"`.
+# returns `user.login: "cockpit-approver[bot]"`, `user.type: "Bot"`,
+# `user.id: 331993040`.
 APPROVER_BOT = os.environ.get("APPROVER_BOT", "cockpit-approver[bot]")
+# The App's bot ACCOUNT id (NOT the App id 5019127 — a different number;
+# GitHub Apps get both a numeric App id and a separate numeric bot user
+# account id, and only the latter appears on a review's `user.id`).
+# Confirmed live via the same `gh api .../reviews` call above. A second,
+# independent identity signal alongside the login + `type: "Bot"` check
+# below — board #1461 review follow-up (2026-09-24): an EARLIER version of
+# this fix normalized the `[bot]` suffix off both sides before comparing,
+# which is wrong for a security gate — it would let a plain (non-App) GitHub
+# user account literally named `cockpit-approver` (no suffix; anyone can
+# register that username) satisfy the match, defeating the entire point of
+# #1462 (only the App's key can ever produce this identity). Pin all three
+# of login + type + id instead; no normalization.
+APPROVER_BOT_ID = int(os.environ.get("APPROVER_BOT_ID", "331993040"))
 _API = "https://api.github.com"
 
 
-def _normalize_bot_login(login: str | None) -> str:
-    """Lowercase, `[bot]`-suffix-stripped form of a GitHub Actor login.
+def is_approver_review(user: dict | None) -> bool:
+    """True when `user` (a review's `user` object, exactly as GitHub's REST
+    `/pulls/{n}/reviews` returns it) identifies the cockpit-approver App —
+    and ONLY the App, never a same-named human account.
 
-    GitHub's own API surfaces report a GitHub App's bot login in more than
-    one shape depending on the endpoint: REST (`/pulls/{n}/reviews`,
-    `/commits/.../check-runs`, i.e. everything this codebase actually calls)
-    returns `cockpit-approver[bot]`; GraphQL's `author.login` on the same
-    identity drops the suffix and returns `cockpit-approver` (this codebase
-    doesn't call GraphQL anywhere today — `git grep -n graphql` — but the
-    difference is real and documented, and a strict `==` against ONE
-    hardcoded shape is exactly the class of bug board #1461 just found, so
-    match on the normalized form rather than add a second literal to drift
-    out of sync with the first).
+    Requires ALL THREE, exact (no normalization):
+      - `login == APPROVER_BOT` (the App's bot login, `[bot]` suffix and
+        all — GitHub always includes the suffix on a Bot actor's REST
+        login; a login missing it is NOT this App).
+      - `type == "Bot"` — a plain User account can be named anything,
+        including `cockpit-approver` with no suffix; this is what actually
+        distinguishes "the App" from "a human who picked a similar name".
+      - `id == APPROVER_BOT_ID` — the bot account's own numeric id, which
+        cannot be changed by renaming the account (GitHub bot accounts,
+        like user accounts, keep their id across a login rename).
+
+    Every reviewer match against `APPROVER_BOT` in this codebase
+    (structural_status.py's sweep, `.github/scripts/structural_merge_guard.py`)
+    goes through this helper (or its local mirror there) instead of a bare
+    `== APPROVER_BOT`, so there is exactly ONE place that knows how to
+    compare a review's author to the App's identity.
     """
-    login = (login or "").strip().lower()
-    if login.endswith("[bot]"):
-        login = login[: -len("[bot]")]
-    return login
-
-
-def is_approver_bot_login(login: str | None) -> bool:
-    """True when `login` identifies the cockpit-approver App, regardless of
-    which `[bot]`-suffix form the calling API surface used. Every reviewer
-    match against `APPROVER_BOT` in this codebase (structural_status.py's
-    sweep, `.github/scripts/structural_merge_guard.py`) should go through
-    this helper instead of a bare `== APPROVER_BOT`, so there is exactly ONE
-    place that knows how to compare a login to the App's identity."""
-    return _normalize_bot_login(login) == _normalize_bot_login(APPROVER_BOT)
+    user = user or {}
+    return (
+        user.get("login") == APPROVER_BOT
+        and user.get("type") == "Bot"
+        and user.get("id") == APPROVER_BOT_ID
+    )
 
 
 def _mint_token() -> str | None:
