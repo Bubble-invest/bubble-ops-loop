@@ -26,8 +26,63 @@ pushes via the operator's own **`gh`/git credential**.
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
 | `local-loop-backup-runner.sh` | The per-tick body: optional due-mission plan from `dept.yaml` → heartbeat-staleness check (overridden once by due periodic work) → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
-| `bubble-deploy-mac.sh` | Board #1477: keeps the Mac's `bubble-ops-loop` **framework checkout itself** (`~/claude-workspaces/bubble-ops-loop`) current — `git fetch` + `merge --ff-only origin/main`, only on a clean `main` checkout. Mac twin of `scripts/bubble-deploy.sh --infra-only`. Refuses (ALERT + exit 1, worktree untouched) on a dirty tree, a non-`main` branch, or a diverged (ahead) checkout. Never executes anything from the pulled tree; it only `install`s (copies) `bubble-session-rotate-mac.sh` into Application Support when that file's content changed. |
+| `bubble-deploy-mac.sh` | Board #1477: keeps the Mac's `bubble-ops-loop` **framework checkout itself** (`~/claude-workspaces/bubble-ops-loop`) current — `git fetch` + `merge --ff-only origin/main`, only on a clean `main` checkout. Mac twin of `scripts/bubble-deploy.sh --infra-only`. Refuses (ALERT + exit 1, worktree untouched) on a dirty tree, a non-`main` branch, or a diverged (ahead) checkout. Board #1488 widened its "never execute from the pulled tree" contract for one explicit, hard-coded, allow-listed installer — see below. |
 | `install-mac-loop-deploy.sh` | Installs `bubble-deploy-mac.sh` as a **StartInterval** launchd agent (`com.bubble.mac-loop-deploy`, default 15 min — mirrors `bubble-deploy-infra.timer`'s `*:0/15`). One instance per Mac (not per-slug): it updates the shared framework checkout every local dept's installers run out of. |
+
+## `bubble-deploy-mac.sh`'s widened contract (#1488)
+
+Board #1488: all 3 Macs were found running a telegram-plugin `boot_rearm.ts`
+from June (missed board #850), because `bubble-deploy-mac.sh` kept the
+**framework checkout** current but never re-ran the installers that actually
+apply that framework to the live Mac state — `git log` moving forward said
+nothing about whether the Mac's plugin cache or vendored hooks had. Joris
+approved (Telegram: "ok, not manual") widening the script's "never execute
+anything from the pulled tree" rule, but **only** for one explicit,
+hard-coded, allow-listed installer — this is a deliberate, narrow carve-out,
+not a blanket allow to run arbitrary vendored scripts. After a successful
+fast-forward, or when the checkout is already current (both cases already
+passed the same clean-`main`-at-`origin/main` verification), the script now
+also:
+
+1. **Re-runs `scripts/install-boot-rearm.sh`** (the sole allow-listed
+   executable) — idempotent, vetted, and already the canonical installer for
+   this exact patch (see `deploy/telegram-plugin/`). On a Mac it's invoked
+   with `BOOT_REARM_PLUGIN_GLOB="$HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/"`
+   and `BOOT_REARM_BUN` set to `~/.bun/bin/bun` (falling back to `command -v
+   bun` when that isn't present) — the same env-var contract
+   `scripts/install-channel-patches.sh` already uses, just resolved for a
+   Mac's `$HOME` instead of the VPS's `/home/claude`. A cheap pre-check
+   (`cmp` the vendored source against the installed plugin copy + `grep` for
+   `bootRearmNotification` in `server.ts`) means the installer — and its
+   `bun build` validation — only actually runs when there's real drift to
+   fix, not on every 15-minute tick forever. It never restarts anything;
+   Rick controls restarts.
+2. **Compare-and-installs `deploy/hooks/rearm-loop-on-compact.py`** into
+   `$SUPPORT_DIR/hooks/rearm-loop-on-compact.py` — copy-only, exactly like
+   the existing rotate-script vendoring — but **only when that path already
+   exists** there, i.e. the Mac already opted in to the compact re-arm hook
+   by having it vendored once. It never creates the hook from scratch. Every
+   overwrite keeps a timestamped `.bak-<UTC-timestamp>` of the previous
+   content.
+
+Every action is logged (`BOOT-REARM: ...` / `COMPACT-HOOK: ...` lines). An
+installer failure raises an ALERT and the script exits 1 (so the launchd
+job's own exit status surfaces it) — but a fast-forward that already
+succeeded is **never** rolled back because a later step failed; only that
+step's own failure is reported. Everything else this script touches stays
+copy-only, as before.
+
+Covered by `tests/test_1477_bubble_deploy_mac_safe_ff.sh` (T10-T15), which
+stubs both the installer and `bun` via env overrides
+(`BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER`, `BOOT_REARM_PLUGIN_GLOB`,
+`BOOT_REARM_BUN`) so the suite never touches a real bun or a real telegram
+plugin cache.
+
+**Deploy step after this PR merges:** re-run
+`install-mac-loop-deploy.sh --activate` on each Mac (jade-m1, jade-m5,
+Joris's Mac) so the vendored `bubble-deploy-mac.sh` copy under
+`~/Library/Application Support/bubble-ops-loop/` picks up the widened
+contract — the launchd job runs the vendored copy, not the live checkout.
 
 ## Operator-intents: read from the wiki, not an isolated host mirror (#1333)
 
