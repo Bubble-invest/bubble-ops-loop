@@ -41,6 +41,25 @@ except Exception as exc:  # pragma: no cover - fail CLOSED if policy can't load
     sys.exit(1)
 
 
+def _normalize_bot_login(login: str | None) -> str:
+    """Lowercase, `[bot]`-suffix-stripped form of a GitHub Actor login.
+
+    Mirrors `console.services.pr_approver._normalize_bot_login` (this script
+    can't import that module — it runs standalone in the Actions runner, no
+    `console` on its path). REST (what this script's caller feeds it, from
+    `/pulls/{n}/reviews`) reports a GitHub App's bot login as
+    `cockpit-approver[bot]`; GraphQL's `author.login` on the same identity
+    drops the suffix. Board #1461: a strict `==` against one hardcoded shape
+    is exactly the bug class that made the sweep (structural_status.py)
+    silently never match a real APPROVED review — match on the normalized
+    form here too, not just where that incident was found.
+    """
+    login = (login or "").strip().lower()
+    if login.endswith("[bot]"):
+        login = login[: -len("[bot]")]
+    return login
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="owner/name of the PR's repo")
@@ -73,7 +92,8 @@ def main() -> int:
     # cannot slip past — the stale approval no longer matches the head).
     approved = any(
         (r.get("state") == "APPROVED")
-        and ((r.get("user") or {}).get("login") == args.approver_bot)
+        and (_normalize_bot_login((r.get("user") or {}).get("login"))
+             == _normalize_bot_login(args.approver_bot))
         and (r.get("commit_id") == args.head_sha)
         for r in reviews
     )

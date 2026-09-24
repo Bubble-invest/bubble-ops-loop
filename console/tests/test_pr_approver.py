@@ -138,3 +138,52 @@ class TestTokenFileReading:
         monkeypatch.setenv("GH_TOKEN", "ghs_envtoken")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_alsoset")
         assert pr_approver._mint_token() is None
+
+
+class TestIsApproverBotLogin:
+    """Board #1461 live incident: `APPROVER_BOT` used to default to the WRONG
+    login (`bubble-cockpit-approver[bot]`), so every strict `==` match keyed
+    off it (the sweep, the merge-guard workflow) silently never matched a
+    real APPROVED review from the App — an operator's cockpit approval kept
+    getting reported as "pending" by the next sweep tick. The default is now
+    `cockpit-approver[bot]` (verified live via
+    `gh api repos/Bubble-invest/bubble-ops-loop/pulls/494/reviews` — REST
+    returns exactly that as `user.login`). `is_approver_bot_login` is the
+    ONE place that compares a login to the App's identity; these tests pin
+    both the real REST literal (so a future default drift is caught, unlike
+    a test that compares `APPROVER_BOT` to itself) and the other login shape
+    GitHub's APIs are documented to return."""
+
+    def test_matches_the_real_rest_literal(self):
+        """The literal string GitHub's REST API actually returns today for
+        this App (confirmed live, not derived from `APPROVER_BOT` — a test
+        that compared against the module's own constant would pass even if
+        that constant were wrong again, exactly how board #1461 slipped
+        through)."""
+        assert pr_approver.is_approver_bot_login("cockpit-approver[bot]") is True
+
+    def test_matches_graphql_style_login_without_bot_suffix(self):
+        """GraphQL's `author.login` on the same identity drops the `[bot]`
+        suffix. Not called anywhere in this codebase today, but a real form
+        the API returns — robust matching must not assume REST's shape is
+        the only one that will ever reach this comparison."""
+        assert pr_approver.is_approver_bot_login("cockpit-approver") is True
+
+    def test_matches_case_insensitively(self):
+        assert pr_approver.is_approver_bot_login("Cockpit-Approver[Bot]") is True
+
+    def test_rejects_an_unrelated_login(self):
+        assert pr_approver.is_approver_bot_login("vdk888") is False
+        assert pr_approver.is_approver_bot_login("some-other-app[bot]") is False
+
+    def test_rejects_none_and_empty(self):
+        assert pr_approver.is_approver_bot_login(None) is False
+        assert pr_approver.is_approver_bot_login("") is False
+
+    def test_tracks_an_overridden_approver_bot_env(self, monkeypatch):
+        """If a repo ever sets `vars.APPROVER_BOT` to a different login (the
+        workflow's own documented escape hatch), the helper must compare
+        against THAT value, not a hardcoded literal."""
+        monkeypatch.setattr(pr_approver, "APPROVER_BOT", "some-other-approver[bot]")
+        assert pr_approver.is_approver_bot_login("some-other-approver[bot]") is True
+        assert pr_approver.is_approver_bot_login("cockpit-approver[bot]") is False

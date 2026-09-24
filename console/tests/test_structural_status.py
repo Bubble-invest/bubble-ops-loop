@@ -117,6 +117,79 @@ def test_structural_pr_approved_on_head_is_success(monkeypatch):
     assert posted["payload"]["state"] == "success"
 
 
+def test_structural_pr_approved_by_real_rest_login_literal_is_success(monkeypatch):
+    """Board #1461 live incident regression: `test_structural_pr_approved_
+    on_head_is_success` above stubs the review's login as
+    `pr_approver.APPROVER_BOT` — the SAME constant `evaluate()` reads, so it
+    would pass even if that constant were wrong (exactly how the live bug
+    slipped through: `APPROVER_BOT` defaulted to the WRONG login
+    `bubble-cockpit-approver[bot]`, and every review the sweep ever fetched
+    from GitHub carries the REAL login `cockpit-approver[bot]` — a mismatch
+    this shape of test can't see). This test pins the literal string GitHub's
+    REST API actually returns today (confirmed live via `gh api repos/
+    Bubble-invest/bubble-ops-loop/pulls/494/reviews`), independent of
+    whatever `APPROVER_BOT` happens to default to, so a future default drift
+    fails this test instead of silently resetting a real approval back to
+    "pending" in production."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver[bot]", state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 505)
+    assert state == "success"
+    assert f"approved by cockpit on {_SHA[:12]}" == description
+    assert posted["payload"]["state"] == "success"
+
+
+def test_structural_pr_approved_by_graphql_style_login_is_still_success(monkeypatch):
+    """Defense in depth: even though this codebase only ever calls REST
+    (`git grep -n graphql` finds nothing), the matching helper normalizes the
+    `[bot]`-suffix form rather than assuming REST's shape is the only one —
+    prove the sweep still resolves to "success" if a review's login ever
+    arrived in GraphQL's suffix-less shape."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="cockpit-approver", state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 506)
+    assert state == "success"
+    assert posted["payload"]["state"] == "success"
+
+
+def test_structural_pr_approved_by_unrelated_login_is_still_pending(monkeypatch):
+    """The normalized/robust match must not become OVER-permissive — an
+    approval from an unrelated identity (even another `[bot]`) must still
+    fail closed to "pending"."""
+    monkeypatch.setattr(pr_approver, "_mint_token", lambda: "ghs_fake")
+    _stub_get(
+        monkeypatch,
+        files=_files(".claude/agents/rnd.md"),
+        reviews=_reviews(login="some-other-app[bot]", state="APPROVED", commit_id=_SHA),
+        head_sha=_SHA,
+    )
+    posted = {}
+    monkeypatch.setattr(pr_approver, "_post",
+                         lambda url, token, payload: (posted.update(payload=payload) or (201, {})))
+
+    state, description = structural_status.evaluate("Bubble-invest", "bubble-ops-loop", 507)
+    assert state == "pending"
+    assert posted["payload"]["state"] == "pending"
+
+
 def test_no_token_post_status_posts_nothing(monkeypatch):
     monkeypatch.setattr(pr_approver, "_mint_token", lambda: None)
     called = {"n": 0}

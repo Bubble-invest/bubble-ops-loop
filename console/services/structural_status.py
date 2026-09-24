@@ -249,7 +249,7 @@ def evaluate(owner: str, repo: str, number: int, token: str | None = None) -> tu
                 return ("error", f"could not fetch PR #{number}'s reviews.")
             approved = any(
                 (r.get("state") == "APPROVED")
-                and ((r.get("user") or {}).get("login") == pr_approver.APPROVER_BOT)
+                and pr_approver.is_approver_bot_login((r.get("user") or {}).get("login"))
                 and (r.get("commit_id") == head_sha)
                 for r in reviews
             )

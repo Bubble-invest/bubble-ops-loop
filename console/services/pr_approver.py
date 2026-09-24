@@ -43,8 +43,49 @@ _APPROVER_TOKEN_FILE = os.environ.get(
 # Matches structural_merge_guard.py's own default literal (`--approver-bot`'s
 # default) — this only affects the human-readable success message below, but a
 # reviewer flagged the mismatch as worth aligning (board #1432 review).
+#
+# Board #1461 live incident (2026-09-24): this used to default to the WRONG
+# login (`bubble-cockpit-approver[bot]`) — the real App's login (verified via
+# `GET /app`, App id 5019127) is `cockpit-approver[bot]`. Every reviewer
+# match keyed off this constant (structural_status.py's sweep, the
+# structural-merge-guard workflow) silently found zero matching reviews as a
+# result, so an operator's cockpit approval kept getting reported/reset as
+# "pending" by the next sweep tick even though GitHub genuinely carried an
+# APPROVED review from the App. Confirmed live via
+# `gh api repos/Bubble-invest/bubble-ops-loop/pulls/494/reviews` — REST
+# returns `user.login: "cockpit-approver[bot]"`, `user.type: "Bot"`.
 APPROVER_BOT = os.environ.get("APPROVER_BOT", "cockpit-approver[bot]")
 _API = "https://api.github.com"
+
+
+def _normalize_bot_login(login: str | None) -> str:
+    """Lowercase, `[bot]`-suffix-stripped form of a GitHub Actor login.
+
+    GitHub's own API surfaces report a GitHub App's bot login in more than
+    one shape depending on the endpoint: REST (`/pulls/{n}/reviews`,
+    `/commits/.../check-runs`, i.e. everything this codebase actually calls)
+    returns `cockpit-approver[bot]`; GraphQL's `author.login` on the same
+    identity drops the suffix and returns `cockpit-approver` (this codebase
+    doesn't call GraphQL anywhere today — `git grep -n graphql` — but the
+    difference is real and documented, and a strict `==` against ONE
+    hardcoded shape is exactly the class of bug board #1461 just found, so
+    match on the normalized form rather than add a second literal to drift
+    out of sync with the first).
+    """
+    login = (login or "").strip().lower()
+    if login.endswith("[bot]"):
+        login = login[: -len("[bot]")]
+    return login
+
+
+def is_approver_bot_login(login: str | None) -> bool:
+    """True when `login` identifies the cockpit-approver App, regardless of
+    which `[bot]`-suffix form the calling API surface used. Every reviewer
+    match against `APPROVER_BOT` in this codebase (structural_status.py's
+    sweep, `.github/scripts/structural_merge_guard.py`) should go through
+    this helper instead of a bare `== APPROVER_BOT`, so there is exactly ONE
+    place that knows how to compare a login to the App's identity."""
+    return _normalize_bot_login(login) == _normalize_bot_login(APPROVER_BOT)
 
 
 def _mint_token() -> str | None:
