@@ -13,17 +13,26 @@ DEPLOY_HOME="$TEST_ROOT/root/home/claude"
 LAUNCHER="$DEPLOY_HOME/scripts/cloud-wiki-compile.sh"
 AUDIT="$DEPLOY_HOME/scripts/wiki-intent-audit.py"
 DELTA="$DEPLOY_HOME/scripts/wiki-delta.py"
+CITATION_LINT="$DEPLOY_HOME/scripts/wiki-citation-lint.py"
 SKILL="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/SKILL.md"
 MISSION="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md"
 
 test -x "$LAUNCHER"
 test -x "$AUDIT"
 test -x "$DELTA"
+test -x "$CITATION_LINT"
 test -r "$SKILL"
 test -r "$MISSION"
 grep -qF '/home/claude/scripts/wiki-intent-audit.py' "$LAUNCHER"
 grep -qF '/home/claude/scripts/wiki-delta.py' "$LAUNCHER"
 grep -qF '/home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md' "$SKILL"
+grep -qF '/home/claude/scripts/wiki-citation-lint.py' "$SKILL"
+
+# The installed script must still work standalone (board #1485): a quiet
+# feed produces zero candidates, exit 0.
+CITATION_FEED="$TEST_ROOT/aggregate_feed.txt"
+printf '%s' '[NEW rick_rnd a.jsonl 2026-09-24T08:00:00 assistant] I read the file and checked status.' > "$CITATION_FEED"
+python3 "$CITATION_LINT" --feed "$CITATION_FEED" | grep -q '"candidates": \[\]'
 
 WIKI="$TEST_ROOT/wiki"
 MIRROR="$TEST_ROOT/mirror"
