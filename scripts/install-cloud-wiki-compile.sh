@@ -26,6 +26,7 @@ SKILL_DST="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/SKILL.md"
 INTENT_AUDIT_DST="$DEPLOY_HOME/scripts/wiki-intent-audit.py"
 INTENT_PROPOSER_DST="$DEPLOY_HOME/scripts/propose-operator-intents.py"
 DELTA_DST="$DEPLOY_HOME/scripts/wiki-delta.py"
+CITATION_LINT_DST="$DEPLOY_HOME/scripts/wiki-citation-lint.py"
 INTENT_MISSION_DST="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/missions/intent-backfill.md"
 # The pruning step invokes this notifier by absolute path (see SKILL.md). It was
 # previously an untracked, hand-deployed orphan under /home/claude/scripts — which
@@ -40,8 +41,9 @@ install -d -m 0755 "$DEPLOY_HOME/scripts"
 echo "[1/10] launcher script -> $SCRIPT_DST"
 install -m 0755 "$SKILL_SRC/scripts/cloud-wiki-compile.sh" "$SCRIPT_DST"
 
-echo "[2/10] delta planner -> $DELTA_DST"
+echo "[2/10] delta planner + citation lint -> $DELTA_DST, $CITATION_LINT_DST"
 install -m 0755 "$SKILL_SRC/scripts/wiki_delta.py" "$DELTA_DST"
+install -m 0755 "$SKILL_SRC/scripts/wiki_citation_lint.py" "$CITATION_LINT_DST"
 
 echo "[3/10] intent audit -> $INTENT_AUDIT_DST"
 install -m 0755 "$SKILL_SRC/scripts/wiki_intent_audit.py" "$INTENT_AUDIT_DST"

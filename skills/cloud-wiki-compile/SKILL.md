@@ -420,7 +420,7 @@ Wait for ALL extraction subagents.
 
 Feed routing is pass-specific and is part of the exhaustiveness contract:
 
-- STEP 4 and nightly STEP 4.7 read this plan's `aggregate_feed`.
+- STEP 4 and nightly STEPS 4.7 and 4.7b read this plan's `aggregate_feed`.
 - Weekly STEPS 4.6, 4.8, and 4.9 read `weekly_aggregate_feed`. It contains the
   durable aggregate spools from every successfully compiled run since the last
   successful weekly pass, plus this run. The launcher clears that separate
@@ -604,19 +604,23 @@ exact plan feed directly; never rediscover/open transcript sources and never
 grep/regex them for keywords.
 
 **Its distinct job — FOLLOW-THROUGH / truthfulness of completion claims.** The
-system now reads the one transcript pass through four non-overlapping lenses:
+system now reads the one transcript pass through five non-overlapping lenses:
 
 - **STEP 4 = KNOWLEDGE** (facts/decisions → wiki)
 - **STEP 4.6 = KNOW-HOW gaps** (a capability was MISSING → skill candidates)
 - **STEP 4.7 = FOLLOW-THROUGH** (a capability/task was CLAIMED done but the
   evidence is absent → verification cards)
-- **STEP 4.8 = INTENT ALIGNMENT** (below) · **STEP 4.9 = DOC COMPLIANCE** (below)
+- **STEP 4.7b = CITATION** (a claim asserts operator intent with no msg/tg/date
+  to back it → deterministic, below) · **STEP 4.8 = INTENT ALIGNMENT** (below,
+  agentic) · **STEP 4.9 = DOC COMPLIANCE** (below)
 
 4.7 surfaces things an agent SAID it did / fixed / deployed / promised where the
 transcript evidence does not show it actually happened. (Live-relevant: agents in
 this fleet have over-claimed — "#1179 called done-then-not", the "4 NAVs aligned"
-misses.) This is DISTINCT from 4.6 (missing tooling) and from 4.8 (operator
-intent, not the agent's own claim).
+misses.) This is DISTINCT from 4.6 (missing tooling), from 4.7b (whether an
+operator-intent CLAIM cites its source at all — mechanical, no reading judgment),
+and from 4.8 (whether the fleet's execution matches operator intent — reading
+judgment on an already-cited claim).
 
 **Agentic reading judgment, NOT a keyword miner.** A grep for "done" / "I did" /
 "deployed" is ~all false positives — only a reading agent can tell a real
@@ -724,6 +728,147 @@ Note the one-line summary in your STEP 10 report.
 **Cadence knob:** nightly by default (#1225 — fresh claims are cheapest to verify
 same-day). Joris may make it Sunday-only by adding the same Sunday-guard STEP 4.6
 uses; leave nightly unless he says otherwise.
+
+## STEP 4.7b — Citation lint: unsourced operator-intent self-notes (deterministic, NIGHTLY)
+
+**Board #1483/#1485.** Free-text self-notes (CronCreate wake prompts, subagent
+briefs, HANDOFF.md, compaction summaries) have no enforced citation
+requirement for operator-intent claims — one unsourced "operator flagged
+spend — be cost-conscious" (Ben, 2026-09-11) got copied forward into ~36 wake
+prompts and ~15 subagent briefs before anyone caught it, and silently
+narrowed a mission deliverable for 12 days. STEP 4.8 below already proved the
+fleet can catch this kind of drift (#1350/#1354) — but only in the WEEKLY
+agentic pass, and #1354 itself then sat unactioned for 6 days with no SLA.
+This step generalizes the SAME signal into something that runs **every
+night** and needs no model judgment at all.
+
+**Deterministic, not agentic — unlike every other extractor in this file.**
+A claim is a sentence matching `(operator|Joris|Jade) (said|flagged|wants|
+asked|told|decided)` (or the French equivalents the fleet also uses in
+notes/transcripts — "a dit", "a signalé"/"a flaggé", "veut", "a demandé", "a
+précisé", "a décidé", "a confirmé", "a validé"). This is a regex pass, not a
+Task subagent read — cheap, testable, and with no injection surface
+(fixed-pattern text matching can't be argued with the way a reading model
+can).
+
+**Scoped to SELF-NOTES, not live conversation (board #1485 review round 2).**
+A first version flagged any matching sentence anywhere and, dry-run against a
+REAL production feed, produced 18 candidates — ALL 18 false positives: an
+assistant narrating a request the operator had JUST made in the same live
+conversation ("Jade wants Olivier's email"). A claim only survives now if
+BOTH:
+
+- **No literal citation nearby** — no `msg\d+`, `tg\d+`, `message_id`, or
+  dated (`YYYY-MM-DD[T..]`) citation in the same sentence or an immediately
+  adjacent one (unchanged from the first pass); AND
+- **No live-conversation grounding.** The SOURCE CHECK: a claim is grounded
+  ("sourced") if the SAME session (folder + basename) has a genuine inbound
+  operator row within the preceding 24h — being inside a live back-and-forth
+  counts as sourced even with no literal msg/tg id, because the adjacent
+  operator turn in that SAME transcript already grounds it. A **subagent
+  transcript** (`agent-<hex>.jsonl` — the live, confirmed naming for a
+  Task-spawned subagent's own transcript file) can NEVER ground a claim this
+  way: its `role="user"` row is the Task-tool PROMPT the *orchestrating*
+  agent wrote, never a real message from Joris/Jade. Verified against the
+  REAL file the #1483 audit cites
+  (`.../subagents/agent-a910fd47bf3adee99.jsonl`): Ben's actual "operator
+  flagged spend" claim is literally the subagent's first `role="user"` row —
+  a self-authored brief, not the operator speaking — so in a top-level
+  session only `role="assistant"` rows are scanned (a `role="user"` row
+  there IS the operator's own words, definitionally sourced), while in a
+  subagent transcript BOTH roles are scanned (both are self-authored: the
+  brief AND the subagent's own replies).
+
+Run it directly against the plan already loaded in STEP 4:
+
+```bash
+LINT=/home/claude/scripts/wiki-citation-lint.py
+AGG_FEED=$(python3 -c "import json; print(json.load(open('/home/claude/monitoring/wiki-compile-delta/current-plan.json'))['aggregate_feed'])")
+SEEN=/home/claude/monitoring/wiki-compile-delta/citation-lint-seen.json
+OUT=/home/claude/monitoring/wiki-compile-delta/citation-lint-$(date -u +%Y-%m-%d).json
+python3 "$LINT" --feed "$AGG_FEED" --seen-store "$SEEN" --digest-cap 10 \
+  --today "$(date -u +%Y-%m-%d)" --output "$OUT"
+```
+
+This is the SAME `aggregate_feed` STEP 4 and STEP 4.7 already piggyback
+(never a separate read, never a raw transcript, never a wider VPS path than
+the delta plan already resolved — board #1485's explicit constraint). Only
+`[NEW ...]` rows are scanned by default, the same exhaustiveness contract as
+every other piggyback pass (see the feed-routing note above STEP 4.6).
+
+**HANDOFF.md, and CronCreate/Agent/Task tool-call ARGUMENTS, are
+intentionally NOT literally visible here.** `wiki_delta.py`'s reducer keeps
+only `type=="text"` content from user/assistant messages and drops every
+`tool_use` block outright, and HANDOFF.md is never read by this compile
+(board #1120 uid isolation — reading a dept's `HANDOFF.md` directly would
+widen this compile's access, which #1485 explicitly rules out). In practice
+the claim that ends up in a wake prompt or HANDOFF.md is almost always first
+drafted as text the compile already mines (a model narrates before or while
+it writes a tool call or a file) — Ben's real incident is proof: the
+verbatim claim is literally readable as a subagent's own `role="user"` text
+row, with no tool-argument parsing needed. **Proposed, not implemented,
+follow-up:** teach `reduced_row()` to also keep `CronCreate`/`Agent`/`Task`
+tool inputs (tagged distinctly, e.g. `[NEW ... tool_use:CronCreate] ...`) for
+literal tool-argument coverage — deliberately left as a separate, more
+carefully reviewed change, since that reducer is shared by every other
+extractor (4, 4.6–4.9) and widening what it emits is not a one-line addition
+to bundle into this pass.
+
+**VOLUME — at most ONE digest card per night, never one card per claim.**
+The script collapses repeats of the SAME claim (same folder + normalized
+text) into one within-run candidate first — Ben's incident alone recurred
+~36+ times, which would otherwise be ~36 separate cards for one underlying
+claim — then builds AT MOST ONE digest listing up to `--digest-cap` (10)
+findings with a count of the rest, and drops any claim whose hash is already
+in the persistent `--seen-store` (a claim already surfaced in a previous
+night's digest never resurfaces). Only the findings actually SHOWN in a
+digest are marked seen; an overflow finding beyond the cap stays eligible for
+a LATER night once the backlog is below the cap, so a real finding is never
+silently lost, only delayed. If the script produced no digest (`digest` is
+`null` in `$OUT` — nothing new survived), emit nothing.
+
+Then the **PARENT** emits the single digest card, through the SAME emitter
+every extractor in this file uses:
+
+```bash
+python3 -c "
+import json, subprocess
+data = json.load(open('$OUT'))
+digest = data.get('digest')
+if digest:
+    EMIT = '/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh'
+    subprocess.run(
+        [EMIT, 'task=wiki-citation-lint', 'title=' + digest['title'], 'body=' + digest['body'],
+         'type=decision', 'owner=' + digest['dept'], 'priority=normal', 'budget=2'],
+        check=False,
+    )
+"
+```
+
+`type=decision` routes to `needs:human` (the same mapping STEP 4.8's CLARIFY
+blocks use). The digest title includes today's date, so `emit_kanban_item.sh`
+creates a fresh card on a night that has new findings — cross-night
+repetition is prevented upstream by the `--seen-store`, not by the emitter's
+own task+title dedup (that dedup still guards against a same-day retry
+double-posting). **This card is the durable output — emitted even on a
+wiki-quiet night**, same as STEP 4.7's verification cards.
+
+**Best-effort, never blocks the receipt.** If the script errors (a malformed
+or missing feed, an unwritable seen-store) or the `emit_kanban_item.sh` call
+fails, log it and continue to STEP 4.8 — like STEP 10's report queue (#495),
+this pass is best-effort. A citation-lint failure must NEVER cost you the
+STEP 11 receipt; do not retry it as a blocker and do not mention it in your
+final turn (STEP 11 below still governs what your literal last output may
+contain).
+
+Note the one-line summary ("citation_lint: N total, M shown this digest, K
+already seen") in your STEP 10 report.
+
+**Boundary with STEP 4.8's agentic C blocks (below).** This step only catches
+the mechanical pattern (claim shape + no citation + no live grounding).
+STEP 4.8's weekly CLARIFY blocks are for genuinely AMBIGUOUS intent readings
+that need judgment, not a bare missing citation — de-dup against the board
+as usual so the same quote doesn't get a second card from STEP 4.8.
 
 ## STEP 4.8 — Intent-drift (map-vs-territory) detector (WEEKLY, Sunday)
 
@@ -1048,13 +1193,14 @@ done
 
 3. Jump to STEP 9 (index) → STEP 10 (report). Skip 5-8. **Stay silent on Telegram** (quiet night).
 
-(Note: STEPS 4.6–4.9 run BEFORE this gate and are INDEPENDENT of it — the
-wiki-knowledge quiet-gate only governs the knowledge/synthesis path. A quiet
-wiki night can still have: 4.7 verification cards emitted (nightly), and — on
-Sunday — a non-empty 4.6 `candidates.md`, 4.8 operator-intent writes +
-drift/clarify cards, and a 4.9 `compliance-drift.md`. Their outputs (board
-cards, the operator-intents collection, the report files) are the durable
-signal; the STEP 10 Telegram message stays silent on a quiet night regardless.)
+(Note: STEPS 4.6–4.9 (and 4.7b) run BEFORE this gate and are INDEPENDENT of
+it — the wiki-knowledge quiet-gate only governs the knowledge/synthesis path.
+A quiet wiki night can still have: 4.7 verification cards AND 4.7b
+citation-lint cards emitted (both nightly), and — on Sunday — a non-empty 4.6
+`candidates.md`, 4.8 operator-intent writes + drift/clarify cards, and a 4.9
+`compliance-drift.md`. Their outputs (board cards, the operator-intents
+collection, the report files) are the durable signal; the STEP 10 Telegram
+message stays silent on a quiet night regardless.)
 
 Otherwise proceed to STEP 5.
 
@@ -1339,12 +1485,12 @@ resent). Otherwise compose ONE concise summary for Joris. If STEP 4.6 ran
 (Sunday) and wrote a non-empty `candidates.md`, append its one-line summary
 (candidate count + dropped counts) to this same message rather than queuing a
 second one — this stays a report-only artifact, never its own alert.
-**Likewise append the one-line summaries from STEP 4.7 (claimed_vs_done), STEP 8
-(intent_backfill), and — on Sunday — STEP 4.8 (intent_drift) and STEP 4.9
-(compliance_drift)** to this same message when it fires. Do NOT queue a
-message on a quiet night just because 4.7 emitted verification cards — the
-cards themselves are the signal; append their count only when the message is
-already firing for real knowledge:
+**Likewise append the one-line summaries from STEP 4.7 (claimed_vs_done), STEP
+4.7b (citation_lint), STEP 8 (intent_backfill), and — on Sunday — STEP 4.8
+(intent_drift) and STEP 4.9 (compliance_drift)** to this same message when it
+fires. Do NOT queue a message on a quiet night just because 4.7/4.7b emitted
+cards — the cards themselves are the signal; append their count only when the
+message is already firing for real knowledge:
 
 ```bash
 REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt
@@ -1354,7 +1500,7 @@ rm -f "$REPORT_FILE"
 # secrets, no shell metacharacters this step needs to worry about — the
 # launcher passes it through --data-urlencode, not shell interpolation):
 TMP_REPORT="$(mktemp "${REPORT_FILE}.XXXXXX")"
-printf '%s' "🧠 wiki compile $(date -u +%Y-%m-%d): <synthesis summary> · <claimed_vs_done line><, on Sunday: + skill-gap: N candidates (M dropped) · intent_drift line · compliance_drift line>" > "$TMP_REPORT"
+printf '%s' "🧠 wiki compile $(date -u +%Y-%m-%d): <synthesis summary> · <claimed_vs_done line> · <citation_lint line><, on Sunday: + skill-gap: N candidates (M dropped) · intent_drift line · compliance_drift line>" > "$TMP_REPORT"
 mv -f "$TMP_REPORT" "$REPORT_FILE"
 ```
 
