@@ -26,6 +26,8 @@ pushes via the operator's own **`gh`/git credential**.
 | `install-local-loop-backup.sh` | Install the **backup floor** as a **StartInterval** launchd agent (`com.bubble.ops-loop-backup-<slug>`, default 3h). The VPS loop-backup twin, for one local dept. With `--wake-catch` it renders the **wake-catch** agent (`com.bubble.ops-loop-wake-<slug>`, default 5m) instead — same runner, shorter interval, so a stale loop is caught promptly after the Mac wakes. |
 | `local-loop-backup-runner.sh` | The per-tick body: optional due-mission plan from `dept.yaml` → heartbeat-staleness check (overridden once by due periodic work) → harness-aware wake of the existing tmux session (Claude secure inject file, or Hermes gateway helper). It never launches a model. |
 | `lib/local_loop_lib.sh` | Shared helpers: `is_heartbeat_stale` (the testable core) + `render_loop_wrapper` / `render_loop_plist` / `render_backup_plist`. |
+| `bubble-deploy-mac.sh` | Board #1477: keeps the Mac's `bubble-ops-loop` **framework checkout itself** (`~/claude-workspaces/bubble-ops-loop`) current — `git fetch` + `merge --ff-only origin/main`, only on a clean `main` checkout. Mac twin of `scripts/bubble-deploy.sh --infra-only`. Refuses (ALERT + exit 1, worktree untouched) on a dirty tree, a non-`main` branch, or a diverged (ahead) checkout. Never executes anything from the pulled tree; it only `install`s (copies) `bubble-session-rotate-mac.sh` into Application Support when that file's content changed. |
+| `install-mac-loop-deploy.sh` | Installs `bubble-deploy-mac.sh` as a **StartInterval** launchd agent (`com.bubble.mac-loop-deploy`, default 15 min — mirrors `bubble-deploy-infra.timer`'s `*:0/15`). One instance per Mac (not per-slug): it updates the shared framework checkout every local dept's installers run out of. |
 
 ## Operator-intents: read from the wiki, not an isolated host mirror (#1333)
 
@@ -208,6 +210,48 @@ delivery lease so the backup and wake-catch agents cannot duplicate it after
 the shorter inbox cooldown. Pending is not success: an uncompleted mission is
 eligible again when the lease expires, and a failed injection releases its own
 claims immediately.
+
+## Framework-clone auto-update (board #1477)
+
+The scripts above assume `~/claude-workspaces/bubble-ops-loop` on the Mac is
+itself kept current — that's where every installer, wrapper, and the rotate
+script are read from. On the VPS that's `bubble-deploy-infra.timer` (every 15
+min, ff-only, `/opt/bubble-ops-loop`). The Mac clones had **no equivalent**
+until #1477: jade-m1 drifted ~100 commits behind main with no upstream
+tracking at all, and jade-m5's clone was ~100 merges behind with a missing
+`.venv`, so its backup floor likely couldn't even run.
+
+`install-mac-loop-deploy.sh` closes that gap — the Mac twin of
+`bubble-deploy-infra.timer` + `bubble-deploy.sh --infra-only`, simplified for
+a single non-systemd checkout (no per-dept owner switching, no primary-unit
+defer logic):
+
+```sh
+# Dry render first (writes the plist, vendors the runner, NO launchctl):
+deploy/local/install-mac-loop-deploy.sh
+
+# Inspect, then activate:
+deploy/local/install-mac-loop-deploy.sh --activate
+
+# Uninstall:
+deploy/local/install-mac-loop-deploy.sh --uninstall --activate
+```
+
+Every 15 minutes (default; `--interval SECONDS` to change), `bubble-deploy-mac.sh`:
+`git fetch origin main`, then `merge --ff-only` **only** when the checkout is
+on `main` with a clean working tree. A dirty tree, a non-`main` branch, or a
+checkout that has diverged (local commits ahead of `origin/main`) is left
+completely untouched — the run logs an `ALERT:` line and exits 1, which shows
+up in `~/Library/Logs/bubble-ops-loop/com.bubble.mac-loop-deploy.err.log` and
+as the launchd job's `LastExitStatus` (`launchctl print
+gui/$(id -u)/com.bubble.mac-loop-deploy`) for the floor/watchdog to catch. It
+never executes anything from the pulled tree — the one exception is a plain
+`install` (copy, not execute) of the vendored `bubble-session-rotate-mac.sh`
+into Application Support when a merge changed its content, so a merged rotate
+fix lands automatically instead of needing a manual re-run of
+`install-session-rotate-mac.sh` after every framework update.
+
+Tests: `bash tests/test_1477_bubble_deploy_mac_safe_ff.sh`.
 
 ## No-sudo tmux (M5 hosts without Homebrew)
 
