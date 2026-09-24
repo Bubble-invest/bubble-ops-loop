@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import yaml
-from datetime import datetime, time as _time, timezone
+from datetime import datetime, time as _time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -59,6 +59,12 @@ _WEEKDAY_NAMES = {
     "saturday": 5,
     "sunday": 6,
 }
+
+# #1489: outputs/<YYYY-MM-DD>/ date-dir name, used by _mission_last_fired_cron
+# to scan across days (a `cron:` mission's last completion may be months in
+# the past — see that function's docstring for why the normal today-scoped
+# per-mission marker lookup can't answer this).
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # #749/#750 defect (c) / board #715: the OODA layers whose shim prompt
 # (`layers/<N>/PROMPT.md`) is confirmed to write its real STEP-3 artifact(s)
@@ -1143,10 +1149,61 @@ def _normalize_weekday_set(raw_day: "str | list | None") -> "set[str]":
 
 def is_mission_due(mission: dict, *, now: datetime,
                    last_fired: datetime | None) -> bool:
+    """Return True iff the mission's cadence AND `active_hours` window (if
+    declared) say it should fire RIGHT NOW.
+
+    Thin wrapper around `_mission_cadence_due` (the cadence-only decision —
+    see its docstring for the full per-cadence contract, including `cron:`).
+    Additionally enforces an optional `active_hours: 'HH:MM-HH:MM'` field
+    (Paris-local, e.g. content's `draft_substack_note` — #1489 gap #5): a
+    mission without `active_hours` behaves EXACTLY as before (unchanged for
+    every existing cadence); one that declares it is due only when BOTH the
+    cadence says so AND `now` falls inside the window. See
+    `_within_active_hours` for the window semantics.
+    """
+    if not _mission_cadence_due(mission, now=now, last_fired=last_fired):
+        return False
+    return _within_active_hours(mission, now)
+
+
+def _within_active_hours(mission: dict, now: datetime) -> bool:
+    """Paris-local `active_hours: 'HH:MM-HH:MM'` gate (#1489 gap #5).
+
+    Missing/empty `active_hours` -> always True — zero behavior change for
+    every mission that doesn't declare it (the entire fleet today except
+    content's `draft_substack_note`). A malformed window also fails OPEN
+    (True) rather than silently starving a mission over a dept.yaml typo —
+    the same fail-safe posture `_to_paris`/`paris_today` use elsewhere in
+    this module. The window is inclusive on both ends; a `start <= end`
+    same-day window is the only shape recurring-mission.schema.yaml
+    documents today, so an end-before-start pair is read as wrapping past
+    midnight rather than treated as malformed.
+    """
+    window = mission.get("active_hours")
+    if not window or not isinstance(window, str):
+        return True
+    try:
+        start_s, end_s = window.split("-", 1)
+        start_t = _parse_hhmm(start_s.strip())
+        end_t = _parse_hhmm(end_s.strip())
+    except (ValueError, AttributeError):
+        return True
+    now_t = _to_paris(now).time()
+    if start_t <= end_t:
+        return start_t <= now_t <= end_t
+    return now_t >= start_t or now_t <= end_t
+
+
+def _mission_cadence_due(mission: dict, *, now: datetime,
+                   last_fired: datetime | None) -> bool:
     """Return True iff the mission's cadence says it should fire RIGHT NOW.
 
     `now` must be a tz-aware UTC datetime. `last_fired` is the mission's
-    own .last-run timestamp (None if never fired).
+    own last-completion watermark (None if never fired) — for every cadence
+    except `cron:` this is the per-mission `.last-run`/ledger timestamp
+    scoped to TODAY's outputs dir (`_mission_last_fired`); for `cron:` it is
+    a cross-day watermark (`_mission_last_fired_cron`) since the last fire
+    may be months in the past.
 
     Supported cadences (from recurring-mission.schema.yaml::cadence):
       daily            — needs `time:` HH:MM Paris. Due once per Paris-local
@@ -1171,8 +1228,17 @@ def is_mission_due(mission: dict, *, now: datetime,
                          materializer → treated as "not yet dispatched" by
                          _mission_last_fired) and by the approved-item being
                          consumed/archived out of inbox/decisions by the subagent.
-      cron:<expr>      — escape hatch; NOT evaluated here, returns False
-                         (caller / agent must handle cron expressions).
+      cron:<expr>      — standard 5-field cron (`minute hour dom month dow`),
+                         evaluated against the Paris wall clock (#1489). Due
+                         iff the most recent scheduled fire time <= `now` is
+                         STRICTLY AFTER `last_fired` — i.e. a missed fire
+                         (Mac asleep at the scheduled moment) is caught up
+                         ONCE on the next tick that observes it, and never
+                         re-fires until the following scheduled moment has
+                         also passed. Same idempotence-by-watermark shape as
+                         daily/weekly above, generalized to an arbitrary
+                         schedule instead of "once today"/"once this
+                         weekday". See `_cron_prev_fire_paris`.
     """
     cadence = mission.get("cadence", "")
     if not cadence:
@@ -1271,8 +1337,133 @@ def is_mission_due(mission: dict, *, now: datetime,
         #   marker + inbox consumption provide sufficient idempotence.
         return True
 
-    # cron:<expr> — escape hatch. Out of scope for STEP C.0.
+    if cadence.startswith("cron:"):
+        expr = cadence[len("cron:"):].strip()
+        prev_fire = _cron_prev_fire_paris(expr, now_paris)
+        if prev_fire is None:
+            # Malformed expression — fail closed (never due) rather than
+            # crash or guess, matching the pre-#1489 "escape hatch" posture
+            # for anything this small matcher can't parse.
+            return False
+        if last_paris is not None and last_paris >= prev_fire:
+            return False
+        return True
+
+    # Unknown cadence string — fail closed.
     return False
+
+
+_CRON_FIELD_BOUNDS = {
+    0: (0, 59),   # minute
+    1: (0, 23),   # hour
+    2: (1, 31),   # day-of-month
+    3: (1, 12),   # month
+    4: (0, 7),    # day-of-week (0 and 7 both mean Sunday, cron convention)
+}
+
+
+def _parse_cron_field(field: str, lo: int, hi: int) -> "set[int]":
+    """Parse one 5-field cron field into the set of matching integer values.
+
+    Supports the common subset — `*`, comma lists, `a-b` ranges, and a
+    `/step` suffix on either `*` or a range (`*/n`, `a-b/n`) — which is
+    enough for every cadence the fleet actually declares (dept.yaml today
+    only uses bare numbers and comma lists, e.g. `'cron:0 8 1 1,4,7,10 *'`).
+    Raises ValueError on anything else, letting the caller fail closed.
+    """
+    values: "set[int]" = set()
+    for part in field.split(","):
+        part = part.strip()
+        if not part:
+            raise ValueError(f"empty cron field segment in {field!r}")
+        step = 1
+        if "/" in part:
+            part, step_s = part.split("/", 1)
+            step = int(step_s)
+            if step <= 0:
+                raise ValueError(f"non-positive cron step in {field!r}")
+        if part == "*":
+            start, end = lo, hi
+        elif "-" in part:
+            a, b = part.split("-", 1)
+            start, end = int(a), int(b)
+        else:
+            start = end = int(part)
+        if start < lo or end > hi or start > end:
+            raise ValueError(f"cron field segment {part!r} out of range [{lo}, {hi}]")
+        for v in range(start, end + 1):
+            if (v - start) % step == 0:
+                values.add(v)
+    if not values:
+        raise ValueError(f"cron field {field!r} matched no values")
+    return values
+
+
+def _cron_prev_fire_paris(expr: str, now_paris: datetime) -> "datetime | None":
+    """Return the most recent cron-scheduled fire moment <= `now_paris`
+    (Paris-local, tz-aware), or None if `expr` is malformed.
+
+    Standard 5-field cron (`minute hour dom month dow`), evaluated against
+    the Paris wall clock — the same fleet-timezone convention the
+    daily/weekly branches above use (`_to_paris`/`paris_today`). When BOTH
+    day-of-month and day-of-week are restricted (neither is `*`), a day
+    matches if EITHER field matches (standard cron OR semantics, e.g. Unix
+    cron/crontab(5)); when only one of the two is restricted, only that one
+    is required; when neither is restricted, every day matches. `dow`
+    follows cron convention (0 and 7 = Sunday, 1 = Monday, ... 6 = Saturday),
+    mapped from Python's `date.weekday()` (Monday=0 ... Sunday=6).
+
+    Implementation note: this walks backward day-by-day (bounded to ~5
+    years) rather than pulling in a `croniter`-style dependency —
+    scripts/requirements.txt pins only PyYAML (board #1330) and every cron
+    cadence the fleet declares today is sparse (quarterly/annual), so a
+    per-tick day walk is cheap and keeps this a small, self-contained
+    matcher rather than a new runtime dependency.
+    """
+    parts = expr.split()
+    if len(parts) != 5:
+        return None
+    try:
+        minutes = _parse_cron_field(parts[0], *_CRON_FIELD_BOUNDS[0])
+        hours = _parse_cron_field(parts[1], *_CRON_FIELD_BOUNDS[1])
+        doms = _parse_cron_field(parts[2], *_CRON_FIELD_BOUNDS[2])
+        months = _parse_cron_field(parts[3], *_CRON_FIELD_BOUNDS[3])
+        dows_raw = _parse_cron_field(parts[4], *_CRON_FIELD_BOUNDS[4])
+    except ValueError:
+        return None
+    dows = {0 if d == 7 else d for d in dows_raw}
+    dom_restricted = parts[2].strip() != "*"
+    dow_restricted = parts[4].strip() != "*"
+
+    candidate = now_paris.date()
+    for _ in range(5 * 366 + 10):  # ~5 years of daily steps — ample for
+                                    # any quarterly/annual/monthly cadence.
+        if candidate.month in months:
+            dom_match = candidate.day in doms
+            cron_dow = (candidate.weekday() + 1) % 7  # Mon=0 -> Sun=0
+            dow_match = cron_dow in dows
+            if dom_restricted and dow_restricted:
+                day_ok = dom_match or dow_match
+            elif dom_restricted:
+                day_ok = dom_match
+            elif dow_restricted:
+                day_ok = dow_match
+            else:
+                day_ok = True
+            if day_ok:
+                is_today = candidate == now_paris.date()
+                slots = sorted(
+                    (h, m) for h in hours for m in minutes
+                    if not is_today or (h, m) <= (now_paris.hour, now_paris.minute)
+                )
+                if slots:
+                    h, m = slots[-1]
+                    return now_paris.replace(
+                        year=candidate.year, month=candidate.month, day=candidate.day,
+                        hour=h, minute=m, second=0, microsecond=0,
+                    )
+        candidate -= timedelta(days=1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3149,13 +3340,21 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
     every caller of `_mission_last_fired` (this is what actually fixes the
     live-loop `select_due_missions` path — the one build_dispatch_ctx feeds).
     """
+    mid = mission.get("id", "")
+    if not mid:
+        return None
+
+    # #1489: `cron:` missions may last have fired months ago — the per-day
+    # lookup below (scoped to ctx['today_dir'], see the rest of this
+    # function) would resolve None on every day except the exact fire day,
+    # which would make is_mission_due() re-fire the mission every tick after
+    # its one legitimate catch-up. Cross-day watermark instead.
+    if str(mission.get("cadence", "")).startswith("cron:"):
+        return _mission_last_fired_cron(ctx, mission)
+
     today_dir_str = ctx.get("today_dir")
     if not today_dir_str:
         # No today_dir in ctx → treat as never fired (mission is due).
-        return None
-
-    mid = mission.get("id", "")
-    if not mid:
         return None
 
     today_dir = Path(today_dir_str)
@@ -3180,6 +3379,62 @@ def _mission_last_fired(ctx: "dict[str, Any]", mission: dict) -> "datetime | Non
         return None
 
     return marker
+
+
+def _mission_last_fired_cron(ctx: "dict[str, Any]", mission: dict) -> "datetime | None":
+    """Cross-day last-completion watermark for a `cron:<expr>` mission (#1489).
+
+    Every other cadence's idempotence lookup (`_mission_last_fired`, above)
+    is deliberately scoped to `ctx['today_dir']` — daily/weekly/hourly/
+    every_Nh/every_Nm/event cadences only ever need to know "did this fire
+    TODAY (or this hour / within N hours)", so a today-scoped marker is a
+    correct and sufficient watermark for them. A `cron:` mission (e.g.
+    Géraldine's `quarterly_vat_audit`, `cron:0 8 1 1,4,7,10 *`) may have last
+    fired up to ~3 months ago — on every day that ISN'T the fire day, a
+    today-scoped lookup would return None, and `is_mission_due` would then
+    treat the mission as "never fired" and re-select it on EVERY tick after
+    its one legitimate catch-up, not just once.
+
+    Fix: scan every `outputs/<YYYY-MM-DD>/` date dir (newest first, so the
+    first hit is the most recent) for this mission's completion marker,
+    using the exact SAME on-disk artifacts + output-truth gate
+    (`_ledger_completion` / `_mission_handled_marker` / GATE_
+    `_layer_output_evidence_ok`) `_mission_last_fired` already trusts — no
+    new write path, no new file format, just a wider read. Bounded by however
+    many date dirs actually exist on disk (real fleet history is months, not
+    years, and this only runs for the rare cron-cadence missions), with an
+    early return on the first (= most recent) valid marker found.
+    """
+    repo_dir = ctx.get("_repo_dir")
+    now_utc = ctx.get("now_utc")
+    mid = mission.get("id", "")
+    if not repo_dir or now_utc is None or not mid:
+        return None
+    outputs_dir = Path(repo_dir) / "outputs"
+    if not outputs_dir.is_dir():
+        return None
+
+    layer = int(mission.get("layer", 0))
+    day_dirs = sorted(
+        (p for p in outputs_dir.iterdir() if p.is_dir() and _DATE_DIR_RE.match(p.name)),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    for day_dir in day_dirs:
+        committed = _ledger_completion(day_dir, mid)
+        marker = committed or _mission_handled_marker(day_dir, mid)
+        if marker is None:
+            continue
+        if marker > now_utc:
+            continue  # future-dated marker (clock skew) — not a real watermark
+        # Same-tick materializer stamp mirrors the today-scoped path's own
+        # exclusion above: not yet a real completion.
+        if committed is None and marker == now_utc:
+            continue
+        if not _layer_output_evidence_ok(str(day_dir), layer, mid):
+            continue
+        return marker
+    return None
 
 
 def _mission_last_fired_with_shim_fallback(
