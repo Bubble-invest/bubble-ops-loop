@@ -18,6 +18,24 @@
 #   T8  the installer (no --activate) renders a valid plist, uses StartInterval
 #       (not StartCalendarInterval / KeepAlive), and never calls launchctl.
 #   T9  --uninstall (no --activate) removes the plist without touching launchctl.
+#
+# Board #1488 — widened contract (allow-listed installer + compare-and-install
+# hook), stubbed via env overrides (BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER,
+# BOOT_REARM_PLUGIN_GLOB, BOOT_REARM_BUN) so these never touch a real bun or a
+# real telegram plugin cache:
+#   T10 boot-rearm source unchanged + server.ts already wired → installer is
+#       never invoked (cheap pre-check skip).
+#   T11 boot-rearm source differs from the installed plugin copy → installer
+#       IS invoked, receiving the Mac plugin glob + bun path via env.
+#   T12 the ff/state check fails (dirty tree) → installer is never invoked,
+#       same ALERT + exit 1 as T3.
+#   T13 the installer itself fails (simulated) → exit 1, but the fast-forward
+#       that already happened is NOT rolled back (HEAD stays at origin/main).
+#   T14 deploy/hooks/rearm-loop-on-compact.py is never created in the support
+#       dir when the Mac never opted in (no pre-existing vendored copy).
+#   T15 a pre-existing vendored compact hook IS updated (compare-and-install),
+#       keeping exactly one timestamped .bak of the previous content, and a
+#       second no-op run creates no additional .bak.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -60,6 +78,65 @@ push_upstream() {
     git -C "$base-seed" commit -qam upstream
     git -C "$base-seed" push -q origin main
 }
+
+# Board #1488 fixtures ------------------------------------------------------
+
+new_pair_br() {
+    # Like new_pair, but also seeds deploy/telegram-plugin/boot_rearm.ts so
+    # the boot-rearm pre-check has a real source file to diff against.
+    local base="$1"
+    new_pair "$base"
+    mkdir -p "$base-seed/deploy/telegram-plugin"
+    echo "boot-rearm-src-v1" >"$base-seed/deploy/telegram-plugin/boot_rearm.ts"
+    git -C "$base-seed" add deploy/telegram-plugin/boot_rearm.ts
+    git -C "$base-seed" commit -qm "seed boot_rearm.ts"
+    git -C "$base-seed" push -q origin main
+    git -C "$base" fetch -q origin main
+    git -C "$base" merge -q --ff-only origin/main
+}
+
+new_pair_hook() {
+    # Like new_pair, but also seeds deploy/hooks/rearm-loop-on-compact.py.
+    local base="$1" content="${2:-compact-hook-src-v1}"
+    new_pair "$base"
+    mkdir -p "$base-seed/deploy/hooks"
+    echo "$content" >"$base-seed/deploy/hooks/rearm-loop-on-compact.py"
+    git -C "$base-seed" add deploy/hooks/rearm-loop-on-compact.py
+    git -C "$base-seed" commit -qm "seed compact hook ($content)"
+    git -C "$base-seed" push -q origin main
+    git -C "$base" fetch -q origin main
+    git -C "$base" merge -q --ff-only origin/main
+}
+
+# Writes a stub install-boot-rearm.sh replacement to $1 that logs each
+# invocation (including the env vars it received) to $STUB_CALL_LOG and
+# exits with $STUB_EXIT_CODE (default 0). Never touches bun or a real
+# plugin cache — this IS the "stub the installer... via env overrides" the
+# card asks for.
+write_stub_installer() {
+    local path="$1"
+    cat >"$path" <<'EOF'
+#!/usr/bin/env bash
+{
+  echo "CALLED"
+  echo "glob=$BOOT_REARM_PLUGIN_GLOB"
+  echo "bun=$BOOT_REARM_BUN"
+} >>"$STUB_CALL_LOG"
+echo "stub-installer-output-line"
+exit "${STUB_EXIT_CODE:-0}"
+EOF
+    chmod +x "$path"
+}
+
+# A harmless, executable stand-in for the real `bun` binary. Board #1488's
+# stub installer above never actually invokes bun (it only records the path
+# it was handed), but bubble-deploy-mac.sh's own BOOT_REARM_BUN resolution
+# falls back to `command -v bun` for any override that isn't executable —
+# this file must exist and be +x so the T10-T13 overrides below survive
+# that check and prove the passthrough end-to-end.
+FAKE_BUN="$WORK/fake-bun"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BUN"
+chmod +x "$FAKE_BUN"
 
 echo "T1 clean tree, behind origin/main: fast-forwards, exit 0, logs UPDATED"
 new_pair "$WORK/t1"
@@ -201,6 +278,112 @@ rc=$?
 chk "T9 uninstall exit code" 0 "$rc"
 [[ ! -f "$PLIST" ]] && ok "T9 plist removed" || bad "T9 plist still present"
 [[ ! -s "$WORK/t9-launchctl.log" ]] && ok "T9 launchctl was never called" || bad "T9 launchctl was called: $(cat "$WORK/t9-launchctl.log")"
+
+echo "T10 boot-rearm: unchanged + already-wired source is skipped (installer never invoked)"
+new_pair_br "$WORK/t10"
+PLUGIN_ROOT="$WORK/t10-plugin"; PLUGIN_DIR="$PLUGIN_ROOT/telegram/9.9.9"; mkdir -p "$PLUGIN_DIR"
+cp "$WORK/t10/deploy/telegram-plugin/boot_rearm.ts" "$PLUGIN_DIR/boot_rearm.ts"
+echo "// bootRearmNotification already wired" >"$PLUGIN_DIR/server.ts"
+STUB="$WORK/t10-stub-installer.sh"; write_stub_installer "$STUB"
+STUB_CALL_LOG="$WORK/t10-stub.log"; : >"$STUB_CALL_LOG"
+out="$WORK/t10.out"
+BOOT_REARM_PLUGIN_GLOB="$PLUGIN_ROOT/telegram/*/" BOOT_REARM_BUN="$FAKE_BUN" \
+    BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER="$STUB" STUB_CALL_LOG="$STUB_CALL_LOG" \
+    bash "$RUNNER" --repo-dir "$WORK/t10" --support-dir "$WORK/t10-support" >"$out" 2>&1
+rc=$?
+chk "T10 exit code" 0 "$rc"
+[[ ! -s "$STUB_CALL_LOG" ]] && ok "T10 installer never invoked (unchanged + wired)" || bad "T10 installer was invoked: $(cat "$STUB_CALL_LOG")"
+want "T10 logs skip" 'BOOT-REARM: source unchanged and already wired' "$out"
+
+echo "T11 boot-rearm: source differs from installed copy -> installer invoked with correct env"
+new_pair_br "$WORK/t11"
+PLUGIN_ROOT="$WORK/t11-plugin"; PLUGIN_DIR="$PLUGIN_ROOT/telegram/9.9.9"; mkdir -p "$PLUGIN_DIR"
+echo "installed-OLD" >"$PLUGIN_DIR/boot_rearm.ts"
+echo "// not wired yet" >"$PLUGIN_DIR/server.ts"
+STUB="$WORK/t11-stub-installer.sh"; write_stub_installer "$STUB"
+STUB_CALL_LOG="$WORK/t11-stub.log"; : >"$STUB_CALL_LOG"
+out="$WORK/t11.out"
+BOOT_REARM_PLUGIN_GLOB="$PLUGIN_ROOT/telegram/*/" BOOT_REARM_BUN="$FAKE_BUN" \
+    BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER="$STUB" STUB_CALL_LOG="$STUB_CALL_LOG" \
+    bash "$RUNNER" --repo-dir "$WORK/t11" --support-dir "$WORK/t11-support" >"$out" 2>&1
+rc=$?
+chk "T11 exit code" 0 "$rc"
+[[ -s "$STUB_CALL_LOG" ]] && ok "T11 installer was invoked" || bad "T11 installer never invoked"
+grep -qF "glob=$PLUGIN_ROOT/telegram/*/" "$STUB_CALL_LOG" \
+    && ok "T11 installer received the Mac plugin glob" || bad "T11 wrong/missing glob passed to installer ($(cat "$STUB_CALL_LOG" 2>/dev/null))"
+grep -qF "bun=$FAKE_BUN" "$STUB_CALL_LOG" \
+    && ok "T11 installer received the bun path" || bad "T11 wrong/missing bun path passed to installer ($(cat "$STUB_CALL_LOG" 2>/dev/null))"
+want "T11 logs change detected" 'BOOT-REARM: change detected' "$out"
+want "T11 logs installer OK" 'BOOT-REARM: installer OK' "$out"
+
+echo "T12 boot-rearm: installer never runs when the ff/state check fails (dirty tree)"
+new_pair_br "$WORK/t12"
+echo dirty >>"$WORK/t12/file.txt"
+PLUGIN_ROOT="$WORK/t12-plugin"; PLUGIN_DIR="$PLUGIN_ROOT/telegram/9.9.9"; mkdir -p "$PLUGIN_DIR"
+echo "installed-OLD" >"$PLUGIN_DIR/boot_rearm.ts"
+STUB="$WORK/t12-stub-installer.sh"; write_stub_installer "$STUB"
+STUB_CALL_LOG="$WORK/t12-stub.log"; : >"$STUB_CALL_LOG"
+out="$WORK/t12.out"
+BOOT_REARM_PLUGIN_GLOB="$PLUGIN_ROOT/telegram/*/" BOOT_REARM_BUN="$FAKE_BUN" \
+    BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER="$STUB" STUB_CALL_LOG="$STUB_CALL_LOG" \
+    bash "$RUNNER" --repo-dir "$WORK/t12" --support-dir "$WORK/t12-support" >"$out" 2>&1
+rc=$?
+chk "T12 exit code" 1 "$rc"
+[[ ! -s "$STUB_CALL_LOG" ]] && ok "T12 installer never invoked when ff check fails" || bad "T12 installer WAS invoked despite dirty tree"
+want "T12 logs ALERT" 'ALERT' "$out"
+
+echo "T13 boot-rearm: installer failure -> exit 1, but the successful ff is kept (not rolled back)"
+new_pair_br "$WORK/t13"
+push_upstream "$WORK/t13"
+target="$(git -C "$WORK/t13-seed" rev-parse origin/main)"
+PLUGIN_ROOT="$WORK/t13-plugin"; PLUGIN_DIR="$PLUGIN_ROOT/telegram/9.9.9"; mkdir -p "$PLUGIN_DIR"
+echo "installed-OLD" >"$PLUGIN_DIR/boot_rearm.ts"
+STUB="$WORK/t13-stub-installer.sh"; write_stub_installer "$STUB"
+STUB_CALL_LOG="$WORK/t13-stub.log"; : >"$STUB_CALL_LOG"
+out="$WORK/t13.out"
+BOOT_REARM_PLUGIN_GLOB="$PLUGIN_ROOT/telegram/*/" BOOT_REARM_BUN="$FAKE_BUN" \
+    BUBBLE_DEPLOY_MAC_BOOT_REARM_INSTALLER="$STUB" STUB_CALL_LOG="$STUB_CALL_LOG" STUB_EXIT_CODE=4 \
+    bash "$RUNNER" --repo-dir "$WORK/t13" --support-dir "$WORK/t13-support" >"$out" 2>&1
+rc=$?
+chk "T13 exit code" 1 "$rc"
+[[ -s "$STUB_CALL_LOG" ]] && ok "T13 installer was invoked" || bad "T13 installer never invoked"
+head="$(git -C "$WORK/t13" rev-parse HEAD)"
+[[ "$head" == "$target" ]] && ok "T13 ff was kept despite installer failure (HEAD == origin/main)" || bad "T13 ff was rolled back or not applied ($head vs $target)"
+want "T13 logs UPDATED (ff happened)" 'UPDATED' "$out"
+want "T13 logs installer failure ALERT" 'boot-rearm installer failed' "$out"
+
+echo "T14 compact-hook: never created when the Mac never opted in (no pre-existing vendored copy)"
+new_pair_hook "$WORK/t14"
+out="$WORK/t14.out"
+bash "$RUNNER" --repo-dir "$WORK/t14" --support-dir "$WORK/t14-support" >"$out" 2>&1
+rc=$?
+chk "T14 exit code" 0 "$rc"
+[[ ! -f "$WORK/t14-support/hooks/rearm-loop-on-compact.py" ]] \
+    && ok "T14 compact hook was not created" || bad "T14 compact hook was created despite no opt-in"
+want "T14 logs opted-out skip" 'COMPACT-HOOK: not vendored on this Mac' "$out"
+
+echo "T15 compact-hook: pre-existing vendored copy is updated with a timestamped .bak; re-run is a no-op"
+new_pair_hook "$WORK/t15" "compact-hook-src-NEW"
+mkdir -p "$WORK/t15-support/hooks"
+echo "compact-hook-OLD" >"$WORK/t15-support/hooks/rearm-loop-on-compact.py"
+out="$WORK/t15.out"
+bash "$RUNNER" --repo-dir "$WORK/t15" --support-dir "$WORK/t15-support" >"$out" 2>&1
+rc=$?
+chk "T15 exit code" 0 "$rc"
+dst="$WORK/t15-support/hooks/rearm-loop-on-compact.py"
+[[ "$(cat "$dst")" == "compact-hook-src-NEW" ]] && ok "T15 compact hook reinstalled with new content" || bad "T15 compact hook not updated"
+bak_count=$(find "$WORK/t15-support/hooks" -name 'rearm-loop-on-compact.py.bak-*' | wc -l | tr -d ' ')
+[[ "$bak_count" == "1" ]] && ok "T15 exactly one .bak created" || bad "T15 expected exactly one .bak, found $bak_count"
+bak_file=$(find "$WORK/t15-support/hooks" -name 'rearm-loop-on-compact.py.bak-*' | head -1)
+[[ -n "$bak_file" && "$(cat "$bak_file" 2>/dev/null)" == "compact-hook-OLD" ]] && ok "T15 .bak preserves old content" || bad "T15 .bak does not preserve old content"
+want "T15 logs reinstalled" 'COMPACT-HOOK: reinstalled' "$out"
+out2="$WORK/t15-rerun.out"
+bash "$RUNNER" --repo-dir "$WORK/t15" --support-dir "$WORK/t15-support" >"$out2" 2>&1
+rc2=$?
+chk "T15 re-run exit code" 0 "$rc2"
+bak_count2=$(find "$WORK/t15-support/hooks" -name 'rearm-loop-on-compact.py.bak-*' | wc -l | tr -d ' ')
+[[ "$bak_count2" == "1" ]] && ok "T15 no additional .bak on unchanged re-run" || bad "T15 unexpected extra .bak on unchanged re-run (found $bak_count2)"
+want "T15 re-run logs unchanged skip" 'COMPACT-HOOK: unchanged' "$out2"
 
 echo
 echo "SUMMARY: pass=$PASS fail=$FAIL"
