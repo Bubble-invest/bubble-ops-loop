@@ -29,10 +29,10 @@ grep -qF '/home/claude/.claude/skills/cloud-wiki-compile/missions/intent-backfil
 grep -qF '/home/claude/scripts/wiki-citation-lint.py' "$SKILL"
 
 # The installed script must still work standalone (board #1485): a quiet
-# feed produces zero candidates, exit 0.
+# feed produces no digest, exit 0.
 CITATION_FEED="$TEST_ROOT/aggregate_feed.txt"
 printf '%s' '[NEW rick_rnd a.jsonl 2026-09-24T08:00:00 assistant] I read the file and checked status.' > "$CITATION_FEED"
-python3 "$CITATION_LINT" --feed "$CITATION_FEED" | grep -q '"candidates": \[\]'
+python3 "$CITATION_LINT" --feed "$CITATION_FEED" | grep -q '"digest": null'
 
 WIKI="$TEST_ROOT/wiki"
 MIRROR="$TEST_ROOT/mirror"

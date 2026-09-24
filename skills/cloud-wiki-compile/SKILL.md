@@ -729,7 +729,7 @@ Note the one-line summary in your STEP 10 report.
 same-day). Joris may make it Sunday-only by adding the same Sunday-guard STEP 4.6
 uses; leave nightly unless he says otherwise.
 
-## STEP 4.7b — Citation lint: unsourced operator-intent claims (deterministic, NIGHTLY)
+## STEP 4.7b — Citation lint: unsourced operator-intent self-notes (deterministic, NIGHTLY)
 
 **Board #1483/#1485.** Free-text self-notes (CronCreate wake prompts, subagent
 briefs, HANDOFF.md, compaction summaries) have no enforced citation
@@ -746,84 +746,129 @@ night** and needs no model judgment at all.
 A claim is a sentence matching `(operator|Joris|Jade) (said|flagged|wants|
 asked|told|decided)` (or the French equivalents the fleet also uses in
 notes/transcripts — "a dit", "a signalé"/"a flaggé", "veut", "a demandé", "a
-précisé", "a décidé", "a confirmé", "a validé") with no `msg\d+`, `tg\d+`,
-`message_id`, or dated (`YYYY-MM-DD[T..]`) citation nearby (same sentence or
-an immediately adjacent one). This is a regex pass, not a Task subagent read
-— cheap, testable, and with no injection surface (fixed-pattern text matching
-can't be argued with the way a reading model can). Run it directly against
-the plan already loaded in STEP 4:
+précisé", "a décidé", "a confirmé", "a validé"). This is a regex pass, not a
+Task subagent read — cheap, testable, and with no injection surface
+(fixed-pattern text matching can't be argued with the way a reading model
+can).
+
+**Scoped to SELF-NOTES, not live conversation (board #1485 review round 2).**
+A first version flagged any matching sentence anywhere and, dry-run against a
+REAL production feed, produced 18 candidates — ALL 18 false positives: an
+assistant narrating a request the operator had JUST made in the same live
+conversation ("Jade wants Olivier's email"). A claim only survives now if
+BOTH:
+
+- **No literal citation nearby** — no `msg\d+`, `tg\d+`, `message_id`, or
+  dated (`YYYY-MM-DD[T..]`) citation in the same sentence or an immediately
+  adjacent one (unchanged from the first pass); AND
+- **No live-conversation grounding.** The SOURCE CHECK: a claim is grounded
+  ("sourced") if the SAME session (folder + basename) has a genuine inbound
+  operator row within the preceding 24h — being inside a live back-and-forth
+  counts as sourced even with no literal msg/tg id, because the adjacent
+  operator turn in that SAME transcript already grounds it. A **subagent
+  transcript** (`agent-<hex>.jsonl` — the live, confirmed naming for a
+  Task-spawned subagent's own transcript file) can NEVER ground a claim this
+  way: its `role="user"` row is the Task-tool PROMPT the *orchestrating*
+  agent wrote, never a real message from Joris/Jade. Verified against the
+  REAL file the #1483 audit cites
+  (`.../subagents/agent-a910fd47bf3adee99.jsonl`): Ben's actual "operator
+  flagged spend" claim is literally the subagent's first `role="user"` row —
+  a self-authored brief, not the operator speaking — so in a top-level
+  session only `role="assistant"` rows are scanned (a `role="user"` row
+  there IS the operator's own words, definitionally sourced), while in a
+  subagent transcript BOTH roles are scanned (both are self-authored: the
+  brief AND the subagent's own replies).
+
+Run it directly against the plan already loaded in STEP 4:
 
 ```bash
 LINT=/home/claude/scripts/wiki-citation-lint.py
 AGG_FEED=$(python3 -c "import json; print(json.load(open('/home/claude/monitoring/wiki-compile-delta/current-plan.json'))['aggregate_feed'])")
+SEEN=/home/claude/monitoring/wiki-compile-delta/citation-lint-seen.json
 OUT=/home/claude/monitoring/wiki-compile-delta/citation-lint-$(date -u +%Y-%m-%d).json
-python3 "$LINT" --feed "$AGG_FEED" --output "$OUT"
+python3 "$LINT" --feed "$AGG_FEED" --seen-store "$SEEN" --digest-cap 10 \
+  --today "$(date -u +%Y-%m-%d)" --output "$OUT"
 ```
 
 This is the SAME `aggregate_feed` STEP 4 and STEP 4.7 already piggyback
 (never a separate read, never a raw transcript, never a wider VPS path than
 the delta plan already resolved — board #1485's explicit constraint). Only
 `[NEW ...]` rows are scanned by default, the same exhaustiveness contract as
-every other piggyback pass (see the feed-routing note above STEP 4.6). The
-script collapses repeats of the SAME claim (same folder + normalized text)
-into ONE candidate first — Ben's incident alone would otherwise be ~36
-separate emit calls for one underlying claim.
+every other piggyback pass (see the feed-routing note above STEP 4.6).
 
-**HANDOFF.md is intentionally NOT re-opened here.** Each dept's `HANDOFF.md`
-lives at its own isolated `/srv/agents/<slug>/HANDOFF.md` (or the Mac
-workspace root), unreadable by this compile under the #1120 uid isolation —
-reading it directly would widen this compile's access outside what the delta
-plan already resolved, which board #1485 explicitly rules out. In practice
-the mission that WRITES `HANDOFF.md` (`session_handoff`) has its own session
-transcript mined like any other, so a claim an agent puts INTO its handoff is
-already visible here via that agent's own assistant-authored text in the
-SAME reduced feed. A dept ever hand-editing `HANDOFF.md` outside its own
-transcript is a distinct gap, tracked separately, not solved by widening this
-compile's read access.
+**HANDOFF.md, and CronCreate/Agent/Task tool-call ARGUMENTS, are
+intentionally NOT literally visible here.** `wiki_delta.py`'s reducer keeps
+only `type=="text"` content from user/assistant messages and drops every
+`tool_use` block outright, and HANDOFF.md is never read by this compile
+(board #1120 uid isolation — reading a dept's `HANDOFF.md` directly would
+widen this compile's access, which #1485 explicitly rules out). In practice
+the claim that ends up in a wake prompt or HANDOFF.md is almost always first
+drafted as text the compile already mines (a model narrates before or while
+it writes a tool call or a file) — Ben's real incident is proof: the
+verbatim claim is literally readable as a subagent's own `role="user"` text
+row, with no tool-argument parsing needed. **Proposed, not implemented,
+follow-up:** teach `reduced_row()` to also keep `CronCreate`/`Agent`/`Task`
+tool inputs (tagged distinctly, e.g. `[NEW ... tool_use:CronCreate] ...`) for
+literal tool-argument coverage — deliberately left as a separate, more
+carefully reviewed change, since that reducer is shared by every other
+extractor (4, 4.6–4.9) and widening what it emits is not a one-line addition
+to bundle into this pass.
 
-Then the **PARENT** emits ONE `needs:human` card per surviving JSON
-candidate, through the SAME emitter every extractor in this file uses:
+**VOLUME — at most ONE digest card per night, never one card per claim.**
+The script collapses repeats of the SAME claim (same folder + normalized
+text) into one within-run candidate first — Ben's incident alone recurred
+~36+ times, which would otherwise be ~36 separate cards for one underlying
+claim — then builds AT MOST ONE digest listing up to `--digest-cap` (10)
+findings with a count of the rest, and drops any claim whose hash is already
+in the persistent `--seen-store` (a claim already surfaced in a previous
+night's digest never resurfaces). Only the findings actually SHOWN in a
+digest are marked seen; an overflow finding beyond the cap stays eligible for
+a LATER night once the backlog is below the cap, so a real finding is never
+silently lost, only delayed. If the script produced no digest (`digest` is
+`null` in `$OUT` — nothing new survived), emit nothing.
+
+Then the **PARENT** emits the single digest card, through the SAME emitter
+every extractor in this file uses:
 
 ```bash
 python3 -c "
 import json, subprocess
 data = json.load(open('$OUT'))
-EMIT = '/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh'
-for c in data['candidates']:
+digest = data.get('digest')
+if digest:
+    EMIT = '/home/claude/bubble-ops-loop/tools/kanban/emit_kanban_item.sh'
     subprocess.run(
-        [EMIT, 'task=wiki-citation-lint', 'title=' + c['title'], 'body=' + c['body'],
-         'type=decision', 'owner=' + c['dept'], 'priority=normal', 'budget=2'],
+        [EMIT, 'task=wiki-citation-lint', 'title=' + digest['title'], 'body=' + digest['body'],
+         'type=decision', 'owner=' + digest['dept'], 'priority=normal', 'budget=2'],
         check=False,
     )
 "
 ```
 
 `type=decision` routes to `needs:human` (the same mapping STEP 4.8's CLARIFY
-blocks use). `emit_kanban_item.sh` computes its own `task::title-slug`
-emit-key and dedups against OPEN issues plus the persistent dismiss-ledger
-(#1395) exactly as every other extractor above — a claim that keeps
-propagating night after night still collapses to ONE board card (the
-script's own within-run dedup handles same-night repeats; the emitter's
-task+title dedup handles the same claim recurring on a LATER night, since the
-title is built from the normalized claim text, not a date or session id).
-**These cards are the durable output — emitted even on a wiki-quiet night**,
-same as STEP 4.7's verification cards.
+blocks use). The digest title includes today's date, so `emit_kanban_item.sh`
+creates a fresh card on a night that has new findings — cross-night
+repetition is prevented upstream by the `--seen-store`, not by the emitter's
+own task+title dedup (that dedup still guards against a same-day retry
+double-posting). **This card is the durable output — emitted even on a
+wiki-quiet night**, same as STEP 4.7's verification cards.
 
 **Best-effort, never blocks the receipt.** If the script errors (a malformed
-or missing feed) or an individual `emit_kanban_item.sh` call fails, log it and
-continue to STEP 4.8 — like STEP 10's report queue (#495), this pass is
-best-effort. A citation-lint failure must NEVER cost you the STEP 11 receipt;
-do not retry it as a blocker and do not mention it in your final turn (STEP
-11 below still governs what your literal last output may contain).
+or missing feed, an unwritable seen-store) or the `emit_kanban_item.sh` call
+fails, log it and continue to STEP 4.8 — like STEP 10's report queue (#495),
+this pass is best-effort. A citation-lint failure must NEVER cost you the
+STEP 11 receipt; do not retry it as a blocker and do not mention it in your
+final turn (STEP 11 below still governs what your literal last output may
+contain).
 
-Note the one-line summary ("citation_lint: N candidates, M occurrences
-collapsed") in your STEP 10 report.
+Note the one-line summary ("citation_lint: N total, M shown this digest, K
+already seen") in your STEP 10 report.
 
 **Boundary with STEP 4.8's agentic C blocks (below).** This step only catches
-the mechanical pattern (claim shape + no citation at all). STEP 4.8's weekly
-CLARIFY blocks are for genuinely AMBIGUOUS intent readings that need
-judgment, not a bare missing citation — de-dup against the board as usual so
-the same quote doesn't get a second card from STEP 4.8.
+the mechanical pattern (claim shape + no citation + no live grounding).
+STEP 4.8's weekly CLARIFY blocks are for genuinely AMBIGUOUS intent readings
+that need judgment, not a bare missing citation — de-dup against the board
+as usual so the same quote doesn't get a second card from STEP 4.8.
 
 ## STEP 4.8 — Intent-drift (map-vs-territory) detector (WEEKLY, Sunday)
 
