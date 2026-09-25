@@ -54,6 +54,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -343,6 +344,65 @@ def load_jsonl(path):
     return rows
 
 
+def _rewrite_with_valid_lines_only(path, lines):
+    """Atomically replace `path` with exactly `lines` (each already a JSON
+    string, no trailing newline) -- temp file in the same directory + fsync
+    + os.replace, so the rewrite itself can't leave a half-written file
+    either."""
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=d, prefix=".jev-resume-tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_jsonl_resumable(path):
+    """Read a `--resume` target that may end in a torn/truncated last line.
+
+    Per-row flush+fsync (see cmd_ask) guarantees every row that finished
+    writing is durable, but it does NOT guarantee a kill can never land
+    mid-write() -- os.write() of a multi-KB line is not atomic, so a process
+    killed at the wrong instant can leave a partial line with no trailing
+    newline (invalid JSON, or valid JSON with the string cut off). A plain
+    `json.loads()` per line would raise on that fragment and crash the next
+    --resume outright.
+
+    This reads the file line by line, silently DROPS any line that fails to
+    parse (a malformed line counts as not-done -- whatever item produced it
+    is simply absent from the returned rows, so it will be re-attempted like
+    it was never run), and then REWRITES the file in place (temp file +
+    atomic os.replace, see _rewrite_with_valid_lines_only) to contain ONLY
+    the valid, complete lines it kept. This must happen BEFORE the caller
+    reopens the file in append mode -- otherwise a new row could get written
+    right after a torn fragment, corrupting every line after it too."""
+    if not os.path.exists(path):
+        return []
+    valid_lines, rows = [], []
+    with open(path, "r") as f:
+        for raw_line in f:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                d = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue  # torn/truncated line -- drop; its item is not-done
+            valid_lines.append(stripped)
+            rows.append(d)
+    _rewrite_with_valid_lines_only(path, valid_lines)
+    return rows
+
+
 def cmd_ask(args):
     if args.backend not in ALL_BACKENDS:
         raise SystemExit(f"error: unknown backend '{args.backend}' (choices: {', '.join(ALL_BACKENDS)})")
@@ -371,15 +431,19 @@ def cmd_ask(args):
     kept_rows = []
     out_exists = os.path.exists(args.out)
     if args.resume:
-        try:
-            for row in load_jsonl(args.out):
-                if row.get("_meta"):
-                    continue
-                if row.get("ok"):
-                    kept_rows.append(row)
-                    done_ids.add(row["id"])
-        except FileNotFoundError:
-            pass
+        # load_jsonl_resumable tolerates (and drops) a torn/truncated last
+        # line -- a kill mid-write() can leave one even with per-row
+        # fsync -- and rewrites --out in place to contain only the valid
+        # lines it kept, BEFORE we ever reopen it in append mode below. A
+        # dropped/malformed line's item simply isn't in done_ids, so it's
+        # treated as not-done and gets re-attempted, same as if it had
+        # never been run.
+        for row in load_jsonl_resumable(args.out):
+            if row.get("_meta"):
+                continue
+            if row.get("ok"):
+                kept_rows.append(row)
+                done_ids.add(row["id"])
         n_before = len(items)
         items = [it for it in items if it["id"] not in done_ids]
         print(f"[resume] kept {len(kept_rows)} already-OK rows, skipping them; "
@@ -706,7 +770,11 @@ def build_parser():
                              "calls (plus any --resume'd rows' recorded cost) reaches this many USD. "
                              "Remote backends only carry real cost (openrouter is verified; typesafe is "
                              "unverified); local calls always cost $0 so the guard never fires for them. "
-                             "Unset = no cap.")
+                             "NOTE with --parallel N: the cap is checked once per batch of N concurrent "
+                             "requests, not per individual call, so a batch already in flight when the cap "
+                             "is reached still completes -- actual spend can overshoot --max-spend by up to "
+                             "roughly one batch's worth of cost (up to N in-flight requests). Use --parallel 1 "
+                             "for an exact cap. Unset = no cap.")
     p_ask.set_defaults(func=cmd_ask)
 
     p_eval = sub.add_parser("eval", help="score ask results against a gold set")

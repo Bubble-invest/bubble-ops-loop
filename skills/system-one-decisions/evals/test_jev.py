@@ -435,6 +435,60 @@ def test_cmd_ask_incremental_write_survives_interruption_and_resumes(monkeypatch
     assert ids_written == ["a", "b", "c", "d"]
 
 
+def test_cmd_ask_resume_handles_torn_last_line_without_crashing(monkeypatch, tmp_path):
+    """Per-row fsync (tested above) guarantees a FINISHED write is durable,
+    but os.write() of a multi-KB line is not atomic -- a kill at the wrong
+    instant can still leave a partial line with no trailing newline: a
+    fragment json.loads() can't parse. A naive --resume that calls plain
+    json.loads() on every line would crash here. It must instead: drop the
+    fragment, treat its item as not-done, and rewrite --out to contain only
+    the valid lines BEFORE appending anything new -- so the new row for the
+    re-done item never lands concatenated onto the old fragment."""
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    # "a" finished writing cleanly. "b"'s row was mid-write() when the
+    # process died: a truncated JSON fragment, no trailing newline.
+    valid_row = json.dumps({"id": "a", "backend": "local-decider", "ok": True, "response": _noul_response(0.5)})
+    torn_fragment = '{"id": "b", "backend": "local-decider", "latency_s": 0.4, "ok": true, "respo'
+    out_path.write_bytes((valid_row + "\n" + torn_fragment).encode())  # deliberately no trailing newline
+
+    calls = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        calls.append(json["state"])
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": True, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "max_spend": None,
+    })()
+
+    jev.cmd_ask(args)  # must NOT raise json.JSONDecodeError
+
+    # "b" (the torn item) got re-done over HTTP; "a" (the clean, valid row) did not.
+    assert calls == ["item b"]
+
+    # the file parses fully now, end to end -- no leftover fragment anywhere.
+    parsed_rows = []
+    with open(out_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                parsed_rows.append(json.loads(line))  # must not raise
+
+    ids = [r["id"] for r in parsed_rows if not r.get("_meta")]
+    assert sorted(ids) == ["a", "b"]
+    assert len(ids) == len(set(ids))  # no duplicates -- "a" wasn't re-appended
+
+
 # ---------------------------------------------------------------------------
 # eval math
 # ---------------------------------------------------------------------------
