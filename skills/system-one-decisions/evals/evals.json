@@ -1,0 +1,95 @@
+{
+  "skill_name": "system-one-decisions",
+  "trigger_evals": [
+    {
+      "id": 1,
+      "query": "Claudette's mail-brief mission is spending a full agent turn on every one of the ~40 emails/day just to bucket them into actionnable/bouclé/pour-info/bruit before anything else happens. Can we make that first bucketing pass cheaper so the full agent only touches the emails that actually need drafting?",
+      "should_trigger": true
+    },
+    {
+      "id": 2,
+      "query": "use Jev to pre-screen the 250 leads before Claude drafts outreach for the qualified ones",
+      "should_trigger": true
+    },
+    {
+      "id": 3,
+      "query": "is there a fast way to classify whether each of these 300 closed board cards is dept:rnd vs dept:ben vs the other 5 depts, without burning a full Opus turn per card?",
+      "should_trigger": true
+    },
+    {
+      "id": 4,
+      "query": "Tony's inbox_watch check runs Sonnet on every single inbound message even though most of them clearly aren't ping-worthy. Set up a cheap first pass that only escalates the uncertain ones to Sonnet.",
+      "should_trigger": true
+    },
+    {
+      "id": 5,
+      "query": "System One — how do I wire a confidence-gated cascade so the local decider engine handles the confident cases and only the unsure band goes to the full model?",
+      "should_trigger": true
+    },
+    {
+      "id": 6,
+      "query": "before we call the reranker on all 40 retrieved passages, i want a quick cheap pass that drops the ones that are obviously irrelevant or contradict the other evidence",
+      "should_trigger": true
+    },
+    {
+      "id": 7,
+      "query": "we're about to let an agent send an email/delete a file/hit a paid API automatically -- I want a fast semantic gate in front of that action that scores destructiveness and asks for confirmation if it's risky, on top of whatever permissions we already have",
+      "should_trigger": true
+    },
+    {
+      "id": 8,
+      "query": "geraldine's categorisation skill README literally says 'manual-first, growing into auto-pass for trusted vendors' -- help me build the auto-pass step that classifies known Qonto movements cheaply and only routes new/ambiguous ones to the full pass",
+      "should_trigger": true
+    },
+    {
+      "id": 9,
+      "query": "5000 support tickets came in this week and I need to route each one to the right team (billing/tech/other) before a human ever reads them -- what's the cheapest way to do that at this volume?",
+      "should_trigger": true
+    },
+    {
+      "id": 10,
+      "query": "is the local decider engine or the official typesafe API the right pick if I need to classify French customer messages and some of it might touch client personal data -- what do I need to check first re GDPR?",
+      "should_trigger": true
+    },
+    {
+      "id": 11,
+      "query": "write a python script that renders a matplotlib bar chart of our monthly recurring revenue by department",
+      "should_trigger": false
+    },
+    {
+      "id": 12,
+      "query": "the risk-control.yaml mission needs a full daily audit of exposures vs mandate written up as a proper report for Joris -- can you draft the prose summary of today's findings?",
+      "should_trigger": false
+    },
+    {
+      "id": 13,
+      "query": "place this trade if the signal is positive and the pre-trade checks pass",
+      "should_trigger": false
+    },
+    {
+      "id": 14,
+      "query": "review this PR for correctness bugs before I merge it, especially around the auth middleware",
+      "should_trigger": false
+    },
+    {
+      "id": 15,
+      "query": "Miranda's proofread-visual skill needs to find the grammar errors in this AI-generated visual and actually rewrite the broken French sentence -- can you fix the copy?",
+      "should_trigger": false
+    },
+    {
+      "id": 16,
+      "query": "a client asked for a formal opinion on whether their proposed structure qualifies as regulated investment advice under French law -- draft the compliance response",
+      "should_trigger": false
+    },
+    {
+      "id": 17,
+      "query": "our PEP/sanctions screening matcher in pep-france needs a small bugfix, the trigram similarity threshold is off by one edge case -- can you look at matching.ts",
+      "should_trigger": false
+    },
+    {
+      "id": 18,
+      "query": "summarize the last 10 commits on this branch into a standup update for tomorrow morning",
+      "should_trigger": false
+    }
+  ]
+}
