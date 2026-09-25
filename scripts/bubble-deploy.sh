@@ -25,6 +25,12 @@ LEGACY_AGENTS_ROOT="${BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT:-/home/claude/agents}"
 UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
 LEGACY_UNIT_PREFIX="${BUBBLE_DEPLOY_LEGACY_UNIT_PREFIX:-ops-loop-}"
 LOCK_FILE="${BUBBLE_DEPLOY_LOCK_FILE:-/run/bubble-deploy.lock}"
+# The unprivileged user the console service itself runs as (User=bubble-console
+# in bubble-ops-console.service). The console-deps import smoke test runs as
+# THIS user, never as root (this script's own User=root) — root-run import-time
+# code (app/session/settings init) could otherwise leave root-owned files the
+# console user can't later write. #1503 checker review.
+CONSOLE_SERVICE_USER="${BUBBLE_CONSOLE_USER:-bubble-console}"
 DRY_RUN=0
 INFRA_ONLY=0
 ONE_DEPT=""
@@ -208,6 +214,114 @@ is_known_fleet_artifact() {
     return 1
 }
 
+# sync_console_requirements $label $dir — board #1503: bubble-deploy.sh syncs
+# the /opt/bubble-ops-loop code every 15 minutes but never installed
+# console/requirements.txt into that checkout's venv, so a merged dependency
+# bump (e.g. #492's `cryptography`) only surfaced as a crash on the next
+# console restart, potentially hours/days later. This installs into the venv
+# THAT SITS INSIDE $dir (the one the console's ExecStart actually runs:
+# $dir/venv/bin/python -m uvicorn console.main:app) whenever
+# console/requirements.txt's content changed since the last successful
+# install, verifies the install with an import smoke test, and only then
+# records the new hash — so a failed install/import is retried every run and
+# keeps failing the deploy loudly instead of being silently forgotten.
+#
+# This function never stops, starts, or restarts anything (same contract as
+# the rest of this script) — it only makes sure that whenever the console
+# NEXT restarts (systemd Restart=on-failure, a manual restart, a reboot), the
+# already-synced code on disk has matching deps already installed and
+# import-verified.
+sync_console_requirements() {
+    local label="$1" dir="$2"
+    local reqs="$dir/console/requirements.txt"
+    local venv_python="$dir/venv/bin/python"
+    local state_file="$dir/venv/.requirements.sha256"
+    local want have
+
+    [[ -f "$reqs" ]] || return 0
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY_RUN $label-console-deps: would check $reqs against $state_file"
+        return 0
+    fi
+    if [[ ! -x "$venv_python" ]]; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: venv python not found or not executable at $venv_python"
+        return 1
+    fi
+    want=$(sha256sum -- "$reqs" 2>/dev/null | awk '{print $1}') || want=""
+    if [[ -z "$want" ]]; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: cannot hash $reqs"
+        return 1
+    fi
+    have=""
+    [[ -f "$state_file" ]] && have=$(<"$state_file")
+    if [[ "$want" == "$have" ]]; then
+        log "CURRENT $label-console-deps: $reqs unchanged since last install"
+        return 0
+    fi
+
+    log "INSTALL $label-console-deps: $reqs changed, installing into $dir/venv"
+    # Board #1503 gotcha: $dir/venv/bin/pip was copied from a DIFFERENT venv
+    # (a stale /home/claude/bubble-ops-loop/venv baked into its shebang when
+    # bin/pip was copied rather than created in place — venv/ itself is a real
+    # venv, pyvenv.cfg present). Always invoke pip as a module of THIS venv's
+    # own interpreter, never the pip script directly.
+    if ! "$venv_python" -m pip install --quiet -r "$reqs"; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: pip install -r $reqs failed; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    fi
+
+    # Checker review (#1503): this script's own service runs as root, but
+    # `import console.main` executes import-time code (create_app(), settings,
+    # session-db connect/mkdir paths, hash computations) that can create files.
+    # Root-owned files from a root-run import could later be unwritable by the
+    # console's own unprivileged service user. So the smoke test itself runs
+    # AS that user via runuser, with a scrubbed environment and a throwaway
+    # cwd — never as root, and never falls back to root if runuser or the
+    # user is missing (that's a loud FAIL instead).
+    #
+    # Live-verified gotcha (checker round 2): this script runs as root, so a
+    # root-made `mktemp -d` is a 0700 root-owned dir — `runuser -u
+    # bubble-console -- cd <that dir>` is a guaranteed Permission denied, so
+    # the smoke test would fail on EVERY run. The workdir must therefore be
+    # CREATED and CLEANED UP as the service user too, not just cd'd into.
+    if ! command -v runuser >/dev/null 2>&1; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: runuser not found; refusing to smoke-test as root; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    fi
+    if ! id -u "$CONSOLE_SERVICE_USER" >/dev/null 2>&1; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: console service user '$CONSOLE_SERVICE_USER' not found; refusing to smoke-test as root; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    fi
+    local smoke_workdir
+    smoke_workdir=$(runuser -u "$CONSOLE_SERVICE_USER" -- mktemp -d) || {
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: cannot create smoke-test working dir as $CONSOLE_SERVICE_USER; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    }
+    if ! runuser -u "$CONSOLE_SERVICE_USER" -- \
+        env -i PATH=/usr/bin:/bin HOME=/nonexistent PYTHONPATH="$dir" \
+        bash -c 'cd -- "$1" && exec "$2" -c "import console.main"' -- \
+        "$smoke_workdir" "$venv_python" >/dev/null 2>&1
+    then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: post-install smoke test failed (import console.main as $CONSOLE_SERVICE_USER); state file left unwritten so this is retried next run; console NOT restarted"
+        runuser -u "$CONSOLE_SERVICE_USER" -- rm -rf -- "$smoke_workdir"
+        return 1
+    fi
+    runuser -u "$CONSOLE_SERVICE_USER" -- rm -rf -- "$smoke_workdir"
+    if ! printf '%s\n' "$want" >"$state_file.tmp" || ! mv -f "$state_file.tmp" "$state_file"; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: install+smoke test succeeded but could not persist $state_file; will reinstall next run"
+        return 1
+    fi
+    log "UPDATED $label-console-deps: installed + import-smoke-tested ($want)"
+}
+
 inspect_repo_state() {
     local dir="$1" owner="$2" branch dirty ahead behind porcelain filtered
     branch=$(g "$dir" "$owner" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -371,12 +485,19 @@ log "START dry_run=$DRY_RUN infra_only=$INFRA_ONLY dept=${ONE_DEPT:-all}"
 if [[ -n "${BUBBLE_DEPLOY_INFRA_DIR+x}" ]]; then
     # Explicit override retains the historical one-checkout contract.
     sync_repo_safe_ff "framework" "$BUBBLE_DEPLOY_INFRA_DIR" ""
+    sync_console_requirements "framework" "$BUBBLE_DEPLOY_INFRA_DIR"
 else
     # The source checkout feeds timers/floors. The console checkout is the
     # current interactive working directory. Updating its files on disk does
     # not claim that an already-running console has hot-reloaded them.
     sync_repo_safe_ff "framework-source" "$SOURCE_INFRA_DIR" ""
     sync_repo_safe_ff "framework-console-disk" "$CONSOLE_INFRA_DIR" ""
+    # #1503: the console's own venv lives inside $SOURCE_INFRA_DIR (its
+    # ExecStart is $SOURCE_INFRA_DIR/venv/bin/python -m uvicorn
+    # console.main:app) — NOT inside $CONSOLE_INFRA_DIR, which is only a
+    # claude-writable checkout for git operations. Only the source checkout's
+    # venv needs its deps kept in sync.
+    sync_console_requirements "framework-source" "$SOURCE_INFRA_DIR"
 fi
 
 if [[ "$INFRA_ONLY" != "1" ]]; then
