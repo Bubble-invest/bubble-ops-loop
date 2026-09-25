@@ -113,13 +113,13 @@ unit_dst="$SYSD2/bubble-cockpit-decision-key.service"
 [[ -f "$unit_dst" ]] && ok "T2 unit installed" || bad "T2 unit missing"
 
 if [[ -f "$script_dst" ]]; then
-    perm="$(stat -f '%Lp' "$script_dst" 2>/dev/null || stat -c '%a' "$script_dst" 2>/dev/null)"
+    perm="$(stat -c '%a' "$script_dst" 2>/dev/null || stat -f '%Lp' "$script_dst" 2>/dev/null)"
     [[ "$perm" == "750" ]] && ok "T2 decrypt script mode 0750" || bad "T2 decrypt script mode=$perm (want 750)"
     cmp -s "$script_dst" "$ROOT/console/deploy/decision-signing-key/bubble-cockpit-decision-key-decrypt.sh" \
         && ok "T2 decrypt script content matches source" || bad "T2 decrypt script content differs from source"
 fi
 if [[ -f "$unit_dst" ]]; then
-    perm="$(stat -f '%Lp' "$unit_dst" 2>/dev/null || stat -c '%a' "$unit_dst" 2>/dev/null)"
+    perm="$(stat -c '%a' "$unit_dst" 2>/dev/null || stat -f '%Lp' "$unit_dst" 2>/dev/null)"
     [[ "$perm" == "644" ]] && ok "T2 unit mode 0644" || bad "T2 unit mode=$perm (want 644)"
     cmp -s "$unit_dst" "$ROOT/console/deploy/decision-signing-key/bubble-cockpit-decision-key.service" \
         && ok "T2 unit content matches source" || bad "T2 unit content differs from source"
