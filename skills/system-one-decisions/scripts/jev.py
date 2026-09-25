@@ -82,7 +82,7 @@ REMOTE_BACKENDS = {
     "openrouter": {
         "base_url_env": "JEV_OPENROUTER_BASE",
         "default_base_url": "https://openrouter.ai/api",
-        "key_env": "OPENROUTER_API_KEY",
+        "key_env": ["JEV_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
         "path": "/alpha/decisions",
         "model": "typesafe/jev-1.13",
     },
@@ -157,11 +157,15 @@ def auth_headers_for(backend):
     if backend not in REMOTE_BACKENDS:
         return {}
     cfg = REMOTE_BACKENDS[backend]
-    key = os.environ.get(cfg["key_env"])
+    # Fleet-dedicated key first (JEV_OPENROUTER_API_KEY, capped "fleet-jev" key,
+    # board #1505) so it never collides with an agent's own OPENROUTER_API_KEY
+    # (e.g. Morty's Hermes key in the shared SOPS env); generic name as fallback.
+    names = [cfg["key_env"]] if isinstance(cfg["key_env"], str) else list(cfg["key_env"])
+    key = next((os.environ[n] for n in names if os.environ.get(n)), None)
     if not key:
         raise SystemExit(
-            f"error: backend '{backend}' requires {cfg['key_env']} in the environment "
-            f"(e.g. `export {cfg['key_env']}=...`). Refusing to call without it. "
+            f"error: backend '{backend}' requires one of {', '.join(names)} in the environment "
+            f"(e.g. `export {names[0]}=...`). Refusing to call without it. "
             f"Never pass an API key as a command-line flag."
         )
     return {"Authorization": f"Bearer {key}"}

@@ -227,6 +227,15 @@ KANBAN_MAP=(
   "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"
   "tools/kanban/emit_kanban_item.sh          tools/kanban/emit_kanban_item.sh"
   "tools/kanban/drain_kanban_queue.sh        tools/kanban/drain_kanban_queue.sh"
+  # Fleet-wide Jev / System-One decisions skill (board #1505; Joris 2026-09-25
+  # Telegram msg 9731 "give this skill to every dept"). evals/ intentionally not
+  # vendored (framework-side tests only).
+  "skills/system-one-decisions/SKILL.md                        skills/system-one-decisions/SKILL.md"
+  "skills/system-one-decisions/scripts/jev.py                  skills/system-one-decisions/scripts/jev.py"
+  "skills/system-one-decisions/references/engines.md           skills/system-one-decisions/references/engines.md"
+  "skills/system-one-decisions/references/eval.md              skills/system-one-decisions/references/eval.md"
+  "skills/system-one-decisions/references/fleet-opportunities.md skills/system-one-decisions/references/fleet-opportunities.md"
+  "skills/system-one-decisions/references/patterns.md          skills/system-one-decisions/references/patterns.md"
 )
 for pair in "${KANBAN_MAP[@]}"; do
   # shellcheck disable=SC2086
@@ -343,7 +352,7 @@ SKILLS_SRC_DIR="$DEPT/skills"
 # The fleet-shared skill(s) every dept must be able to use — ensured for EVERY
 # dept regardless of dept.yaml. Keep in sync with KANBAN_MAP above (the skill it
 # vendors into every dept's skills/). Space-separated.
-FLEET_SHARED_SKILLS="emit-kanban-task"
+FLEET_SHARED_SKILLS="emit-kanban-task system-one-decisions"
 
 if [[ -d "$CLAUDE_DIR" && -d "$SKILLS_SRC_DIR" ]]; then
   # Build the ENSURE-PRESENT set = FLEET_SHARED_SKILLS ∪ declared(dept.yaml).

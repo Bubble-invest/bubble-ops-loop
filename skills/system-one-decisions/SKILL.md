@@ -251,7 +251,7 @@ trivial "always predict the majority label" baseline for direct comparison — r
 eval number next to that baseline, not in isolation.
 
 API keys for `openrouter`/`typesafe` backends come **only** from the environment
-(`OPENROUTER_API_KEY` / `TYPESAFE_API_KEY`) — the script never accepts a key as a
+(`JEV_OPENROUTER_API_KEY`, the fleet-dedicated capped "fleet-jev" key provisioned into each VPS dept's env, with `OPENROUTER_API_KEY` as fallback / `TYPESAFE_API_KEY`) — the script never accepts a key as a
 flag, never prints one, and fails with a clear message (not a stack trace) if the
 relevant variable is unset.
 

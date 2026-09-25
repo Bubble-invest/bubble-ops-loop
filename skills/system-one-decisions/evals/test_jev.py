@@ -581,3 +581,24 @@ def test_cmd_eval_end_to_end(tmp_path):
     assert q["type"] == "noul"
     assert q["accuracy_at_0.5"] == pytest.approx(1.0)  # 0.9->yes(correct), 0.1->no(correct), 0.4->no(correct)
     assert q["trivial_baseline_accuracy"] == pytest.approx(2 / 3)  # majority label is "no" (2 of 3)
+
+
+def test_openrouter_prefers_dedicated_jev_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "generic-key")
+    monkeypatch.setenv("JEV_OPENROUTER_API_KEY", "dedicated-key")
+    assert jev.auth_headers_for("openrouter")["Authorization"] == "Bearer dedicated-key"
+
+
+def test_openrouter_falls_back_to_generic_key(monkeypatch):
+    monkeypatch.delenv("JEV_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "generic-key")
+    assert jev.auth_headers_for("openrouter")["Authorization"] == "Bearer generic-key"
+
+
+def test_openrouter_missing_both_keys_names_both(monkeypatch):
+    monkeypatch.delenv("JEV_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    import pytest
+    with pytest.raises(SystemExit) as e:
+        jev.auth_headers_for("openrouter")
+    assert "JEV_OPENROUTER_API_KEY" in str(e.value) and "OPENROUTER_API_KEY" in str(e.value)
