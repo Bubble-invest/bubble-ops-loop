@@ -281,6 +281,12 @@ sync_console_requirements() {
     # AS that user via runuser, with a scrubbed environment and a throwaway
     # cwd — never as root, and never falls back to root if runuser or the
     # user is missing (that's a loud FAIL instead).
+    #
+    # Live-verified gotcha (checker round 2): this script runs as root, so a
+    # root-made `mktemp -d` is a 0700 root-owned dir — `runuser -u
+    # bubble-console -- cd <that dir>` is a guaranteed Permission denied, so
+    # the smoke test would fail on EVERY run. The workdir must therefore be
+    # CREATED and CLEANED UP as the service user too, not just cd'd into.
     if ! command -v runuser >/dev/null 2>&1; then
         FAILED=$((FAILED + 1))
         log "FAIL $label-console-deps: runuser not found; refusing to smoke-test as root; state file left unwritten so this is retried next run; console NOT restarted"
@@ -292,9 +298,9 @@ sync_console_requirements() {
         return 1
     fi
     local smoke_workdir
-    smoke_workdir=$(mktemp -d) || {
+    smoke_workdir=$(runuser -u "$CONSOLE_SERVICE_USER" -- mktemp -d) || {
         FAILED=$((FAILED + 1))
-        log "FAIL $label-console-deps: cannot create smoke-test working dir; state file left unwritten so this is retried next run; console NOT restarted"
+        log "FAIL $label-console-deps: cannot create smoke-test working dir as $CONSOLE_SERVICE_USER; state file left unwritten so this is retried next run; console NOT restarted"
         return 1
     }
     if ! runuser -u "$CONSOLE_SERVICE_USER" -- \
@@ -304,10 +310,10 @@ sync_console_requirements() {
     then
         FAILED=$((FAILED + 1))
         log "FAIL $label-console-deps: post-install smoke test failed (import console.main as $CONSOLE_SERVICE_USER); state file left unwritten so this is retried next run; console NOT restarted"
-        rm -rf -- "$smoke_workdir"
+        runuser -u "$CONSOLE_SERVICE_USER" -- rm -rf -- "$smoke_workdir"
         return 1
     fi
-    rm -rf -- "$smoke_workdir"
+    runuser -u "$CONSOLE_SERVICE_USER" -- rm -rf -- "$smoke_workdir"
     if ! printf '%s\n' "$want" >"$state_file.tmp" || ! mv -f "$state_file.tmp" "$state_file"; then
         FAILED=$((FAILED + 1))
         log "FAIL $label-console-deps: install+smoke test succeeded but could not persist $state_file; will reinstall next run"

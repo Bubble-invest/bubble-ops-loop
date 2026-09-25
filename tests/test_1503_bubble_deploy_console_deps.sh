@@ -46,8 +46,12 @@
 # T6 venv python missing/non-executable → logs FAIL, script exits 1.
 # T7 --dry-run with a changed requirements.txt → logs DRY_RUN, pip/import
 #    are never invoked, state file is never written.
-# T8 successful run → the import smoke test is invoked via `runuser -u
-#    <console user> --`, never directly as the (root) caller.
+# T8 successful run → the smoke-test workdir is created (`mktemp -d`),
+#    used, and cleaned up (`rm -rf`) all via `runuser -u <console user> --`,
+#    and the import itself likewise — never directly as the (root) caller.
+#    (Live-verified checker finding: a root-made mktemp -d is a 0700
+#    root-owned dir, so `runuser -u bubble-console -- cd <it>` is a
+#    guaranteed Permission denied — the workdir must be made AS that user.)
 # T9 the configured console user does not exist → logs FAIL, refuses to
 #    fall back to root, never calls runuser, state file left unwritten,
 #    script exits 1.
@@ -209,11 +213,13 @@ grep -q "DRY_RUN framework-source-console-deps" "$WORK/out.log" || fail "T7: mis
 [[ "$(cat "$STATE_FILE")" == "$before_hash" ]] || fail "T7: state file changed during --dry-run"
 echo "  ok"
 
-echo "T8 smoke test is invoked via runuser as the configured console user, never directly"
+echo "T8 workdir mktemp+cleanup and the smoke test itself all run via runuser as the configured console user"
 echo "fastapi==0.115.6" >"$SOURCE_DIR/console/requirements.txt"
 run
 [[ "$RC" == "0" ]] || fail "T8: expected exit 0, got $RC"
 grep -q -- "-u $TEST_CONSOLE_USER --" "$RUNUSER_LOG" || fail "T8: runuser was not called with -u $TEST_CONSOLE_USER --"
+grep -q -- "-u $TEST_CONSOLE_USER -- mktemp -d" "$RUNUSER_LOG" || fail "T8: the smoke-test workdir was not created via runuser mktemp -d"
+grep -q -- "-u $TEST_CONSOLE_USER -- rm -rf --" "$RUNUSER_LOG" || fail "T8: the smoke-test workdir was not cleaned up via runuser rm -rf"
 grep -q -- "import console.main" "$RUNUSER_LOG" || fail "T8: the import smoke test did not reach runuser's argv"
 grep -q -- "env -i " "$RUNUSER_LOG" || fail "T8: runuser's argv did not use a scrubbed (env -i) environment"
 echo "  ok"
