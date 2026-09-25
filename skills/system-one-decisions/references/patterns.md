@@ -157,3 +157,31 @@ Patterns most useful as a starting point (see SKILL.md's pattern picker table):
 double-checking output before it's trusted. **Action gate (6)** is the one to reach
 for before any risky tool call — always as a second layer over deterministic
 permissions, never instead of them.
+
+## 19. Decompose: small model answers the easy sub-question, code owns the objective
+
+**What it is.** Split a decision into (a) a narrow perceptual/risk sub-question the small
+model can answer ("will the snake die if it moves UP?", "is this email a bounce?"), (b) the
+objective, computed deterministically in code (distance to food, priority, SLA), and (c) a
+hard safety veto from exact rules. Final choice = argmax(objective − w·model_risk), then veto.
+
+**Source.** Laya's own demo `laya-ts/examples/snake.mjs` (NandhaKishorM/laya): 4 batched `noul`
+"Will the snake die (wall or own body) if it moves {DIR} next?" questions over a text board,
+fused as `pull − 2·danger`, plus an exact-lethality veto. Reproduced on our M4, 2026-09-25
+(`Rick_RnD/prototypes/jev-local/snake-demo`, `LAYA-SNAKE-DEMO-ORIGIN.md`, board #1505).
+
+**Measured (our M4, laya multilingual).**
+- Whole decision asked as one 3-way `choice` ("best move"): 0 food in 1,000+ moves. The model
+  followed an option LABEL (`turn_right`) instead of the facts. Opaque keys plus content-free
+  calibration (Zhao et al. 2021) flattened the label prior but left accuracy at 3/7.
+- Decomposed (this pattern): score 26 before the first death, over 400 moves.
+- Real Jev (`typesafe/jev-1.13`) on the whole decision: 6/6 hand cases, ~0.48 s/decision.
+
+**Caveats.**
+- Most of the skill can live in the code. Measure the model's marginal contribution against
+  the model-free heuristic (`pull − w·exact_risk`): here it changed the choice on only 10% of
+  ticks, and the veto overrode it 17% of the time. If that number is near 0, drop the model.
+- Asking several question types in one request cost ~4× latency on laya (~177 ms vs ~35 ms).
+  Batch same-type questions and keep the board text short.
+- Bigger/official models (real Jev) can take the whole decision; small local ones usually can't.
+
