@@ -11,7 +11,7 @@ against the same three benchmark sets, **verified live**, 230/230 calls OK, 2026
 
 Confirmed working end-to-end 2026-09-25 (from the VPS, `ssh hetzner-root`, using an
 OpenRouter key): **`POST https://openrouter.ai/api/alpha/decisions`**, header
-`Authorization: Bearer $OPENROUTER_API_KEY`, body
+`Authorization: Bearer $JEV_OPENROUTER_API_KEY` (fallback `$OPENROUTER_API_KEY`), body
 `{"model": "typesafe/jev-1.13", "state": <text>, "questions": {<same noul/choice/score
 question objects as the local /v1/systemone format>}}`. Response:
 `{model, answers: {<qid>: {type, noul | choice+probabilities+confidence | score}},
