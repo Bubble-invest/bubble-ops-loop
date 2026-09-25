@@ -42,6 +42,13 @@ jobs:
       # No real root/systemd/VPS involved — see the test file's own header.
       - name: Decision-signing key installer test
         run: bash tests/test_1498_decision_signing_key_install.sh
+      # Board #1510: arm-wake-cron.sh must stay portable to BSD/macOS date
+      # (Macs run it directly, no coreutils). This test forces TZ=UTC and
+      # TZ=Europe/Paris around each call to exercise both the VPS-host and
+      # Mac-host code paths on this one (Linux) CI runner — see the test
+      # file's own header for why that's a faithful simulation.
+      - name: arm-wake-cron.sh portability test
+        run: bash tests/test_arm_wake_cron.sh
 
   console-tests:
     runs-on: ubuntu-latest
