@@ -35,28 +35,46 @@ what to do with the probability. Chaining several of these micro-decisions toget
 how a dept turns a slow, expensive pipeline into a fast, cheap one: cheap steps first,
 expensive model only where the cheap step is genuinely unsure.
 
-This is a real, measured local capability today (`prototypes/jev-local/` in the R&D
-workspace — three vetted local engines, benchmarked on JevBench + a French set + a real
-fleet board sample, plus a completed pilot classifying wiki pages), not a hypothetical.
-It is also, per that same research, **not a silver bullet** — read "The use/don't-use
-checklist" below before reaching for it.
+This is a real, measured capability today (`prototypes/jev-local/` in the R&D
+workspace — three vetted local engines AND the official Jev via OpenRouter, all
+benchmarked on JevBench + a French set + a real fleet board sample, plus a completed
+pilot classifying wiki pages), not a hypothetical. The official Jev is verified live
+and is meaningfully more accurate than the local stand-ins on most of what was tested
+(see "Backend choice" below) — but it is also, per that same research, **not a silver
+bullet**: it still struggles on the fleet's own skewed board-card corpus, and it is
+never trusted alone on anything gold-critical. Read "The use/don't-use checklist"
+below before reaching for it.
 
 ## Step 0: try a deterministic rule first
 
 Before spinning up any model — local or API — check whether a plain rule already
-answers the question. This is not a formality: on the fleet's own board-card
-dept-classification task, a rule mapping each wiki page's `owner`/`domain`/top-level
-directory to a department scored **P=0.88** on the gold set, beating every local
-engine's zero-shot accuracy on the same task (decider 0.45, laya 0.40, semif 0.175 on
-the 40-card internal set; see `references/engines.md`). If your state carries a
-metadata field, a sender pattern, a fixed keyword, or an existing enum that already
-determines the answer most of the time, write that rule and reserve the model for
-what the rule can't resolve — as a pre-filter ahead of it, or as the escalation path
-for what it doesn't cover. Also check for existing deterministic precedents already in
-the fleet before building anything new (fleet standard, don't duplicate): Claudette's
-IMAP `\Seen`/UID dedup gate, Maya's `bodacc-signals` `classify_annonce()`, Tonio's
-`pep-france` trigram/token-set matcher. If a dept already solved this with code, reuse
-it; a Jev call is for questions a rule genuinely can't answer well.
+answers the question. Two separate results from this research make this concrete, not
+a formality (two different corpora, don't conflate them):
+- **On the wiki-page → operator-intent pilot** (pilot 1, 46 gold pages, 12 intents), a
+  metadata rule (map each page's `owner`/`domain`/top-level directory → department)
+  scored **P=0.88, R=0.63** on the 7 department-shaped intents — beating the SAME gold
+  pages scored across all 12 intents by the local engines (decider micro-P 0.550,
+  semif micro-P 0.619; see `references/eval.md`'s worked example). The pilot's own
+  recommendation: dept intents come from the rule, engines are reserved for the 5
+  fleet-wide intents the rule can't resolve.
+- **On a separate benchmark** — real closed board cards' own `dept:*` labels (40 cards,
+  the `internal_set` in the cross-engine benchmark) — a trivial "always guess the
+  majority class" baseline scores 0.85 (the corpus is 85% one department), and every
+  local engine scored *below* that baseline zero-shot: decider 0.450, laya 0.400,
+  semif 0.175 (see `references/engines.md`'s "base-rate blindness"). The official Jev
+  (`jev113`) also struggled on this exact task (0.421 accuracy — see `references/engines.md`)
+  even though it clearly outperforms every local engine elsewhere; base-rate skew that
+  none of the engines exploit zero-shot is a real limit, not an artifact of one backend.
+
+If your state carries a metadata field, a sender pattern, a fixed keyword, or an
+existing enum that already determines the answer most of the time, write that rule and
+reserve the model for what the rule can't resolve — as a pre-filter ahead of it, or as
+the escalation path for what it doesn't cover. Also check for existing deterministic
+precedents already in the fleet before building anything new (fleet standard, don't
+duplicate): Claudette's IMAP `\Seen`/UID dedup gate, Maya's `bodacc-signals`
+`classify_annonce()`, Tonio's `pep-france` trigram/token-set matcher. If a dept already
+solved this with code, reuse it; a Jev call is for questions a rule genuinely can't
+answer well.
 
 ## The use / don't-use checklist
 
@@ -79,11 +97,19 @@ it; a Jev call is for questions a rule genuinely can't answer well.
 - **Fund execution or risk** (Ben's `execution.yaml`, `risk-control.yaml`) — fenced,
   deterministic, human/Opus-gated, explicitly off-limits per the fleet opportunity
   research.
-- **Regulated financial/investment advice or compliance output** — the local engines
-  tested here **missed every regulated-advice positive** in a French compliance test
-  at standard thresholds (decider and semif both missed all 3; only the weakest
-  all-around engine, laya, caught them — see `references/engines.md`'s "regulated-advice
-  miss" section). Never gate a compliance decision on a single engine's threshold.
+- **Regulated financial/investment advice or compliance output.** This stays a NEVER
+  regardless of backend — even the official Jev's much better detection on this
+  question (below) is a *flag for human review*, never a decision. On the French
+  compliance test's `is_regulated_advice` question (8 items, 3 true positives): **the
+  local engines missed every positive** — decider and semif each caught 0/3 (5/8
+  overall — right on every negative, wrong on every positive; see
+  `references/engines.md`'s "regulated-advice miss" section). The verified official Jev
+  (`jev113`, via OpenRouter) caught **3/3 positives with 0 false positives among the 5
+  negatives** — p(yes) = 0.92/0.77/0.93 on the true positives vs. 0.01-0.09 on the
+  negatives, a wide, confident separation — making it a genuinely useful
+  **flag-for-human-review** signal. But detecting well is still not the same as being
+  trusted to decide: a regulated-advice call is never made by Jev, of any backend, full
+  stop — route a positive/uncertain flag to a human, never to an automatic action.
 - **Client-facing output** — Tonio's `pep-france` PEP/sanctions matcher is deliberately
   kept as a hard deterministic scorer for exactly this reason; don't replace a
   client-facing regulated decision with a probabilistic model just because it's cheaper.
@@ -96,7 +122,8 @@ full agent, or human).
 
 Pick the shape of the decision first, then read the matching entry in
 `references/patterns.md` for the full write-up, source citations, and caveats before
-building. All patterns are engine-agnostic — same wire format, whichever backend you
+building. All patterns are engine-agnostic — `scripts/jev.py` normalizes the (two)
+underlying wire formats, so a pattern works the same regardless of which backend you
 pick below.
 
 | You need to... | Pattern | Read |
@@ -116,25 +143,42 @@ calibrate the real band on your own labeled data (see `references/eval.md`).
 
 ## Backend choice
 
-Same wire format (`POST /v1/systemone`, `{"state": ..., "questions": {...}}`) across
-every backend — swapping backends is a config change, not a rewrite. Use
-`scripts/jev.py` for all of them; see its `--help` for the exact flags.
+**The official Jev (`openrouter` backend, `typesafe/jev-1.13`) is now VERIFIED LIVE**
+(230/230 calls OK, 2026-09-25 — `prototypes/jev-local/bench/results/20260925-openrouter/`)
+and is **the recommended DEFAULT backend for INTERNAL Bubble Invest data** — it beats
+every local engine on accuracy almost everywhere it was tested, at negligible cost
+(~$0.025 per 1,000 decisions) and flat, fast latency (p50 ~0.5s, p95 ~0.6s, no tail).
+`openrouter` and `typesafe` (direct API, unverified — see below) speak a **different
+wire format** than the local engines: `POST <base_url>/alpha/decisions` with a `model`
+field, vs. the local engines' `POST <base_url>/v1/systemone` — `scripts/jev.py` handles
+this for you (`request_url_and_payload()`), you never hand-build the request. Use
+`scripts/jev.py --help` for the exact flags.
 
 | Backend | Where it runs | Pick it when |
 |---|---|---|
-| `local-decider` (**default**) | Mac only (MPS), one engine at a time | Best all-rounder — near-best accuracy on every tested set, fastest/most consistent of the two decoder engines, well-calibrated. Start here. |
-| `local-semif` | Mac only (MLX) | French/accuracy-critical text where latency isn't on a user-facing critical path — most accurate on the French test set (0.900 vs decider's 0.825), but has a heavy latency tail (p95 up to ~15s on long items). |
+| `openrouter` (**recommended default for internal data**, `typesafe/jev-1.13`) | Any dept, VPS or Mac, no special networking | VERIFIED LIVE. Clear accuracy leader: JevBench 0.793 (vs. decider 0.673, semif 0.687, laya 0.527), French 0.950 (highest of any engine on any set in this whole benchmark), and the only engine with genuinely **flat latency** across difficulty tiers (p50 ~0.5s, p95 ~0.6s — no blow-up on hard/long items, unlike semif's p95 up to 18.3s). Also the clear leader on regulated-advice **detection** (3/3, 0 false positives — see the use/don't-use checklist above; still never a final call). Cost is negligible: $0.025/1,000 decisions. **Internal Bubble data only for now** — see the data-residency rule below. |
+| `local-decider` | Mac only (MPS), one engine at a time | Free, zero-data-leaves-the-machine fallback and the pick for EXTERNAL client data (below) — best all-rounder of the three local engines, near-best accuracy on every tested set, fastest/most consistent of the two decoder engines. |
+| `local-semif` | Mac only (MLX) | French/accuracy-critical EXTERNAL-client text where latency isn't on a user-facing critical path (0.900 vs decider's 0.825 on French, but a heavy latency tail — p95 up to ~15s). |
 | `local-laya` | Mac only | A coarse pre-filter ONLY, ahead of a stronger step — 5-50x faster than the other two at a real accuracy cost; use it to cut volume, not to make the final call. |
-| `openrouter` / `typesafe` (official `typesafe/jev-1.13`) | Any VPS dept, no special networking | The only currently-viable route for VPS-hosted depts (Ben, Maya, Miranda, Tony, Géraldine, Tonio) wanting Jev-class speed today — the local engines are Mac-only (decider is MPS/PyTorch, semif is MLX; neither is proven to port cleanly to Linux). |
+| `typesafe` (direct API) | Any dept, no special networking | The direct TypeSafe API — same `/v1/systemone`-style protocol as the local engines, but **not independently verified against a live account** in this build (no key/network available). Prefer `openrouter` (verified) unless you have a specific reason to go direct. |
 
-**GDPR / EU residency is unconfirmed for the official API.** TypeSafe's own risk
-notes flag data residency and sub-processor terms as things to verify, not settled
-facts, and this research did not find a citable statement that the OpenRouter route
-excludes EU regions. **Until that's confirmed in writing, no Jade/client personal
-data or KYC/AML/patrimoine specifics goes to the official API** — use a local engine
-or a minimized/pseudonymized state for anything sensitive. See
-`references/engines.md` for the full residency note and the local-engine Linux-porting
-caveat.
+**Data-residency rule (Joris, Telegram msg 9715, 2026-09-25 — "for now it's internal
+use so it's ok"):**
+- **INTERNAL Bubble Invest fleet data** — board cards, wiki, internal mail/ops, dept
+  missions, anything that is Bubble's own operational data about Bubble itself — **MAY
+  use the official Jev via OpenRouter now.** This is why `openrouter` is the
+  recommended default above.
+- **EXTERNAL client data** — client deliverables (e.g. Gefineo/Delahaye), and anything
+  processed on behalf of a client such as PEP-France/OpenSanctions screening subjects
+  — **stays LOCAL-ONLY** (`local-decider`/`local-semif`/`local-laya`) until EU
+  residency and a DPA are confirmed in writing. TypeSafe's own risk notes still flag
+  data residency and sub-processor terms as things to verify, not settled facts (see
+  `references/engines.md`); this research did not find a citable statement that the
+  OpenRouter route excludes EU regions. Nothing about the internal-use clearance above
+  changes that for client data.
+- If you're not sure which bucket a task's data falls into, treat it as external
+  (local-only) until you've checked — this rule only widens the door for data that is
+  unambiguously Bubble's own internal operations.
 
 **Only one local engine runs at a time on a 16 GB Mac** (`scripts/jev.py start`
 refuses to start a second one while another is listening — don't work around this;
@@ -184,6 +228,11 @@ scripts/jev.py stop
 scripts/jev.py ask --backend local-decider --questions questions.json \
   --items items.jsonl --out results.jsonl [--resume] [--parallel 4]
 
+# ask against the official Jev (internal data only -- see "Backend choice" above),
+# with a hard spend cap:
+scripts/jev.py ask --backend openrouter --questions questions.json \
+  --items items.jsonl --out results.jsonl --max-spend 0.50
+
 # eval: score results against a gold set
 scripts/jev.py eval --results results.jsonl --gold gold.jsonl --out report.json
 ```
@@ -191,7 +240,12 @@ scripts/jev.py eval --results results.jsonl --gold gold.jsonl --out report.json
 `ask` batches every question in `questions.json` into one request per item (the same
 shared-prefix trick `run_engine.py` used in pilot 1 — render the item once, score N
 questions off it) and supports `--resume` to skip items already present (by `id`) in
-`--out`, so a long run surviving a kill/restart never re-pays for finished items.
+`--out`. Every row is flushed and fsync'd to `--out` as soon as it's computed — not
+batched up and written at the end — so a kill/restart mid-run never loses more than the
+single in-flight request, and `--resume` genuinely continues from exactly where the run
+stopped. On `openrouter`, each row also records the call's real `usage.cost` and a
+running total; pass `--max-spend <usd>` to have the run stop issuing new requests once
+that total is reached (local calls always cost $0, so the guard never fires for them).
 `eval` reports precision/recall/F1/ECE (calibration) and P@1 per question, plus the
 trivial "always predict the majority label" baseline for direct comparison — read the
 eval number next to that baseline, not in isolation.
@@ -217,7 +271,9 @@ relevant variable is unset.
 This skill condenses `~/claude-workspaces/Rick_RnD/prototypes/jev-local/` (board
 `Bubble-invest/bubble-ops-board#1505`): `USE-CASES.md` (pattern catalog + opportunity
 map), `README.md` (engine install/start/stop), `bench/results/20260925-seq/summary.md`
-(cross-engine benchmark), and `pilot1-wiki-intent/results/20260925-pilot1/summary.md`
+(the three-local-engine cross-engine benchmark), `pilot1-wiki-intent/results/20260925-pilot1/summary.md`
 (a completed real-corpus pilot, including the "Checker addendum" deterministic-rule
-finding that opens this skill). Read those directly for anything this skill's
-condensed references don't cover.
+finding that opens Step 0), and `bench/results/20260925-openrouter/summary.md` (the
+official Jev, `typesafe/jev-1.13` via OpenRouter, re-run against the exact same three
+benchmark sets — 230/230 calls OK, verified live 2026-09-25). Read those directly for
+anything this skill's condensed references don't cover.

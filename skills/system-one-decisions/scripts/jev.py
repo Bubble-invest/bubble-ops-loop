@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
 """jev.py -- one CLI/library interface over swappable Jev / System-One backends.
 
-Backends (all speak the same wire format -- swapping is a config change, not a
-rewrite): local-decider (default) | local-semif | local-laya | openrouter | typesafe.
-See ../SKILL.md for when to use which, and ../references/engines.md for measured
-perf/failure modes per backend.
+Backends: local-decider | local-semif | local-laya | openrouter (the official
+Jev, RECOMMENDED DEFAULT when the data is allowed off-box) | typesafe (the
+direct API, not yet independently verified against a live account -- see
+../references/engines.md). See ../SKILL.md for when to use which.
 
-Wire format, identical across every backend (see prototypes/jev-local/README.md
-in the R&D workspace, and bench/harness.py / pilot1-wiki-intent/scripts/run_engine.py,
-which this script's HTTP client logic is adapted from):
+TWO wire formats, not one -- the local engines and the direct `typesafe` API
+speak TypeSafe's own `/v1/systemone` protocol; `openrouter` (the officially
+VERIFIED LIVE route, 230/230 calls OK on 2026-09-25 --
+prototypes/jev-local/bench/results/20260925-openrouter/) speaks a different,
+OpenRouter-specific endpoint and body shape. `request_url_and_payload()` is
+the one place that knows the difference -- callers never branch on it.
 
+  local-* / typesafe:
     POST <base_url>/v1/systemone
     {"state": <str-or-dict>, "questions": {"<qid>": {"type": "choice"|"score"|"noul",
                                                        "instructions": "...",
                                                        "criteria": {...}}}}
     -> {"model": "...", "answers": {"<qid>": {"type": ..., "choice": ..., "noul": ...,
-                                               "probabilities": {...}, "legend": {...}}}}
+                                               "probabilities": {...}, "legend": {...}}},
+        "usage": {"input_tokens": ..., "output_tokens": ...}}
+
+  openrouter (VERIFIED, see the sample raw row cited above):
+    POST <base_url>/alpha/decisions
+    {"model": "typesafe/jev-1.13", "state": <str-or-dict>, "questions": {...}}
+    -> {"model": "typesafe/jev-1.13-...", "answers": {...same shape as above...},
+        "usage": {"input_tokens": ..., "output_tokens": ..., "cost": <float USD>},
+        "id": "...", "provider": "TypeSafe"}
 
 Subcommands:
   start / stop / status   -- manage ONE local engine server (local-* backends only)
-  ask                      -- score items (JSONL) against one or more questions -> JSONL
+  ask                      -- score items (JSONL) against one or more questions -> JSONL,
+                               tracking cumulative usage.cost per call and enforcing
+                               --max-spend if set
   eval                     -- score `ask` results against a gold set -> precision/recall/
                                F1/ECE/P@1 per question, plus the trivial majority-class
                                baseline (ALWAYS compare against this -- see ../SKILL.md
@@ -58,24 +72,47 @@ LOCAL_BACKENDS = {
     "local-semif": {"port": 8783, "name": "semif"},
 }
 REMOTE_BACKENDS = {
-    # Both remote backends are assumed to speak the same /v1/systemone wire format
-    # as the local engines (TypeSafe's own protocol -- see references/engines.md).
-    # NOTE (open question, flagged in the PR): the exact OpenRouter proxy path for
-    # typesafe/jev-1.13 was not independently verified against a live account for
-    # this build -- verify against a real key before relying on the openrouter
-    # backend in production; typesafe (the direct API) is the better-documented path.
+    # "openrouter" -- VERIFIED LIVE 2026-09-25, 230/230 calls OK (see
+    # prototypes/jev-local/bench/results/20260925-openrouter/{summary.md,
+    # jev113_fr_set.jsonl}): a different endpoint + body shape than the
+    # /v1/systemone protocol the local engines and the direct `typesafe` API
+    # speak -- see request_url_and_payload() below, and the module docstring
+    # for both wire formats side by side.
     "openrouter": {
         "base_url_env": "JEV_OPENROUTER_BASE",
         "default_base_url": "https://openrouter.ai/api",
         "key_env": "OPENROUTER_API_KEY",
+        "path": "/alpha/decisions",
+        "model": "typesafe/jev-1.13",
     },
+    # "typesafe" -- the direct TypeSafe API, speaking /v1/systemone (same
+    # protocol as the local engines). NOT independently verified against a
+    # live account in this build (no key/network available) -- see
+    # references/engines.md. Prefer `openrouter` (verified) unless you have
+    # a specific reason to go direct.
     "typesafe": {
         "base_url_env": "JEV_TYPESAFE_BASE",
         "default_base_url": "https://api.typesafe.ai",
         "key_env": "TYPESAFE_API_KEY",
+        "path": "/v1/systemone",
+        "model": None,
     },
 }
 ALL_BACKENDS = list(LOCAL_BACKENDS) + list(REMOTE_BACKENDS)
+
+# The official Jev via OpenRouter is the recommended DEFAULT backend for
+# INTERNAL Bubble Invest fleet data (board cards, wiki, internal mail/ops,
+# dept missions) now that the wire format is verified live and Joris cleared
+# internal use (Telegram msg 9715, 2026-09-25: "for now it's internal use so
+# it's ok"). EXTERNAL client data (client deliverables e.g. Gefineo/Delahaye,
+# PEP-France/OpenSanctions screening subjects -- anything processed on behalf
+# of a client) stays LOCAL-ONLY until EU residency/a DPA is confirmed in
+# writing -- see SKILL.md "Backend choice" and references/engines.md. This
+# constant is documentation, not an enforced gate -- `--backend` stays a
+# required, explicit CLI flag on every subcommand precisely so a caller must
+# consciously choose to send data off-box rather than silently defaulting to
+# it.
+RECOMMENDED_DEFAULT_BACKEND_FOR_INTERNAL_DATA = "openrouter"
 
 DEFAULT_JEV_LOCAL_DIR = Path.home() / "claude-workspaces" / "Rick_RnD" / "prototypes" / "jev-local"
 
@@ -252,20 +289,45 @@ def cmd_status(args):
 # ask
 # ---------------------------------------------------------------------------
 
-def call_engine(base_url, state, questions, headers=None, timeout=90):
-    """POST one /v1/systemone request. Returns {"ok", "latency_s", "response"|"error"}.
-    Adapted from bench/harness.py / pilot1-wiki-intent/scripts/run_engine.py's
-    call_engine() -- same wire format, same shape of result, reused rather than
-    reinvented."""
+def request_url_and_payload(backend, base_url, state, questions):
+    """The ONE place that knows the wire format differs by backend -- every
+    caller (call_engine, tests) goes through this rather than hand-building a
+    URL/payload. local-* and `typesafe` speak /v1/systemone; `openrouter`
+    (VERIFIED LIVE 2026-09-25, see references/engines.md) speaks
+    /alpha/decisions with a `model` field prepended to the same state/questions
+    body -- see the module docstring for both shapes side by side."""
+    if backend in REMOTE_BACKENDS:
+        cfg = REMOTE_BACKENDS[backend]
+        payload = {"state": state, "questions": questions}
+        if cfg.get("model"):
+            payload = {"model": cfg["model"], **payload}
+        return f"{base_url}{cfg['path']}", payload
+    return f"{base_url}/v1/systemone", {"state": state, "questions": questions}
+
+
+def call_engine(backend, base_url, state, questions, headers=None, timeout=90):
+    """POST one request in the backend's wire format. Returns {"ok", "latency_s",
+    "response"|"error", "cost_usd"}. Adapted from bench/harness.py /
+    pilot1-wiki-intent/scripts/run_engine.py's call_engine() -- same result
+    shape, reused rather than reinvented -- extended with backend-aware
+    URL/payload selection (request_url_and_payload) and usage.cost extraction
+    (only `openrouter`'s verified response carries a real `usage.cost`; local
+    engines and the unverified `typesafe` path have none, so cost_usd is None
+    there -- see references/engines.md)."""
     import requests  # imported lazily so `eval`/`start`/`stop`/`status` never need it
 
-    payload = {"state": state, "questions": questions}
+    url, payload = request_url_and_payload(backend, base_url, state, questions)
     t0 = time.perf_counter()
     try:
-        r = requests.post(f"{base_url}/v1/systemone", json=payload, headers=headers or {}, timeout=timeout)
+        r = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
         elapsed = time.perf_counter() - t0
         r.raise_for_status()
-        return {"ok": True, "latency_s": elapsed, "response": r.json()}
+        resp = r.json()
+        cost = None
+        usage = resp.get("usage") if isinstance(resp, dict) else None
+        if isinstance(usage, dict) and usage.get("cost") is not None:
+            cost = usage["cost"]
+        return {"ok": True, "latency_s": elapsed, "response": resp, "cost_usd": cost}
     except Exception as e:  # noqa: BLE001 -- deliberately broad, mirrors the benchmark harness
         elapsed = time.perf_counter() - t0
         return {"ok": False, "latency_s": elapsed, "error": str(e)}
@@ -303,8 +365,11 @@ def cmd_ask(args):
     if args.backend in LOCAL_BACKENDS and not port_listening(LOCAL_BACKENDS[args.backend]["port"]):
         raise SystemExit(f"error: {args.backend} is not running -- `jev.py start --backend {args.backend}` first")
 
+    max_spend = getattr(args, "max_spend", None)
+
     done_ids = set()
     kept_rows = []
+    out_exists = os.path.exists(args.out)
     if args.resume:
         try:
             for row in load_jsonl(args.out):
@@ -320,44 +385,87 @@ def cmd_ask(args):
         print(f"[resume] kept {len(kept_rows)} already-OK rows, skipping them; "
               f"{n_before - len(items)} items skipped, {len(items)} remaining", file=sys.stderr)
 
+    running_total = sum(r.get("cost_usd") or 0.0 for r in kept_rows)
+    if max_spend is not None and running_total >= max_spend:
+        raise SystemExit(f"error: already-kept rows spent ${running_total:.4f} >= --max-spend ${max_spend:.4f}; nothing more to do")
+
     def score_one(item):
-        res = call_engine(base_url, item["state"], questions, headers=headers, timeout=args.timeout)
+        res = call_engine(args.backend, base_url, item["state"], questions, headers=headers, timeout=args.timeout)
         row = {"id": item["id"], "backend": args.backend, "latency_s": res["latency_s"], "ok": res["ok"]}
         if res["ok"]:
             row["response"] = res["response"]
+            if res.get("cost_usd") is not None:
+                row["cost_usd"] = res["cost_usd"]
         else:
             row["error"] = res["error"]
         return row
 
-    results = list(kept_rows)
-    n_errors = sum(1 for r in kept_rows if not r.get("ok", True))
-    t_start = time.time()
+    # Incremental, flushed+fsync'd writes -- a process kill mid-run must never
+    # lose more than the single in-flight request. On --resume, the already-OK
+    # rows are already on disk (we just read them above) so we APPEND rather
+    # than rewrite the whole file; a fresh (non-resumed) run truncates once at
+    # the start, then every row after that is appended+flushed as it's
+    # computed. This is what makes --resume actually survive a kill, not just
+    # a clean stop -- see run_engine.py's per-row `fout.flush()` precedent,
+    # which this mirrors.
+    out_mode = "a" if (args.resume and out_exists) else "w"
+    fout = open(args.out, out_mode)
 
-    if args.parallel > 1 and len(items) > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=args.parallel) as ex:
-            for i, row in enumerate(ex.map(score_one, items)):
-                results.append(row)
+    def write_row(row):
+        fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fout.flush()
+        os.fsync(fout.fileno())
+
+    n_written = len(kept_rows)
+    n_errors = sum(1 for r in kept_rows if not r.get("ok", True))
+    n_new = 0
+    t_start = time.time()
+    stopped_for_spend = False
+
+    try:
+        chunk_size = max(1, args.parallel)
+        i = 0
+        while i < len(items):
+            if max_spend is not None and running_total >= max_spend:
+                stopped_for_spend = True
+                break
+            chunk = items[i:i + chunk_size]
+            if chunk_size > 1 and len(chunk) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=chunk_size) as ex:
+                    chunk_rows = list(ex.map(score_one, chunk))
+            else:
+                chunk_rows = [score_one(it) for it in chunk]
+            for row in chunk_rows:
+                cost = row.get("cost_usd")
+                if cost:
+                    running_total += cost
+                    row["_running_total_spend_usd"] = running_total
+                write_row(row)  # <-- on disk NOW, not just in memory
+                n_written += 1
+                n_new += 1
                 if not row["ok"]:
                     n_errors += 1
-                if (i + 1) % 25 == 0 or (i + 1) == len(items):
-                    print(f"[{args.backend}] {i+1}/{len(items)} ({time.time()-t_start:.0f}s, {n_errors} errors)", file=sys.stderr)
-    else:
-        for i, item in enumerate(items):
-            row = score_one(item)
-            results.append(row)
-            if not row["ok"]:
-                n_errors += 1
-            if (i + 1) % 25 == 0 or (i + 1) == len(items):
-                print(f"[{args.backend}] {i+1}/{len(items)} ({time.time()-t_start:.0f}s, {n_errors} errors)", file=sys.stderr)
+            i += len(chunk)
+            if n_new % 25 == 0 or i >= len(items):
+                spend_note = f", spend ${running_total:.4f}" if (max_spend is not None or running_total) else ""
+                print(f"[{args.backend}] {n_new}/{len(items)} ({time.time()-t_start:.0f}s, {n_errors} errors{spend_note})", file=sys.stderr)
+    finally:
+        meta = {"_meta": True, "backend": args.backend, "n": n_written,
+                "n_errors": n_errors, "questions_file": args.questions}
+        if max_spend is not None or running_total:
+            meta["total_spend_usd"] = running_total
+        if stopped_for_spend:
+            meta["stopped_for_spend"] = True
+            meta["max_spend_usd"] = max_spend
+        write_row(meta)
+        fout.close()
 
-    with open(args.out, "w") as f:
-        for row in results:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"_meta": True, "backend": args.backend, "n": len(results),
-                             "n_errors": n_errors, "questions_file": args.questions}) + "\n")
-
-    print(f"[{args.backend}] done: {len(results)} items, {n_errors} errors -> {args.out}", file=sys.stderr)
+    if stopped_for_spend:
+        print(f"[{args.backend}] STOPPED: spend ${running_total:.4f} reached --max-spend "
+              f"${max_spend:.4f} after {n_new}/{len(items)} new items this run -- rerun with --resume "
+              f"to continue once the cap is raised or a new run is approved", file=sys.stderr)
+    print(f"[{args.backend}] done: {n_written} items total ({n_new} new this run), {n_errors} errors -> {args.out}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +701,12 @@ def build_parser():
                         help="skip items whose id already has an ok:true row in --out")
     p_ask.add_argument("--parallel", type=int, default=1, help="concurrent item requests (default 1 = sequential)")
     p_ask.add_argument("--timeout", type=float, default=90.0)
+    p_ask.add_argument("--max-spend", type=float, default=None,
+                        help="stop issuing new requests once cumulative usage.cost across THIS RUN's new "
+                             "calls (plus any --resume'd rows' recorded cost) reaches this many USD. "
+                             "Remote backends only carry real cost (openrouter is verified; typesafe is "
+                             "unverified); local calls always cost $0 so the guard never fires for them. "
+                             "Unset = no cap.")
     p_ask.set_defaults(func=cmd_ask)
 
     p_eval = sub.add_parser("eval", help="score ask results against a gold set")

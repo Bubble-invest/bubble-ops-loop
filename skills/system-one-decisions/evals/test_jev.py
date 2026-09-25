@@ -145,7 +145,7 @@ def test_call_engine_success(monkeypatch):
         return _FakeResponse(_noul_response(0.9))
 
     monkeypatch.setattr("requests.post", fake_post)
-    res = jev.call_engine("http://127.0.0.1:8782", {"body": "hi"}, {"bucket": {"type": "noul"}})
+    res = jev.call_engine("local-decider", "http://127.0.0.1:8782", {"body": "hi"}, {"bucket": {"type": "noul"}})
     assert res["ok"] is True
     assert res["response"]["answers"]["bucket"]["noul"] == 0.9
     assert calls[0][0] == "http://127.0.0.1:8782/v1/systemone"
@@ -156,9 +156,83 @@ def test_call_engine_failure_is_caught_not_raised(monkeypatch):
         raise ConnectionError("boom")
 
     monkeypatch.setattr("requests.post", fake_post)
-    res = jev.call_engine("http://127.0.0.1:8782", "state", {})
+    res = jev.call_engine("local-decider", "http://127.0.0.1:8782", "state", {})
     assert res["ok"] is False
     assert "boom" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# openrouter wire format (VERIFIED LIVE 2026-09-25, 230/230 calls OK --
+# prototypes/jev-local/bench/results/20260925-openrouter/) -- different
+# endpoint + body shape than the local/typesafe /v1/systemone protocol.
+# ---------------------------------------------------------------------------
+
+# Adapted from the verified live sample row (jev113_fr_set.jsonl line 1,
+# 2026-09-25 -- no key in it, as the coordinator confirmed) -- see
+# references/engines.md for the full run's summary.
+OPENROUTER_SAMPLE_RESPONSE = {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+        "routing": {
+            "type": "choice", "choice": "facturation",
+            "probabilities": {"commercial": 0, "resiliation": 0, "support_technique": 0,
+                               "conformite": 0, "facturation": 1},
+            "confidence": 1,
+        },
+    },
+    "usage": {"input_tokens": 477, "output_tokens": 64, "cost": 2.0034e-05},
+    "id": "gen-dec-1790343415-inSeHAXsszvgcV2Ok5hm",
+    "provider": "TypeSafe",
+}
+
+
+def test_request_url_and_payload_openrouter_uses_decisions_endpoint_and_model():
+    url, payload = jev.request_url_and_payload("openrouter", "https://openrouter.ai/api",
+                                                 "state text", {"q": {"type": "noul"}})
+    assert url == "https://openrouter.ai/api/alpha/decisions"
+    assert payload["model"] == "typesafe/jev-1.13"
+    assert payload["state"] == "state text"
+    assert payload["questions"] == {"q": {"type": "noul"}}
+
+
+def test_request_url_and_payload_local_backend_unchanged():
+    url, payload = jev.request_url_and_payload("local-decider", "http://127.0.0.1:8782", "s", {"q": {}})
+    assert url == "http://127.0.0.1:8782/v1/systemone"
+    assert "model" not in payload
+
+
+def test_request_url_and_payload_typesafe_direct_has_no_model_field():
+    url, payload = jev.request_url_and_payload("typesafe", "https://api.typesafe.ai", "s", {"q": {}})
+    assert url == "https://api.typesafe.ai/v1/systemone"
+    assert "model" not in payload
+
+
+def test_call_engine_openrouter_uses_verified_endpoint_and_extracts_cost(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        calls.append((url, json, headers))
+        return _FakeResponse(OPENROUTER_SAMPLE_RESPONSE)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    res = jev.call_engine("openrouter", "https://openrouter.ai/api", "quote text",
+                           {"routing": {"type": "choice"}}, headers={"Authorization": "Bearer x"})
+    assert res["ok"] is True
+    assert res["cost_usd"] == pytest.approx(2.0034e-05)
+    url, payload, headers = calls[0]
+    assert url == "https://openrouter.ai/api/alpha/decisions"
+    assert payload["model"] == "typesafe/jev-1.13"
+    assert headers == {"Authorization": "Bearer x"}
+
+
+def test_call_engine_local_backend_has_no_cost(monkeypatch):
+    def fake_post(url, json, headers=None, timeout=None):
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post)
+    res = jev.call_engine("local-decider", "http://127.0.0.1:8782", "s", {"bucket": {"type": "noul"}})
+    assert res["ok"] is True
+    assert res["cost_usd"] is None
 
 
 def test_cmd_ask_rejects_unknown_backend(tmp_path):
@@ -169,7 +243,7 @@ def test_cmd_ask_rejects_unknown_backend(tmp_path):
     out = tmp_path / "out.jsonl"
     args = type("Args", (), {
         "backend": "not-a-real-backend", "questions": str(questions), "items": str(items),
-        "out": str(out), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "out": str(out), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
     })()
     with pytest.raises(SystemExit):
         jev.cmd_ask(args)
@@ -195,7 +269,7 @@ def test_cmd_ask_resume_skips_completed_ids(monkeypatch, tmp_path):
 
     args = type("Args", (), {
         "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
-        "out": str(out_path), "resume": True, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "out": str(out_path), "resume": True, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
     })()
     jev.cmd_ask(args)
 
@@ -216,7 +290,7 @@ def test_cmd_ask_refuses_when_local_engine_not_running(monkeypatch, tmp_path):
     monkeypatch.setattr(jev, "port_listening", lambda *a, **k: False)
     args = type("Args", (), {
         "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
-        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
     })()
     with pytest.raises(SystemExit) as exc:
         jev.cmd_ask(args)
@@ -232,11 +306,133 @@ def test_cmd_ask_remote_backend_requires_api_key(monkeypatch, tmp_path):
     out_path = tmp_path / "out.jsonl"
     args = type("Args", (), {
         "backend": "typesafe", "questions": str(questions_path), "items": str(items_path),
-        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
     })()
     with pytest.raises(SystemExit) as exc:
         jev.cmd_ask(args)
     assert "TYPESAFE_API_KEY" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# --max-spend guard (openrouter carries real usage.cost; local backends don't)
+# ---------------------------------------------------------------------------
+
+def test_cmd_ask_max_spend_guard_stops_early(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b", "c", "d"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"routing": {"type": "choice", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    def fake_post(url, json, headers=None, timeout=None):
+        resp = dict(OPENROUTER_SAMPLE_RESPONSE)
+        resp["usage"] = {"input_tokens": 100, "output_tokens": 10, "cost": 0.01}
+        return _FakeResponse(resp)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    args = type("Args", (), {
+        "backend": "openrouter", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "max_spend": 0.025,  # 3 calls @ $0.01 = $0.03 >= cap -> stops after the 3rd
+    })()
+    jev.cmd_ask(args)
+
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    data_rows = [r for r in rows if not r.get("_meta")]
+    meta = next(r for r in rows if r.get("_meta"))
+    assert len(data_rows) == 3  # "d" never attempted
+    assert meta.get("stopped_for_spend") is True
+    assert meta["total_spend_usd"] == pytest.approx(0.03)
+
+
+def test_cmd_ask_no_max_spend_means_unbounded(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"routing": {"type": "choice", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    def fake_post(url, json, headers=None, timeout=None):
+        resp = dict(OPENROUTER_SAMPLE_RESPONSE)
+        resp["usage"] = {"input_tokens": 100, "output_tokens": 10, "cost": 100.0}  # deliberately huge
+        return _FakeResponse(resp)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    args = type("Args", (), {
+        "backend": "openrouter", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None,
+        "max_spend": None,
+    })()
+    jev.cmd_ask(args)
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    data_rows = [r for r in rows if not r.get("_meta")]
+    assert len(data_rows) == 2  # both ran -- no cap set, guard never fires
+
+
+# ---------------------------------------------------------------------------
+# incremental writes -- a kill mid-run must not lose already-computed rows,
+# and --resume must genuinely pick up where it left off (not just claim to)
+# ---------------------------------------------------------------------------
+
+def test_cmd_ask_incremental_write_survives_interruption_and_resumes(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b", "c", "d"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    calls = []
+
+    def fake_post_kill_on_third(url, json, headers=None, timeout=None):
+        calls.append(json["state"])
+        if len(calls) == 3:
+            # Something call_engine's `except Exception` does NOT swallow --
+            # propagates all the way out of cmd_ask, exactly like a real
+            # process kill/interrupt would. If cmd_ask only wrote its output
+            # at the very end (the pre-fix behavior), this would lose every
+            # row computed so far, including the two calls before this one.
+            raise KeyboardInterrupt("simulated kill mid-run")
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post_kill_on_third)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    def make_args(resume):
+        return type("Args", (), {
+            "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+            "out": str(out_path), "resume": resume, "parallel": 1, "timeout": 5.0, "base_url": None,
+            "max_spend": None,
+        })()
+
+    with pytest.raises(KeyboardInterrupt):
+        jev.cmd_ask(make_args(resume=False))
+
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    ids_written = [r["id"] for r in rows if not r.get("_meta")]
+    # "a" and "b" (the 2 calls before the simulated kill) are already on disk
+    # -- the whole point of per-row flush+fsync. "c" (the killed call) and
+    # "d" (never reached) are NOT written.
+    assert ids_written == ["a", "b"]
+
+    # --resume must re-call only "c" and "d" -- not re-pay for "a"/"b", and
+    # not silently skip "c" either.
+    calls.clear()
+
+    def fake_post_resume(url, json, headers=None, timeout=None):
+        calls.append(json["state"])
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post_resume)
+    jev.cmd_ask(make_args(resume=True))
+    assert calls == ["item c", "item d"]
+
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    ids_written = sorted(r["id"] for r in rows if not r.get("_meta"))
+    assert ids_written == ["a", "b", "c", "d"]
 
 
 # ---------------------------------------------------------------------------
