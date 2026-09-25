@@ -12,6 +12,8 @@ A genuine operational failure (`FAILED`, e.g. an unresolvable repository owner, 
 
 The script never stops, starts, restarts, resets, stashes, rolls back, or rewrites Git history.
 
+Board #1503: after syncing `$BUBBLE_DEPLOY_SOURCE_INFRA_DIR` (default `/opt/bubble-ops-loop` — the checkout the console's `ExecStart` actually runs from, `venv/bin/python -m uvicorn console.main:app`), the deployer also keeps that checkout's own venv in sync with `console/requirements.txt`: if the file's content hash differs from the last successfully-installed hash recorded at `venv/.requirements.sha256`, it installs with `venv/bin/python -m pip install -r console/requirements.txt` (never `venv/bin/pip` directly — its shebang can point at a different, copied venv) and then runs an `import console.main` smoke test through that same interpreter. The hash file is only updated after both steps succeed, so a failed install or a failed import is retried on the next run and keeps failing the deploy loudly (`FAILED`, non-zero exit, `OnFailure=` alarm) instead of being silently forgotten until the console's next restart. This step still never stops, starts, or restarts the console itself — it only keeps the on-disk deps ahead of whatever eventually triggers that restart. `--dry-run` never installs or writes the hash file.
+
 Dry-run summaries count eligible changes as `would_update`; they never report them as completed updates.
 
 The production lock lives at `/run/bubble-deploy.lock`, whose `/run` parent is root-owned and not writable by unprivileged users. A stdlib Python launcher opens it with `O_NOFOLLOW` and without truncation, requires a regular root-owned private inode with one link, takes a nonblocking `flock`, and passes the locked descriptor into the deploy script. Explicit test lock paths use the same checks with the invoking UID as owner. A pre-positioned symlink is rejected before its target can be changed.
@@ -21,4 +23,5 @@ Tests:
 ```bash
 bash tests/test_1122_bubble_deploy_rollback_dataloss.sh
 bash tests/test_1124_bubble_deploy_safe_ff.sh
+bash tests/test_1503_bubble_deploy_console_deps.sh
 ```
