@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# arm-wake-cron.sh — print the box-UTC cron expression for a Paris wall-clock
+# arm-wake-cron.sh — print the HOST-local cron expression for a Paris wall-clock
 # wake time, DST-safe. Fixes board #850: the VPS box's local clock is UTC,
 # but every dept self-arms its next /loop wake in Paris wall-clock via
 # CronCreate (layer windows L1 07:30 / L3 15:30 / L2 18:00 / L4 21:00-22:30
@@ -20,13 +20,26 @@
 #                   (e.g. arming a specific market-close reminder).
 #
 # Output: a single line, the 5-field cron expression to hand to CronCreate.
-# This script assumes the HOST clock is UTC (verify with `date` — if the
-# box's local TZ is ever changed to Europe/Paris, this script must NOT be
-# used as-is). It never hardcodes the CEST/CET offset — every conversion is
-# derived from the system tz database at call time, so the Oct/Mar DST flip
-# is handled automatically.
 #
-# Correctness note (board #850 comment thread, Ben 2026-07-29):
+# Fix #1510: this now converts to whatever timezone the HOST's system clock
+# is actually set to (verify with `date`) — UTC on the VPS, Europe/Paris on
+# the Macs — instead of hardcoding "the host is UTC". CronCreate always
+# interprets the cron expression in the box's own local time, so converting
+# to the box's own local time is the one mapping that's correct on every
+# host. On a host whose local zone already IS Europe/Paris, this is
+# (correctly) a no-op modulo any DST-boundary edge case.
+#
+# Portability #1510: GNU `date -d` (used below in earlier revisions) does
+# not exist on BSD/macOS `date` ("date: illegal option -- d"). Rather than
+# forking two different date(1) code paths (GNU vs BSD -j -f), the
+# Paris -> host-local conversion is done with Python's stdlib `zoneinfo`
+# (tz-database backed, DST-safe, no extra dependency, ships with python3 on
+# both the VPS and every dept Mac) — see the embedded helper below. Only
+# `python3` is required; it is not GNU/BSD `date`-specific.
+#
+# Correctness note (board #850 comment thread, Ben 2026-07-29 — kept for
+# history; the code below no longer uses GNU date, but the lesson still
+# applies to any future rewrite):
 #   The intuitive-looking form
 #     TZ=Europe/Paris date -d '22:35 today' -u +'%M %H'
 #   is SILENTLY BROKEN: the TZ=<value> ENVIRONMENT-VARIABLE prefix does not
@@ -34,16 +47,11 @@
 #   given for output — it echoes the input back unchanged (verified: prints
 #   "35 22" for "22:35", i.e. no conversion at all) and looks plausible
 #   enough to pass a casual glance. That is how the original two-hour bug
-#   would have survived even a "fix."
-#
-#   The form that actually converts embeds the zone INSIDE the date string
-#   via GNU date's `TZ="value"` prefix syntax (verified against known-answer
-#   pairs spanning both DST regimes — see tests/test_arm_wake_cron.sh):
-#     date -u -d 'TZ="Europe/Paris" <date> <time>' +'FORMAT'
-#   This script uses ONLY that verified embedded form. Never "simplify" it
-#   back to the TZ=-env-var-prefix form without re-checking against a
-#   known-answer pair first — a timezone helper that returns its input
-#   unchanged is indistinguishable, at a glance, from one that works.
+#   would have survived even a "fix." A timezone helper that returns its
+#   input unchanged is indistinguishable, at a glance, from one that works
+#   — always check any new implementation against known-answer pairs (see
+#   tests/test_arm_wake_cron.sh) spanning both DST regimes AND both a
+#   UTC-host and a Europe/Paris-host simulation before trusting it.
 set -euo pipefail
 
 usage() {
@@ -78,37 +86,62 @@ if [[ -n "$EXPLICIT_DATE" ]] && ! [[ "$EXPLICIT_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9
   exit 2
 fi
 
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: python3 is required (for tz-database-backed Paris -> host-local conversion) but not found on PATH" >&2
+  exit 2
+}
+
+# Resolve the target calendar date EXPLICITLY (never lean on a bare relative
+# "tomorrow", and never resolve it inside the conversion step) so the
+# calendar-day arithmetic is auditable:
+#   1. daily         -> today, AS OBSERVED IN Paris.
+#   2. one-shot + explicit date -> that date, taken as-is.
+#   3. one-shot, no explicit date -> tomorrow, AS OBSERVED IN Paris (today
+#      in Paris + 1 calendar day).
+# Both "today in Paris" and the actual Paris -> host-local conversion are
+# done by the same embedded python3 helper so there is exactly one place
+# that touches the tz database.
+CONVERTED="$(python3 - "$PARIS_TIME" "$MODE" "$EXPLICIT_DATE" <<'PY'
+import sys
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+paris_time, mode, explicit_date = sys.argv[1], sys.argv[2], sys.argv[3]
+hh, mm = (int(x) for x in paris_time.split(":"))
+paris = ZoneInfo("Europe/Paris")
+
+today_paris = datetime.now(paris).date()
+
+if mode == "daily":
+    target_date = today_paris
+elif explicit_date:
+    target_date = date.fromisoformat(explicit_date)
+else:
+    target_date = today_paris + timedelta(days=1)
+
+# Localize the target wall-clock time as Europe/Paris, then convert to
+# whatever timezone THIS HOST's system clock is actually set to (the VPS'
+# is UTC, the Macs' is Europe/Paris) — tz-database backed, so the Mar/Oct
+# DST flip on either end is handled automatically, never a hardcoded offset.
+dt_paris = datetime(target_date.year, target_date.month, target_date.day, hh, mm, tzinfo=paris)
+dt_local = dt_paris.astimezone()
+
+# MIN/HOUR are always printed zero-padded to 2 digits (matches the previous
+# GNU `date +'%M %H'` output format exactly, byte for byte). DAY/MONTH are
+# printed as plain decimal WITHOUT zero-padding (cron doesn't need it, and a
+# leading zero on a cron field risks being misread as octal by naive
+# parsers) — same convention the previous revision enforced explicitly.
+if mode == "daily":
+    print(f"{dt_local.minute:02d} {dt_local.hour:02d}")
+else:
+    print(f"{dt_local.minute:02d} {dt_local.hour:02d} {dt_local.day} {dt_local.month}")
+PY
+)"
+
 if [[ "$MODE" == "daily" ]]; then
-  # No day/month pinning needed -> safe to use the "today" keyword directly
-  # inside the embedded-TZ form (verified: this combination, unlike the
-  # TZ-env-prefix form above, converts correctly).
-  read -r MIN HOUR <<<"$(date -u -d "TZ=\"Europe/Paris\" today ${PARIS_TIME}" +'%M %H')"
+  read -r MIN HOUR <<<"$CONVERTED"
   echo "${MIN} ${HOUR} * * *"
-  exit 0
-fi
-
-# one-shot: pin day + month too. Resolve the target date EXPLICITLY (never
-# lean on a bare relative "tomorrow" inside the embedded-TZ string) so the
-# calendar-day arithmetic is auditable and independent of exactly how GNU
-# date resolves relative keywords across a timezone boundary:
-#   1. Get TODAY's calendar date AS OBSERVED IN Paris — this is the most
-#      basic, universally-correct use of the TZ env var (no -d, no -u; no
-#      relation to the broken form above).
-#   2. If no explicit date was given, add exactly one calendar day to that
-#      anchor via plain date arithmetic (zone-independent once you already
-#      have a concrete YYYY-MM-DD).
-#   3. Feed that concrete anchor + the target time through the verified
-#      embedded-TZ conversion to get the box-UTC minute/hour/day/month.
-if [[ -n "$EXPLICIT_DATE" ]]; then
-  TARGET_DATE="$EXPLICIT_DATE"
 else
-  TODAY_PARIS="$(TZ=Europe/Paris date +'%Y-%m-%d')"
-  TARGET_DATE="$(date -d "${TODAY_PARIS} +1 day" +'%Y-%m-%d')"
+  read -r MIN HOUR DAY MONTH <<<"$CONVERTED"
+  echo "${MIN} ${HOUR} ${DAY} ${MONTH} *"
 fi
-
-read -r MIN HOUR DAY MONTH <<<"$(date -u -d "TZ=\"Europe/Paris\" ${TARGET_DATE} ${PARIS_TIME}" +'%M %H %d %m')"
-# Strip any leading zero so cron sees plain decimal fields, not
-# octal-looking ones (bash `$((10#$x))` forces base-10 interpretation).
-DAY=$((10#$DAY))
-MONTH=$((10#$MONTH))
-echo "${MIN} ${HOUR} ${DAY} ${MONTH} *"
