@@ -7,12 +7,26 @@
 # This hermetically tests scripts/bubble-deploy.sh's sync_console_requirements
 # step: it installs console/requirements.txt into $SOURCE_INFRA_DIR/venv
 # (the venv the console's ExecStart actually runs) using
-# `venv/bin/python -m pip install` (never `venv/bin/pip`, whose shebang can
-# point at a different, copied venv — the exact gotcha logged on #1503), only
-# when the requirements file's hash changed since the last successful
-# install, and only records success after a post-install
-# `import console.main` smoke test also passes. A fake `venv/bin/python`
-# stub stands in for pip/python so this never touches real Python or network.
+# `venv/bin/python -m pip install` (never `venv/bin/pip`, whose shebang was
+# copied from a different venv — the exact gotcha logged on #1503), only when
+# the requirements file's hash changed since the last successful install, and
+# only records success after a post-install `import console.main` smoke test
+# also passes.
+#
+# Checker review: this script's own service runs as root (User=root), but
+# `import console.main` runs import-time app/session/settings code that can
+# create files — root-run, that could leave root-owned files the console's
+# own unprivileged service user (User=bubble-console) later can't write. So
+# the smoke test itself must run AS that user via `runuser`, with a scrubbed
+# environment and a throwaway cwd, and must FAIL LOUDLY (never fall back to
+# root) if `runuser` or that user is missing.
+#
+# A fake `venv/bin/python` stub stands in for pip/python (its outcomes are
+# steered by flag FILES, not env vars, because the real smoke-test call runs
+# under `env -i` — a scrubbed environment that would silently drop any
+# env-var-based test control too, exactly like it drops everything else). A
+# fake `runuser` stands in for the real one (which needs root to actually
+# switch users) and just records+forwards the call, so this never needs root.
 #
 # No real git checkout is needed to exercise this: leaving $SOURCE_INFRA_DIR
 # and $CONSOLE_INFRA_DIR without a `.git` directory makes sync_repo_safe_ff
@@ -32,6 +46,11 @@
 # T6 venv python missing/non-executable → logs FAIL, script exits 1.
 # T7 --dry-run with a changed requirements.txt → logs DRY_RUN, pip/import
 #    are never invoked, state file is never written.
+# T8 successful run → the import smoke test is invoked via `runuser -u
+#    <console user> --`, never directly as the (root) caller.
+# T9 the configured console user does not exist → logs FAIL, refuses to
+#    fall back to root, never calls runuser, state file left unwritten,
+#    script exits 1.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -42,44 +61,50 @@ trap 'rm -rf "$WORK"' EXIT
 
 SOURCE_DIR="$WORK/opt/bubble-ops-loop"
 CONSOLE_DIR="$WORK/home-claude/bubble-ops-loop"
-mkdir -p "$SOURCE_DIR/console" "$SOURCE_DIR/venv/bin" "$CONSOLE_DIR" "$WORK/agents" "$WORK/legacy"
+mkdir -p "$SOURCE_DIR/console" "$SOURCE_DIR/venv/bin" "$CONSOLE_DIR" "$WORK/agents" "$WORK/legacy" "$WORK/emptybin"
 
 PY_CALL_LOG="$WORK/py-calls.log"
-cat >"$SOURCE_DIR/venv/bin/python" <<'EOF'
+PIP_FAIL_FLAG="$WORK/pip-should-fail"
+IMPORT_FAIL_FLAG="$WORK/import-should-fail"
+: >"$PY_CALL_LOG"
+
+# Flag-file steered, not env-var steered: the real smoke test runs under
+# `env -i` (a scrubbed environment), so an env var wouldn't reach it anyway —
+# this test intentionally exercises that same constraint. $PY_CALL_LOG,
+# $PIP_FAIL_FLAG, $IMPORT_FAIL_FLAG are baked in as literal paths at
+# heredoc-creation time below (unquoted EOF), not read from the environment
+# at call time.
+cat >"$SOURCE_DIR/venv/bin/python" <<EOF
 #!/usr/bin/env bash
-echo "$*" >>"$PY_CALL_LOG"
-if [[ "$1" == "-m" && "$2" == "pip" ]]; then
-    [[ "${PIP_SHOULD_FAIL:-0}" == "1" ]] && exit 1
+echo "\$*" >>"$PY_CALL_LOG"
+if [[ "\$1" == "-m" && "\$2" == "pip" ]]; then
+    [[ -f "$PIP_FAIL_FLAG" ]] && exit 1
     exit 0
 fi
-if [[ "$1" == "-c" ]]; then
-    [[ "${IMPORT_SHOULD_FAIL:-0}" == "1" ]] && exit 1
+if [[ "\$1" == "-c" ]]; then
+    [[ -f "$IMPORT_FAIL_FLAG" ]] && exit 1
     exit 0
 fi
-echo "unexpected python invocation: $*" >&2
+echo "unexpected python invocation: \$*" >&2
 exit 99
 EOF
 chmod +x "$SOURCE_DIR/venv/bin/python"
 
-STATE_FILE="$SOURCE_DIR/venv/.requirements.sha256"
+RUNUSER_LOG="$WORK/runuser-calls.log"
+: >"$RUNUSER_LOG"
+# Stands in for the real `runuser` (which needs root to actually switch
+# users): records the call, enforces the `-u <user> --` shape the script
+# must use, then forwards to the real `env`/`bash`/python stub unprivileged
+# — enough to prove the SHAPE of the call without needing root in this test.
+cat >"$WORK/emptybin/runuser" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$RUNUSER_LOG"
+[[ "\$1" == "-u" && "\$3" == "--" ]] || exit 91
+shift 3
+exec "\$@"
+EOF
+chmod +x "$WORK/emptybin/runuser"
 
-run() {
-    : >"$PY_CALL_LOG"
-    set +e
-    PATH="$WORK/emptybin:$PATH" \
-    PY_CALL_LOG="$PY_CALL_LOG" \
-    PIP_SHOULD_FAIL="${PIP_SHOULD_FAIL:-0}" \
-    IMPORT_SHOULD_FAIL="${IMPORT_SHOULD_FAIL:-0}" \
-    BUBBLE_DEPLOY_SOURCE_INFRA_DIR="$SOURCE_DIR" \
-    BUBBLE_DEPLOY_CONSOLE_INFRA_DIR="$CONSOLE_DIR" \
-    BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/agents" \
-    BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/legacy" \
-    BUBBLE_DEPLOY_LOCK_FILE="$WORK/deploy.lock" \
-        bash "$SCRIPT" --infra-only "$@" >"$WORK/out.log" 2>"$WORK/err.log"
-    RC=$?
-    set -e
-}
-mkdir -p "$WORK/emptybin"
 # The script (VPS/Linux-only, same as its existing sha256sum-using sibling
 # scripts/morty-security-audit.sh) shells out to GNU `sha256sum`. This macOS
 # dev sandbox doesn't ship it, so shim it via BSD `shasum -a 256` in the same
@@ -92,6 +117,30 @@ EOF
     chmod +x "$WORK/emptybin/sha256sum"
 fi
 export PATH="$WORK/emptybin:$PATH"
+
+STATE_FILE="$SOURCE_DIR/venv/.requirements.sha256"
+# A real, currently-existing user, so "the console user exists" cases don't
+# depend on a `bubble-console` system account being present on the dev/CI
+# box running this test.
+TEST_CONSOLE_USER="$(id -un)"
+
+run() {
+    rm -f "$PIP_FAIL_FLAG" "$IMPORT_FAIL_FLAG"
+    [[ "${PIP_SHOULD_FAIL:-0}" == "1" ]] && : >"$PIP_FAIL_FLAG"
+    [[ "${IMPORT_SHOULD_FAIL:-0}" == "1" ]] && : >"$IMPORT_FAIL_FLAG"
+    : >"$PY_CALL_LOG"
+    : >"$RUNUSER_LOG"
+    set +e
+    BUBBLE_CONSOLE_USER="${BUBBLE_CONSOLE_USER:-$TEST_CONSOLE_USER}" \
+    BUBBLE_DEPLOY_SOURCE_INFRA_DIR="$SOURCE_DIR" \
+    BUBBLE_DEPLOY_CONSOLE_INFRA_DIR="$CONSOLE_DIR" \
+    BUBBLE_DEPLOY_AGENTS_ROOT="$WORK/agents" \
+    BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT="$WORK/legacy" \
+    BUBBLE_DEPLOY_LOCK_FILE="$WORK/deploy.lock" \
+        bash "$SCRIPT" --infra-only "$@" >"$WORK/out.log" 2>"$WORK/err.log"
+    RC=$?
+    set -e
+}
 
 fail() { echo "FAIL: $1" >&2; echo "--- out ---"; cat "$WORK/out.log" >&2 || true; echo "--- err ---"; cat "$WORK/err.log" >&2 || true; exit 1; }
 
@@ -158,6 +207,26 @@ run --dry-run
 grep -q "DRY_RUN framework-source-console-deps" "$WORK/out.log" || fail "T7: missing DRY_RUN log line"
 [[ -s "$PY_CALL_LOG" ]] && fail "T7: pip/python was invoked during --dry-run"
 [[ "$(cat "$STATE_FILE")" == "$before_hash" ]] || fail "T7: state file changed during --dry-run"
+echo "  ok"
+
+echo "T8 smoke test is invoked via runuser as the configured console user, never directly"
+echo "fastapi==0.115.6" >"$SOURCE_DIR/console/requirements.txt"
+run
+[[ "$RC" == "0" ]] || fail "T8: expected exit 0, got $RC"
+grep -q -- "-u $TEST_CONSOLE_USER --" "$RUNUSER_LOG" || fail "T8: runuser was not called with -u $TEST_CONSOLE_USER --"
+grep -q -- "import console.main" "$RUNUSER_LOG" || fail "T8: the import smoke test did not reach runuser's argv"
+grep -q -- "env -i " "$RUNUSER_LOG" || fail "T8: runuser's argv did not use a scrubbed (env -i) environment"
+echo "  ok"
+
+echo "T9 configured console user missing: FAIL logged, refuses to fall back to root, runuser never called, exit 1"
+before_hash="$(cat "$STATE_FILE")"
+echo "fastapi==0.115.7" >"$SOURCE_DIR/console/requirements.txt"
+BUBBLE_CONSOLE_USER="bubble-console-does-not-exist-1503" run
+[[ "$RC" == "1" ]] || fail "T9: expected exit 1, got $RC"
+grep -q "FAIL framework-source-console-deps: console service user 'bubble-console-does-not-exist-1503' not found" "$WORK/out.log" \
+    || fail "T9: missing console-service-user-not-found FAIL log line"
+[[ -s "$RUNUSER_LOG" ]] && fail "T9: runuser was invoked despite the configured user not existing"
+[[ "$(cat "$STATE_FILE")" == "$before_hash" ]] || fail "T9: state file changed despite the configured user not existing"
 echo "  ok"
 
 echo "ALL PASS"

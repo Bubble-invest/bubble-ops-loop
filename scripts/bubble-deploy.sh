@@ -25,6 +25,12 @@ LEGACY_AGENTS_ROOT="${BUBBLE_DEPLOY_LEGACY_AGENTS_ROOT:-/home/claude/agents}"
 UNIT_PREFIX="${BUBBLE_DEPLOY_UNIT_PREFIX:-bubble-agent@}"
 LEGACY_UNIT_PREFIX="${BUBBLE_DEPLOY_LEGACY_UNIT_PREFIX:-ops-loop-}"
 LOCK_FILE="${BUBBLE_DEPLOY_LOCK_FILE:-/run/bubble-deploy.lock}"
+# The unprivileged user the console service itself runs as (User=bubble-console
+# in bubble-ops-console.service). The console-deps import smoke test runs as
+# THIS user, never as root (this script's own User=root) — root-run import-time
+# code (app/session/settings init) could otherwise leave root-owned files the
+# console user can't later write. #1503 checker review.
+CONSOLE_SERVICE_USER="${BUBBLE_CONSOLE_USER:-bubble-console}"
 DRY_RUN=0
 INFRA_ONLY=0
 ONE_DEPT=""
@@ -256,20 +262,52 @@ sync_console_requirements() {
     fi
 
     log "INSTALL $label-console-deps: $reqs changed, installing into $dir/venv"
-    # Board #1503 gotcha: $dir/venv/bin/pip's shebang can point at a DIFFERENT,
-    # copied venv (e.g. a stale /home/claude path baked in when the venv dir
-    # was cloned/copied rather than created in place). Always invoke pip as a
-    # module of THIS venv's own interpreter, never the pip script directly.
+    # Board #1503 gotcha: $dir/venv/bin/pip was copied from a DIFFERENT venv
+    # (a stale /home/claude/bubble-ops-loop/venv baked into its shebang when
+    # bin/pip was copied rather than created in place — venv/ itself is a real
+    # venv, pyvenv.cfg present). Always invoke pip as a module of THIS venv's
+    # own interpreter, never the pip script directly.
     if ! "$venv_python" -m pip install --quiet -r "$reqs"; then
         FAILED=$((FAILED + 1))
         log "FAIL $label-console-deps: pip install -r $reqs failed; state file left unwritten so this is retried next run; console NOT restarted"
         return 1
     fi
-    if ! PYTHONPATH="$dir" "$venv_python" -c 'import console.main' >/dev/null 2>&1; then
+
+    # Checker review (#1503): this script's own service runs as root, but
+    # `import console.main` executes import-time code (create_app(), settings,
+    # session-db connect/mkdir paths, hash computations) that can create files.
+    # Root-owned files from a root-run import could later be unwritable by the
+    # console's own unprivileged service user. So the smoke test itself runs
+    # AS that user via runuser, with a scrubbed environment and a throwaway
+    # cwd — never as root, and never falls back to root if runuser or the
+    # user is missing (that's a loud FAIL instead).
+    if ! command -v runuser >/dev/null 2>&1; then
         FAILED=$((FAILED + 1))
-        log "FAIL $label-console-deps: post-install smoke test failed (import console.main); state file left unwritten so this is retried next run; console NOT restarted"
+        log "FAIL $label-console-deps: runuser not found; refusing to smoke-test as root; state file left unwritten so this is retried next run; console NOT restarted"
         return 1
     fi
+    if ! id -u "$CONSOLE_SERVICE_USER" >/dev/null 2>&1; then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: console service user '$CONSOLE_SERVICE_USER' not found; refusing to smoke-test as root; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    fi
+    local smoke_workdir
+    smoke_workdir=$(mktemp -d) || {
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: cannot create smoke-test working dir; state file left unwritten so this is retried next run; console NOT restarted"
+        return 1
+    }
+    if ! runuser -u "$CONSOLE_SERVICE_USER" -- \
+        env -i PATH=/usr/bin:/bin HOME=/nonexistent PYTHONPATH="$dir" \
+        bash -c 'cd -- "$1" && exec "$2" -c "import console.main"' -- \
+        "$smoke_workdir" "$venv_python" >/dev/null 2>&1
+    then
+        FAILED=$((FAILED + 1))
+        log "FAIL $label-console-deps: post-install smoke test failed (import console.main as $CONSOLE_SERVICE_USER); state file left unwritten so this is retried next run; console NOT restarted"
+        rm -rf -- "$smoke_workdir"
+        return 1
+    fi
+    rm -rf -- "$smoke_workdir"
     if ! printf '%s\n' "$want" >"$state_file.tmp" || ! mv -f "$state_file.tmp" "$state_file"; then
         FAILED=$((FAILED + 1))
         log "FAIL $label-console-deps: install+smoke test succeeded but could not persist $state_file; will reinstall next run"
