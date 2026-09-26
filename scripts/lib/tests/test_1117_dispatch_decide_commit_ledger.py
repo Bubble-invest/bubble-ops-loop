@@ -276,3 +276,250 @@ def test_l4_sees_processed_l3_item_when_parent_crashes_before_commit(tmp_path: P
     assert after["has_inbox_decisions"] is True  # trade-B is still real work
     assert after["layer_3_mission_fired_today"] is True
     assert decide_dispatch(after) == "layer_4"
+
+
+# ---------------------------------------------------------------------------
+# Board #1542: intra-day cadences (every_Nh / every_Nm / hourly / cron:) must
+# advance `completed_at` on a genuine 2nd+ same-day completion, while a true
+# replay of the SAME dispatch stays idempotent. daily/weekly/legacy-ledger
+# behavior must not change.
+# ---------------------------------------------------------------------------
+
+def _intraday_mission(cadence: str) -> dict:
+    return {
+        "id": "draft_substack_note",
+        "layer": 2,
+        "cadence": cadence,
+        "output_queue": "queues/drafts/",
+        "creates": [],
+    }
+
+
+def _seed_research_item(repo: Path) -> None:
+    """Layer 2's eligibility gate (`has_research`) needs a non-empty
+    `queues/research/` — content's real `draft_substack_note` runs alongside
+    a steady research feed, so this mirrors that instead of poking ctx
+    internals directly.
+    """
+    research = repo / "queues" / "research"
+    research.mkdir(parents=True, exist_ok=True)
+    (research / "item.yaml").write_text(
+        yaml.safe_dump({"id": "item", "kind": "research_item"}), encoding="utf-8"
+    )
+
+
+# Layer 2's time floor is 12:00 Paris (`_LAYER_MIN_TIME`), so intra-day-cadence
+# tests use an afternoon base time instead of the module's `NOW` (08:05 Paris,
+# used by the layer-1 `daily` fixtures above).
+_L2_BASE = datetime(2026, 9, 4, 10, 5, tzinfo=timezone.utc)  # 12:05 Paris
+
+
+def test_every_3h_second_completion_advances_ledger_and_is_not_reselected(tmp_path: Path):
+    """THE BUG (#1542): an every_3h mission completed twice in one Paris day
+    must advance `completed_at` to the 2nd completion — not keep re-selecting
+    the mission on every subsequent tick because the ledger is stuck on the
+    1st completion.
+    """
+    repo, missions = _repo(tmp_path, _intraday_mission("every_3h"))
+    mission = missions[0]
+    _seed_research_item(repo)
+
+    first_dispatch = _L2_BASE
+    first_completed_at = first_dispatch + timedelta(seconds=5)
+    assert _due(repo, missions, first_dispatch) == ["draft_substack_note"]
+    assert commit_dispatch(
+        repo, mission,
+        dispatched_at=first_dispatch,
+        completed_at=first_completed_at,
+    )
+    # Not due again immediately after the 1st completion.
+    assert _due(repo, missions, first_dispatch + timedelta(hours=1)) == []
+
+    # 3h after the 1st COMPLETION (not the 1st dispatch): cadence math
+    # (elapsed since the 1st completion) says due — this is the mission's
+    # legitimate 2nd run of the day.
+    second_dispatch = first_completed_at + timedelta(hours=3)
+    assert _due(repo, missions, second_dispatch) == ["draft_substack_note"]
+    second_completed_at = second_dispatch + timedelta(seconds=5)
+    assert commit_dispatch(
+        repo, mission,
+        dispatched_at=second_dispatch,
+        completed_at=second_completed_at,
+    ), "a genuinely new same-day completion must be let through (return True)"
+
+    ledger = read_dispatch_ledger(repo / "outputs" / TODAY)
+    assert ledger["draft_substack_note"]["completed_at"] == second_completed_at.isoformat()
+
+    # THE REGRESSION this closes: shortly after the 2nd completion, the old
+    # code left `completed_at` at the 1st completion, so elapsed-time was
+    # already >= 3h and the mission re-fired on every subsequent tick.
+    assert _due(repo, missions, second_dispatch + timedelta(minutes=5)) == [], (
+        "must not re-select right after the 2nd completion — the ledger has "
+        "to measure elapsed time from the LATEST completion, not the first"
+    )
+    # Still not due just before the 3h mark from the 2nd completion.
+    assert _due(
+        repo, missions, second_completed_at + timedelta(hours=3) - timedelta(seconds=1)
+    ) == []
+    # Due again exactly 3h after the 2nd completion (not the 1st).
+    assert _due(repo, missions, second_completed_at + timedelta(hours=3)) == [
+        "draft_substack_note"
+    ]
+
+
+def test_every_3h_duplicate_commit_of_same_run_stays_noop(tmp_path: Path):
+    """A retried/replayed commit of the SAME dispatch (identical
+    `dispatched_at`) must remain idempotent — it must not double-count the
+    round counter or otherwise advance state, even for an intra-day cadence.
+    """
+    repo, missions = _repo(tmp_path, _intraday_mission("every_3h"))
+    mission = missions[0]
+
+    dispatched_at = NOW
+    completed_at = NOW + timedelta(seconds=5)
+    assert commit_dispatch(
+        repo, mission, dispatched_at=dispatched_at, completed_at=completed_at
+    )
+    round_counter_path = repo / "outputs" / TODAY / "round_counter.json"
+    first_round_counter = json.loads(round_counter_path.read_text())
+
+    # Same dispatch, replayed (e.g. a watchdog re-kick re-committing the same
+    # worker result) — must return False and leave the ledger untouched.
+    assert not commit_dispatch(
+        repo, mission, dispatched_at=dispatched_at, completed_at=completed_at
+    )
+    ledger = read_dispatch_ledger(repo / "outputs" / TODAY)
+    assert ledger["draft_substack_note"]["completed_at"] == completed_at.isoformat()
+    assert json.loads(round_counter_path.read_text()) == first_round_counter
+
+
+def test_every_30m_case_advances_across_two_completions(tmp_path: Path):
+    """every_Nm behaves the same way as every_Nh (minute granularity)."""
+    repo, missions = _repo(tmp_path, _intraday_mission("every_30m"))
+    mission = missions[0]
+    _seed_research_item(repo)
+
+    first_dispatch = _L2_BASE
+    first_completed_at = first_dispatch + timedelta(seconds=5)
+    assert commit_dispatch(
+        repo, mission,
+        dispatched_at=first_dispatch,
+        completed_at=first_completed_at,
+    )
+    assert _due(repo, missions, first_dispatch + timedelta(minutes=10)) == []
+
+    second_dispatch = first_completed_at + timedelta(minutes=30)
+    assert _due(repo, missions, second_dispatch) == ["draft_substack_note"]
+    second_completed_at = second_dispatch + timedelta(seconds=5)
+    assert commit_dispatch(
+        repo, mission, dispatched_at=second_dispatch, completed_at=second_completed_at
+    )
+
+    ledger = read_dispatch_ledger(repo / "outputs" / TODAY)
+    assert ledger["draft_substack_note"]["completed_at"] == second_completed_at.isoformat()
+    assert _due(repo, missions, second_dispatch + timedelta(minutes=10)) == []
+    assert _due(repo, missions, second_completed_at + timedelta(minutes=30)) == [
+        "draft_substack_note"
+    ]
+
+
+def test_daily_cadence_second_same_day_commit_still_blocked(tmp_path: Path):
+    """REGRESSION: daily cadence keeps its once-per-Paris-day idempotence —
+    a 2nd same-day commit (even with a later `dispatched_at`, unlike a true
+    replay) must still return False and must not advance `completed_at`.
+    """
+    repo, missions = _repo(tmp_path, _mission(cadence="daily"))
+    mission = missions[0]
+
+    # Layer 1's output-evidence gate requires a real artifact under
+    # outputs/<today>/1/ before treating the mission as genuinely done
+    # (crash-recovery retry, unrelated to #1542) — supply one so this test
+    # exercises the cadence idempotence guard, not that separate gate.
+    artifact = repo / "outputs" / TODAY / "1" / "summary.md"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("completed\n", encoding="utf-8")
+
+    first_dispatch = NOW
+    first_completed_at = first_dispatch + timedelta(seconds=5)
+    assert commit_dispatch(
+        repo, mission,
+        dispatched_at=first_dispatch,
+        completed_at=first_completed_at,
+        artifacts=[artifact],
+    )
+
+    later_same_day = first_dispatch + timedelta(hours=2)
+    assert not commit_dispatch(
+        repo, mission,
+        dispatched_at=later_same_day,
+        completed_at=later_same_day + timedelta(seconds=5),
+    ), "daily cadence must stay idempotent for a 2nd same-day completion"
+
+    ledger = read_dispatch_ledger(repo / "outputs" / TODAY)
+    assert ledger["data_update"]["completed_at"] == first_completed_at.isoformat()
+
+
+def test_weekly_cadence_second_same_day_commit_still_blocked(tmp_path: Path):
+    """REGRESSION: weekly cadence is unaffected by #1542 — still once per
+    Paris-local listed day, even with a later `dispatched_at`.
+    """
+    friday_0800 = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)  # 08:00 Paris, Friday
+    mission = {
+        "id": "weekly_digest",
+        "layer": 2,
+        "cadence": "weekly",
+        "time": "07:00",
+        "day": "friday",
+        "output_queue": "queues/drafts/",
+        "creates": [],
+    }
+    repo, missions = _repo(tmp_path, mission)
+
+    assert commit_dispatch(
+        repo, mission,
+        dispatched_at=friday_0800,
+        completed_at=friday_0800 + timedelta(seconds=5),
+    )
+    later_same_day = friday_0800 + timedelta(hours=4)
+    assert not commit_dispatch(
+        repo, mission,
+        dispatched_at=later_same_day,
+        completed_at=later_same_day + timedelta(seconds=5),
+    ), "weekly cadence must stay idempotent for a 2nd same-day completion"
+
+
+def test_legacy_ledger_entry_without_dispatched_at_still_loads_and_is_conservative(
+    tmp_path: Path,
+):
+    """Old/hand-written dispatch.json entries are not guaranteed to carry a
+    parseable `dispatched_at` (e.g. a pre-#1542 or malformed entry). Reading
+    it must never crash, and — since there's no reliable evidence this is a
+    NEW dispatch — the intra-day advance path must fail closed (stay
+    idempotent), exactly like the pre-#1542 behavior.
+    """
+    repo, missions = _repo(tmp_path, _intraday_mission("every_3h"))
+    mission = missions[0]
+    today_dir = repo / "outputs" / TODAY
+    today_dir.mkdir(parents=True)
+    (today_dir / "dispatch.json").write_text(
+        json.dumps({
+            "draft_substack_note": {
+                "materialized_at": NOW.isoformat(),
+                "completed_at": NOW.isoformat(),
+                "artifacts": [],
+                # `dispatched_at` deliberately absent — legacy/malformed shape.
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    # Old-format ledger loads without raising.
+    ledger = read_dispatch_ledger(today_dir)
+    assert ledger["draft_substack_note"]["completed_at"] == NOW.isoformat()
+
+    later = NOW + timedelta(hours=3)
+    assert not commit_dispatch(
+        repo, mission, dispatched_at=later, completed_at=later + timedelta(seconds=5)
+    ), "missing dispatched_at evidence must fail closed to idempotent, not crash"
+    ledger_after = read_dispatch_ledger(today_dir)
+    assert ledger_after["draft_substack_note"]["completed_at"] == NOW.isoformat()

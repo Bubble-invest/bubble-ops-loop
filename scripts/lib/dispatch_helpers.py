@@ -415,6 +415,34 @@ def _materialize_committed_outputs(repo: Path, mission: dict, when: datetime) ->
     return created
 
 
+def _cadence_advances_within_day(cadence: str) -> bool:
+    """True iff ``cadence``'s "due" math (`_mission_cadence_due`) is measured
+    as elapsed-time-since-last-completion / most-recent-scheduled-fire —
+    `hourly`, `every_<N>h`, `every_<N>m`, `cron:<expr>` — rather than a
+    once-per-Paris-calendar-day-or-weekday check (`daily`, `weekly`) or
+    trigger-evidence-gated dispatch (`event`, handled separately via
+    ``dispatched_trigger_ids``).
+
+    Used by ``commit_dispatch`` (#1542) to tell a genuine later same-day
+    completion (must advance ``completed_at`` so the cadence re-arms from the
+    LATEST run, not the first) from a true duplicate/replayed commit of the
+    SAME dispatch (must stay idempotent). Mirrors the cadence-string parsing
+    in `_mission_cadence_due` exactly (same `startswith`/`endswith`/`int(...)`
+    shape) so the two never drift apart on what counts as "every_Nh"/"every_Nm".
+    """
+    if cadence == "hourly":
+        return True
+    if cadence.startswith("cron:"):
+        return True
+    if cadence.startswith("every_") and (cadence.endswith("h") or cadence.endswith("m")):
+        try:
+            int(cadence[len("every_"):-1])
+        except ValueError:
+            return False
+        return True
+    return False
+
+
 def commit_dispatch(
     repo_dir: "Path | str",
     mission: dict,
@@ -443,6 +471,18 @@ def commit_dispatch(
     An uncommitted crash is deliberately still due on the watchdog re-kick;
     the fleet tick lock prevents concurrent workers, while completion—not a
     wall-clock equality trick—is what closes the mission.
+
+    #1542: for intra-day cadences (`_cadence_advances_within_day` — hourly/
+    every_Nh/every_Nm/cron:) a completion whose `dispatched_at` is STRICTLY
+    LATER than the one already recorded is a new, legitimate dispatch cycle
+    (e.g. the 2nd `every_3h` run of the day) and is let through so
+    `completed_at` advances — otherwise the ledger keeps the FIRST
+    completion forever and `is_mission_due` re-selects the mission on every
+    tick (board #1542). A commit that repeats the SAME `dispatched_at`
+    already on record (a replay/retry of the identical dispatch — e.g. a
+    watchdog re-kick re-committing a worker's result) still returns False,
+    exactly as before. `daily`/`weekly`/`event` are unaffected: their
+    idempotence guard is unchanged.
     """
     repo = Path(repo_dir)
     mission_id = str(mission.get("id") or "")
@@ -487,7 +527,28 @@ def commit_dispatch(
             for value in existing_artifacts
         )
         already_completed = _ledger_completion(today_dir, mission_id) is not None
-        if already_completed and (
+
+        # #1542: a later `dispatched_at` than the one already recorded means
+        # this is a NEW dispatch cycle, not a replay of the recorded one. For
+        # intra-day cadences that must complete more than once per day, that
+        # makes it a legitimate completion that has to advance the ledger
+        # rather than being swallowed as an idempotent duplicate. See
+        # `_cadence_advances_within_day` and this function's docstring.
+        existing_dispatched_at: "datetime | None" = None
+        raw_existing_dispatched_at = existing.get("dispatched_at")
+        if isinstance(raw_existing_dispatched_at, str) and raw_existing_dispatched_at.strip():
+            try:
+                existing_dispatched_at = _parse_iso(raw_existing_dispatched_at)
+            except (ValueError, TypeError):
+                existing_dispatched_at = None
+        is_new_intraday_dispatch = (
+            already_completed
+            and _cadence_advances_within_day(str(mission.get("cadence") or ""))
+            and existing_dispatched_at is not None
+            and dispatched_at > existing_dispatched_at
+        )
+
+        if already_completed and not is_new_intraday_dispatch and (
             (layer not in (1, 4) or existing_has_required_output)
             and (
                 mission.get("cadence") != "event"
