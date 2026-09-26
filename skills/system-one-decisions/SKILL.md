@@ -350,6 +350,19 @@ tokens not read), plus a full JSONL via `--log`. Safety is automatic: `.env*`/`*
 `grep`), subjective/house-style/unwritten-policy labels — weakest spot in both
 benchmarks. Output is a shortlist, never proof — check the `?` items yourself.
 
+## Wiki search: `tools/wiki-search/search.py`
+
+A fifth, standing capability rather than a bulk verb: search over the shared wiki
+(`~/.claude/agent-memory/shared-wiki`) with an FTS5/hybrid candidate pool this skill's
+own `choice`-design Jev rerank narrows to the top matches (board #1505 step 2, pool=5
+validated on a fresh held-out set — see `tools/wiki-search/README.md`). Auto-detects
+Ollama-backed hybrid candidates vs. the dependency-light FTS-only index per host, hard-
+falls-back to plain candidates if Jev/the key is unavailable (never errors, never
+returns empty for a real query), and writes the same receipt shape as `jev.py ask`.
+Vendored to every dept alongside this skill. Not yet wired into any layer template or
+CLAUDE.md instruction telling agents to reach for it automatically — that's a later
+step; for now, call it directly: `python3 tools/wiki-search/search.py "<query>"`.
+
 ## Reference files
 
 - `references/patterns.md` — the 19-pattern catalog, condensed with citations.

@@ -268,6 +268,52 @@ for pair in "${KANBAN_MAP[@]}"; do
   fi
 done
 
+# Fleet wiki-search tool (board #1505 step 2, 2026-09-27): FTS-only + hybrid
+# candidate sources + Jev rerank over the shared wiki, vendored to every dept
+# the same way system-one-decisions is above (a plain tool, not a skill --
+# it has no SKILL.md, so no .claude/skills/ link is needed for it below).
+# tests/test_wiki_search_*.py intentionally not vendored (framework-side
+# tests only, same rule as system-one-decisions' evals/).
+WIKI_SEARCH_MAP=(
+  "tools/wiki-search/README.md            tools/wiki-search/README.md"
+  "tools/wiki-search/wiki_paths.py        tools/wiki-search/wiki_paths.py"
+  "tools/wiki-search/fts_index.py         tools/wiki-search/fts_index.py"
+  "tools/wiki-search/hybrid_index.py      tools/wiki-search/hybrid_index.py"
+  "tools/wiki-search/context_builder.py   tools/wiki-search/context_builder.py"
+  "tools/wiki-search/rerank.py            tools/wiki-search/rerank.py"
+  "tools/wiki-search/jev_bridge.py        tools/wiki-search/jev_bridge.py"
+  "tools/wiki-search/search.py            tools/wiki-search/search.py"
+)
+for pair in "${WIKI_SEARCH_MAP[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $pair
+  src="$FRAMEWORK/$1"; dst="$DEPT/$2"
+  [[ -f "$src" ]] || { log "skip $1 — not in framework"; continue; }
+  mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+  # board #1115: same symlink-dest refusal as the MAP loop above.
+  if [[ -L "$dst" ]]; then
+    log "WARN: refusing wiki-search $2 — dest is a symlink, not a regular file (fail-open, not copied)"
+    continue
+  fi
+  if ! cmp -s "$src" "$dst" 2>/dev/null; then
+    if ! permit_vendor_refresh "$src" "$dst" "$2"; then
+      deferred=$((deferred+1))
+      deferred_rels="${deferred_rels}${2}|"
+      continue
+    fi
+    if copy_canonical_file "$src" "$dst"; then
+      chown claude:claude "$dst" 2>/dev/null || true
+      record_last_vendored "$dst" "$2"
+      log "re-vendored wiki-search $2 (was stale/missing)"
+      vendored=$((vendored+1))
+    else
+      log "WARN: could not copy $2 (fail-open)"
+    fi
+  else
+    record_last_vendored "$dst" "$2"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # Wire .claude/skills/<name> -> ../../skills/<name> so Claude Code can actually
 # DISCOVER the dept's DECLARED skills (board #1224).
@@ -445,7 +491,7 @@ fi
 # the framework-overwrite (else it commits structural libs → push 403; Tony
 # 2026-06-07). Best-effort, fail-open. Covers BOTH the core libs and the
 # kanban-capability files.
-for pair in "${MAP[@]}" "${KANBAN_MAP[@]}"; do
+for pair in "${MAP[@]}" "${KANBAN_MAP[@]}" "${WIKI_SEARCH_MAP[@]}"; do
   # shellcheck disable=SC2086
   set -- $pair
   dst="$DEPT/$2"
