@@ -52,6 +52,25 @@
 #   — always check any new implementation against known-answer pairs (see
 #   tests/test_arm_wake_cron.sh) spanning both DST regimes AND both a
 #   UTC-host and a Europe/Paris-host simulation before trusting it.
+#
+# Fix #1529: the Paris -> host-local conversion used to be an embedded
+# `python3 - ... <<'PY' ... PY` heredoc INSIDE a `$(...)` command
+# substitution. macOS STOCK bash — /bin/bash, never upgraded past 3.2.57
+# post-GPLv3 (the only bash on an M5 Mac with no Homebrew bash installed) —
+# mis-parses a heredoc nested inside `$(...)`: `/bin/bash
+# scripts/arm-wake-cron.sh 08:03 one-shot` failed with a parse error
+# ("unexpected EOF while looking for matching `''" / "bad substitution",
+# depending on exact bash 3.2.x build) before a single line of the script's
+# own logic ever ran. bash 5 (Homebrew, CI, any dev shell) parses the same
+# heredoc fine, which is why this was invisible everywhere except a real
+# Mac's stock /bin/bash — the same parser defect fixed for the local-loop
+# wrapper renderer in board #1529 / PR #512 (deploy/local/lib/
+# local_loop_lib.sh + safe_secrets_loader.sh.tmpl). Fix: the conversion body
+# now lives in its own file (scripts/arm_wake_cron_convert.py, resolved via
+# this script's own directory) and is invoked with a plain `python3
+# "$HELPER" ...` command substitution — no heredoc for bash 3.2 to
+# mis-parse. Output, exit codes, and stderr messages (including the #1515 TZ
+# validation) are byte-identical to the previous embedded-heredoc version.
 set -euo pipefail
 
 usage() {
@@ -91,6 +110,19 @@ command -v python3 >/dev/null 2>&1 || {
   exit 2
 }
 
+# Fix #1529: resolve the conversion helper relative to THIS script's own
+# directory (never relative to the caller's cwd) and fail loudly — non-zero
+# exit, no stdout — if it's missing (e.g. a partial checkout/rsync), rather
+# than silently falling through to some other python3 on PATH or producing
+# no output at all.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+HELPER="$DIR/arm_wake_cron_convert.py"
+
+[[ -f "$HELPER" ]] || {
+  echo "ERROR: conversion helper not found: $HELPER (expected next to $0)" >&2
+  exit 2
+}
+
 # Resolve the target calendar date EXPLICITLY (never lean on a bare relative
 # "tomorrow", and never resolve it inside the conversion step) so the
 # calendar-day arithmetic is auditable:
@@ -99,65 +131,11 @@ command -v python3 >/dev/null 2>&1 || {
 #   3. one-shot, no explicit date -> tomorrow, AS OBSERVED IN Paris (today
 #      in Paris + 1 calendar day).
 # Both "today in Paris" and the actual Paris -> host-local conversion are
-# done by the same embedded python3 helper so there is exactly one place
-# that touches the tz database.
-CONVERTED="$(python3 - "$PARIS_TIME" "$MODE" "$EXPLICIT_DATE" <<'PY'
-import os
-import sys
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-paris_time, mode, explicit_date = sys.argv[1], sys.argv[2], sys.argv[3]
-hh, mm = (int(x) for x in paris_time.split(":"))
-paris = ZoneInfo("Europe/Paris")
-
-# Fix #1515: validate the HOST zone actually resolves before trusting it.
-# `datetime.astimezone()` (no args) resolves the host's local zone the same
-# way the OS/C library does: TZ env var if set, else the system zone (e.g.
-# /etc/localtime). But an invalid/unknown TZ value (e.g.
-# TZ=Bogus/Nonexistent) does NOT raise there — it silently falls back to
-# UTC, which is exactly the silent-wrong-hour class of board #850 (a 2h/1h
-# offset nobody notices until a live order fires at the wrong time). Only
-# validate when TZ is actually SET and non-empty: an empty/unset TZ must
-# keep falling through to the system zone unchanged (that path already
-# works and must not be touched).
-tz_env = os.environ.get("TZ", "")
-if tz_env:
-    try:
-        ZoneInfo(tz_env)
-    except (ZoneInfoNotFoundError, ValueError) as e:
-        print(f"ERROR: TZ={tz_env!r} does not resolve to a known IANA "
-              f"timezone ({e}); refusing to silently fall back to UTC",
-              file=sys.stderr)
-        sys.exit(2)
-
-today_paris = datetime.now(paris).date()
-
-if mode == "daily":
-    target_date = today_paris
-elif explicit_date:
-    target_date = date.fromisoformat(explicit_date)
-else:
-    target_date = today_paris + timedelta(days=1)
-
-# Localize the target wall-clock time as Europe/Paris, then convert to
-# whatever timezone THIS HOST's system clock is actually set to (the VPS'
-# is UTC, the Macs' is Europe/Paris) — tz-database backed, so the Mar/Oct
-# DST flip on either end is handled automatically, never a hardcoded offset.
-dt_paris = datetime(target_date.year, target_date.month, target_date.day, hh, mm, tzinfo=paris)
-dt_local = dt_paris.astimezone()
-
-# MIN/HOUR are always printed zero-padded to 2 digits (matches the previous
-# GNU `date +'%M %H'` output format exactly, byte for byte). DAY/MONTH are
-# printed as plain decimal WITHOUT zero-padding (cron doesn't need it, and a
-# leading zero on a cron field risks being misread as octal by naive
-# parsers) — same convention the previous revision enforced explicitly.
-if mode == "daily":
-    print(f"{dt_local.minute:02d} {dt_local.hour:02d}")
-else:
-    print(f"{dt_local.minute:02d} {dt_local.hour:02d} {dt_local.day} {dt_local.month}")
-PY
-)"
+# done by the same helper (scripts/arm_wake_cron_convert.py) so there is
+# exactly one place that touches the tz database. This is a plain command
+# substitution (no heredoc) — see the #1529 fix note above for why that
+# matters on bash 3.2.
+CONVERTED="$(python3 "$HELPER" "$PARIS_TIME" "$MODE" "$EXPLICIT_DATE")"
 
 if [[ "$MODE" == "daily" ]]; then
   read -r MIN HOUR <<<"$CONVERTED"
