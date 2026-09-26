@@ -258,7 +258,7 @@ its code-only twin on **0 of 6** questions. Phase 1b (2026-09-26, 1,800 cases pe
 question per arm): richer context (MACD/%B/ATR/volume, related assets VIX/TNX/DXY/QQQ/ETH/TLT,
 and the same data as a structured JSON state) never beat a plain logistic regression on the
 same features by >0.03 AUC in any of 30 cells. On the one question with real signal
-("big move in 10 days"), laya *degraded* as context grew (AUC 0.73 → 0.33) while the
+("big move in 10 days"), laya *degraded* with every richer arm (AUC 0.73 → 0.33-0.61) while the
 logistic regression held 0.80-0.89. The signal is in the numbers; a small System-One
 model doesn't extract it, and extra context distracts it. For numeric decisions, use code
 or a classic statistical model; keep Jev for bounded judgments over messy text.
