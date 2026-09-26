@@ -37,6 +37,16 @@ INTENT_MISSION_DST="$DEPLOY_HOME/.claude/skills/cloud-wiki-compile/missions/inte
 MEM_HYGIENE_DST="$DEPLOY_HOME/scripts/memory_hygiene_notify.py"
 SKILLSMITH_DST="$DEPLOY_HOME/.claude/skills/skill-authoring"
 
+# Production deploys must prove the immutable intent baseline before mutating
+# the launcher or systemd state. Test-layout installs intentionally skip host
+# prerequisites and exercise only the asset-install path.
+if [ -z "$INSTALL_ROOT" ]; then
+    python3 "$REPO_ROOT/tools/readonly_intents_mirror.py" --mode compile || {
+        echo "FATAL: immutable operator-intents mirror preflight failed; install the Linux mirror first." >&2
+        exit 1
+    }
+fi
+
 install -d -m 0755 "$DEPLOY_HOME/scripts"
 
 echo "[1/11] launcher script -> $SCRIPT_DST"

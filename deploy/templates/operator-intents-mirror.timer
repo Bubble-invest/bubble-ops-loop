@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh immutable operator-intents mirror every 15 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=30s
+Unit=operator-intents-mirror.service
+
+[Install]
+WantedBy=timers.target

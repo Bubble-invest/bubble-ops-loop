@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Managed by bubble-ops-loop (#1298). Runs as root via systemd.
+set -Eeuo pipefail
+umask 077
+
+REMOTE_URL='git@github.com:Bubble-invest/bubble-operator-intents.git'
+REMOTE_REF='main'
+KEY='/etc/bubble/secrets/operator-intents-readonly-deploy-key'
+BASE='/opt/bubble-operator-intents-data'
+STAGING="$BASE/.staging"
+RELEASES="$BASE/releases"
+CURRENT="$BASE/current"
+MIRROR='/opt/bubble-operator-intents'
+KNOWN_HOSTS='/etc/ssh/ssh_known_hosts'
+
+stage=''
+cleanup() {
+  if [[ -n "$stage" && "$stage" == "$STAGING"/run.* ]]; then rm -rf -- "$stage"; fi
+}
+trap cleanup EXIT
+log() { /usr/bin/logger -t operator-intents-mirror -- "$*" 2>/dev/null || true; printf 'operator-intents-mirror: %s\n' "$*" >&2; }
+fail() { log "ERROR: $*"; exit 1; }
+unexpected_error() {
+  local rc=$?
+  trap - ERR
+  log "ERROR: unexpected sync failure rc=$rc line=${BASH_LINENO[0]:-unknown}"
+  exit "$rc"
+}
+trap unexpected_error ERR
+
+validate_release() {
+  /usr/bin/python3 - "$1" "${2:-}" "${3:-1}" "$RELEASES" <<'PY'
+import hashlib, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+expected_commit = sys.argv[2]
+enforce_binding = sys.argv[3] == "1"
+releases = pathlib.Path(sys.argv[4])
+if not root.is_dir() or root.is_symlink():
+    raise SystemExit(1)
+info = root.lstat()
+if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o555:
+    raise SystemExit(1)
+metadata = [root / name for name in (".mirror-commit", ".mirror-manifest", ".mirror-synced-at")]
+if any(not path.is_file() or path.is_symlink() for path in metadata):
+    raise SystemExit(1)
+commit = metadata[0].read_text(encoding="utf-8").strip()
+if len(commit) != 40 or any(ch not in "0123456789abcdef" for ch in commit):
+    raise SystemExit(1)
+if expected_commit and commit != expected_commit:
+    raise SystemExit(1)
+if enforce_binding and (root.resolve().parent != releases.resolve() or root.resolve().name != commit):
+    raise SystemExit(1)
+actual = []
+for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+    rel = path.relative_to(root).as_posix()
+    item = path.lstat()
+    if stat.S_ISLNK(item.st_mode) or item.st_uid != 0 or item.st_gid != 0:
+        raise SystemExit(1)
+    if stat.S_ISDIR(item.st_mode):
+        if stat.S_IMODE(item.st_mode) != 0o555:
+            raise SystemExit(1)
+    elif stat.S_ISREG(item.st_mode):
+        if stat.S_IMODE(item.st_mode) != 0o444:
+            raise SystemExit(1)
+        if path.name in {".mirror-commit", ".mirror-manifest", ".mirror-synced-at"} and path.parent != root:
+            raise SystemExit(1)
+        if path not in {root / ".mirror-manifest", root / ".mirror-synced-at"}:
+            actual.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{rel}")
+    else:
+        raise SystemExit(1)
+if actual != metadata[1].read_text(encoding="utf-8").splitlines():
+    raise SystemExit(1)
+if any(path.name == ".git" for path in root.rglob("*")):
+    raise SystemExit(1)
+PY
+}
+
+[[ "$(/usr/bin/id -u)" == 0 ]] || fail 'must run as root'
+[[ -f "$KEY" && ! -L "$KEY" ]] || fail 'dedicated read-only deploy key missing'
+[[ "$(/usr/bin/stat -c '%U:%G:%a' "$KEY")" == 'root:root:400' ]] || fail 'deploy key must be root:root mode 0400'
+[[ -f "$KNOWN_HOSTS" && ! -L "$KNOWN_HOSTS" ]] || fail 'root SSH known_hosts missing or not regular'
+known_hosts_stat="$(/usr/bin/stat -c '%U:%G:%a' "$KNOWN_HOSTS")"
+[[ "$known_hosts_stat" =~ ^root:root:[0-7]{3,4}$ ]] || fail 'known_hosts must be root-owned'
+known_hosts_mode="${known_hosts_stat##*:}"
+(( (8#$known_hosts_mode & 022) == 0 )) || fail 'known_hosts must not be group/world writable'
+(( (8#$known_hosts_mode & 0400) != 0 )) || fail 'known_hosts must be root-readable'
+[[ -d "$BASE" && ! -L "$BASE" ]] || fail 'publication base is missing, symlinked, or not a directory'
+[[ "$(/usr/bin/stat -c '%U:%G:%a' "$BASE")" == 'root:root:755' ]] || fail 'publication base must be root:root mode 0755'
+[[ -L "$MIRROR" && "$(/usr/bin/readlink "$MIRROR")" == "$CURRENT" ]] || fail 'stable mirror symlink is missing or points outside the managed current link'
+[[ "$(/usr/bin/stat -c '%U:%G' "$MIRROR")" == 'root:root' ]] || fail 'stable mirror symlink must be root-owned'
+
+/usr/bin/install -d -o root -g root -m 0700 "$STAGING"
+/usr/bin/install -d -o root -g root -m 0555 "$RELEASES"
+current_commit=''
+tampered=0
+diverged=0
+if [[ -e "$CURRENT" || -L "$CURRENT" ]]; then
+  if [[ ! -L "$CURRENT" ]]; then
+    fail 'managed current path is not a symlink'
+  fi
+  current_target="$(/usr/bin/readlink "$CURRENT")"
+  if [[ "$(/usr/bin/dirname "$current_target")" != "$RELEASES" ]] || ! validate_release "$current_target"; then
+    fail 'managed current link escaped or failed release validation'
+  fi
+  current_commit="$(/usr/bin/tr -d '\n' < "$current_target/.mirror-commit")"
+elif [[ -n "$(/usr/bin/find "$RELEASES" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  fail 'managed current link is missing while releases exist'
+fi
+while IFS= read -r -d '' old_release; do
+  if ! validate_release "$old_release"; then
+    log "tamper detected: invalid dormant release object $old_release"
+    tampered=1
+  fi
+done < <(/usr/bin/find "$RELEASES" -mindepth 1 -maxdepth 1 -print0)
+(( tampered == 0 )) || fail 'invalid dormant release present; refusing mutation'
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="/usr/bin/ssh -i \"$KEY\" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS"
+remote_commit="$(/usr/bin/git ls-remote --exit-code "$REMOTE_URL" "refs/heads/$REMOTE_REF" | /usr/bin/awk 'NR == 1 {print $1}')" || fail 'cannot resolve vault main'
+[[ "$remote_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'vault main did not resolve to one commit'
+if [[ -n "$current_commit" && "$current_commit" != "$remote_commit" ]]; then
+  log "divergence detected: mirror $current_commit differs from vault main $remote_commit"
+  diverged=1
+fi
+stage="$(/usr/bin/mktemp -d "$STAGING/run.XXXXXX")"
+checkout="$stage/checkout"
+/usr/bin/git clone --quiet --no-tags --single-branch --branch "$REMOTE_REF" "$REMOTE_URL" "$checkout" || fail 'fresh vault clone failed'
+[[ "$(/usr/bin/git -C "$checkout" remote get-url origin)" == "$REMOTE_URL" ]] || fail 'clone origin mismatch'
+[[ "$(/usr/bin/git -C "$checkout" rev-parse HEAD)" == "$remote_commit" ]] || fail 'clone HEAD differs from vault main'
+remote_after="$(/usr/bin/git ls-remote --exit-code "$REMOTE_URL" "refs/heads/$REMOTE_REF" | /usr/bin/awk 'NR == 1 {print $1}')" || fail 'cannot recheck vault main'
+[[ "$remote_after" == "$remote_commit" ]] || fail 'vault main moved during sync; refusing stale publication'
+[[ -z "$(/usr/bin/find "$checkout" -path "$checkout/.git" -prune -o -type l -print -quit)" ]] || fail 'vault content contains a symlink'
+rm -rf -- "$checkout/.git"
+[[ -z "$(/usr/bin/find "$checkout" -name .git -print -quit)" ]] || fail '.git remains in publication'
+[[ -z "$(/usr/bin/find "$checkout" \( -name .mirror-commit -o -name .mirror-manifest -o -name .mirror-synced-at \) -print -quit)" ]] || fail 'vault content uses a reserved mirror metadata name'
+printf '%s\n' "$remote_commit" > "$checkout/.mirror-commit"
+/bin/date -u +'%Y-%m-%dT%H:%M:%SZ' > "$checkout/.mirror-synced-at"
+/usr/bin/python3 - "$checkout" <<'PY' > "$checkout/.mirror-manifest"
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+    if path.is_file() and path not in {root / ".mirror-manifest", root / ".mirror-synced-at"}:
+        print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{path.relative_to(root).as_posix()}")
+PY
+/usr/bin/chown -R root:root "$checkout"
+/usr/bin/find "$checkout" -type d -exec /bin/chmod 0555 {} +
+/usr/bin/find "$checkout" -type f -exec /bin/chmod 0444 {} +
+validate_release "$checkout" "$remote_commit" 0 || fail 'staged release failed validation'
+
+release="$RELEASES/$remote_commit"
+if [[ -e "$release" || -L "$release" ]]; then
+  if validate_release "$release" "$remote_commit"; then
+    rm -rf -- "$checkout"
+  else
+    fail "existing release for $remote_commit failed validation"
+  fi
+else
+  /bin/mv -- "$checkout" "$release"
+fi
+/usr/bin/chown -R root:root "$release"
+/usr/bin/find "$release" -type d -exec /bin/chmod 0555 {} +
+/usr/bin/find "$release" -type f -exec /bin/chmod 0444 {} +
+validate_release "$release" "$remote_commit" || fail 'published release failed validation'
+synced_tmp="$stage/synced-at"
+/bin/date -u +'%Y-%m-%dT%H:%M:%SZ' > "$synced_tmp"
+/usr/bin/chown root:root "$synced_tmp"
+/bin/chmod 0444 "$synced_tmp"
+/bin/mv -f -- "$synced_tmp" "$release/.mirror-synced-at"
+validate_release "$release" "$remote_commit" || fail 'refreshed release failed validation'
+link_tmp="$BASE/.current.$$"
+rm -f -- "$link_tmp"
+/bin/ln -s -- "$release" "$link_tmp"
+/usr/bin/chown -h root:root "$link_tmp"
+/bin/mv -Tf -- "$link_tmp" "$CURRENT"
+[[ -L "$CURRENT" && "$(/usr/bin/readlink "$CURRENT")" == "$release" ]] || fail 'current symlink publication failed'
+validate_release "$release" "$remote_commit" || fail 'post-publish validation failed'
+if (( diverged != 0 )); then fail 'preexisting mirror differed from vault main; divergence was healed'; fi
+log "published verified vault main $remote_commit"
