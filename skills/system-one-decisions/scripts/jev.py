@@ -33,11 +33,29 @@ Subcommands:
   start / stop / status   -- manage ONE local engine server (local-* backends only)
   ask                      -- score items (JSONL) against one or more questions -> JSONL,
                                tracking cumulative usage.cost per call and enforcing
-                               --max-spend if set
+                               --max-spend if set. Every row is a decision RECEIPT (see
+                               ../references/contract.md): state_digest, question_set_version,
+                               backend, model (served, when available), latency_ms, timestamp,
+                               plus the existing ok/response/cost_usd fields.
   eval                     -- score `ask` results against a gold set -> precision/recall/
                                F1/ECE/P@1 per question, plus the trivial majority-class
                                baseline (ALWAYS compare against this -- see ../SKILL.md
                                "Mandatory rollout discipline" and ../references/eval.md)
+  lint                     -- lint a questions.json for contract issues: no-match option
+                               missing on a Choice, empty/missing instructions or criteria,
+                               Score criteria without observable anchors, duplicate question
+                               ids. Exits non-zero on errors only (warnings don't fail CI).
+  replay                   -- re-run the states from a previous `ask` run's results against a
+                               (possibly changed) questions file/backend and report per-question
+                               drift: how many answers changed class, mean |delta p|, and the
+                               flipped ids. See ../references/contract.md.
+
+State can be a string, a JSON object, or a JSON array on EVERY backend (local and remote
+alike) -- jev.py forwards it unchanged in the request body and never re-serializes it, and
+each local engine's own wire-format module (`decider.systemone.render_state`,
+`semif_phase1.core`, `laya.common`) accepts str|dict|list and serializes non-strings itself.
+A structured state (named fields, not a flattened paragraph) works on every backend -- see
+../references/contract.md's "State design" section.
 
 Dependencies: stdlib + `requests` (only needed for `ask` against a real server; `eval`,
 `start`, `stop`, `status` are stdlib-only). Install with the caller's own venv/pip.
@@ -47,9 +65,11 @@ TYPESAFE_API_KEY) -- never pass one as a CLI flag, never printed, and a missing 
 loudly before any request is attempted.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
+import re
 import socket
 import statistics
 import subprocess
@@ -57,6 +77,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 N_ECE_BINS = 10
@@ -169,6 +190,65 @@ def auth_headers_for(backend):
             f"Never pass an API key as a command-line flag."
         )
     return {"Authorization": f"Bearer {key}"}
+
+
+# ---------------------------------------------------------------------------
+# Decision contract: canonical digests, question-set versioning, receipts
+# (see ../references/contract.md -- this is the "harness" that records and
+# replays a decision, not the model itself).
+# ---------------------------------------------------------------------------
+
+def canonical_json(obj):
+    """Deterministic serialization used for both state_digest and the
+    fallback question_set_version -- sort_keys + no extra whitespace so the
+    same logical object always hashes the same way regardless of dict
+    insertion order."""
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def sha256_hex(s):
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def state_digest(state):
+    """A receipt records this digest, never the raw state, by default (see
+    ../references/contract.md's state-design section, and the field guide's
+    "do not log secrets or raw customer state by default") -- `replay` needs
+    the real state back, which is why it takes --items rather than trying to
+    reconstruct it from a digest."""
+    return sha256_hex(canonical_json(state))
+
+
+def strip_meta_keys(questions_raw):
+    """Question ids that start with '_' (currently just an optional
+    "_version" string) are contract metadata, never sent to an engine."""
+    return {k: v for k, v in questions_raw.items() if not k.startswith("_")}
+
+
+def question_set_version(questions_raw):
+    """The version recorded on every receipt and checked by --resume. Uses
+    the explicit optional top-level "_version" key when the questions file
+    declares one; otherwise falls back to a sha256 of the canonical wire
+    question set (meta keys stripped) so an unversioned file still gets a
+    real, content-derived version rather than a constant placeholder."""
+    v = questions_raw.get("_version")
+    if v is not None:
+        return str(v)
+    return sha256_hex(canonical_json(strip_meta_keys(questions_raw)))
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+_NO_MATCH_RE = re.compile(
+    r"(other|unknown|unsure|uncertain|needs?[-_ ]?review|not[-_ ]?applicable|\bn/?a\b|^none$)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_no_match_option(option_key):
+    return bool(_NO_MATCH_RE.search(str(option_key)))
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +495,10 @@ def cmd_ask(args):
         questions = json.load(f)
     if not isinstance(questions, dict) or not questions:
         raise SystemExit("error: --questions must be a non-empty JSON object of {question_id: {type, instructions, ...}}")
+    wire_questions = strip_meta_keys(questions)
+    if not wire_questions:
+        raise SystemExit("error: --questions has no question definitions (only meta keys like _version)")
+    qsv = question_set_version(questions)
 
     items = load_jsonl(args.items)
     if not items:
@@ -445,9 +529,23 @@ def cmd_ask(args):
         for row in load_jsonl_resumable(args.out):
             if row.get("_meta"):
                 continue
-            if row.get("ok"):
-                kept_rows.append(row)
-                done_ids.add(row["id"])
+            if not row.get("ok"):
+                continue
+            recorded_qsv = row.get("question_set_version")
+            # Version-aware resume (board #1505 upgrade 5): a row recorded
+            # under a DIFFERENT question_set_version than the current
+            # questions file is stale evidence -- the contract changed, so
+            # its answer must not be reused; drop it from kept_rows so its
+            # item is treated as not-done and gets re-attempted below. A row
+            # with NO recorded version at all is a legacy (pre-receipt) row
+            # written before this field existed -- there is no way to know
+            # whether it matches the current contract, so it is kept as
+            # before (backward compatible with runs made before this
+            # upgrade). Only an EXPLICIT mismatch invalidates the cache.
+            if recorded_qsv is not None and recorded_qsv != qsv:
+                continue
+            kept_rows.append(row)
+            done_ids.add(row["id"])
         n_before = len(items)
         items = [it for it in items if it["id"] not in done_ids]
         print(f"[resume] kept {len(kept_rows)} already-OK rows, skipping them; "
@@ -458,10 +556,27 @@ def cmd_ask(args):
         raise SystemExit(f"error: already-kept rows spent ${running_total:.4f} >= --max-spend ${max_spend:.4f}; nothing more to do")
 
     def score_one(item):
-        res = call_engine(args.backend, base_url, item["state"], questions, headers=headers, timeout=args.timeout)
-        row = {"id": item["id"], "backend": args.backend, "latency_s": res["latency_s"], "ok": res["ok"]}
+        res = call_engine(args.backend, base_url, item["state"], wire_questions, headers=headers, timeout=args.timeout)
+        # Every row is a decision receipt (board #1505, ../references/contract.md):
+        # state_digest + question_set_version + backend + timestamp + latency are
+        # recorded even on failure (useful for audit/replay); model/response/cost_usd
+        # only when the call actually succeeded. All fields here are ADDITIONS --
+        # every field a pre-upgrade row had (id/backend/latency_s/ok/response/error/
+        # cost_usd) keeps the exact same meaning, so old tooling reading old or new
+        # rows still works.
+        row = {
+            "id": item["id"], "backend": args.backend,
+            "latency_s": res["latency_s"], "latency_ms": res["latency_s"] * 1000.0,
+            "ok": res["ok"],
+            "state_digest": state_digest(item["state"]),
+            "question_set_version": qsv,
+            "timestamp": utc_now_iso(),
+        }
         if res["ok"]:
             row["response"] = res["response"]
+            served_model = res["response"].get("model") if isinstance(res["response"], dict) else None
+            if served_model:
+                row["model"] = served_model
             if res.get("cost_usd") is not None:
                 row["cost_usd"] = res["cost_usd"]
         else:
@@ -520,7 +635,8 @@ def cmd_ask(args):
                 print(f"[{args.backend}] {n_new}/{len(items)} ({time.time()-t_start:.0f}s, {n_errors} errors{spend_note})", file=sys.stderr)
     finally:
         meta = {"_meta": True, "backend": args.backend, "n": n_written,
-                "n_errors": n_errors, "questions_file": args.questions}
+                "n_errors": n_errors, "questions_file": args.questions,
+                "question_set_version": qsv}
         if max_spend is not None or running_total:
             meta["total_spend_usd"] = running_total
         if stopped_for_spend:
@@ -737,6 +853,238 @@ def cmd_eval(args):
 
 
 # ---------------------------------------------------------------------------
+# lint  (stdlib-only, see ../references/contract.md "Question design")
+# ---------------------------------------------------------------------------
+
+def _load_questions_detecting_duplicates(path):
+    """Plain json.load silently keeps only the LAST of two duplicate top-level
+    keys -- a real authoring bug (one question definition quietly discarded)
+    that a normal parse can never surface. object_pairs_hook sees every
+    (key, value) pair BEFORE the dict is collapsed, so a duplicate is caught
+    here or nowhere."""
+    dup_ids = []
+
+    def hook(pairs):
+        seen = set()
+        d = {}
+        for k, v in pairs:
+            if k in seen:
+                dup_ids.append(k)
+            seen.add(k)
+            d[k] = v
+        return d
+
+    with open(path) as f:
+        try:
+            questions = json.load(f, object_pairs_hook=hook)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"error: invalid JSON in {path}: {e}")
+    return questions, sorted(set(dup_ids))
+
+
+def lint_questions(questions_raw, dup_ids):
+    """-> (errors: [str], warnings: [str]). Pure function over an already-
+    parsed questions dict so tests can exercise it without a file on disk."""
+    errors, warnings = [], []
+    for d in dup_ids:
+        errors.append(f"duplicate question id '{d}' -- plain JSON silently kept only the last "
+                       f"definition; rename one of them")
+
+    wire = strip_meta_keys(questions_raw)
+    if not wire:
+        errors.append("no question definitions found (only meta keys like _version)")
+
+    for qid, qdef in wire.items():
+        if not isinstance(qdef, dict):
+            errors.append(f"[{qid}] question definition must be an object, got {type(qdef).__name__}")
+            continue
+        qtype = qdef.get("type")
+        instructions = qdef.get("instructions")
+        criteria = qdef.get("criteria")
+        has_noul_criteria_instructions = (
+            qtype in ("noul", "bool") and isinstance(criteria, dict)
+            and any(criteria.get(k) not in (None, "") for k in ("true", "false", True, False))
+        )
+        if (not instructions or not str(instructions).strip()) and not has_noul_criteria_instructions:
+            errors.append(f"[{qid}] missing or empty 'instructions' "
+                           f"(a noul question may instead describe true/false in 'criteria')")
+
+        if qtype == "choice":
+            if not isinstance(criteria, dict) or not criteria:
+                errors.append(f"[{qid}] choice question needs a non-empty 'criteria' object of "
+                               f"{{option: description}}")
+            elif not any(_looks_like_no_match_option(opt) for opt in criteria):
+                warnings.append(f"[{qid}] no no-match option (e.g. 'other'/'unknown'/'needs_review') -- "
+                                 f"if the real world can fall outside this list, the model must still "
+                                 f"pick one of the listed options")
+        elif qtype == "score":
+            if not isinstance(criteria, list) or not criteria:
+                errors.append(f"[{qid}] score question needs a non-empty 'criteria' list of ordered, "
+                               f"observable level descriptions")
+            else:
+                if len(criteria) < 2:
+                    warnings.append(f"[{qid}] score has fewer than 2 levels -- not a real scale")
+                if len(criteria) != len(set(criteria)):
+                    warnings.append(f"[{qid}] score criteria has duplicate level descriptions -- levels "
+                                     f"must be distinct, observable anchors")
+        elif qtype in ("noul", "bool"):
+            pass  # criteria optional -- covered by the instructions check above
+        else:
+            errors.append(f"[{qid}] unknown or missing 'type' (expected choice/score/noul), got {qtype!r}")
+
+    return errors, warnings
+
+
+def cmd_lint(args):
+    questions_raw, dup_ids = _load_questions_detecting_duplicates(args.questions)
+    if not isinstance(questions_raw, dict) or not questions_raw:
+        raise SystemExit(f"error: --questions must be a non-empty JSON object, got {args.questions}")
+
+    errors, warnings = lint_questions(questions_raw, dup_ids)
+    for e in errors:
+        print(f"[ERROR] {e}", file=sys.stderr)
+    for w in warnings:
+        print(f"[WARN] {w}", file=sys.stderr)
+    print(f"lint: {len(errors)} error(s), {len(warnings)} warning(s) in {args.questions}", file=sys.stderr)
+    if errors:
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# replay  (see ../references/contract.md "Decision receipts and replay")
+# ---------------------------------------------------------------------------
+
+def cmd_replay(args):
+    if args.backend not in ALL_BACKENDS:
+        raise SystemExit(f"error: unknown backend '{args.backend}' (choices: {', '.join(ALL_BACKENDS)})")
+
+    with open(args.questions) as f:
+        questions_raw = json.load(f)
+    if not isinstance(questions_raw, dict) or not questions_raw:
+        raise SystemExit("error: --questions must be a non-empty JSON object")
+    wire_questions = strip_meta_keys(questions_raw)
+    if not wire_questions:
+        raise SystemExit("error: --questions has no question definitions (only meta keys)")
+    new_qsv = question_set_version(questions_raw)
+
+    all_old_rows = load_jsonl(args.results)
+    old_meta = next((r for r in all_old_rows if r.get("_meta")), {})
+    old_qsv = old_meta.get("question_set_version")
+    old_by_id = {r["id"]: r for r in all_old_rows if not r.get("_meta") and r.get("ok")}
+    if not old_by_id:
+        raise SystemExit(f"error: no ok:true rows found in {args.results}")
+
+    # States: `ask` does NOT store the raw state on a row by default (only
+    # state_digest -- see contract.md), so replay normally needs --items
+    # (the original items JSONL) to get real states back. A results row that
+    # happens to carry its own "state" field (e.g. a hand-built results file)
+    # is honoured too, so --items is a requirement in practice, not in code.
+    state_by_id = {}
+    if args.items:
+        for it in load_jsonl(args.items):
+            if "id" in it and "state" in it:
+                state_by_id[it["id"]] = it["state"]
+    for rid, row in old_by_id.items():
+        if rid not in state_by_id and "state" in row:
+            state_by_id[rid] = row["state"]
+
+    missing = sorted(rid for rid in old_by_id if rid not in state_by_id)
+    if missing:
+        raise SystemExit(
+            f"error: {len(missing)} item(s) have no recoverable state -- `ask` results rows don't carry "
+            f"raw state by default, pass --items pointing at the original items JSONL. Missing ids "
+            f"(first 5): {missing[:5]}"
+        )
+
+    base_url = base_url_for(args.backend, args.base_url)
+    headers = auth_headers_for(args.backend)
+    if args.backend in LOCAL_BACKENDS and not port_listening(LOCAL_BACKENDS[args.backend]["port"]):
+        raise SystemExit(f"error: {args.backend} is not running -- `jev.py start --backend {args.backend}` first")
+
+    ids = list(old_by_id.keys())
+    running_total = 0.0
+    max_spend = getattr(args, "max_spend", None)
+
+    def score_one(rid):
+        res = call_engine(args.backend, base_url, state_by_id[rid], wire_questions, headers=headers, timeout=args.timeout)
+        return rid, res
+
+    new_by_id = {}
+    chunk_size = max(1, args.parallel)
+    i = 0
+    stopped_for_spend = False
+    while i < len(ids):
+        if max_spend is not None and running_total >= max_spend:
+            stopped_for_spend = True
+            break
+        chunk = ids[i:i + chunk_size]
+        if chunk_size > 1 and len(chunk) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=chunk_size) as ex:
+                chunk_results = list(ex.map(score_one, chunk))
+        else:
+            chunk_results = [score_one(r) for r in chunk]
+        for rid, res in chunk_results:
+            if res["ok"]:
+                new_by_id[rid] = res["response"]
+                cost = res.get("cost_usd")
+                if cost:
+                    running_total += cost
+        i += len(chunk)
+
+    # Diff per question: reuse extract_prediction (the same normalizer `eval`
+    # uses) so choice/score/noul are compared the same way here as everywhere
+    # else in this file -- "changed class" = the predicted label/choice
+    # flipped; |delta p| = |new confidence in its own pick - old confidence
+    # in its own pick|.
+    by_question = {}
+    for rid in ids:
+        old_answers = (old_by_id[rid].get("response") or {}).get("answers", {})
+        new_answers = (new_by_id.get(rid) or {}).get("answers", {})
+        for qid in set(old_answers) | set(new_answers):
+            old_ans, new_ans = old_answers.get(qid), new_answers.get(qid)
+            if old_ans is None or new_ans is None:
+                continue  # question added/removed between versions -- not comparable
+            old_pred, _, old_p = extract_prediction(old_ans)
+            new_pred, _, new_p = extract_prediction(new_ans)
+            if old_pred is None or new_pred is None:
+                continue
+            q = by_question.setdefault(qid, {"n_compared": 0, "n_changed_class": 0,
+                                              "flipped_ids": [], "_deltas": []})
+            q["n_compared"] += 1
+            if old_pred != new_pred:
+                q["n_changed_class"] += 1
+                q["flipped_ids"].append(rid)
+            if old_p is not None and new_p is not None:
+                q["_deltas"].append(abs(new_p - old_p))
+
+    report = {
+        "backend": args.backend,
+        "old_question_set_version": old_qsv,
+        "new_question_set_version": new_qsv,
+        "n_items_compared": len(ids),
+        "n_items_missing_new_answer": len(ids) - len(new_by_id),
+        "stopped_for_spend": stopped_for_spend,
+        "questions": {},
+    }
+    for qid, q in by_question.items():
+        deltas = q.pop("_deltas")
+        q["mean_abs_delta_p"] = (sum(deltas) / len(deltas)) if deltas else None
+        report["questions"][qid] = q
+
+    with open(args.out, "w") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+    print(f"replay: {report['n_items_compared']} item(s) compared, "
+          f"{report['n_items_missing_new_answer']} missing a new answer"
+          + (" (stopped: --max-spend reached)" if stopped_for_spend else ""), file=sys.stderr)
+    for qid, q in report["questions"].items():
+        print(f"[{qid}] compared={q['n_compared']} changed_class={q['n_changed_class']} "
+              f"mean|dp|={q['mean_abs_delta_p']} flipped={len(q['flipped_ids'])}", file=sys.stderr)
+    print(f"replay report -> {args.out}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -787,6 +1135,27 @@ def build_parser():
                          help="JSONL: one {id, question_id, gold} per gold (item, question) pair")
     p_eval.add_argument("--out", required=True, help="output JSON report path")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_lint = sub.add_parser("lint", help="lint a questions.json for contract issues")
+    p_lint.add_argument("--questions", required=True, help="JSON file: {question_id: {type, instructions, ...}}")
+    p_lint.set_defaults(func=cmd_lint)
+
+    p_replay = sub.add_parser("replay", help="re-run a previous ask run's states against a "
+                                              "(possibly changed) questions file/backend and diff the answers")
+    p_replay.add_argument("--results", required=True, help="JSONL from a previous `ask` run")
+    p_replay.add_argument("--questions", required=True, help="the (possibly changed) questions JSON to replay against")
+    p_replay.add_argument("--backend", required=True, choices=ALL_BACKENDS)
+    p_replay.add_argument("--base-url", default=None, help="override the backend's default base URL")
+    p_replay.add_argument("--items", default=None,
+                           help="JSONL of {id, state} for the original run -- required unless the results "
+                                "rows themselves carry a 'state' field (ask does not store one by default)")
+    p_replay.add_argument("--out", required=True, help="output JSON diff report path")
+    p_replay.add_argument("--parallel", type=int, default=1, help="concurrent item requests (default 1 = sequential)")
+    p_replay.add_argument("--timeout", type=float, default=90.0)
+    p_replay.add_argument("--max-spend", type=float, default=None,
+                           help="same semantics as `ask --max-spend` -- stop issuing new requests once "
+                                "cumulative usage.cost reaches this many USD")
+    p_replay.set_defaults(func=cmd_replay)
 
     return ap
 

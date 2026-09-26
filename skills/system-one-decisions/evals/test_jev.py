@@ -602,3 +602,370 @@ def test_openrouter_missing_both_keys_names_both(monkeypatch):
     with pytest.raises(SystemExit) as e:
         jev.auth_headers_for("openrouter")
     assert "JEV_OPENROUTER_API_KEY" in str(e.value) and "OPENROUTER_API_KEY" in str(e.value)
+
+
+# ---------------------------------------------------------------------------
+# Decision contract: state_digest / question_set_version / receipt fields
+# (board #1505, ../references/contract.md)
+# ---------------------------------------------------------------------------
+
+def test_state_digest_is_deterministic_and_order_independent():
+    a = jev.state_digest({"x": 1, "y": 2})
+    b = jev.state_digest({"y": 2, "x": 1})  # different key order, same object
+    assert a == b
+    assert len(a) == 64  # sha256 hex
+
+
+def test_state_digest_differs_for_different_state():
+    assert jev.state_digest({"x": 1}) != jev.state_digest({"x": 2})
+
+
+def test_strip_meta_keys_removes_underscore_prefixed_only():
+    raw = {"_version": "v1", "route": {"type": "noul"}, "_other_meta": 1}
+    assert jev.strip_meta_keys(raw) == {"route": {"type": "noul"}}
+
+
+def test_question_set_version_uses_explicit_version_key():
+    raw = {"_version": "v7", "route": {"type": "noul", "instructions": "?"}}
+    assert jev.question_set_version(raw) == "v7"
+
+
+def test_question_set_version_falls_back_to_content_hash_when_unversioned():
+    raw = {"route": {"type": "noul", "instructions": "?"}}
+    v = jev.question_set_version(raw)
+    assert len(v) == 64  # sha256 hex, not a placeholder
+    # deterministic and independent of an added meta key (meta stripped before hashing)
+    raw_with_meta = {"_ignored": "anything", "route": {"type": "noul", "instructions": "?"}}
+    assert jev.question_set_version(raw_with_meta) == v
+    # changing an actual question changes the version
+    changed = {"route": {"type": "noul", "instructions": "different?"}}
+    assert jev.question_set_version(changed) != v
+
+
+def test_ask_row_carries_decision_receipt_fields(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text(json.dumps({"id": "a", "state": {"message": "hi"}}) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    def fake_post(url, json, headers=None, timeout=None):
+        resp = dict(_noul_response(0.7))
+        resp["model"] = "fake-engine-served"
+        return _FakeResponse(resp)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
+    })()
+    jev.cmd_ask(args)
+
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    row = next(r for r in rows if not r.get("_meta"))
+    meta = next(r for r in rows if r.get("_meta"))
+
+    expected_qsv = jev.question_set_version({"bucket": {"type": "noul", "instructions": "?"}})
+    assert row["state_digest"] == jev.state_digest({"message": "hi"})
+    assert row["question_set_version"] == expected_qsv
+    assert row["model"] == "fake-engine-served"
+    assert row["latency_ms"] == pytest.approx(row["latency_s"] * 1000.0)
+    assert "timestamp" in row and row["timestamp"]
+    # existing fields untouched
+    assert row["response"]["answers"]["bucket"]["noul"] == 0.7
+    assert meta["question_set_version"] == expected_qsv
+
+
+def test_ask_strips_meta_keys_before_sending_over_the_wire(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text(json.dumps({"id": "a", "state": "s"}) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"_version": "v1", "bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+
+    sent_payloads = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        sent_payloads.append(json)
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": False, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
+    })()
+    jev.cmd_ask(args)
+
+    assert "_version" not in sent_payloads[0]["questions"]
+    assert "bucket" in sent_payloads[0]["questions"]
+
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    row = next(r for r in rows if not r.get("_meta"))
+    assert row["question_set_version"] == "v1"
+
+
+# ---------------------------------------------------------------------------
+# Version-aware --resume (a changed question_set_version must never reuse an
+# old answer; a legacy row with no recorded version is still resumable)
+# ---------------------------------------------------------------------------
+
+def test_resume_reruns_item_when_recorded_version_differs(monkeypatch, tmp_path):
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"_version": "v2", "bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+    # "a" was answered under the OLD contract (v1) -- must be re-run under v2.
+    out_path.write_text(json.dumps({
+        "id": "a", "ok": True, "backend": "local-decider", "question_set_version": "v1",
+        "response": _noul_response(0.7),
+    }) + "\n")
+
+    calls = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        calls.append(json["state"])
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": True, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
+    })()
+    jev.cmd_ask(args)
+
+    # both "a" (stale version) and "b" (never run) get called
+    assert calls == ["item a", "item b"]
+    rows = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
+    new_a_rows = [r for r in rows if r.get("id") == "a" and r.get("question_set_version") == "v2"]
+    assert len(new_a_rows) == 1
+
+
+def test_resume_keeps_legacy_row_with_no_recorded_version(monkeypatch, tmp_path):
+    """A row written before this upgrade has no question_set_version field at
+    all. There is no way to know whether it matches the current contract, so
+    -- unlike an explicit mismatch -- it is still treated as done (backward
+    compatible with every --resume file written before board #1505's receipt
+    upgrade)."""
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": i, "state": f"item {i}"}) for i in ["a", "b"]) + "\n")
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"bucket": {"type": "noul", "instructions": "?"}}))
+    out_path = tmp_path / "out.jsonl"
+    out_path.write_text(json.dumps({"id": "a", "ok": True, "backend": "local-decider",
+                                     "response": _noul_response(0.7)}) + "\n")
+
+    calls = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        calls.append(json["state"])
+        return _FakeResponse(_noul_response(0.5))
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "questions": str(questions_path), "items": str(items_path),
+        "out": str(out_path), "resume": True, "parallel": 1, "timeout": 5.0, "base_url": None, "max_spend": None,
+    })()
+    jev.cmd_ask(args)
+
+    assert calls == ["item b"]  # "a" was skipped, same as pre-upgrade behavior
+
+
+# ---------------------------------------------------------------------------
+# lint
+# ---------------------------------------------------------------------------
+
+def test_lint_clean_questions_has_no_findings():
+    questions = {
+        "route": {"type": "choice", "instructions": "Which team?",
+                   "criteria": {"billing": "Payments", "technical": "Bugs", "other": "None of the above"}},
+    }
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert errors == [] and warnings == []
+
+
+def test_lint_warns_choice_without_no_match_option():
+    questions = {"route": {"type": "choice", "instructions": "Which?",
+                            "criteria": {"billing": "x", "technical": "y"}}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert errors == []
+    assert any("no-match" in w for w in warnings)
+
+
+def test_lint_errors_on_missing_instructions():
+    questions = {"bucket": {"type": "noul"}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert any("instructions" in e for e in errors)
+
+
+def test_lint_allows_noul_with_criteria_instead_of_instructions():
+    questions = {"bucket": {"type": "noul", "criteria": {"true": "is urgent", "false": "not urgent"}}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert errors == []
+
+
+def test_lint_errors_on_empty_choice_criteria():
+    questions = {"route": {"type": "choice", "instructions": "Which?", "criteria": {}}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert any("criteria" in e for e in errors)
+
+
+def test_lint_warns_score_with_fewer_than_two_levels():
+    questions = {"sev": {"type": "score", "instructions": "How bad?", "criteria": ["Critical"]}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert errors == []
+    assert any("fewer than 2 levels" in w for w in warnings)
+
+
+def test_lint_warns_score_with_duplicate_levels():
+    questions = {"sev": {"type": "score", "instructions": "How bad?", "criteria": ["Low", "Low", "High"]}}
+    errors, warnings = jev.lint_questions(questions, dup_ids=[])
+    assert any("duplicate level" in w for w in warnings)
+
+
+def test_lint_flags_duplicate_question_ids_as_error():
+    errors, warnings = jev.lint_questions(
+        {"route": {"type": "noul", "instructions": "?"}}, dup_ids=["route"])
+    assert any("duplicate question id 'route'" in e for e in errors)
+
+
+def test_lint_detects_duplicate_ids_from_raw_json_text(tmp_path):
+    # a plain dict literally can't hold two "route" keys -- the duplicate only
+    # exists in the raw text, so this exercises the object_pairs_hook path.
+    raw = '{"route": {"type": "noul", "instructions": "first"}, "route": {"type": "noul", "instructions": "second"}}'
+    qpath = tmp_path / "dup.json"
+    qpath.write_text(raw)
+    questions, dup_ids = jev._load_questions_detecting_duplicates(str(qpath))
+    assert dup_ids == ["route"]
+    assert questions["route"]["instructions"] == "second"  # plain JSON semantics: last wins
+
+
+def test_cmd_lint_exits_nonzero_on_error_only(tmp_path, capsys):
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"bucket": {"type": "noul"}}))
+    args = type("Args", (), {"questions": str(bad)})()
+    with pytest.raises(SystemExit) as exc:
+        jev.cmd_lint(args)
+    assert exc.value.code == 1
+
+
+def test_cmd_lint_exits_zero_with_only_warnings(tmp_path):
+    ok_with_warning = tmp_path / "warn.json"
+    ok_with_warning.write_text(json.dumps({
+        "route": {"type": "choice", "instructions": "Which?", "criteria": {"billing": "x", "technical": "y"}},
+    }))
+    args = type("Args", (), {"questions": str(ok_with_warning)})()
+    jev.cmd_lint(args)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# replay
+# ---------------------------------------------------------------------------
+
+def _write_ask_style_results(path, rows, meta=None):
+    with open(path, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+        if meta is not None:
+            f.write(json.dumps(meta) + "\n")
+
+
+def test_replay_reports_flipped_ids_and_mean_delta(monkeypatch, tmp_path):
+    old_qsv = jev.question_set_version({"route": {"type": "choice", "instructions": "old", "criteria": {"billing": "x", "technical": "y"}}})
+    old_rows = [
+        {"id": "a", "ok": True, "response": {"model": "old", "answers": {
+            "route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.9, "technical": 0.1}}}}},
+        {"id": "b", "ok": True, "response": {"model": "old", "answers": {
+            "route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.8, "technical": 0.2}}}}},
+    ]
+    results_path = tmp_path / "results.jsonl"
+    _write_ask_style_results(results_path, old_rows, meta={"_meta": True, "question_set_version": old_qsv})
+
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text("\n".join(json.dumps({"id": r["id"], "state": f"state-{r['id']}"}) for r in old_rows) + "\n")
+
+    questions_path = tmp_path / "q_new.json"
+    questions_path.write_text(json.dumps({"_version": "v2",
+        "route": {"type": "choice", "instructions": "new", "criteria": {"billing": "x", "technical": "y"}}}))
+
+    def fake_post(url, json, headers=None, timeout=None):
+        state = json["state"]
+        flip = state == "state-a"
+        return _FakeResponse({"model": "new", "answers": {
+            "route": {"type": "choice", "choice": "technical" if flip else "billing",
+                       "probabilities": {"billing": 0.3 if flip else 0.85, "technical": 0.7 if flip else 0.15}}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    out_path = tmp_path / "diff.json"
+    args = type("Args", (), {
+        "backend": "local-decider", "results": str(results_path), "questions": str(questions_path),
+        "items": str(items_path), "out": str(out_path), "base_url": None, "parallel": 1,
+        "timeout": 5.0, "max_spend": None,
+    })()
+    jev.cmd_replay(args)
+
+    report = json.loads(out_path.read_text())
+    assert report["old_question_set_version"] == old_qsv
+    assert report["new_question_set_version"] == "v2"
+    q = report["questions"]["route"]
+    assert q["n_compared"] == 2
+    assert q["n_changed_class"] == 1
+    assert q["flipped_ids"] == ["a"]
+    # delta is |Δp of each item's OWN predicted label|, not the raw probability of one
+    # fixed option: a flips billing(0.9)->technical(0.7), |0.7-0.9|=0.2; b stays on
+    # billing, 0.8->0.85, |0.85-0.8|=0.05 -> mean (0.2+0.05)/2 = 0.125
+    assert q["mean_abs_delta_p"] == pytest.approx(0.125)
+
+
+def test_replay_requires_items_when_state_not_recoverable(monkeypatch, tmp_path):
+    old_rows = [{"id": "a", "ok": True, "response": {"answers": {
+        "route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.9}}}}}]
+    results_path = tmp_path / "results.jsonl"
+    _write_ask_style_results(results_path, old_rows)
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"route": {"type": "choice", "instructions": "?", "criteria": {"billing": "x"}}}))
+
+    args = type("Args", (), {
+        "backend": "local-decider", "results": str(results_path), "questions": str(questions_path),
+        "items": None, "out": str(tmp_path / "out.json"), "base_url": None, "parallel": 1,
+        "timeout": 5.0, "max_spend": None,
+    })()
+    with pytest.raises(SystemExit) as exc:
+        jev.cmd_replay(args)
+    assert "--items" in str(exc.value)
+
+
+def test_replay_uses_state_embedded_in_results_row_when_no_items_given(monkeypatch, tmp_path):
+    old_rows = [{"id": "a", "ok": True, "state": "embedded state", "response": {"answers": {
+        "route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.9}}}}}]
+    results_path = tmp_path / "results.jsonl"
+    _write_ask_style_results(results_path, old_rows)
+    questions_path = tmp_path / "q.json"
+    questions_path.write_text(json.dumps({"route": {"type": "choice", "instructions": "?", "criteria": {"billing": "x"}}}))
+
+    seen_states = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        seen_states.append(json["state"])
+        return _FakeResponse({"answers": {"route": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.9}}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "backend": "local-decider", "results": str(results_path), "questions": str(questions_path),
+        "items": None, "out": str(tmp_path / "out.json"), "base_url": None, "parallel": 1,
+        "timeout": 5.0, "max_spend": None,
+    })()
+    jev.cmd_replay(args)
+    assert seen_states == ["embedded state"]
