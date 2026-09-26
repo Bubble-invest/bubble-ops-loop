@@ -265,21 +265,36 @@ say "  plist         = $PLIST_PATH"
 [[ -n "$HARNESS_SELECTOR_DIR" ]] && export LOOP_HARNESS_SELECTOR_DIR="$HARNESS_SELECTOR_DIR"
 [[ -n "$HERMES_BIN" ]]           && export LOOP_HERMES_BIN="$HERMES_BIN"
 [[ -n "$EXTRA_EXPORTS" ]]        && export LOOP_EXTRA_EXPORTS="$EXTRA_EXPORTS"
-render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_PATH" \
-    || die "failed to render wrapper to $WRAPPER_PATH"
+# Board #1529: render + syntax-gate into a TEMP file in the SAME directory as
+# WRAPPER_PATH, and only `mv` it into place once it passes `bash -n`. A bare
+# `render_loop_wrapper ... > "$WRAPPER_PATH"` truncates/creates WRAPPER_PATH
+# via the `>` redirect BEFORE render_loop_wrapper's exit code is even checked
+# — so any render failure (a lib source error, a bad knob, anything) left an
+# EMPTY file at the live wrapper path, clobbering whatever good wrapper was
+# already installed there. mktemp in the same dir keeps the final `mv` an
+# atomic rename (same filesystem), so the live path only ever shows a
+# complete, `bash -n`-clean wrapper — never a partial or empty one.
+WRAPPER_TMP="$(mktemp "${WRAPPER_DIR%/}/.ops-loop-${SLUG}-wrapper.XXXXXX")" \
+    || die "failed to create a temp file for the wrapper render in $WRAPPER_DIR"
+if ! render_loop_wrapper "$DEPT_DIR" "$SLUG" "$CLAUDE_BIN" "$TMUX_BIN" "$TELEGRAM_STATE_DIR" "$EXTRA_PATH" "$WORKSPACE_DIR" "$CHANNEL_PATCHES_SCRIPT" > "$WRAPPER_TMP"; then
+    rm -f "$WRAPPER_TMP"
+    die "failed to render wrapper (aborted before touching $WRAPPER_PATH; any previously installed wrapper there is left untouched)"
+fi
 # Syntax-gate the rendered wrapper BEFORE it can be activated — the twin of the
 # plist's plutil -lint below. Catches a malformed knob (esp. a fat-fingered
 # --extra-export with an unbalanced quote, which is emitted verbatim) at install
 # time instead of silently installing a wrapper that only fails at launchd/tmux
-# exec time. On failure, remove the broken wrapper so a prior good one isn't
-# shadowed by an unrunnable file.
-if ! bash -n "$WRAPPER_PATH" 2>/tmp/.wrapper-lint.$$; then
+# exec time. On failure, remove the temp file and leave WRAPPER_PATH exactly as
+# it was (a prior good wrapper is never shadowed by an unrunnable file, and no
+# empty file is ever left at the live path).
+if ! bash -n "$WRAPPER_TMP" 2>/tmp/.wrapper-lint.$$; then
     say "rendered wrapper failed bash -n: $(cat /tmp/.wrapper-lint.$$ 2>/dev/null)"
-    rm -f "$WRAPPER_PATH" /tmp/.wrapper-lint.$$
-    die "rendered wrapper is not valid bash (check --extra-export / other knob quoting): $WRAPPER_PATH"
+    rm -f "$WRAPPER_TMP" /tmp/.wrapper-lint.$$
+    die "rendered wrapper is not valid bash (check --extra-export / other knob quoting); $WRAPPER_PATH left untouched"
 fi
 rm -f /tmp/.wrapper-lint.$$
-chmod +x "$WRAPPER_PATH"
+chmod +x "$WRAPPER_TMP"
+mv -f "$WRAPPER_TMP" "$WRAPPER_PATH"
 say "wrote $WRAPPER_PATH (chmod +x, bash -n OK)"
 
 # 2) Render the launchd plist (KeepAlive) that supervises the wrapper.
