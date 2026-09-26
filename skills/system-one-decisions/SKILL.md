@@ -14,9 +14,11 @@ description: >-
   on a decision that's really "pick one of N options" or "true or false, how
   sure are you." Also load this when someone says "use Jev" or "System One."
   Covers picking a pattern, choosing local engines (decider/semif/laya on the
-  Macs) vs. the official typesafe/jev-1.13 API, and the mandatory shadow ->
+  Macs) vs. the official typesafe/jev-1.13 API, the mandatory shadow ->
   gold-set -> calibrate -> gate rollout discipline before any Jev verdict
-  touches real work.
+  touches real work, and the decision contract itself: state/question design,
+  decision receipts, and replaying a changed questions.json (`jev.py lint` /
+  `jev.py replay`) before it ships.
 ---
 
 # system-one-decisions — when & how to chain cheap classification steps
@@ -220,10 +222,57 @@ classifier can still be worse than doing nothing.
    current (more expensive) method — never a hard cutover. Re-check calibration
    periodically; a threshold tuned once on 50 examples can drift as real traffic
    differs from the gold set.
+6. **Stage automation deliberately, keep a kill switch, and measure the counterfactual.**
+   The full stage order is offline replay (steps 2-3 above, no live call yet) → shadow
+   (step 1) → assist (surface the route to a human, don't act) → limited automation (act
+   on a narrow low-risk slice) → expand. Wire a kill switch that disables the automated
+   *action* while leaving logging on — never disable both together. At every stage, log
+   the route the current (non-Jev) method would have taken too (the counterfactual), and
+   the total cost (calls, retries, review time), not just the Jev call's own price.
+   **Removal rule:** if verified outcomes don't improve over the counterfactual, remove
+   the Jev layer from that branch — a decision step that only adds cost and calls is not
+   a win. Full recipe in `references/contract.md`.
 
 Always log decisions (state, questions, response, and what the caller did with it)
 for later evaluation — an ungated Jev call you can't audit later is a Jev call you
-can't improve or debug.
+can't improve or debug. `scripts/jev.py ask` does this automatically now (every row is a
+decision receipt — see "Decision contract" below).
+
+## Decision contract: boundary, state, questions, receipts
+
+Where a decision belongs, by output shape (an independent field guide's framing, cited
+below — not a fleet-verified claim, unlike this skill's own benchmark citations):
+
+| Output shape | Owner |
+|---|---|
+| Exact rule, numeric threshold | Code |
+| Bounded judgment over messy text | Jev |
+| Open-ended generation | LLM |
+| Authorizing a side effect | Policy + human |
+| Record / replay a decision | The harness (`jev.py`'s receipts — see below) |
+
+**Counter-example — numbers aren't Jev's job, and more context makes it worse.** Laya
+trading research (board #1534, `prototypes/jev-local/autoresearch/CALIBRATION*.md`,
+6 assets × 6 numeric price questions, TRAIN split only). Phase 1 (2026-09-25): laya beat
+its code-only twin on **0 of 6** questions. Phase 1b (2026-09-26, 1,800 cases per
+question per arm): richer context (MACD/%B/ATR/volume, related assets VIX/TNX/DXY/QQQ/ETH/TLT,
+and the same data as a structured JSON state) never beat a plain logistic regression on the
+same features by >0.03 AUC in any of 30 cells. On the one question with real signal
+("big move in 10 days"), laya *degraded* with every richer arm (AUC 0.73 → 0.33-0.61) while the
+logistic regression held 0.80-0.89. The signal is in the numbers; a small System-One
+model doesn't extract it, and extra context distracts it. For numeric decisions, use code
+or a classic statistical model; keep Jev for bounded judgments over messy text.
+
+The full state/question design recipe (structured state, provenance, the
+prompt-injection note, fail-closed, per-backend text-vs-JSON handling), the host-owned
+menu + abstain + re-validate rules, and the `ask`/`lint`/`replay` decision-receipt
+contract are in `references/contract.md` — read it before building a new Jev-backed
+decision, not only the pattern picker above.
+
+External guidance cited there, not fleet-verified measurements: "2026 Field Guide to Jev
+and Language Models" (independent guide based on public TypeSafe docs, Sept 2026) and
+Avid's keel builder's guide, "How to Build Agentic Harness using Jev (Builder's Guide)" (x.com/av1dlive, 2026-09-23)
+(github.com/codejunkie99/keel).
 
 ## Using `scripts/jev.py`
 
@@ -244,6 +293,17 @@ scripts/jev.py ask --backend openrouter --questions questions.json \
 
 # eval: score results against a gold set
 scripts/jev.py eval --results results.jsonl --gold gold.jsonl --out report.json
+
+# lint: catch a broken questions.json before it burns a call (duplicate ids, missing
+# instructions/criteria, no no-match option, unanchored Score levels) -- exits non-zero
+# on errors only, so a CI gate can run it without failing on warnings
+scripts/jev.py lint --questions questions.json
+
+# replay: did a changed questions.json/backend actually change the answers? re-runs the
+# ORIGINAL states (from --items, since `ask` doesn't store raw state by default -- see
+# references/contract.md) and reports per-question flips + mean |delta p|
+scripts/jev.py replay --results results.jsonl --questions questions_v2.json \
+  --backend local-decider --items items.jsonl --out diff.json
 ```
 
 `ask` batches every question in `questions.json` into one request per item (the same
@@ -274,6 +334,10 @@ relevant variable is unset.
   5 quick wins, each with real file paths.
 - `references/eval.md` — the gold-set and calibration recipe in full, with the
   `jev.py eval` metrics explained.
+- `references/contract.md` — state design, question design, host-owned menu +
+  abstain + re-validate, the decision-receipt/`lint`/`replay` contract, and the
+  staged-rollout/kill-switch/counterfactual/removal detail (see "Decision contract"
+  above).
 
 ## Full research trail
 
