@@ -969,3 +969,309 @@ def test_replay_uses_state_embedded_in_results_row_when_no_items_given(monkeypat
     })()
     jev.cmd_replay(args)
     assert seen_states == ["embedded state"]
+
+
+# ---------------------------------------------------------------------------
+# Agent verbs (board #1540): filter / classify / rank / find
+# Design ported from quicksilver (MIT) -- see SKILL.md's "Agent verbs" section.
+# ---------------------------------------------------------------------------
+
+def _common_verb_kwargs(**overrides):
+    base = {
+        "base_url": None, "ext": None, "max_chars": 60000, "limit": 5000,
+        "parallel": 1, "max_spend": None, "timeout": 5.0, "log": None,
+    }
+    base.update(overrides)
+    return base
+
+
+# -- collect_items: safety (secret-like files, binaries, oversized, .gitignore) --
+
+def test_collect_items_skips_secret_like_files(tmp_path):
+    (tmp_path / ".env").write_text("SECRET=1")
+    (tmp_path / ".env.production").write_text("SECRET=1")
+    (tmp_path / "id_ed25519").write_text("PRIVATE KEY")
+    (tmp_path / "server.pem").write_text("CERT")
+    (tmp_path / "token.key").write_text("KEY")
+    (tmp_path / "credentials.json").write_text("{}")
+    (tmp_path / "my_secret.txt").write_text("shh")
+    (tmp_path / "normal.txt").write_text("hello world, nothing sensitive here")
+
+    items, skipped, _ = jev.collect_items([str(tmp_path)])
+
+    ids = {Path(it["id"]).name for it in items}
+    assert ids == {"normal.txt"}
+    assert len(skipped) == 7
+    assert all("secret-like" in s for s in skipped)
+
+
+def test_collect_items_skips_binary_and_oversized(monkeypatch, tmp_path):
+    (tmp_path / "binary.dat").write_bytes(b"\x00\x01\x02binary-looking-data")
+    (tmp_path / "small.txt").write_text("fits fine")
+    (tmp_path / "big.txt").write_text("x" * 500)
+    monkeypatch.setattr(jev, "AGENT_VERB_MAX_FILE_BYTES", 100)
+
+    items, skipped, _ = jev.collect_items([str(tmp_path)])
+
+    ids = {Path(it["id"]).name for it in items}
+    assert ids == {"small.txt"}
+    assert any("binary" in s for s in skipped)
+    assert any("MB" in s for s in skipped)
+
+
+def test_collect_items_respects_gitignore_for_explicit_file_args(tmp_path):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text("ignored.txt\n")
+    (repo / "ignored.txt").write_text("should never be sent")
+    (repo / "kept.txt").write_text("normal content")
+
+    items, skipped, _ = jev.collect_items([str(repo / "ignored.txt"), str(repo / "kept.txt")])
+
+    names = {Path(it["id"]).name for it in items}
+    assert names == {"kept.txt"}
+
+
+def test_collect_items_directory_walk_respects_gitignore(tmp_path):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text("ignored.txt\n")
+    (repo / "ignored.txt").write_text("should never be sent")
+    (repo / "kept.txt").write_text("normal content")
+
+    items, skipped, _ = jev.collect_items([str(repo)])
+
+    names = {Path(it["id"]).name for it in items}
+    assert "kept.txt" in names
+    assert "ignored.txt" not in names
+
+
+# -- --lines run collapsing --
+
+def test_render_collapsed_line_rows_collapses_contiguous_runs():
+    def row(item_id, text, p):
+        return ({"item": {"id": item_id, "text": text}}, p)
+
+    matched = [
+        row("app.log:104", "ERROR worker 42 died", 0.95),
+        row("app.log:105", "ERROR worker 17 died", 0.90),
+        row("app.log:106", "ERROR worker 3 died", 0.93),
+        row("app.log:200", "FATAL disk full", 0.99),
+    ]
+    out = jev.render_collapsed_line_rows(matched, lo=0.97, hi=0.99)
+
+    assert out[0].startswith("?0.99") and "app.log:200" in out[0]
+    assert "app.log:L104-106 (3×)" in out[1]
+    assert not out[1].lstrip().startswith("?") and not out[1].startswith("?")
+
+
+# -- filter: borderline `?`, matched/borderline counts, receipt fields --
+
+def test_cmd_filter_marks_borderline_and_reports_receipt(monkeypatch, tmp_path, capsys):
+    (tmp_path / "a.txt").write_text("clearly matches the question")
+    (tmp_path / "b.txt").write_text("maybe matches the question")
+    (tmp_path / "c.txt").write_text("does not match at all")
+
+    p_by_id = {"a.txt": 0.9, "b.txt": 0.5, "c.txt": 0.2}
+
+    def fake_post(url, json, headers=None, timeout=None):
+        src = json["state"]["source"]
+        p = next(v for k, v in p_by_id.items() if src.endswith(k))
+        return _FakeResponse({"model": "fake", "answers": {"q": {"type": "noul", "noul": p}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "question": "Does this match?", "paths": [str(tmp_path)], "lines": False,
+        "threshold": 0.5, "band": None, "backend": "local-decider",
+        **_common_verb_kwargs(),
+    })()
+    jev.cmd_filter(args)
+
+    out, err = capsys.readouterr()
+    lines = [l for l in out.splitlines() if l.strip()]
+    a_line = next(l for l in lines if "a.txt" in l)
+    b_line = next(l for l in lines if "b.txt" in l)
+    assert not a_line.strip().startswith("?")   # 0.9 >= hi (0.65): a sure match
+    assert b_line.strip().startswith("?")        # 0.5 is inside the default [0.35, 0.65] band
+    assert not any("c.txt" in l for l in lines)   # 0.2 < threshold: not printed at all
+
+    assert "2 matched" in err
+    assert "1 borderline" in err
+    assert "local-decider" in err
+    assert "jev $" in err
+    assert "Claude tokens not read" in err
+
+
+def test_cmd_filter_explicit_band_overrides_default():
+    lo, hi = jev.parse_band("0.4,0.6", threshold=0.5)
+    assert (lo, hi) == (0.4, 0.6)
+    lo, hi = jev.parse_band("0.2", threshold=0.5)
+    assert (lo, hi) == pytest.approx((0.3, 0.7))
+    lo, hi = jev.parse_band(None, threshold=0.5)
+    assert (lo, hi) == pytest.approx((0.35, 0.65))
+
+
+# -- classify: automatic "other" label, --no-other, low-confidence "?" group --
+
+def test_cmd_classify_injects_other_label_unless_no_other(monkeypatch, tmp_path):
+    (tmp_path / "a.txt").write_text("a bug report")
+    (tmp_path / "b.txt").write_text("a feature idea")
+    seen_criteria = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        seen_criteria.append(json["questions"]["q"]["criteria"])
+        return _FakeResponse({"model": "fake", "answers": {"q": {
+            "type": "choice", "choice": "bug", "confidence": 0.9,
+            "probabilities": {"bug": 0.9, "feature": 0.1}}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    base = {
+        "paths": [str(tmp_path)], "labels": "bug,feature", "items": None, "question": None,
+        "min_confidence": 0.6, "backend": "local-decider", **_common_verb_kwargs(),
+    }
+    jev.cmd_classify(type("Args", (), {**base, "no_other": False})())
+    assert "other" in seen_criteria[-1]
+
+    seen_criteria.clear()
+    jev.cmd_classify(type("Args", (), {**base, "no_other": True})())
+    assert "other" not in seen_criteria[-1]
+
+
+def test_cmd_classify_low_confidence_goes_to_question_group(monkeypatch, tmp_path, capsys):
+    (tmp_path / "a.txt").write_text("an ambiguous item")
+
+    def fake_post(url, json, headers=None, timeout=None):
+        return _FakeResponse({"model": "fake", "answers": {"q": {
+            "type": "choice", "choice": "bug", "confidence": 0.4,
+            "probabilities": {"bug": 0.4, "feature": 0.35, "other": 0.25}}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "paths": [str(tmp_path)], "labels": "bug,feature", "items": None, "question": None,
+        "no_other": False, "min_confidence": 0.6, "backend": "local-decider", **_common_verb_kwargs(),
+    })()
+    jev.cmd_classify(args)
+
+    out, err = capsys.readouterr()
+    assert "? low confidence" in out
+    assert "bug (or feature)" in out
+
+
+def test_cmd_classify_requires_items_or_paths():
+    args = type("Args", (), {
+        "paths": [], "labels": "a,b", "items": None, "question": None,
+        "no_other": False, "min_confidence": 0.6, "backend": "local-decider", **_common_verb_kwargs(),
+    })()
+    with pytest.raises(SystemExit):
+        jev.cmd_classify(args)
+
+
+# -- rank: top-K, and the shared --max-spend guard also covers a verb (not just `ask`) --
+
+def test_cmd_rank_max_spend_guard_stops_early(monkeypatch, tmp_path):
+    for name in ["a", "b", "c", "d"]:
+        (tmp_path / f"{name}.txt").write_text(f"content about {name}")
+    calls = []
+
+    def fake_post(url, json, headers=None, timeout=None):
+        calls.append(json["state"]["source"])
+        resp = dict(OPENROUTER_SAMPLE_RESPONSE)
+        resp["answers"] = {"q": {"type": "score", "score": 2, "confidence": 0.5,
+                                  "probabilities": {"0": 0.2, "1": 0.2, "2": 0.2, "3": 0.2, "4": 0.2}}}
+        resp["usage"] = {"input_tokens": 10, "output_tokens": 5, "cost": 0.01}
+        return _FakeResponse(resp)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    args = type("Args", (), {
+        "query": "find x", "paths": [str(tmp_path)], "top": 10, "backend": "openrouter",
+        **_common_verb_kwargs(max_spend=0.025),
+    })()
+    jev.cmd_rank(args)
+
+    assert len(calls) == 3  # 3 calls @ $0.01 = $0.03 >= cap -> the 4th file never scored
+
+
+def test_cmd_rank_orders_by_score_and_respects_top(monkeypatch, tmp_path, capsys):
+    scores = {"a.txt": 4, "b.txt": 1, "c.txt": 3}
+    for name in scores:
+        (tmp_path / name).write_text(f"content {name}")
+
+    def fake_post(url, json, headers=None, timeout=None):
+        src = json["state"]["source"]
+        score = next(v for k, v in scores.items() if src.endswith(k))
+        return _FakeResponse({"model": "fake", "answers": {"q": {
+            "type": "score", "score": score, "confidence": 0.8,
+            "probabilities": {str(i): 0.2 for i in range(5)}}}})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "query": "find x", "paths": [str(tmp_path)], "top": 2, "backend": "local-decider",
+        **_common_verb_kwargs(),
+    })()
+    jev.cmd_rank(args)
+
+    out, err = capsys.readouterr()
+    lines = [l for l in out.splitlines() if l.strip() and "matched" not in l]
+    assert len(lines) == 2
+    assert "a.txt" in lines[0]  # score 4/4 = 1.00, ranked first
+    assert "c.txt" in lines[1]  # score 3/4 = 0.75, ranked second
+    assert "2 matched" in err
+
+
+# -- find: chunked search over one big file --
+
+def test_cmd_find_ranks_line_hits(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "big.log"
+    f.write_text("\n".join(f"line {i}: nothing interesting" for i in range(1, 50)) + "\nline 50: the target needle\n")
+
+    def fake_post(url, json, headers=None, timeout=None):
+        lines_in_chunk = json["state"]["lines"]
+        if "50" in lines_in_chunk:
+            return _FakeResponse({"model": "fake", "answers": {
+                "where": {"type": "choice", "choice": "50",
+                          "probabilities": {**{k: 0.0 for k in lines_in_chunk}, "none": 0.0, "50": 0.95}},
+                "exists": {"type": "noul", "noul": 0.9},
+            }})
+        return _FakeResponse({"model": "fake", "answers": {
+            "where": {"type": "choice", "choice": "none",
+                      "probabilities": {**{k: 0.0 for k in lines_in_chunk}, "none": 1.0}},
+            "exists": {"type": "noul", "noul": 0.01},
+        }})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(jev, "port_listening", lambda *a, **k: True)
+
+    args = type("Args", (), {
+        "description": "the target needle", "path": str(f), "top": 5, "chunk": 150, "overlap": 30,
+        "min_score": 0.05, "backend": "local-decider", **_common_verb_kwargs(),
+    })()
+    jev.cmd_find(args)
+
+    out, err = capsys.readouterr()
+    lines = [l for l in out.splitlines() if l.strip()]
+    assert any("big.log:50" in l for l in lines)
+    assert "matched" in err and "local-decider" in err and "Claude tokens not read" in err
+
+
+def test_cmd_find_requires_a_single_readable_file(tmp_path):
+    missing = tmp_path / "does-not-exist.log"
+    args = type("Args", (), {
+        "description": "x", "path": str(missing), "top": 5, "chunk": 150, "overlap": 30,
+        "min_score": 0.05, "backend": "local-decider", **_common_verb_kwargs(),
+    })()
+    with pytest.raises(SystemExit):
+        jev.cmd_find(args)
