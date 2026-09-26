@@ -76,7 +76,18 @@ want()   { if grep -qF -- "$2" "$3" 2>/dev/null; then echo "  PASS: $1"; PASS=$(
 nowant() { if grep -qF -- "$2" "$3" 2>/dev/null; then echo "  FAIL: $1 (unexpected '$2')"; FAIL=$((FAIL+1)); else echo "  PASS: $1"; PASS=$((PASS+1)); fi; }
 ok()     { if [[ "$2" -eq 0 ]]; then echo "  PASS: $1"; PASS=$((PASS+1)); else echo "  FAIL: $1 (rc=$2)"; FAIL=$((FAIL+1)); fi; }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"
+# T8 below briefly moves the REAL repo template out of the way to simulate
+# "missing" against the real installer (not a copy) — _MOVED_TMPL/_REAL_TMPL
+# track that so this cleanup ALWAYS restores it, even on an early exit.
+_MOVED_TMPL=""; _REAL_TMPL=""
+_cleanup() {
+    rm -rf "$TMP"
+    if [[ -n "$_MOVED_TMPL" && -f "$_MOVED_TMPL" && -n "$_REAL_TMPL" ]]; then
+        mv -f "$_MOVED_TMPL" "$_REAL_TMPL" 2>/dev/null
+    fi
+}
+trap _cleanup EXIT
 
 # ── T1: locate a bash 3.x interpreter, or skip gracefully ───────────────────
 # Try common locations without assuming any exist. macOS ships bash 3.2 at
@@ -166,6 +177,61 @@ WRAPPER2="$WORK/wrap/ops-loop-fresh-wrapper.sh"
 rc=$?
 if [[ "$rc" -ne 0 ]]; then echo "  PASS: T7a broken-knob install (no prior wrapper) exits non-zero"; PASS=$((PASS+1)); else echo "  FAIL: T7a exited 0 (expected non-zero)"; FAIL=$((FAIL+1)); fi
 if [[ ! -e "$WRAPPER2" ]]; then echo "  PASS: T7b no wrapper file left behind (never an empty one)"; PASS=$((PASS+1)); else echo "  FAIL: T7b a wrapper file was left at $WRAPPER2 (size $(wc -c <"$WRAPPER2" 2>/dev/null))"; FAIL=$((FAIL+1)); fi
+
+# ── T8: checker follow-up — missing safe_secrets_loader.sh.tmpl must fail the
+# WHOLE install loudly, never render+install a wrapper that calls an undefined
+# _lll_load_secrets_safe. Exercises the REAL installer (not a copy), so it
+# briefly moves the real repo template aside — see the _cleanup trap above for
+# the always-restore safety net.
+echo "== board #1529 (checker follow-up): missing safe-loader template =="
+LIB_DIR="$(cd "$(dirname "$LIB")" && pwd)"
+_REAL_TMPL="$LIB_DIR/safe_secrets_loader.sh.tmpl"
+if [[ -f "$_REAL_TMPL" ]]; then
+    _MOVED_TMPL="$TMP/safe_secrets_loader.sh.tmpl.hidden-for-test"
+    mv "$_REAL_TMPL" "$_MOVED_TMPL"
+
+    # T8a-c: re-render for the ALREADY-INSTALLED slug (demo, from T5) — must
+    # fail non-zero and leave that prior good wrapper byte-identical (same
+    # atomicity guarantee as the broken-knob T6, now for THIS failure cause).
+    GOOD_SUM3="$(cksum "$WRAPPER" 2>/dev/null)"
+    "$BASH32" "$INSTALLER" --dept-dir "$WORK/agents/demo" --slug demo \
+        --launch-agents-dir "$WORK/LA" --log-dir "$WORK/logs" --wrapper-dir "$WORK/wrap" \
+        --claude-bin /usr/bin/claude --tmux-bin /usr/bin/tmux \
+        --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+        --vault "$WORK/vault.sops.env" \
+        >"$WORK/install-missing-tmpl.log" 2>&1
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then echo "  PASS: T8a missing template -> install-local-loop.sh exits non-zero"; PASS=$((PASS+1)); else echo "  FAIL: T8a missing template -> install exited 0 (expected non-zero); log:"; cat "$WORK/install-missing-tmpl.log"; FAIL=$((FAIL+1)); fi
+    NEW_SUM3="$(cksum "$WRAPPER" 2>/dev/null)"
+    if [[ "$GOOD_SUM3" == "$NEW_SUM3" ]]; then echo "  PASS: T8b missing template -> prior good wrapper left byte-identical"; PASS=$((PASS+1)); else echo "  FAIL: T8b missing template -> prior good wrapper was modified/truncated"; FAIL=$((FAIL+1)); fi
+    if [[ -s "$WRAPPER" ]]; then echo "  PASS: T8c missing template -> wrapper still non-empty (never silently emptied)"; PASS=$((PASS+1)); else echo "  FAIL: T8c missing template -> wrapper is now EMPTY (the original board #1529 symptom, new cause)"; FAIL=$((FAIL+1)); fi
+    # No wrapper ever calls _lll_load_secrets_safe without also defining it.
+    if grep -q "_lll_load_secrets_safe" "$WRAPPER" && ! grep -q "_lll_load_secrets_safe() {" "$WRAPPER"; then
+        echo "  FAIL: T8c2 installed wrapper calls _lll_load_secrets_safe without defining it"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: T8c2 installed wrapper never calls _lll_load_secrets_safe without defining it"; PASS=$((PASS+1))
+    fi
+
+    # T8d-e: same missing template, but for a slug with NO prior wrapper at
+    # all — must leave NO file behind (never an empty one; this is the exact
+    # shape the checker's repro described).
+    WRAPPER5="$WORK/wrap/ops-loop-fresh2-wrapper.sh"
+    "$BASH32" "$INSTALLER" --dept-dir "$WORK/agents/demo" --slug fresh2 \
+        --launch-agents-dir "$WORK/LA" --log-dir "$WORK/logs" --wrapper-dir "$WORK/wrap" \
+        --claude-bin /usr/bin/claude --tmux-bin /usr/bin/tmux \
+        --telegram-state-dir "$WORK/tg" --extra-path "/opt/homebrew/bin" \
+        --vault "$WORK/vault.sops.env" \
+        >"$WORK/install-missing-tmpl-fresh.log" 2>&1
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then echo "  PASS: T8d missing template, no prior wrapper -> install exits non-zero"; PASS=$((PASS+1)); else echo "  FAIL: T8d exited 0 (expected non-zero)"; FAIL=$((FAIL+1)); fi
+    if [[ ! -e "$WRAPPER5" ]]; then echo "  PASS: T8e missing template, no prior wrapper -> no file left behind"; PASS=$((PASS+1)); else echo "  FAIL: T8e a wrapper file was left at $WRAPPER5 (size $(wc -c <"$WRAPPER5" 2>/dev/null))"; FAIL=$((FAIL+1)); fi
+
+    # Restore now (belt-and-suspenders; the EXIT trap covers early failures).
+    mv -f "$_MOVED_TMPL" "$_REAL_TMPL"
+    _MOVED_TMPL=""
+else
+    echo "  SKIP: T8 real template not found at $_REAL_TMPL (unexpected repo layout)"
+fi
 
 echo
 echo "RESULT: $PASS passed, $FAIL failed"

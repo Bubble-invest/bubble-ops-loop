@@ -287,8 +287,28 @@ render_loop_wrapper() {
     # command substitution has no heredoc for bash 3.2 to mis-parse. The
     # template's bytes are unchanged from the old heredoc body, so the
     # rendered wrapper stays byte-identical.
+    #
+    # Checker follow-up (board #1529): under `set -uo pipefail` (NO `-e` —
+    # install-local-loop.sh deliberately omits it so it can check exit codes
+    # itself), a `cat` on a MISSING template does not abort the function —
+    # `safe_loader` just ends up empty and render_loop_wrapper carries on,
+    # emitting a wrapper that CALLS `_lll_load_secrets_safe` with its
+    # definition silently missing. That passes `bash -n` (an undefined
+    # function is not a syntax error) and would be installed, then fail only
+    # at runtime — exactly the silent-failure class this card exists to
+    # kill. Fail LOUD and return non-zero (nothing has been written to this
+    # function's stdout yet, so the caller's `> tempfile` stays empty and is
+    # discarded) unless the template was read AND actually contains the
+    # function it's supposed to define.
     local safe_loader
-    safe_loader="$(cat "${_LLL_DIR}/safe_secrets_loader.sh.tmpl")"
+    safe_loader="$(cat "${_LLL_DIR}/safe_secrets_loader.sh.tmpl" 2>&1)" || {
+        echo "render_loop_wrapper: failed to read ${_LLL_DIR}/safe_secrets_loader.sh.tmpl: $safe_loader" >&2
+        return 1
+    }
+    if [[ -z "$safe_loader" || "$safe_loader" != *"_lll_load_secrets_safe()"* ]]; then
+        echo "render_loop_wrapper: ${_LLL_DIR}/safe_secrets_loader.sh.tmpl is missing, empty, or does not define _lll_load_secrets_safe() — refusing to render a wrapper that would call an undefined function" >&2
+        return 1
+    fi
 
     # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
     local age_export="" vault_block=""
