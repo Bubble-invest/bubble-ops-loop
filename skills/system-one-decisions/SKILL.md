@@ -251,14 +251,17 @@ below — not a fleet-verified claim, unlike this skill's own benchmark citation
 | Authorizing a side effect | Policy + human |
 | Record / replay a decision | The harness (`jev.py`'s receipts — see below) |
 
-**Counter-example — numbers aren't Jev's job either.** On the laya trading research
-(board #1534, `prototypes/jev-local/autoresearch/CALIBRATION.md`), laya scored on 6
-numeric price-indicator questions (uptrend, overbought, momentum, 3 forward-return
-questions) against a pure code-only twin computed from the same inputs — laya beat its
-code-only twin on **0 of 6** questions (worse on 3, no signal on 3). Measured
-2026-09-25, Phase 1b (richer-context genomes still pending) — a decision that's already
-computable from the data is code's job; don't reach for Jev just because a question
-sounds like it's "about" numbers.
+**Counter-example — numbers aren't Jev's job, and more context makes it worse.** Laya
+trading research (board #1534, `prototypes/jev-local/autoresearch/CALIBRATION*.md`,
+6 assets × 6 numeric price questions, TRAIN split only). Phase 1 (2026-09-25): laya beat
+its code-only twin on **0 of 6** questions. Phase 1b (2026-09-26, 1,800 cases per
+question per arm): richer context (MACD/%B/ATR/volume, related assets VIX/TNX/DXY/QQQ/ETH/TLT,
+and the same data as a structured JSON state) never beat a plain logistic regression on the
+same features by >0.03 AUC in any of 30 cells. On the one question with real signal
+("big move in 10 days"), laya *degraded* as context grew (AUC 0.73 → 0.33) while the
+logistic regression held 0.80-0.89. The signal is in the numbers; a small System-One
+model doesn't extract it, and extra context distracts it. For numeric decisions, use code
+or a classic statistical model; keep Jev for bounded judgments over messy text.
 
 The full state/question design recipe (structured state, provenance, the
 prompt-injection note, fail-closed, per-backend text-vs-JSON handling), the host-owned
@@ -268,7 +271,7 @@ decision, not only the pattern picker above.
 
 External guidance cited there, not fleet-verified measurements: "2026 Field Guide to Jev
 and Language Models" (independent guide based on public TypeSafe docs, Sept 2026) and
-Avid's keel builder's guide, "How We Used Jev in an Agentic Coding Harness"
+Avid's keel builder's guide, "How to Build Agentic Harness using Jev (Builder's Guide)" (x.com/av1dlive, 2026-09-23)
 (github.com/codejunkie99/keel).
 
 ## Using `scripts/jev.py`

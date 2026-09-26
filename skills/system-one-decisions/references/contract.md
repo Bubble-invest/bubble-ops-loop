@@ -14,7 +14,7 @@ which cite our own `bench/results/`):
 - **"2026 Field Guide to Jev and Language Models"** — an independent field guide based
   on public TypeSafe documentation, Sept 2026 (no fleet-specific URL; a text copy was
   used to build this file).
-- **Avid's keel builder's guide**, "How We Used Jev in an Agentic Coding Harness"
+- **Avid's keel builder's guide**, "How to Build Agentic Harness using Jev (Builder's Guide)" (x.com/av1dlive, 2026-09-23)
   (github.com/codejunkie99/keel, keel 0.2.0) — a real shipped coding app's writeup of
   putting a decision layer in front of/behind an LLM-based coding agent.
 
