@@ -270,49 +270,45 @@ render_loop_wrapper() {
     # convention), and exports the value LITERALLY — a malformed value can never
     # be executed as a command. Malformed lines are skipped + logged (by file +
     # var name only — never the decrypted value) instead of aborting the loop.
-    # Defined via a single-quoted heredoc so none of ITS $/`/" are touched by
-    # THIS renderer (they must reach the wrapper file untouched).
+    # Board #1529: this used to be built via `cat <<'SAFE_LOADER_EOF' ... EOF`
+    # INSIDE this command substitution. macOS stock bash 3.2 mis-parses a
+    # quoted heredoc nested in `$(...)` when the body contains an odd count of
+    # literal `\'` (backslash-single-quote) sequences — exactly the 4 that
+    # appear in the _val quote-stripping `case` below (\'*\' twice). Bash 3.2's
+    # parser loses track of the heredoc's true end, part of the body escapes
+    # into the surrounding script as LIVE commands, and `_f` (a var local to
+    # the function body, never meant to run standalone) gets evaluated at
+    # SOURCE time under the caller's `set -u` — "line 315: _f: unbound
+    # variable" — aborting the source and leaving `render_loop_wrapper`
+    # undefined for the rest of the run. bash 5 parses the same heredoc fine,
+    # which is why this was invisible under any dev/CI shell that isn't stock
+    # macOS bash 3.2. Fix: keep the function body in its own template file
+    # (deploy/local/lib/safe_secrets_loader.sh.tmpl) and `cat` it — a plain
+    # command substitution has no heredoc for bash 3.2 to mis-parse. The
+    # template's bytes are unchanged from the old heredoc body, so the
+    # rendered wrapper stays byte-identical.
+    #
+    # Checker follow-up (board #1529): under `set -uo pipefail` (NO `-e` —
+    # install-local-loop.sh deliberately omits it so it can check exit codes
+    # itself), a `cat` on a MISSING template does not abort the function —
+    # `safe_loader` just ends up empty and render_loop_wrapper carries on,
+    # emitting a wrapper that CALLS `_lll_load_secrets_safe` with its
+    # definition silently missing. That passes `bash -n` (an undefined
+    # function is not a syntax error) and would be installed, then fail only
+    # at runtime — exactly the silent-failure class this card exists to
+    # kill. Fail LOUD and return non-zero (nothing has been written to this
+    # function's stdout yet, so the caller's `> tempfile` stays empty and is
+    # discarded) unless the template was read AND actually contains the
+    # function it's supposed to define.
     local safe_loader
-    safe_loader="$(cat <<'SAFE_LOADER_EOF'
-# --- _lll_load_secrets_safe <file> (board #1275) ---------------------------
-# Parse a decrypted KEY=VALUE secrets file as DATA, never as shell code. Skips
-# comments/blank lines and any line that isn't KEY=VALUE with a legal
-# identifier key; strips one matching pair of surrounding quotes. Never
-# aborts the wrapper (a malformed value is logged by key name and skipped,
-# not fatal) and never logs the decrypted VALUE.
-_lll_load_secrets_safe() {
-  local _f="$1" _line _key _val
-  [ -f "$_f" ] || return 0
-  while IFS= read -r _line || [ -n "$_line" ]; do
-    _line="${_line%$'\r'}"   # tolerate CRLF-decrypted secrets files
-    case "$_line" in
-      ''|'#'*) continue ;;
-    esac
-    case "$_line" in
-      [A-Za-z_]*=*) : ;;
-      *)
-        echo "[wrapper] WARN: skipping malformed secret line in $_f (not KEY=VALUE)" >&2
-        continue
-        ;;
-    esac
-    _key="${_line%%=*}"
-    _val="${_line#*=}"
-    case "$_key" in
-      *[!A-Za-z0-9_]*)
-        echo "[wrapper] WARN: skipping secret line with invalid var name '$_key' in $_f" >&2
-        continue
-        ;;
-    esac
-    case "$_val" in
-      \"*\") _val="${_val#\"}"; _val="${_val%\"}" ;;
-      \'*\') _val="${_val#\'}"; _val="${_val%\'}" ;;
-    esac
-    export "$_key=$_val"
-  done < "$_f"
-  return 0
-}
-SAFE_LOADER_EOF
-)"
+    safe_loader="$(cat "${_LLL_DIR}/safe_secrets_loader.sh.tmpl" 2>&1)" || {
+        echo "render_loop_wrapper: failed to read ${_LLL_DIR}/safe_secrets_loader.sh.tmpl: $safe_loader" >&2
+        return 1
+    }
+    if [[ -z "$safe_loader" || "$safe_loader" != *"_lll_load_secrets_safe()"* ]]; then
+        echo "render_loop_wrapper: ${_LLL_DIR}/safe_secrets_loader.sh.tmpl is missing, empty, or does not define _lll_load_secrets_safe() — refusing to render a wrapper that would call an undefined function" >&2
+        return 1
+    fi
 
     # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
     local age_export="" vault_block=""

@@ -183,6 +183,37 @@ LOOP_EXTRA_EXPORTS='PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' \
   render /tmp/dept accountant /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/accountant.sh"
 bash -n "$TMP/accountant.sh"; ok "T15 accountant-shaped render is valid bash (bash -n)" $?
 
+echo "== board #1529: missing/broken safe-loader template fails LOUD =="
+# render_loop_wrapper reads deploy/local/lib/safe_secrets_loader.sh.tmpl as a
+# SIBLING of local_loop_lib.sh (via $_LLL_DIR). Copy just the lib (no sibling
+# template) into an isolated dir to simulate "template missing" without
+# touching the real repo file. Under `set -uo pipefail` (install-local-loop.sh
+# deliberately has NO `-e`, so it can check exit codes itself), a `cat` on a
+# missing file must NOT be allowed to silently continue with an empty
+# safe_loader — that would render a wrapper that CALLS
+# `_lll_load_secrets_safe` with its definition missing: passes `bash -n` (an
+# undefined function is not a syntax error), installs fine, fails only at
+# runtime. render_loop_wrapper must instead return non-zero and emit NOTHING.
+ISOLATED="$TMP/isolated-lib"; mkdir -p "$ISOLATED"
+cp "$LIB" "$ISOLATED/local_loop_lib.sh"
+bash -c 'set -uo pipefail; source "$0"; render_loop_wrapper "$@"' \
+    "$ISOLATED/local_loop_lib.sh" /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" \
+    > "$TMP/missing_tmpl.out" 2>"$TMP/missing_tmpl.err"
+rc=$?
+if [[ "$rc" -ne 0 ]]; then echo "  PASS: T16a missing template -> render_loop_wrapper returns non-zero"; PASS=$((PASS+1)); else echo "  FAIL: T16a missing template -> render_loop_wrapper returned 0 (expected non-zero)"; FAIL=$((FAIL+1)); fi
+if [[ ! -s "$TMP/missing_tmpl.out" ]]; then echo "  PASS: T16b missing template -> nothing emitted on stdout (no silently-broken wrapper)"; PASS=$((PASS+1)); else echo "  FAIL: T16b missing template -> stdout is non-empty (a broken wrapper would be written)"; FAIL=$((FAIL+1)); fi
+want "T16c missing template -> error is logged to stderr" "safe_secrets_loader.sh.tmpl" "$TMP/missing_tmpl.err"
+
+# Same, for an EXISTING-but-empty/wrong-content template (e.g. truncated by a
+# bad checkout) — must be treated the same as missing, never silently used.
+printf '' > "$ISOLATED/safe_secrets_loader.sh.tmpl"
+bash -c 'set -uo pipefail; source "$0"; render_loop_wrapper "$@"' \
+    "$ISOLATED/local_loop_lib.sh" /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" \
+    > "$TMP/empty_tmpl.out" 2>"$TMP/empty_tmpl.err"
+rc=$?
+if [[ "$rc" -ne 0 ]]; then echo "  PASS: T16d empty template -> render_loop_wrapper returns non-zero"; PASS=$((PASS+1)); else echo "  FAIL: T16d empty template -> returned 0 (expected non-zero)"; FAIL=$((FAIL+1)); fi
+if [[ ! -s "$TMP/empty_tmpl.out" ]]; then echo "  PASS: T16e empty template -> nothing emitted on stdout"; PASS=$((PASS+1)); else echo "  FAIL: T16e empty template -> stdout is non-empty"; FAIL=$((FAIL+1)); fi
+
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

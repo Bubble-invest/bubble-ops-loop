@@ -121,8 +121,12 @@ Tests (run from repo root, no launchctl, no live machine):
 
 ```sh
 bash tests/test_local_loop_staleness.sh   deploy/local/lib/local_loop_lib.sh deploy/local/local-loop-backup-runner.sh
+bash tests/test_local_loop_wrapper_render.sh deploy/local/lib/local_loop_lib.sh
 bash tests/test_local_loop_plist_render.sh deploy/local/install-local-loop.sh deploy/local/install-local-loop-backup.sh
 bash tests/test_local_loop_injection_floor.sh deploy/local/local-loop-backup-runner.sh
+# Board #1529: macOS stock bash 3.2 regression guard (--vault render + atomic
+# wrapper write). Skips gracefully where no bash 3.x is available (e.g. CI).
+bash tests/test_1529_bash32_wrapper_render.sh deploy/local/lib/local_loop_lib.sh deploy/local/install-local-loop.sh
 bash tests/test_rnd_due_mission_floor.sh deploy/local/local-loop-backup-runner.sh
 bash tests/test_1491_mac_recurring_wake_inject.sh deploy/local/local-loop-backup-runner.sh
 python3 -m pytest -q scripts/lib/tests/test_due_missions.py
