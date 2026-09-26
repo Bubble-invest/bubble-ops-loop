@@ -324,6 +324,32 @@ API keys for `openrouter`/`typesafe` backends come **only** from the environment
 flag, never prints one, and fails with a clear message (not a stack trace) if the
 relevant variable is unset.
 
+## Agent verbs: filter / classify / rank / find
+
+Four bulk verbs (board #1540), UX ported from the MIT-licensed
+[quicksilver](https://github.com/UditAkhourii/quicksilver) skill (one line per hit,
+leading `p`, `?` on the borderline band, one closing receipt) onto THIS skill's own
+backends/auth (`openrouter` default; local engines as a no-network fallback).
+
+```bash
+jev.py filter "Does this file implement or handle X?" src/ --lines     # keep the yes's
+jev.py classify --labels "bug,feature,question" --items tickets.jsonl  # bucket + "other"
+jev.py rank "auth token refresh" src/ --top 10                         # relevance order
+jev.py find "the retry-with-backoff loop" big_module.py --top 5        # locate line ranges
+```
+
+Matched items only, sorted by probability; `?` marks the borderline band
+(`--threshold`/`--band`); `--lines` collapses a run into `path:Lx-Ly (N×)`; every run
+ends with ONE receipt (scanned/matched/borderline/seconds/backend/cost/estimated Claude
+tokens not read), plus a full JSONL via `--log`. Safety is automatic: `.env*`/`*.pem`/
+`*.key`/`id_*`/credential- or secret-looking paths and `.git/` are never sent,
+`.gitignore` is respected, binaries/files over 2MB are skipped, `--max-spend`/
+`--parallel` cap cost/concurrency. Internal Bubble data only (data-residency rule above).
+
+**Don't use for** (quicksilver's own honest limits): exact grep-able questions (use
+`grep`), subjective/house-style/unwritten-policy labels — weakest spot in both
+benchmarks. Output is a shortlist, never proof — check the `?` items yourself.
+
 ## Reference files
 
 - `references/patterns.md` — the 19-pattern catalog, condensed with citations.

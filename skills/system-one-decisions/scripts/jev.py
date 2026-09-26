@@ -1085,6 +1085,597 @@ def cmd_replay(args):
 
 
 # ---------------------------------------------------------------------------
+# Agent verbs: filter / classify / rank / find  (board #1540)
+#
+# Design PORTED from the MIT-licensed quicksilver skill (github.com/UditAkhourii/
+# quicksilver, skills/quicksilver/scripts/qs.mjs, read 2026-09-26) -- the UX (one
+# line per hit, a `p` in front, a `?` on the borderline band, a closing receipt,
+# --lines/--items input handling) is deliberately close to it. NOT a port of its
+# code: this reuses jev.py's OWN backends, call_engine()/request_url_and_payload()
+# and auth_headers_for() (openrouter by default via JEV_OPENROUTER_API_KEY, local
+# engines as a no-network fallback) rather than quicksilver's TypeSafe-only HTTP
+# client and its separate ~/.quicksilver key store. Credit: quicksilver, MIT
+# license, see SKILL.md's "Agent verbs" section.
+# ---------------------------------------------------------------------------
+
+AGENT_VERB_MAX_FILE_BYTES = 2 * 1024 * 1024
+
+_AGENT_VERB_IGNORE_DIRS = {
+    "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt",
+    "target", "vendor", "__pycache__", ".venv", "venv", "coverage",
+    ".turbo", ".cache", ".idea", ".vscode",
+}
+
+# Deliberately broad / over-inclusive -- a false positive here just means one
+# more file gets skipped and reported, never sent. Matches .env*, *.pem, *.key,
+# id_rsa/id_ed25519/etc, and anything with "credential" or "secret" in the path.
+_SECRET_PATH_RES = [
+    re.compile(r"(^|[/\\])\.env(\..*)?$", re.IGNORECASE),
+    re.compile(r"\.pem$", re.IGNORECASE),
+    re.compile(r"\.key$", re.IGNORECASE),
+    re.compile(r"(^|[/\\])id_[^/\\]+$", re.IGNORECASE),
+    re.compile(r"credential", re.IGNORECASE),
+    re.compile(r"secret", re.IGNORECASE),
+]
+
+
+def _looks_secret(relpath):
+    return any(p.search(relpath) for p in _SECRET_PATH_RES)
+
+
+def _is_binary(buf):
+    return b"\0" in buf[:8192]
+
+
+def _clip(s, n):
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _fmt_k(n):
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(int(n))
+
+
+def _rel(p):
+    try:
+        return os.path.relpath(p, os.getcwd())
+    except ValueError:
+        return str(p)
+
+
+def _git_ls_files(dirpath):
+    """Files git already knows about (tracked + untracked-but-not-ignored) under
+    `dirpath`, respecting .gitignore -- or None if `dirpath` isn't inside a git
+    work tree (caller falls back to a plain walk)."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "-co", "--exclude-standard", "-z", "--", "."],
+            cwd=str(dirpath), capture_output=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return None
+        return [str(Path(dirpath) / p) for p in r.stdout.decode("utf-8", "replace").split("\0") if p]
+    except OSError:
+        return None
+
+
+def _git_check_ignored(paths):
+    """Subset of absolute path strings `paths` that `git check-ignore` considers
+    ignored, in ONE batched --stdin call. Best-effort: returns an empty set (no
+    filtering) if the paths aren't inside a git work tree or git isn't available
+    -- this is a belt-and-suspenders check for explicitly-named files; directory
+    expansion already goes through _git_ls_files, which respects .gitignore on
+    its own."""
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "-z", "--stdin"],
+            cwd=os.path.dirname(paths[0]) or ".",
+            input=("\0".join(paths) + "\0").encode("utf-8"),
+            capture_output=True, timeout=30,
+        )
+        if proc.returncode not in (0, 1):
+            return set()
+        return set(x for x in proc.stdout.decode("utf-8", "replace").split("\0") if x)
+    except OSError:
+        return set()
+
+
+def _walk_fs(dirpath):
+    out = []
+    for root, dirs, files in os.walk(dirpath):
+        dirs[:] = [d for d in dirs if d not in _AGENT_VERB_IGNORE_DIRS and not d.startswith(".")]
+        for fn in files:
+            out.append(os.path.join(root, fn))
+    return out
+
+
+def _expand_path_spec(spec):
+    if any(ch in spec for ch in "*?["):
+        import glob
+        return [f for f in glob.glob(spec, recursive=True) if Path(f).is_file()]
+    p = Path(spec)
+    if not p.exists():
+        raise SystemExit(f"error: no such file or directory: {spec}")
+    if p.is_file():
+        return [str(p)]
+    listed = _git_ls_files(p)
+    if listed is None:
+        listed = _walk_fs(p)
+    return [f for f in listed if Path(f).is_file()]
+
+
+def collect_items(path_specs, lines=False, max_chars=60000, limit=5000, ext=None, items_jsonl=None):
+    """Safe, agent-verb-wide input collection.
+
+    Returns (items, skipped, total_chars): items is [{id, text}] (one per file,
+    or one per non-blank line when `lines=True`); skipped is a list of
+    human-readable reasons (secret-like / binary / too big / gitignored, never
+    an exception -- the caller just doesn't see that content); total_chars is
+    the sum of every collected item's UN-truncated length, used for the
+    "Claude tokens not read" estimate."""
+    items, skipped = [], []
+    total_chars = 0
+    exts = {"." + e.strip().lstrip(".").lower() for e in ext.split(",") if e.strip()} if ext else None
+
+    if items_jsonl:
+        raw = sys.stdin.read() if items_jsonl == "-" else open(items_jsonl).read()
+        for i, line in enumerate(raw.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                obj = None
+            if isinstance(obj, dict):
+                iid = str(obj.get("id", i + 1))
+                text = obj.get("text")
+                if text is None:
+                    text = obj.get("content", "")
+                if not isinstance(text, str):
+                    text = json.dumps(text, ensure_ascii=False)
+            else:
+                iid, text = str(i + 1), line
+            total_chars += len(text)
+            items.append({"id": iid, "text": text[:max_chars] if max_chars else text})
+
+    files = []
+    for spec in path_specs or []:
+        if spec == "-":
+            text = sys.stdin.read()
+            if lines:
+                for i, l in enumerate(text.split("\n")):
+                    if l.strip():
+                        items.append({"id": f"stdin:{i + 1}", "text": l})
+                        total_chars += len(l)
+            else:
+                items.append({"id": "stdin", "text": text[:max_chars] if max_chars else text})
+                total_chars += len(text)
+            continue
+        files.extend(_expand_path_spec(spec))
+
+    seen, uniq_files = set(), []
+    for f in files:
+        ap = os.path.abspath(f)
+        if ap in seen:
+            continue
+        seen.add(ap)
+        uniq_files.append(ap)
+
+    ignored = _git_check_ignored(uniq_files) if uniq_files else set()
+
+    for ap in uniq_files:
+        rel = _rel(ap)
+        if ap in ignored:
+            continue
+        if exts and Path(ap).suffix.lower() not in exts:
+            continue
+        if _looks_secret(rel):
+            skipped.append(f"{rel} (secret-like, never sent)")
+            continue
+        try:
+            size = os.path.getsize(ap)
+        except OSError:
+            continue
+        if size > AGENT_VERB_MAX_FILE_BYTES:
+            skipped.append(f"{rel} (>{AGENT_VERB_MAX_FILE_BYTES // (1024 * 1024)}MB)")
+            continue
+        try:
+            with open(ap, "rb") as fh:
+                buf = fh.read()
+        except OSError:
+            continue
+        if _is_binary(buf):
+            skipped.append(f"{rel} (binary)")
+            continue
+        text = buf.decode("utf-8", "replace")
+        if not text.strip():
+            continue
+        if lines:
+            for i, l in enumerate(text.split("\n")):
+                if l.strip():
+                    items.append({"id": f"{rel}:{i + 1}", "text": l})
+                    total_chars += len(l)
+        else:
+            total_chars += len(text)
+            items.append({"id": rel, "text": text[:max_chars] if max_chars else text})
+
+    if limit and len(items) > limit:
+        raise SystemExit(f"error: {len(items)} items exceeds --limit {limit}; narrow the input or raise --limit")
+    return items, skipped, total_chars
+
+
+def _require_local_running(backend):
+    if backend in LOCAL_BACKENDS and not port_listening(LOCAL_BACKENDS[backend]["port"]):
+        raise SystemExit(f"error: {backend} is not running -- `jev.py start --backend {backend}` first")
+
+
+def _run_verb(items, question_for, backend, base_url, headers, parallel, max_spend, timeout=90):
+    """Score every item against ONE question (built per-item by `question_for`).
+    Same chunked-ThreadPoolExecutor / running-cost / --max-spend shape as
+    cmd_ask/cmd_replay above -- reused, not reinvented. Returns
+    (rows, running_total_spend_usd, stopped_for_spend); rows is
+    [{item, ok, answer, cost_usd, latency_s, error}]."""
+    rows = []
+    running_total = 0.0
+    stopped_for_spend = False
+    chunk_size = max(1, parallel)
+
+    def score_one(it):
+        q = question_for(it)
+        state = {"source": it["id"], "content": it["text"]}
+        res = call_engine(backend, base_url, state, {"q": q}, headers=headers, timeout=timeout)
+        return it, res
+
+    i = 0
+    while i < len(items):
+        if max_spend is not None and running_total >= max_spend:
+            stopped_for_spend = True
+            break
+        chunk = items[i:i + chunk_size]
+        if chunk_size > 1 and len(chunk) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=chunk_size) as ex:
+                results = list(ex.map(score_one, chunk))
+        else:
+            results = [score_one(it) for it in chunk]
+        for it, res in results:
+            cost = res.get("cost_usd") if res["ok"] else None
+            if cost:
+                running_total += cost
+            answer = None
+            if res["ok"] and isinstance(res.get("response"), dict):
+                answer = (res["response"].get("answers") or {}).get("q")
+            rows.append({"item": it, "ok": res["ok"], "answer": answer, "cost_usd": cost,
+                         "latency_s": res.get("latency_s"), "error": res.get("error")})
+        i += len(chunk)
+    return rows, running_total, stopped_for_spend
+
+
+def _finish(args, t0, n_scanned, total_input_chars, output_lines, n_matched, n_borderline, backend, spend, log_rows):
+    """The ONE closing receipt line every agent verb ends with, plus the
+    optional full JSONL receipt (--log)."""
+    output_text = "\n".join(output_lines) if output_lines else "(no results)"
+    print(output_text)
+    elapsed = time.time() - t0
+    tokens_not_read = max(0, total_input_chars - len(output_text)) // 4
+    footer = (f"— {n_scanned} scanned · {n_matched} matched · {n_borderline} borderline · "
+              f"{elapsed:.1f}s · {backend} · jev ${spend:.4f} · "
+              f"~{_fmt_k(tokens_not_read)} Claude tokens not read")
+    print(footer, file=sys.stderr)
+    log_path = getattr(args, "log", None)
+    if log_path:
+        with open(log_path, "w") as f:
+            for row in log_rows:
+                item = row.get("item") if isinstance(row, dict) else None
+                rec = {
+                    "id": item["id"] if isinstance(item, dict) else row.get("id"),
+                    "ok": row.get("ok"), "answer": row.get("answer"), "cost_usd": row.get("cost_usd"),
+                    "latency_s": row.get("latency_s"), "error": row.get("error"),
+                    "backend": backend, "timestamp": utc_now_iso(),
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return footer
+
+
+def parse_band(band_flag, threshold):
+    """--band accepts either a half-width (e.g. 0.15, symmetric around
+    --threshold, quicksilver's convention) or an explicit 'lo,hi' pair."""
+    if band_flag is None:
+        w = 0.15
+        return max(0.0, threshold - w), min(1.0, threshold + w)
+    s = str(band_flag)
+    if "," in s:
+        lo_s, hi_s = s.split(",", 1)
+        return float(lo_s), float(hi_s)
+    w = float(s)
+    return max(0.0, threshold - w), min(1.0, threshold + w)
+
+
+# Log/CSV lines repeat with different numbers/ids/timestamps; normalizing them
+# to a shared template is how a run of near-identical lines is detected.
+_TEMPLATE_HEX_RE = re.compile(r"0x[0-9a-f]+", re.IGNORECASE)
+_TEMPLATE_LONGHEX_RE = re.compile(r"\b[0-9a-f]{8,}\b", re.IGNORECASE)
+_TEMPLATE_DIGIT_RE = re.compile(r"\d+")
+
+
+def line_template(text):
+    t = _TEMPLATE_HEX_RE.sub("#", text)
+    t = _TEMPLATE_LONGHEX_RE.sub("#", t)
+    t = _TEMPLATE_DIGIT_RE.sub("#", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _parse_line_id(item_id):
+    path, sep, n = item_id.rpartition(":")
+    if not sep:
+        return item_id, None
+    try:
+        return path, int(n)
+    except ValueError:
+        return item_id, None
+
+
+def render_collapsed_line_rows(matched, lo, hi):
+    """matched: [(row, p)] for --lines mode. Collapses RUNS of consecutive
+    lines (same file, adjacent line numbers) that share the same line_template
+    into one 'path:Lx-Ly (N×)' row -- a single line stays 'path:N'. Sorted by
+    the run's max p, descending; a run gets the '?' prefix if any line in it
+    falls in the [lo, hi] borderline band."""
+    by_order = sorted(matched, key=lambda rp: _parse_line_id(rp[0]["item"]["id"]))
+    runs = []
+    cur = None
+    for r, p in by_order:
+        path, n = _parse_line_id(r["item"]["id"])
+        tmpl = line_template(r["item"]["text"])
+        if (cur and cur["path"] == path and cur["tmpl"] == tmpl
+                and n is not None and cur["end"] is not None and n == cur["end"] + 1):
+            cur["end"] = n
+            cur["count"] += 1
+            cur["max_p"] = max(cur["max_p"], p)
+            cur["any_border"] = cur["any_border"] or (lo <= p <= hi)
+        else:
+            cur = {"path": path, "start": n, "end": n, "tmpl": tmpl, "count": 1,
+                   "max_p": p, "text": r["item"]["text"], "any_border": lo <= p <= hi}
+            runs.append(cur)
+    runs.sort(key=lambda c: -c["max_p"])
+    out = []
+    for c in runs:
+        prefix = "?" if c["any_border"] else " "
+        loc = f"{c['path']}:{c['start']}" if c["count"] == 1 else f"{c['path']}:L{c['start']}-{c['end']} ({c['count']}×)"
+        out.append(f"{prefix}{c['max_p']:.2f}  {loc}  {_clip(c['text'].strip(), 160)}")
+    return out
+
+
+def cmd_filter(args):
+    t0 = time.time()
+    backend = args.backend
+    base_url = base_url_for(backend, args.base_url)
+    headers = auth_headers_for(backend)
+    _require_local_running(backend)
+
+    items, skipped, total_chars = collect_items(args.paths, lines=args.lines, max_chars=args.max_chars, limit=args.limit, ext=args.ext)
+    if not items:
+        raise SystemExit("error: nothing to filter -- pass files, directories, globs, or -")
+
+    thr = args.threshold
+    lo, hi = parse_band(args.band, thr)
+
+    def qfor(it):
+        return {"type": "noul", "instructions": args.question}
+
+    rows, spend, stopped = _run_verb(items, qfor, backend, base_url, headers, args.parallel, args.max_spend, args.timeout)
+
+    scored = [(r, r["answer"]["noul"]) for r in rows if r["ok"] and r.get("answer") and r["answer"].get("noul") is not None]
+    matched = [(r, p) for r, p in scored if p >= thr]
+    borderline_n = sum(1 for _, p in matched if lo <= p <= hi)
+
+    if args.lines:
+        out_lines = render_collapsed_line_rows(matched, lo, hi)
+    else:
+        matched.sort(key=lambda rp: -rp[1])
+        out_lines = [f"{'?' if lo <= p <= hi else ' '}{p:.2f}  {r['item']['id']}" for r, p in matched]
+
+    if stopped:
+        out_lines.append(f"(stopped: --max-spend ${args.max_spend:.4f} reached; {len(items) - len(rows)} item(s) not scored)")
+    if skipped:
+        out_lines.append(f"skipped {len(skipped)}: {_clip(', '.join(skipped), 300)}")
+
+    _finish(args, t0, len(items), total_chars, out_lines, len(matched), borderline_n, backend, spend, rows)
+
+
+def cmd_classify(args):
+    t0 = time.time()
+    backend = args.backend
+    base_url = base_url_for(backend, args.base_url)
+    headers = auth_headers_for(backend)
+    _require_local_running(backend)
+
+    labels = [s.strip() for s in args.labels.split(",") if s.strip()]
+    if len(labels) < 2:
+        raise SystemExit("error: classify needs at least 2 --labels")
+    criteria = {l: None for l in labels}
+    other_label = None
+    if not args.no_other and not any(_looks_like_no_match_option(l) for l in labels):
+        other_label = "other"
+        n = 1
+        while other_label in criteria:
+            n += 1
+            other_label = f"other{n}"
+        criteria[other_label] = "None of the other labels fit; use this when the item genuinely matches none of them"
+
+    if not args.paths and not args.items:
+        raise SystemExit("error: classify needs --items FILE.jsonl or one or more <paths>")
+    items, skipped, total_chars = collect_items(args.paths, lines=False, max_chars=args.max_chars, limit=args.limit, ext=args.ext, items_jsonl=args.items)
+    if not items:
+        raise SystemExit("error: nothing to classify")
+
+    question = args.question or "Which label best describes this item?"
+
+    def qfor(it):
+        return {"type": "choice", "instructions": question, "criteria": criteria}
+
+    rows, spend, stopped = _run_verb(items, qfor, backend, base_url, headers, args.parallel, args.max_spend, args.timeout)
+
+    groups = {}
+    low = []
+    for r in rows:
+        if not r["ok"] or not r.get("answer") or r["answer"].get("choice") is None:
+            continue
+        a = r["answer"]
+        groups.setdefault(a["choice"], []).append(r["item"]["id"])
+        if a.get("confidence", 1.0) < args.min_confidence:
+            low.append((r, a))
+
+    out_lines = []
+    for l in criteria:
+        ids = groups.get(l, [])
+        if ids:
+            out_lines.append(f"{l}: {','.join(ids)}")
+    if low:
+        out_lines.append("? low confidence — check these yourself:")
+        for r, a in low:
+            probs = a.get("probabilities") or {}
+            runners = sorted(((k, v) for k, v in probs.items() if k != a.get("choice")), key=lambda kv: -kv[1])
+            runner = runners[0][0] if runners else "?"
+            out_lines.append(f"?{a.get('confidence', 0.0):.2f}  {a.get('choice')} (or {runner})  {r['item']['id']}")
+
+    if stopped:
+        out_lines.append(f"(stopped: --max-spend ${args.max_spend:.4f} reached; {len(items) - len(rows)} item(s) not scored)")
+    if skipped:
+        out_lines.append(f"skipped {len(skipped)}: {_clip(', '.join(skipped), 300)}")
+
+    matched_n = sum(len(v) for v in groups.values())
+    _finish(args, t0, len(items), total_chars, out_lines, matched_n, len(low), backend, spend, rows)
+
+
+RANK_LEVELS = [
+    "Unrelated to the query",
+    "Shares a topic with the query but does not help answer it",
+    "Partially relevant: contains some useful information for the query",
+    "Relevant: substantially addresses the query",
+    "Directly and specifically answers or matches the query",
+]
+
+
+def cmd_rank(args):
+    t0 = time.time()
+    backend = args.backend
+    base_url = base_url_for(backend, args.base_url)
+    headers = auth_headers_for(backend)
+    _require_local_running(backend)
+
+    items, skipped, total_chars = collect_items(args.paths, lines=False, max_chars=args.max_chars, limit=args.limit, ext=args.ext)
+    if not items:
+        raise SystemExit("error: nothing to rank -- pass files, directories, or globs")
+
+    def qfor(it):
+        return {"type": "score", "instructions": {"query": args.query, "question": "How relevant is `content` to `query`?"},
+                "criteria": RANK_LEVELS}
+
+    rows, spend, stopped = _run_verb(items, qfor, backend, base_url, headers, args.parallel, args.max_spend, args.timeout)
+
+    max_lvl = len(RANK_LEVELS) - 1
+    scored = [(r, r["answer"]["score"] / max_lvl) for r in rows if r["ok"] and r.get("answer") and r["answer"].get("score") is not None]
+    scored.sort(key=lambda rp: -rp[1])
+    shown = scored[:args.top]
+    out_lines = [f"{p:.2f}  {r['item']['id']}" for r, p in shown]
+
+    if stopped:
+        out_lines.append(f"(stopped: --max-spend ${args.max_spend:.4f} reached; {len(items) - len(rows)} item(s) not scored)")
+    if skipped:
+        out_lines.append(f"skipped {len(skipped)}: {_clip(', '.join(skipped), 300)}")
+
+    _finish(args, t0, len(items), total_chars, out_lines, len(shown), 0, backend, spend, rows)
+
+
+def cmd_find(args):
+    t0 = time.time()
+    backend = args.backend
+    base_url = base_url_for(backend, args.base_url)
+    headers = auth_headers_for(backend)
+    _require_local_running(backend)
+
+    path = args.path
+    items, skipped, _ = collect_items([path], lines=False, max_chars=None, limit=1, ext=None)
+    if not items:
+        raise SystemExit(f"error: cannot read {path} (missing, secret-like, binary, or over "
+                          f"{AGENT_VERB_MAX_FILE_BYTES // (1024 * 1024)}MB){': ' + skipped[0] if skipped else ''}")
+    text = items[0]["text"]
+    rel = items[0]["id"]
+
+    all_lines = [(i + 1, l) for i, l in enumerate(text.split("\n")) if l.strip()]
+    chunk_n, overlap = args.chunk, min(args.overlap, args.chunk - 1)
+    chunks = []
+    i = 0
+    while i < len(all_lines):
+        piece = all_lines[i:i + chunk_n]
+        if not piece:
+            break
+        chunks.append(piece)
+        if i + chunk_n >= len(all_lines):
+            break
+        i += max(1, chunk_n - overlap)
+
+    def score_chunk(piece):
+        line_map = {str(n): _clip(t, 400) for n, t in piece}
+        state = {"query": args.description, "lines": line_map}
+        questions = {
+            "where": {"type": "choice", "instructions": "Which line number in `lines` best matches `query`?",
+                      "criteria": {**{k: None for k in line_map}, "none": "No line matches `query`"}},
+            "exists": {"type": "noul", "instructions": "Does any line in `lines` match `query`?"},
+        }
+        res = call_engine(backend, base_url, state, questions, headers=headers, timeout=args.timeout)
+        return line_map, res
+
+    hits, running_total, stopped = [], 0.0, False
+    chunk_size = max(1, args.parallel)
+    i = 0
+    while i < len(chunks):
+        if args.max_spend is not None and running_total >= args.max_spend:
+            stopped = True
+            break
+        batch = chunks[i:i + chunk_size]
+        if chunk_size > 1 and len(batch) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=chunk_size) as ex:
+                batch_results = list(ex.map(score_chunk, batch))
+        else:
+            batch_results = [score_chunk(b) for b in batch]
+        for line_map, res in batch_results:
+            if not res["ok"]:
+                continue
+            cost = res.get("cost_usd")
+            if cost:
+                running_total += cost
+            answers = (res["response"] or {}).get("answers", {}) if isinstance(res.get("response"), dict) else {}
+            exists_p = (answers.get("exists") or {}).get("noul") or 0.0
+            probs = (answers.get("where") or {}).get("probabilities") or {}
+            for n, p in probs.items():
+                if n == "none":
+                    continue
+                hits.append({"line": int(n), "text": line_map.get(n, ""), "score": p * exists_p})
+        i += len(batch)
+
+    hits.sort(key=lambda h: -h["score"])
+    kept = [h for h in hits if h["score"] >= args.min_score][:args.top]
+    out_lines = [f"{h['score']:.2f}  {rel}:{h['line']}  {_clip(h['text'].strip(), 160)}" for h in kept]
+    if stopped:
+        out_lines.append(f"(stopped: --max-spend ${args.max_spend:.4f} reached after {i}/{len(chunks)} chunk(s))")
+
+    n_scanned = len(all_lines)
+    total_chars = sum(len(t) for _, t in all_lines)
+    log_rows = [{"item": {"id": f"{rel}:{h['line']}"}, "ok": True, "answer": {"score": h["score"]},
+                 "cost_usd": None, "latency_s": None} for h in kept]
+    _finish(args, t0, n_scanned, total_chars, out_lines, len(kept), 0, backend, running_total, log_rows)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1156,6 +1747,55 @@ def build_parser():
                            help="same semantics as `ask --max-spend` -- stop issuing new requests once "
                                 "cumulative usage.cost reaches this many USD")
     p_replay.set_defaults(func=cmd_replay)
+
+    # ---- agent verbs (board #1540) ----
+    def _add_common_verb_args(p):
+        p.add_argument("--backend", choices=ALL_BACKENDS, default=RECOMMENDED_DEFAULT_BACKEND_FOR_INTERNAL_DATA,
+                       help=f"default: {RECOMMENDED_DEFAULT_BACKEND_FOR_INTERNAL_DATA} (internal data only -- see SKILL.md)")
+        p.add_argument("--base-url", default=None)
+        p.add_argument("--ext", default=None, help="comma-separated extensions to keep, e.g. py,ts")
+        p.add_argument("--max-chars", type=int, default=60000, help="truncate each file's content to this many chars")
+        p.add_argument("--limit", type=int, default=5000, help="refuse to run over more than this many items")
+        p.add_argument("--parallel", type=int, default=8, help="concurrent item requests")
+        p.add_argument("--max-spend", type=float, default=None, help="stop issuing new requests once cumulative usage.cost (USD) reaches this")
+        p.add_argument("--timeout", type=float, default=90.0)
+        p.add_argument("--log", default=None, help="write a full JSONL receipt (one row per item) to this path")
+
+    p_filter = sub.add_parser("filter", help="keep items where a yes/no question is answered yes")
+    p_filter.add_argument("question")
+    p_filter.add_argument("paths", nargs="+", help="files, directories, globs, or - for stdin")
+    p_filter.add_argument("--lines", action="store_true", help="judge each non-blank line separately")
+    p_filter.add_argument("--threshold", type=float, default=0.5)
+    p_filter.add_argument("--band", default=None, help="borderline band: a half-width (e.g. 0.15) or explicit 'lo,hi'")
+    _add_common_verb_args(p_filter)
+    p_filter.set_defaults(func=cmd_filter)
+
+    p_classify = sub.add_parser("classify", help="put each item in one labeled bucket")
+    p_classify.add_argument("paths", nargs="*", help="files, directories, or globs (or use --items)")
+    p_classify.add_argument("--labels", required=True, help="comma-separated label names, e.g. bug,feature,question")
+    p_classify.add_argument("--items", default=None, help="JSONL of {id, text} instead of / in addition to paths")
+    p_classify.add_argument("--question", default=None)
+    p_classify.add_argument("--no-other", action="store_true", help="do not add an automatic no-match label")
+    p_classify.add_argument("--min-confidence", type=float, default=0.6)
+    _add_common_verb_args(p_classify)
+    p_classify.set_defaults(func=cmd_classify)
+
+    p_rank = sub.add_parser("rank", help="order items by relevance to a query")
+    p_rank.add_argument("query")
+    p_rank.add_argument("paths", nargs="+", help="files, directories, or globs")
+    p_rank.add_argument("--top", type=int, default=10)
+    _add_common_verb_args(p_rank)
+    p_rank.set_defaults(func=cmd_rank)
+
+    p_find = sub.add_parser("find", help="locate the line range(s) in one big file that match a description")
+    p_find.add_argument("description")
+    p_find.add_argument("path", help="one file")
+    p_find.add_argument("--top", type=int, default=5)
+    p_find.add_argument("--chunk", type=int, default=150, help="lines per chunk")
+    p_find.add_argument("--overlap", type=int, default=30, help="overlapping lines between consecutive chunks")
+    p_find.add_argument("--min-score", type=float, default=0.05)
+    _add_common_verb_args(p_find)
+    p_find.set_defaults(func=cmd_find)
 
     return ap
 
