@@ -12,6 +12,14 @@
 # timezone the HOST it is running on actually has (UTC on the VPS,
 # Europe/Paris on the Macs) — never a hardcoded "the host is UTC"
 # assumption.
+# Board #1515: `datetime.astimezone()` (no-arg) silently falls back to UTC
+# when TZ is set to an unknown/invalid zone (e.g. TZ=Bogus/Nonexistent) —
+# it does NOT raise. That is the same silent-wrong-hour class as #850 (a
+# 2h/1h offset nobody notices until a live order fires at the wrong time),
+# just triggered by a bad TZ value instead of a naive mapping. The script
+# now explicitly validates TZ (when set and non-empty) resolves to a real
+# IANA zone via zoneinfo, and exits 2 with a stderr message (no stdout) if
+# it doesn't — never silently defaulting to UTC.
 #
 # This test runs unmodified on BOTH platforms (CI/ubuntu-latest and macOS):
 # it never touches GNU-date-only flags itself, and it EXERCISES both host
@@ -168,6 +176,52 @@ if [[ "$OUT" == "3 8 * * *" || "$OUT" == "03 08 * * *" ]]; then
 else
   ok "helper does NOT reproduce the wrong naive Paris-as-UTC mapping (got '$OUT', not '3 8 * * *')"
 fi
+
+# ── H. Fix #1515: unknown/invalid host TZ fails loud, never silent-UTC ──────
+echo ""
+echo "H. TZ validation (#1515) — unknown TZ fails loud instead of silently defaulting to UTC"
+
+OUT="$(TZ=Bogus/Nonexistent "$SCRIPT" 08:03 one-shot 2>/dev/null)"
+RC=$?
+if [[ $RC -ne 0 && -z "$OUT" ]]; then
+  ok "bogus TZ (one-shot) rejected: non-zero exit ($RC), empty stdout"
+else
+  bad "bogus TZ (one-shot): expected non-zero exit + empty stdout, got exit=$RC stdout='$OUT'"
+fi
+
+ERR="$(TZ=Bogus/Nonexistent "$SCRIPT" 08:03 one-shot 2>&1 >/dev/null)"
+[[ -n "$ERR" ]] && ok "bogus TZ (one-shot) prints a stderr message ('$ERR')" || bad "bogus TZ (one-shot) printed no stderr message"
+
+OUT="$(TZ=Bogus/Nonexistent "$SCRIPT" 08:03 daily 2>/dev/null)"
+RC=$?
+if [[ $RC -ne 0 && -z "$OUT" ]]; then
+  ok "bogus TZ (daily) rejected: non-zero exit ($RC), empty stdout"
+else
+  bad "bogus TZ (daily): expected non-zero exit + empty stdout, got exit=$RC stdout='$OUT'"
+fi
+
+# UTC and Europe/Paris must behave EXACTLY as before this fix (regression
+# guard for the fix itself — a validator that's too strict is its own bug).
+OUT="$(TZ=UTC "$SCRIPT" 08:03 one-shot 2026-07-28)"
+check_eq "TZ=UTC still works unchanged (one-shot)" "03 06 28 7 *" "$OUT"
+
+OUT="$(TZ=UTC "$SCRIPT" 08:03 daily)"
+check_eq "TZ=UTC still works unchanged (daily)" "${EXPECT_MIN} ${EXPECT_HOUR_STR} * * *" "$OUT"
+
+OUT="$(TZ=Europe/Paris "$SCRIPT" 08:03 one-shot 2026-07-28)"
+check_eq "TZ=Europe/Paris still works unchanged (one-shot)" "03 08 28 7 *" "$OUT"
+
+OUT="$(TZ=Europe/Paris "$SCRIPT" 08:03 daily)"
+check_eq "TZ=Europe/Paris still works unchanged (daily)" "03 08 * * *" "$OUT"
+
+# Empty/unset TZ must still fall through to the system zone and work.
+OUT="$(env -u TZ "$SCRIPT" 08:03 daily 2>/dev/null)"
+RC=$?
+[[ $RC -eq 0 && -n "$OUT" ]] && ok "unset TZ still works (daily) -> '$OUT'" || bad "unset TZ failed: exit=$RC stdout='$OUT'"
+
+OUT="$(TZ= "$SCRIPT" 08:03 daily 2>/dev/null)"
+RC=$?
+[[ $RC -eq 0 && -n "$OUT" ]] && ok "empty TZ still works (daily) -> '$OUT'" || bad "empty TZ failed: exit=$RC stdout='$OUT'"
 
 echo ""
 echo "== RESULT: $PASS passed, $FAIL failed =="

@@ -102,13 +102,34 @@ command -v python3 >/dev/null 2>&1 || {
 # done by the same embedded python3 helper so there is exactly one place
 # that touches the tz database.
 CONVERTED="$(python3 - "$PARIS_TIME" "$MODE" "$EXPLICIT_DATE" <<'PY'
+import os
 import sys
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 paris_time, mode, explicit_date = sys.argv[1], sys.argv[2], sys.argv[3]
 hh, mm = (int(x) for x in paris_time.split(":"))
 paris = ZoneInfo("Europe/Paris")
+
+# Fix #1515: validate the HOST zone actually resolves before trusting it.
+# `datetime.astimezone()` (no args) resolves the host's local zone the same
+# way the OS/C library does: TZ env var if set, else the system zone (e.g.
+# /etc/localtime). But an invalid/unknown TZ value (e.g.
+# TZ=Bogus/Nonexistent) does NOT raise there — it silently falls back to
+# UTC, which is exactly the silent-wrong-hour class of board #850 (a 2h/1h
+# offset nobody notices until a live order fires at the wrong time). Only
+# validate when TZ is actually SET and non-empty: an empty/unset TZ must
+# keep falling through to the system zone unchanged (that path already
+# works and must not be touched).
+tz_env = os.environ.get("TZ", "")
+if tz_env:
+    try:
+        ZoneInfo(tz_env)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        print(f"ERROR: TZ={tz_env!r} does not resolve to a known IANA "
+              f"timezone ({e}); refusing to silently fall back to UTC",
+              file=sys.stderr)
+        sys.exit(2)
 
 today_paris = datetime.now(paris).date()
 
