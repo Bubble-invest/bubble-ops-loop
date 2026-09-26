@@ -134,6 +134,15 @@ pick below.
 | Combine several scored dimensions into one downstream number | Weighted composite (pattern 12) | `references/patterns.md#12-weighted-composite-score` |
 | Double-check an output before trusting it (citation support, policy match) | Output verifier / trace evaluator (patterns 7, 8) | `references/patterns.md#7-output--citation-verifier` / `#8-trace-evaluator--llm-as-judge-replacement` |
 | Gate a risky tool call (destructive action, scoped permission) | Action gate (pattern 5) | `references/patterns.md#5-action-gate--guardrail-before-a-tool-call` |
+| Let a small/local model steer a loop (game, agent step, triage) without trusting it with the goal | **Decompose: model answers the easy sub-question, code owns the objective + hard veto** (pattern 19) | `references/patterns.md#19-decompose-small-model-answers-the-easy-sub-question-code-owns-the-objective` |
+
+**Rule of thumb (pattern 19, measured 2026-09-25):** never hand a small model the whole
+decision. Laya asked "which move is best?" in Snake scored 0 food in 1,000+ moves (label
+bias toward one option; no prompt/calibration fix helped: 3/7 on hand cases). Asked only
+"will the snake die if it moves X?" with the food pull + a hard lethality veto in code, the
+same model played well (score 26). The real Jev could take the whole decision (6/6). And
+always measure the model's real contribution against the model-free heuristic: here it
+changed the move only 10% of the time, with the veto correcting it 17% of the time.
 
 The confidence-gated cascade (pattern 2) is the one that shows up almost everywhere
 else — most rows in `references/fleet-opportunities.md` are really "cascade, with a
