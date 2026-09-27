@@ -101,6 +101,21 @@ _SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _DIRECTIVE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _TRANSPORT_FIELDS = {"status", "dispatched_at", "delivered_at", "delivery_digest"}
 
+# board #1551: `_push_repo`'s commit runs inside `_clone_remote_repo`'s fresh,
+# throwaway `git clone` (ISOLATED FLOOR MODE, #606) — a directory bootstrap-
+# dept.sh never touches, so it carries NO local git identity. Since #1120
+# (per-agent uid isolation) the uid this relay runs as (agent-tony, in
+# --remote-delivery mode) has no GLOBAL git user.name/user.email either — so
+# `git commit` there fails outright: "Author identity unknown" (FAIL deliver
+# accountant-20260926-01 -> accountant). Reuse the fleet's existing scripted/
+# isolated-clone identity standard rather than inventing a new one: this is
+# the exact same identity `bootstrap-dept.sh` stamps as a fallback on a fresh
+# clone with no identity (see its "Configure a local identity if none (test
+# env)" step). Set it explicitly per invocation via `-c` so this relay's
+# commit never depends on ambient config (local OR global) again.
+_BOT_NAME = "ops-loop-bot"
+_BOT_EMAIL = "ops-loop-bot@bubble.invest"
+
 
 def _log(msg: str) -> None:
     ts = _now_iso()
@@ -241,7 +256,15 @@ def _push_repo(
         return True, "nothing to commit"
     if _run(["git", "-C", str(repo_dir), "add", "--"] + paths).returncode != 0:
         return False, "git add failed"
-    commit = _run(["git", "-C", str(repo_dir), "commit", "-m", message])
+    # #1551: explicit `-c user.name=/-c user.email=` — never rely on this
+    # clone (or the uid running it) having ANY git identity configured. See
+    # the module-level `_BOT_NAME`/`_BOT_EMAIL` comment for why.
+    commit = _run([
+        "git", "-C", str(repo_dir),
+        "-c", f"user.name={_BOT_NAME}",
+        "-c", f"user.email={_BOT_EMAIL}",
+        "commit", "-m", message,
+    ])
     if commit.returncode != 0:
         out = (commit.stdout + commit.stderr).lower()
         if "nothing to commit" in out:
