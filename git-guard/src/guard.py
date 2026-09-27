@@ -30,6 +30,7 @@ Design invariants (enforced by tests):
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,61 @@ from .staging import staged_paths_for_push
 
 # Hard cap (matches broker MAX_TTL_MINUTES — Notion v4 audit example line 612).
 DEFAULT_TOKEN_TTL_MINUTES = 60
+
+# Board #1552: the fleet-standard install location for the broker binary
+# (matches token-broker/deploy/INSTALL-ON-MORTY.md and the systemd unit's own
+# `Environment=PATH=` prepend — bubble-vps-platform's systemd/bubble-agent@.service,
+# board #1150). This is the LAST-RESORT fallback when the bare name isn't
+# resolvable on PATH at all — see `resolve_broker_binary()`.
+DEFAULT_BROKER_NAME = "bubble-token-broker"
+DEFAULT_BROKER_ABS_PATH = "/opt/bubble-token-broker/bin/bubble-token-broker"
+
+
+def resolve_broker_binary(broker: Optional[str] = None) -> str:
+    """Resolve which broker binary to invoke.
+
+    Board #1552 root cause: the golden `claude-settings.json` env.PATH used
+    by a dept's live Claude Code session listed `/opt/bubble-token-broker/bin`
+    nowhere at all, AND started with `/home/claude/.bun/bin` — a directory
+    untraversable by every `agent-<slug>` OS user since board #1120. Python's
+    `execvp`-family PATH search (used by `subprocess.run(["bubble-token-broker", ...])`)
+    treats a directory-traversal EACCES as if the FILE itself were access-denied,
+    and — per POSIX semantics — reports that EACCES as the terminal error
+    instead of ENOENT, even though the broker was never actually present in
+    that directory. So a bare-name exec surfaced a confusing PermissionError
+    instead of "command not found", and (with the golden PATH now fixed to
+    prepend the broker dir — see bubble-vps-platform PR) callers on an
+    UNPATCHED or stale settings.json would still fail the same way.
+
+    This function is the guard-side half of the fix: it gives any caller that
+    invokes the guard directly (bypassing `force_commit_and_push`'s own PATH
+    prepend, e.g. Ben's fresh post-rotation session calling `bubble-git-guard
+    push` per CLAUDE.md STEP E) a safety net that does not depend on PATH
+    being correct.
+
+    Resolution order:
+      1. An EXPLICIT `broker` (e.g. `--broker /some/path`) is never
+         second-guessed — used verbatim.
+      2. `shutil.which(DEFAULT_BROKER_NAME)` — a PATH search that (unlike the
+         raw execvp path) simply treats an inaccessible directory as "not
+         found there" per-entry (it uses `os.access(..., os.X_OK)`, which
+         does not raise) and keeps looking, so a merely-misordered PATH still
+         resolves correctly here even before any settings.json fix rolls out.
+      3. The fleet-standard absolute install path, IF it exists and is
+         executable — the same fallback board #1150 already wired into the
+         systemd unit's own `Environment=PATH=`.
+      4. Otherwise, return the bare name unchanged — `Guard.push()`'s
+         FileNotFoundError/PermissionError handling takes it from there with
+         a legible error instead of a bare traceback.
+    """
+    if broker:
+        return broker
+    found = shutil.which(DEFAULT_BROKER_NAME)
+    if found:
+        return found
+    if os.path.isfile(DEFAULT_BROKER_ABS_PATH) and os.access(DEFAULT_BROKER_ABS_PATH, os.X_OK):
+        return DEFAULT_BROKER_ABS_PATH
+    return DEFAULT_BROKER_NAME
 
 
 class Guard:
@@ -60,9 +116,11 @@ class Guard:
         default_branch: str = "HEAD",
     ) -> None:
         self.policy = policy
-        # Path to the broker binary. Default = look up `bubble-token-broker`
-        # in PATH at call time. Tests inject an absolute path to a stub.
-        self.broker_cmd = list(broker_cmd) if broker_cmd else ["bubble-token-broker"]
+        # Path to the broker binary. Default = resolve_broker_binary()'s
+        # PATH-lookup-then-fleet-standard-absolute-path fallback (board #1552).
+        # Tests inject an absolute path to a stub via broker_cmd=[...], which
+        # is always respected verbatim (never re-resolved).
+        self.broker_cmd = list(broker_cmd) if broker_cmd else [resolve_broker_binary()]
         self.audit = GuardAudit(log_path=audit_log_path)
         self.default_remote = default_remote
         self.default_branch = default_branch
@@ -199,6 +257,34 @@ class Guard:
             )
             import sys
             print(f"ERROR: broker binary not found: {self.broker_cmd[0]} ({exc})", file=sys.stderr)
+            return 1
+        except PermissionError as exc:
+            # Board #1552: a bare-name exec (e.g. "bubble-token-broker") whose
+            # PATH search hits an UNTRAVERSABLE directory before ever finding
+            # the binary surfaces as PermissionError, not FileNotFoundError —
+            # execvp reports the directory-traversal EACCES as the terminal
+            # error rather than ENOENT (POSIX semantics), which reads exactly
+            # like "found it, but denied" even though the broker was never in
+            # that directory at all. Name the PATH problem explicitly so this
+            # doesn't look like a bare, unexplained traceback.
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="mint_failed", paths_count=len(paths),
+                error=f"broker exec permission denied: {self.broker_cmd[0]}",
+            )
+            import sys
+            print(
+                f"ERROR: permission denied executing broker binary "
+                f"{self.broker_cmd[0]!r} ({exc}). This usually means a "
+                f"directory earlier in PATH is untraversable by this user "
+                f"(e.g. a shared home dir locked down for other users) — "
+                f"execvp reports that as \"permission denied\" instead of "
+                f"\"not found\", even when the broker isn't actually in that "
+                f"directory. Current PATH={os.environ.get('PATH', '')!r}. "
+                f"Pass --broker with an absolute path to bypass PATH search "
+                f"entirely.",
+                file=sys.stderr,
+            )
             return 1
 
         if broker_result.returncode != 0:
