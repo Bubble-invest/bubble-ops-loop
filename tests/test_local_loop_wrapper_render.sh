@@ -61,6 +61,10 @@ render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/g
 bash -n "$TMP/generic.sh"; ok "T1 no-knobs render is valid bash" $?
 want   "T2a bare exec claude"            "exec '/usr/bin/claude'" "$TMP/generic.sh"
 nowant "T2b no token baked into argv"    "TELEGRAM_BOT_TOKEN='"   "$TMP/generic.sh"
+# Board #1548: even the fully knob-less render still writes TELEGRAM_BOT_TOKEN
+# into the plugin's own state-dir .env (independent of --inline-env entirely —
+# the plugin has never needed the REPL env for this).
+want   "T2c board #1548: TELEGRAM_BOT_TOKEN routed to the state-dir .env even with zero knobs" '_lll_write_state_env "/tmp/tg/.env" TELEGRAM_BOT_TOKEN' "$TMP/generic.sh"
 want   "T3a selector present"            'SELECTOR="'             "$TMP/generic.sh"
 want   "T3b selector default file"       "harness-demo"           "$TMP/generic.sh"
 want   "T3c hermes branch present"       'HARNESS" = "hermes"'    "$TMP/generic.sh"
@@ -72,12 +76,22 @@ LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN" \
 bash -n "$TMP/inline.sh"; ok "T4a inline render valid" $?
 # Board #1520: inline-env vars are written to a fresh 0600 tmpfile (wrapper's own
 # process, never argv) — the tmux command only SOURCES that file's path.
-want   "T4b TELEGRAM_BOT_TOKEN written to the 0600 inline-env tmpfile" "printf 'export %s=%q\\n' 'TELEGRAM_BOT_TOKEN'" "$TMP/inline.sh"
+# Board #1548: TELEGRAM_BOT_TOKEN is now ALWAYS filtered OUT of that tmpfile —
+# even when the caller's LOOP_INLINE_ENV still names it (an old-shaped config,
+# exactly as rendered here) — because sourcing it there means it gets `set -a`
+# EXPORTED into the pane's shell and inherited by every Agent-tool subagent +
+# Bash subshell the claude REPL later spawns (the exact leak board #1548
+# reports). It is routed to the plugin's own state-dir .env instead (see the
+# board #1548 assertions below); only CLAUDE_CODE_OAUTH_TOKEN — which the REPL
+# itself legitimately needs to authenticate — still goes through this path.
+nowant "T4b board #1548: TELEGRAM_BOT_TOKEN NO LONGER written to the REPL-inherited inline-env tmpfile" "printf 'export %s=%q\\n' 'TELEGRAM_BOT_TOKEN'" "$TMP/inline.sh"
 want   "T4c OAUTH written to the 0600 inline-env tmpfile"              "printf 'export %s=%q\\n' 'CLAUDE_CODE_OAUTH_TOKEN'" "$TMP/inline.sh"
+want   "T4m board #1548: TELEGRAM_BOT_TOKEN instead routed to the plugin's own state-dir .env" '_lll_write_state_env "/tmp/tg/.env" TELEGRAM_BOT_TOKEN' "$TMP/inline.sh"
+want   "T4n board #1548: defense-in-depth env -u TELEGRAM_BOT_TOKEN on the same exec" "exec env -u TELEGRAM_BOT_TOKEN " "$TMP/inline.sh"
 want   "T4d tmux command sources + deletes the tmpfile (single-quoted path, no VAR= assignment)" "set -a; . '\$_lll_inline_file'; set +a; rm -f '\$_lll_inline_file'" "$TMP/inline.sh"
 nowant "T4e old vuln pattern absent: no raw VAR='\${VAR:-}' assignment in the tmux command" "TELEGRAM_BOT_TOKEN='\${TELEGRAM_BOT_TOKEN:-}'" "$TMP/inline.sh"
 nowant "T4f old vuln pattern absent: OAUTH not assigned inline either" "CLAUDE_CODE_OAUTH_TOKEN='\${CLAUDE_CODE_OAUTH_TOKEN:-}'" "$TMP/inline.sh"
-want   "T4g inline-env tmpfile created under umask 077 + explicit chmod 600" "umask 077 && mktemp" "$TMP/inline.sh"
+want   "T4g inline-env tmpfile created under umask 077 + explicit chmod 600" "umask 077 && mktemp -t 'demo-inline-env'" "$TMP/inline.sh"
 want   "T4h inline-env tmpfile explicit chmod 600"                          'chmod 600 "$_lll_inline_file"' "$TMP/inline.sh"
 # Board #1520 REGRESSION fix: TELEGRAM_STATE_DIR must be a prefix-assignment
 # directly attached to `exec` — NOT to `set -a` (a prefix-assignment binds only
@@ -94,7 +108,12 @@ nowant "T5 explicit empty inline => no tokens" "TELEGRAM_BOT_TOKEN='" "$TMP/noin
 # always empty/unset when no inline-env is requested, guarded by
 # ${_lll_inline_file:-}) — so the var NAME alone is no longer a useful signal.
 # What must stay knob-gated is actually CREATING the tmpfile (mktemp/chmod).
-nowant "T5b explicit empty inline => no inline-env tmpfile CREATED" "umask 077 && mktemp" "$TMP/noinline.sh"
+# NB: "umask 077 && mktemp" alone is no longer a unique signal for the
+# INLINE-env tmpfile — board #1548's _lll_write_state_env (rendered into
+# EVERY wrapper, knob-independent) uses the same idiom for its own unrelated
+# tmpfile. Match the inline-env tmpfile's distinguishing `mktemp -t '<slug>-
+# inline-env'` form instead.
+nowant "T5b explicit empty inline => no inline-env tmpfile CREATED" "mktemp -t 'demo-inline-env'" "$TMP/noinline.sh"
 nowant "T5c explicit empty inline => no inline-env tmpfile chmod either" 'chmod 600 "$_lll_inline_file"' "$TMP/noinline.sh"
 
 echo "== model / chrome / continue =="
@@ -237,6 +256,12 @@ echo "== board #1520 REGRESSION: prefix env (TELEGRAM_STATE_DIR) survives to exe
 # /bin/bash and /bin/zsh (the panes' real $SHELL on these Macs) against a stub
 # `claude` that dumps its cwd + env to a file. This test MUST fail against the
 # pre-fix render (TELEGRAM_STATE_DIR missing) and pass against the fix.
+#
+# Board #1548: the inline-env exemplar here is now CLAUDE_CODE_OAUTH_TOKEN, not
+# TELEGRAM_BOT_TOKEN — the whole point of #1548 is that TELEGRAM_BOT_TOKEN no
+# longer takes this path at all (see the T21 assertions below, which prove it
+# stays <UNSET> in the exec'd process's env even though a real value is present
+# in the wrapper's own calling env throughout this run).
 BEHAV="$TMP/behav"; mkdir -p "$BEHAV/dept" "$BEHAV/tg"
 cat > "$BEHAV/stub-claude" <<STUBEOF
 #!/bin/bash
@@ -244,6 +269,7 @@ cat > "$BEHAV/stub-claude" <<STUBEOF
   echo "PWD=\$(pwd)"
   echo "TELEGRAM_STATE_DIR=\${TELEGRAM_STATE_DIR:-<UNSET>}"
   echo "TELEGRAM_BOT_TOKEN=\${TELEGRAM_BOT_TOKEN:-<UNSET>}"
+  echo "CLAUDE_CODE_OAUTH_TOKEN=\${CLAUDE_CODE_OAUTH_TOKEN:-<UNSET>}"
 } > "$BEHAV/env_dump.txt"
 STUBEOF
 chmod +x "$BEHAV/stub-claude"
@@ -265,13 +291,17 @@ esac
 CAPEOF
 chmod +x "$BEHAV/capture-tmux"
 
-LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN" \
+LOOP_INLINE_ENV="CLAUDE_CODE_OAUTH_TOKEN" \
   render "$BEHAV/dept" behav "$BEHAV/stub-claude" "$BEHAV/capture-tmux" "$BEHAV/tg" /bin "" "" > "$BEHAV/wrapper.sh"
 chmod +x "$BEHAV/wrapper.sh"
 bash -n "$BEHAV/wrapper.sh"; ok "T20a behavioral-test render is valid bash" $?
 
 rm -f "$BEHAV/captured_cmd.txt"
-env -i HOME="$HOME" PATH="/usr/bin:/bin" CAPTURE_OUT="$BEHAV/captured_cmd.txt" TELEGRAM_BOT_TOKEN='FAKE-BEHAV-TOKEN-1520' \
+# A REAL TELEGRAM_BOT_TOKEN value is present in the wrapper's own calling env
+# throughout this run (board #1548: it must reach the plugin's state-dir .env,
+# below, but must NEVER reach the exec'd stub-claude's env).
+env -i HOME="$HOME" PATH="/usr/bin:/bin" CAPTURE_OUT="$BEHAV/captured_cmd.txt" \
+  CLAUDE_CODE_OAUTH_TOKEN='FAKE-BEHAV-TOKEN-1520' TELEGRAM_BOT_TOKEN='FAKE-BEHAV-TELEGRAM-TOKEN-1548' \
   "$BEHAV/wrapper.sh" >"$BEHAV/wrapper.out" 2>"$BEHAV/wrapper.err" || true
 PANE_CMD="$(cat "$BEHAV/captured_cmd.txt" 2>/dev/null)"
 ok "T20b captured the exact pane command string" $([[ -n "$PANE_CMD" ]] && echo 0 || echo 1)
@@ -279,11 +309,27 @@ ok "T20b captured the exact pane command string" $([[ -n "$PANE_CMD" ]] && echo 
 INLINE_FILE_PATH="$(printf '%s' "$PANE_CMD" | grep -oE "/[^ ']*behav-inline-env[^ ']*" | head -1)"
 ok "T20c inline-env tmpfile path extracted from the captured command" $([[ -n "$INLINE_FILE_PATH" ]] && echo 0 || echo 1)
 
+echo "== board #1548: the REAL wrapper run above wrote TELEGRAM_BOT_TOKEN to the state-dir .env, not the REPL =="
+if [[ -f "$BEHAV/tg/.env" ]]; then
+  echo "  PASS: T21a wrapper run wrote $BEHAV/tg/.env"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T21a no $BEHAV/tg/.env written by the real wrapper run"; FAIL=$((FAIL+1))
+fi
+want   "T21b state-dir .env contains the real token value" "TELEGRAM_BOT_TOKEN=FAKE-BEHAV-TELEGRAM-TOKEN-1548" "$BEHAV/tg/.env"
+MODE="$(stat -f '%Lp' "$BEHAV/tg/.env" 2>/dev/null || stat -c '%a' "$BEHAV/tg/.env" 2>/dev/null)"
+if [[ "$MODE" == "600" ]]; then
+  echo "  PASS: T21c state-dir .env is mode 600 (got $MODE)"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T21c state-dir .env is NOT mode 600 (got '$MODE')"; FAIL=$((FAIL+1))
+fi
+nowant "T21d token value never leaked into wrapper stdout" "FAKE-BEHAV-TELEGRAM-TOKEN-1548" "$BEHAV/wrapper.out"
+nowant "T21e token value never leaked into wrapper stderr" "FAKE-BEHAV-TELEGRAM-TOKEN-1548" "$BEHAV/wrapper.err"
+
 for SH in bash zsh; do
   if ! command -v "$SH" >/dev/null 2>&1; then
     echo "  SKIP: T20[$SH] $SH not present on this runner"; continue
   fi
-  printf 'export TELEGRAM_BOT_TOKEN=FAKE-BEHAV-TOKEN-1520\n' > "$INLINE_FILE_PATH"
+  printf 'export CLAUDE_CODE_OAUTH_TOKEN=FAKE-BEHAV-TOKEN-1520\n' > "$INLINE_FILE_PATH"
   chmod 600 "$INLINE_FILE_PATH"
   rm -f "$BEHAV/env_dump.txt"
   env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SH" -c "$PANE_CMD" >"$BEHAV/$SH.out" 2>"$BEHAV/$SH.err"
@@ -298,10 +344,15 @@ for SH in bash zsh; do
   else
     echo "  FAIL: T20e[$SH] TELEGRAM_STATE_DIR did NOT reach the exec'd process (got: $DUMP)"; FAIL=$((FAIL+1))
   fi
-  if printf '%s' "$DUMP" | grep -qF "TELEGRAM_BOT_TOKEN=FAKE-BEHAV-TOKEN-1520"; then
-    echo "  PASS: T20f[$SH] inline-env var (TELEGRAM_BOT_TOKEN) reaches the exec'd process"; PASS=$((PASS+1))
+  if printf '%s' "$DUMP" | grep -qF "CLAUDE_CODE_OAUTH_TOKEN=FAKE-BEHAV-TOKEN-1520"; then
+    echo "  PASS: T20f[$SH] inline-env var (CLAUDE_CODE_OAUTH_TOKEN) reaches the exec'd process"; PASS=$((PASS+1))
   else
     echo "  FAIL: T20f[$SH] inline-env var did NOT reach the exec'd process (got: $DUMP)"; FAIL=$((FAIL+1))
+  fi
+  if printf '%s' "$DUMP" | grep -qF "TELEGRAM_BOT_TOKEN=<UNSET>"; then
+    echo "  PASS: T21f[$SH] board #1548: TELEGRAM_BOT_TOKEN stays UNSET in the exec'd (claude REPL) process"; PASS=$((PASS+1))
+  else
+    echo "  FAIL: T21f[$SH] board #1548: TELEGRAM_BOT_TOKEN leaked into the exec'd process (got: $DUMP)"; FAIL=$((FAIL+1))
   fi
   if [[ ! -e "$INLINE_FILE_PATH" ]]; then
     echo "  PASS: T20g[$SH] inline-env tmpfile deleted after sourcing"; PASS=$((PASS+1))
@@ -315,7 +366,7 @@ done
 # `{ ...; }` grouping this fix also adds — semicolon-joined commands after a
 # failed `&&` are NOT otherwise gated by it).
 BADCMD="$(printf '%s' "$PANE_CMD" | sed "s#cd '$BEHAV/dept'#cd '/nonexistent/board-1520/xyz'#")"
-printf 'export TELEGRAM_BOT_TOKEN=FAKE-BEHAV-TOKEN-1520\n' > "$INLINE_FILE_PATH" 2>/dev/null
+printf 'export CLAUDE_CODE_OAUTH_TOKEN=FAKE-BEHAV-TOKEN-1520\n' > "$INLINE_FILE_PATH" 2>/dev/null
 chmod 600 "$INLINE_FILE_PATH" 2>/dev/null
 rm -f "$BEHAV/env_dump.txt"
 env -i HOME="$HOME" PATH="/usr/bin:/bin" bash -c "$BADCMD" >/dev/null 2>&1

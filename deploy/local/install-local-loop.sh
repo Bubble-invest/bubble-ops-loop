@@ -43,6 +43,15 @@
 #   --inline-env "<VARS>"    space-sep var names passed INLINE into tmux (tmux server env != wrapper env);
 #                            default TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN; pass "" for none
 #   --env-unset "<VARS>"     space-sep var names to `env -u` before exec (e.g. CLAUDE_CODE_OAUTH_TOKEN)
+#   --token-to-state-env "<VARS>"  space-sep var names that must NEVER reach the
+#                            claude REPL env (board #1548 — every Agent-tool
+#                            subagent + Bash subshell inherits it). Default
+#                            TELEGRAM_BOT_TOKEN: filtered OUT of --inline-env
+#                            even if also listed there, written instead —
+#                            current value, atomically, 0600 — straight to
+#                            <telegram-state-dir>/.env (the telegram plugin
+#                            loads its token from there directly), and
+#                            `env -u`'d on the exec too. Pass "" to opt out.
 #   --harness-selector-dir <dir>  dir holding harness-<slug> (default: wrapper dir)
 #   --hermes-bin <path>      hermes binary (default: hermes)
 #   --extra-export "KEY=VAL" extra wrapper export line, emitted verbatim as
@@ -84,6 +93,7 @@
 #                         [--vault <path>] [--legacy-env <path>] [--age-key-file <path>]
 #                         [--model <val>] [--chrome] [--continue]
 #                         [--inline-env "<VARS>"] [--env-unset "<VARS>"]
+#                         [--token-to-state-env "<VARS>"]
 #                         [--harness-selector-dir <dir>] [--hermes-bin <path>]
 #                         [--extra-export "KEY=VAL"]... [--activate]
 #   install-local-loop.sh --uninstall --slug <slug> [--launch-agents-dir <dir>]
@@ -126,6 +136,7 @@ USE_CHROME="${LOCAL_LOOP_CHROME:-}"                     # 1 = --chrome
 USE_CONTINUE="${LOCAL_LOOP_CONTINUE:-}"                 # 1 = --continue + resume-gate + fresh-fallback
 INLINE_ENV="${LOCAL_LOOP_INLINE_ENV-__RENDER_DEFAULT__}"  # space-sep var names passed INLINE into tmux; sentinel = leave the render default (TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 ENV_UNSET="${LOCAL_LOOP_ENV_UNSET:-}"                   # space-sep var names to env -u (e.g. CLAUDE_CODE_OAUTH_TOKEN)
+TOKEN_TO_STATE_ENV="${LOCAL_LOOP_TOKEN_TO_STATE_ENV-__RENDER_DEFAULT__}"  # board #1548; space-sep var names routed to <telegram-state-dir>/.env instead of the claude REPL env; sentinel = leave the render default (TELEGRAM_BOT_TOKEN)
 HARNESS_SELECTOR_DIR="${LOCAL_LOOP_HARNESS_SELECTOR_DIR:-}"  # dir holding harness-<slug> (default: wrapper dir)
 HERMES_BIN="${LOCAL_LOOP_HERMES_BIN:-}"                 # hermes binary (default: hermes)
 EXTRA_EXPORTS="${LOCAL_LOOP_EXTRA_EXPORTS:-}"           # newline-joined KEY=VALUE extra wrapper exports (repeatable --extra-export)
@@ -170,6 +181,8 @@ while [[ $# -gt 0 ]]; do
         --inline-env=*)       INLINE_ENV="${1#--inline-env=}"; shift ;;
         --env-unset)          ENV_UNSET="${2-}"; shift 2 ;;
         --env-unset=*)        ENV_UNSET="${1#--env-unset=}"; shift ;;
+        --token-to-state-env)   TOKEN_TO_STATE_ENV="${2-}"; shift 2 ;;
+        --token-to-state-env=*) TOKEN_TO_STATE_ENV="${1#--token-to-state-env=}"; shift ;;
         --harness-selector-dir)   HARNESS_SELECTOR_DIR="${2:?}"; shift 2 ;;
         --harness-selector-dir=*) HARNESS_SELECTOR_DIR="${1#--harness-selector-dir=}"; shift ;;
         --hermes-bin)         HERMES_BIN="${2:?}"; shift 2 ;;
@@ -262,6 +275,7 @@ say "  plist         = $PLIST_PATH"
 [[ -n "$USE_CONTINUE" ]]         && export LOOP_CONTINUE="$USE_CONTINUE"
 [[ "$INLINE_ENV" != "__RENDER_DEFAULT__" ]] && export LOOP_INLINE_ENV="$INLINE_ENV"
 [[ -n "$ENV_UNSET" ]]            && export LOOP_ENV_UNSET="$ENV_UNSET"
+[[ "$TOKEN_TO_STATE_ENV" != "__RENDER_DEFAULT__" ]] && export LOOP_TOKEN_TO_STATE_ENV="$TOKEN_TO_STATE_ENV"
 [[ -n "$HARNESS_SELECTOR_DIR" ]] && export LOOP_HARNESS_SELECTOR_DIR="$HARNESS_SELECTOR_DIR"
 [[ -n "$HERMES_BIN" ]]           && export LOOP_HERMES_BIN="$HERMES_BIN"
 [[ -n "$EXTRA_EXPORTS" ]]        && export LOOP_EXTRA_EXPORTS="$EXTRA_EXPORTS"

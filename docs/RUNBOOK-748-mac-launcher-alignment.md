@@ -56,6 +56,28 @@ install-local-loop.sh --dept-dir ~/claude-workspaces/Tony_CEO --slug main \
 > argv — and the tmux command only sources that file's PATH, then deletes it. No
 > action needed here: this is transparent to every `--inline-env` invocation
 > above: re-render (this doc's flags are unchanged) to pick it up.
+>
+> **Board #1548 (2026-09-27):** `--inline-env` sourcing the vars into the
+> pane's shell (via `set -a; . <tmpfile>; set +a`) still means every var
+> listed there gets `export`ed into that shell BEFORE `exec` — so it lands in
+> the claude REPL's own process env, and every Agent-tool subagent + its Bash
+> subshells inherit it (a worker `cat` printed a live bot token into its
+> transcript this way, #1520 worker smoke test). The telegram plugin
+> (`server.ts`) never actually needed `TELEGRAM_BOT_TOKEN` there — it already
+> loads its own `$TELEGRAM_STATE_DIR/.env` directly ("real env wins": it fills
+> any var NOT already set). `render_loop_wrapper` now (a) filters
+> `TELEGRAM_BOT_TOKEN` OUT of `--inline-env` automatically — even in the
+> invocations documented above, which still list it, for backward-compat —
+> (b) writes its current value straight into `<telegram-state-dir>/.env`
+> instead (atomically, 0600, every other line in that file preserved), and
+> (c) `env -u TELEGRAM_BOT_TOKEN`'s the exec too, belt-and-suspenders against a
+> stale value already sitting in the tmux SERVER's own persistent global env.
+> `CLAUDE_CODE_OAUTH_TOKEN` is unaffected — the REPL genuinely needs it to
+> authenticate, so it still travels inline exactly as before.
+> **No action needed** for any invocation on this page: re-render (the flags
+> are unchanged) to pick up the fix. A new `--token-to-state-env "<VARS>"` flag
+> (default `TELEGRAM_BOT_TOKEN`; pass `""` to opt out) exists for a dept that
+> wants to customize or disable the routing.
 
 ### Joris Mac — Rick (rnd)  [regenerate LAST; do NOT restart — this is the live session]
 ```
