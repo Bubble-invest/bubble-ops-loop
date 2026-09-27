@@ -24,6 +24,11 @@ jobs:
           bash tests/test_wiki_intent_installed_layout.sh
           bash -n skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh
           bash -n scripts/install-cloud-wiki-compile.sh
+      # Board #1505 step 2: fleet wiki-search tool (FTS/hybrid candidates +
+      # Jev rerank, vendored to every dept). Hermetic — builds a synthetic
+      # temp wiki, never touches the real ~/.claude/agent-memory/shared-wiki.
+      - name: Wiki-search tool tests
+        run: python3 -m pytest tests/test_wiki_search_fts_index.py tests/test_wiki_search_context_builder.py tests/test_wiki_search_rerank_fallback.py -q --tb=short
       # The token-broker (push chokepoint) and git-guard are security code — run
       # their suites too so a regression in the mission-file-lock / structural-push
       # detector is caught here. Run separately: each dir has its own conftest.py.
