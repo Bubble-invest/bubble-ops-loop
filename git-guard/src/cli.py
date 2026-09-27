@@ -31,7 +31,10 @@ Usage examples:
       --remote origin \\
       --ref tony/directive/2026-05-20-buy-aapl
 
-The broker binary is looked up in PATH by default (override with --broker).
+The broker binary is looked up in PATH by default, falling back to the
+fleet-standard /opt/bubble-token-broker/bin/bubble-token-broker absolute path
+if PATH resolution fails (board #1552 — see guard.resolve_broker_binary()).
+Override either with --broker.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .guard import Guard
+from .guard import Guard, resolve_broker_binary
 from .policy_loader import KNOWN_ACTIONS, load_policy
 
 
@@ -99,8 +102,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audit-log", default=None, help="Override audit JSONL path")
     p.add_argument(
         "--broker",
-        default="bubble-token-broker",
-        help="Broker binary (looked up in PATH by default; pass absolute path on Morty)",
+        default=None,
+        help=(
+            "Broker binary. Default (omit this flag): looked up on PATH, "
+            "falling back to the fleet-standard /opt/bubble-token-broker/bin/"
+            "bubble-token-broker if PATH resolution fails (board #1552) — "
+            "see resolve_broker_binary() in guard.py. Pass an absolute path "
+            "here to override both."
+        ),
     )
     p.add_argument(
         "--dry-run",
@@ -128,7 +137,7 @@ def _cmd_push(args: argparse.Namespace) -> int:
     audit_path = Path(args.audit_log) if args.audit_log else None
     guard = Guard(
         policy=policy,
-        broker_cmd=[args.broker],
+        broker_cmd=[resolve_broker_binary(args.broker)],
         audit_log_path=audit_path,
     )
     return guard.push(
