@@ -505,6 +505,14 @@ ${patch_block}
 TMUX_BIN="${tmux_bin}"
 SESSION="ops-loop-${slug}"
 
+# Board #1520 (review follow-up): reap stale inline-env tmpfiles at wrapper
+# start. The tmux-new-session-FAILED case is cleaned up synchronously in
+# start_claude() below; this bounds the other leak mode — the pane itself
+# dying/erroring AFTER tmux new-session already returned success (so the
+# in-pane \`rm -f\` never ran) — across restarts/KeepAlive crash-loops. -mmin
+# +5 / -maxdepth 1 are BSD-find (and bash 3.2) safe — no GNU-only flags.
+find "\${TMPDIR:-/tmp}" -maxdepth 1 -name '${slug}-inline-env.*' -mmin +5 -exec rm -f {} + 2>/dev/null || true
+
 # --- HARNESS SELECTOR (#1133): claude (default) | hermes ---
 # The Mac twin of the VPS /etc/bubble-harness/<slug> selector. A switch flips this
 # file then \`launchctl kickstart -k\` restarts the wrapper, which re-reads it here.
@@ -520,9 +528,21 @@ ${cont_gate}
 # Board #1520: any inline-env secret is written to a fresh 0600 tmpfile HERE (in
 # this wrapper's own process, never argv) before tmux is invoked; the command
 # string handed to tmux only references that file's PATH.
+# Board #1520 (review follow-up): if tmux new-session ITSELF fails (non-zero),
+# the pane never started, so it will never reach the in-pane \`rm -f\` — clean
+# the tmpfile up synchronously here, ON FAILURE ONLY. Do NOT delete
+# unconditionally (e.g. via a blanket trap): \`tmux new-session -d\` returns
+# before the pane has actually sourced the file, so an unconditional delete
+# would race a SUCCESSFUL launch and could remove the file before the pane
+# reads it.
 start_claude() {  # \$1 = leading flag(s): "--continue" or "" (fresh)${inline_file_block}
+  _lll_start_rc=0
   "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-    "${claude_launch}"
+    "${claude_launch}" || _lll_start_rc=\$?
+  if [ "\$_lll_start_rc" -ne 0 ]; then
+    [ -n "\${_lll_inline_file:-}" ] && rm -f "\$_lll_inline_file"
+    return "\$_lll_start_rc"
+  fi
 }
 
 start_hermes() {  # #1133 alternate harness — hermes reads its own profile (${slug})

@@ -81,7 +81,13 @@ want   "T4g inline-env tmpfile created under umask 077 + explicit chmod 600" "um
 want   "T4h inline-env tmpfile explicit chmod 600"                          'chmod 600 "$_lll_inline_file"' "$TMP/inline.sh"
 LOOP_INLINE_ENV="" render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/noinline.sh"
 nowant "T5 explicit empty inline => no tokens" "TELEGRAM_BOT_TOKEN='" "$TMP/noinline.sh"
-nowant "T5b explicit empty inline => no inline-env tmpfile machinery either" "_lll_inline_file" "$TMP/noinline.sh"
+# NB: the failure-cleanup guard in start_claude() (board #1520 review
+# follow-up) references \$_lll_inline_file UNCONDITIONALLY (harmless: it's
+# always empty/unset when no inline-env is requested, guarded by
+# ${_lll_inline_file:-}) — so the var NAME alone is no longer a useful signal.
+# What must stay knob-gated is actually CREATING the tmpfile (mktemp/chmod).
+nowant "T5b explicit empty inline => no inline-env tmpfile CREATED" "umask 077 && mktemp" "$TMP/noinline.sh"
+nowant "T5c explicit empty inline => no inline-env tmpfile chmod either" 'chmod 600 "$_lll_inline_file"' "$TMP/noinline.sh"
 
 echo "== model / chrome / continue =="
 LOOP_MODEL="claude-opus-4-8[1m]" LOOP_CHROME=1 LOOP_CONTINUE=1 \
@@ -134,6 +140,78 @@ else
   echo "  FAIL: T17c tmux argv line does not source the inline-env tmpfile: $TMUX_ARG_LINE"; FAIL=$((FAIL+1))
 fi
 nowant "T17d no literal VAR=value assignment for a live secret rendered anywhere" "TELEGRAM_BOT_TOKEN='SUPERSECRET'" "$TMP/secref.sh"
+
+echo "== board #1520 review follow-up: tmux new-session FAILURE cleans up the inline-env tmpfile =="
+# A failed tmux new-session means the pane never started, so it never reaches
+# the in-pane 'rm -f' — start_claude() must clean up the tmpfile synchronously
+# ON FAILURE ONLY (not via an unconditional/trap delete, which would race a
+# SUCCESSFUL -d launch). This actually EXECUTES the rendered wrapper end-to-end
+# against a stub tmux that always fails new-session, and checks the filesystem.
+FAILTEST="$TMP/failtest"; mkdir -p "$FAILTEST/dept" "$FAILTEST/tg"
+cat > "$FAILTEST/fake-tmux" <<'FAKETMUXEOF'
+#!/bin/bash
+# Simulates a tmux server that always fails to start a new session.
+case "$1" in
+  new-session)  exit 7 ;;
+  kill-session) exit 0 ;;
+  has-session)  exit 1 ;;
+  *)            exit 0 ;;
+esac
+FAKETMUXEOF
+chmod +x "$FAILTEST/fake-tmux"
+LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN" \
+  render "$FAILTEST/dept" failslug /usr/bin/claude "$FAILTEST/fake-tmux" "$FAILTEST/tg" /bin "" "" > "$FAILTEST/wrapper.sh"
+chmod +x "$FAILTEST/wrapper.sh"
+bash -n "$FAILTEST/wrapper.sh"; ok "T18a fail-path render is valid bash" $?
+env -i HOME="$HOME" PATH="/usr/bin:/bin" TMPDIR="${TMPDIR:-/tmp}" TELEGRAM_BOT_TOKEN='TESTTOKEN-NOT-REAL-1520' \
+  "$FAILTEST/wrapper.sh" >"$FAILTEST/wrapper.out" 2>"$FAILTEST/wrapper.err"
+WRC=$?
+if [[ "$WRC" -ne 0 ]]; then
+  echo "  PASS: T18b wrapper exits non-zero when tmux new-session fails"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T18b wrapper unexpectedly exited 0"; FAIL=$((FAIL+1))
+fi
+LEFTOVER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'failslug-inline-env.*' 2>/dev/null)"
+if [[ -z "$LEFTOVER" ]]; then
+  echo "  PASS: T18c no inline-env tmpfile left behind after a failed tmux new-session"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T18c leftover tmpfile(s) after failed launch: $LEFTOVER"; FAIL=$((FAIL+1))
+  rm -f $LEFTOVER
+fi
+nowant "T18d no token value leaked into wrapper stdout on failure" "TESTTOKEN-NOT-REAL-1520" "$FAILTEST/wrapper.out"
+nowant "T18e no token value leaked into wrapper stderr on failure" "TESTTOKEN-NOT-REAL-1520" "$FAILTEST/wrapper.err"
+
+echo "== board #1520 review follow-up: stale inline-env tmpfiles are reaped at wrapper start =="
+# The tmux-FAILURE case is covered above (synchronous rm -f in start_claude()).
+# This covers the OTHER leak mode: tmux new-session returns 0 but the pane
+# itself dies/errors before sourcing (so the in-pane rm -f never runs) — the
+# wrapper-start reaper bounds that leftover across restarts. Extract the exact
+# rendered reaper line (BSD-find-safe: -maxdepth/-name/-mmin/-exec ... +, no
+# GNU-only flags) and run it in isolation against a scratch TMPDIR holding one
+# STALE file (mtime > threshold) and one FRESH file (current mtime, as if a
+# pane were still using it) — assert stale is reaped, fresh is kept.
+render "$FAILTEST/dept" reapslug /usr/bin/claude /usr/bin/tmux "$FAILTEST/tg" /bin "" "" > "$TMP/reap.sh"
+REAPER_LINE="$(grep -m1 "reapslug-inline-env" "$TMP/reap.sh")"
+ok "T19a reaper line found in the render" $([[ -n "$REAPER_LINE" ]] && echo 0 || echo 1)
+want "T19b reaper uses -mmin +5 (BSD/bash-3.2-safe find)" "-mmin +5" "$TMP/reap.sh"
+want "T19c reaper is guarded (never aborts the wrapper)" "-exec rm -f {} + 2>/dev/null || true" "$TMP/reap.sh"
+REAPDIR="$TMP/reapdir"; mkdir -p "$REAPDIR"
+STALE="$REAPDIR/reapslug-inline-env.STALE1"; FRESH="$REAPDIR/reapslug-inline-env.FRESH1"
+: > "$STALE"; : > "$FRESH"
+# Backdate the stale file well past the 5-minute threshold (BSD touch -t).
+touch -t "$(date -v-15M '+%Y%m%d%H%M.%S')" "$STALE"
+TMPDIR="$REAPDIR" bash -c "$REAPER_LINE"
+if [[ ! -e "$STALE" ]]; then
+  echo "  PASS: T19d stale inline-env tmpfile reaped"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T19d stale inline-env tmpfile NOT reaped"; FAIL=$((FAIL+1))
+fi
+if [[ -e "$FRESH" ]]; then
+  echo "  PASS: T19e fresh inline-env tmpfile (still in use) kept"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T19e fresh inline-env tmpfile was WRONGLY reaped"; FAIL=$((FAIL+1))
+fi
+rm -f "$FRESH"
 
 echo "== extra-export (per-agent wrapper exports, e.g. Géraldine PYTHONPATH) =="
 LOOP_EXTRA_EXPORTS='PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' \
