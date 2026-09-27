@@ -422,22 +422,25 @@ fi
     # env -u prefix (drop vars so a lower-precedence source wins, e.g. keychain).
     local env_unset_prefix="" _v
     for _v in $env_unset_vars; do env_unset_prefix+="-u ${_v} "; done
-    # Board #1548 defense-in-depth: whenever we're ALREADY taking the cd+exec
-    # path below (inline-env vars requested, or an explicit env-unset), also
-    # unset every token_state_vars name on that same exec — belt-and-suspenders
-    # in case one of them is somehow still sitting in the tmux SERVER's own
-    # persistent global env (a stale value from before this fix, or a manual
-    # `tmux set-environment`). The fully knob-less "plain" render (no
-    # inline-env, no vault, no env-unset) is intentionally left untouched — it
-    # never passes anything into the pane's env in the first place (T2).
-    if [[ -n "$inline_env_vars" || -n "$env_unset_prefix" ]]; then
-        for _v in $token_state_vars; do
-            case " $env_unset_vars " in
-                *" $_v "*) : ;;  # already unset above, don't duplicate the flag
-                *) env_unset_prefix+="-u ${_v} " ;;
-            esac
-        done
-    fi
+    # Board #1548 (independent review follow-up — execution-confirmed bug):
+    # token_state_vars must be `env -u`'d on the exec UNCONDITIONALLY, not
+    # only when --inline-env/--env-unset are ALSO used. A --vault-only render
+    # (no inline-env, no env-unset) still loads TELEGRAM_BOT_TOKEN into THIS
+    # wrapper's own process env via _lll_load_secrets_safe, and a freshly
+    # spawned tmux SERVER inherits the STARTING client's env as its global
+    # session environment — so the previous gating left a real leak on every
+    # vault-only config. Fold token_state_vars in every time, regardless of
+    # what else is set; this also means the branch below always takes the
+    # explicit cd+TELEGRAM_STATE_DIR+exec form once a default token_state_vars
+    # is in play (safer AND simpler than trying to special-case a "truly
+    # bare" render around it). --token-to-state-env "" (opt out) is the only
+    # way back to the historical bare-exec render with zero other knobs.
+    for _v in $token_state_vars; do
+        case " $env_unset_vars " in
+            *" $_v "*) : ;;  # already unset above, don't duplicate the flag
+            *) env_unset_prefix+="-u ${_v} " ;;
+        esac
+    done
     [[ -n "$env_unset_prefix" ]] && env_unset_prefix="env ${env_unset_prefix}"
     # claude flags
     local chrome_flag="" model_flag=""

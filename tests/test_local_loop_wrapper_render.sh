@@ -59,7 +59,19 @@ render() { bash -c 'source "$0"; render_loop_wrapper "$@"' "$LIB" "$@"; }
 echo "== no-knobs (backward compat) =="
 render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/generic.sh"
 bash -n "$TMP/generic.sh"; ok "T1 no-knobs render is valid bash" $?
-want   "T2a bare exec claude"            "exec '/usr/bin/claude'" "$TMP/generic.sh"
+# Board #1548 (independent review follow-up — execution-confirmed bug): a
+# purely bare `exec 'claude'` with NOTHING else is no longer what the
+# DEFAULT (zero explicit knobs) render produces, because token_state_vars
+# defaults to TELEGRAM_BOT_TOKEN and must now be `env -u`'d UNCONDITIONALLY
+# — a vault-only config (no --inline-env, no --env-unset) was proven to
+# still leak the token into the claude REPL otherwise (a freshly-spawned
+# tmux SERVER inherits the starting wrapper process's own env as its global
+# session environment). The default render is now the explicit
+# cd+TELEGRAM_STATE_DIR+`env -u TELEGRAM_BOT_TOKEN` form; true bare-exec
+# (the historical pre-#748 shape) survives only under an explicit
+# `--token-to-state-env ""` opt-out (T2f below).
+want   "T2a default render explicitly env -u's TELEGRAM_BOT_TOKEN even with zero other knobs" "exec env -u TELEGRAM_BOT_TOKEN '/usr/bin/claude'" "$TMP/generic.sh"
+want   "T2a2 default render still cd's + sets TELEGRAM_STATE_DIR before that exec" "TELEGRAM_STATE_DIR='/tmp/tg' exec env -u TELEGRAM_BOT_TOKEN" "$TMP/generic.sh"
 nowant "T2b no token baked into argv"    "TELEGRAM_BOT_TOKEN='"   "$TMP/generic.sh"
 # Board #1548: even the fully knob-less render still writes TELEGRAM_BOT_TOKEN
 # into the plugin's own state-dir .env (independent of --inline-env entirely —
@@ -69,6 +81,16 @@ want   "T3a selector present"            'SELECTOR="'             "$TMP/generic.
 want   "T3b selector default file"       "harness-demo"           "$TMP/generic.sh"
 want   "T3c hermes branch present"       'HARNESS" = "hermes"'    "$TMP/generic.sh"
 want   "T3d selector defaults to claude" 'HARNESS="claude"'       "$TMP/generic.sh"
+
+echo "== board #1548: --token-to-state-env \"\" opt-out is the only way back to a truly bare exec =="
+LOOP_TOKEN_TO_STATE_ENV="" render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/optout.sh"
+bash -n "$TMP/optout.sh"; ok "T2e opt-out render is valid bash" $?
+want   "T2f opted-out + zero other knobs => the historical bare exec is restored" "exec '/usr/bin/claude'" "$TMP/optout.sh"
+# NB: the _lll_write_state_env FUNCTION DEFINITION is still embedded (same
+# always-present pattern as _lll_load_secrets_safe) — only the CALL (which
+# needs a real target-file argument, hence the opening quote) is knob-gated.
+nowant "T2g opted-out render never CALLS the state-dir writer" '_lll_write_state_env "' "$TMP/optout.sh"
+nowant "T2h opted-out render has no env -u TELEGRAM_BOT_TOKEN" "env -u TELEGRAM_BOT_TOKEN" "$TMP/optout.sh"
 
 echo "== inline-env =="
 LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN" \

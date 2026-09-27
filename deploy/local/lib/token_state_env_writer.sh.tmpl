@@ -34,7 +34,17 @@ _lll_write_state_env() {
       for _v in $_pending; do
         [ "$_key" = "$_v" ] && _managed=1
       done
-      [ "$_managed" = "1" ] || printf '%s\n' "$_line" >> "$_tmp"
+      if [ "$_managed" = "1" ]; then
+        # Board #1548 (independent review follow-up): only drop this line
+        # when a FRESH non-empty value is actually about to replace it below
+        # (checked here, not just "is this key managed"). An empty/failed
+        # vault decrypt yields no fresh value for this var — in that case the
+        # ORIGINAL line must survive unchanged, never be silently wiped.
+        _val="${!_key:-}"
+        [ -n "$_val" ] || printf '%s\n' "$_line" >> "$_tmp"
+      else
+        printf '%s\n' "$_line" >> "$_tmp"
+      fi
     done < "$_target"
   fi
   for _v in $_pending; do
