@@ -425,14 +425,28 @@ if ls \"\$_proj\"/*.jsonl >/dev/null 2>&1; then CONT_FLAG=\"--continue\"; fi"
 
     local claude_launch
     if [[ -n "$inline_env_vars" || -n "$env_unset_prefix" ]]; then
-        local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' "
         if [[ -n "$inline_env_vars" ]]; then
-            # Source the 0600 tmpfile's PATH (never a secret value) inside the
-            # pane, then delete it — the token/oauth value itself never touches
-            # this command string, so it never touches argv.
-            inline_prefix+="set -a; . \"\$_lll_inline_file\"; set +a; rm -f \"\$_lll_inline_file\"; "
+            # Board #1520 REGRESSION FIX: a shell prefix-assignment (VAR=val CMD)
+            # binds ONLY to the single simple command it directly precedes. The
+            # previous render put `TELEGRAM_STATE_DIR='...'` before `set -a` (an
+            # intervening builtin needed to sequence source-then-cleanup of the
+            # inline-env tmpfile) — that made the assignment TEMPORARY (scoped to
+            # `set -a` alone) and it was GONE by the time `exec` ran. A re-rendered/
+            # restarted dept would then boot its telegram plugin on the DEFAULT
+            # state dir (Tonio's bot) instead of its own, causing poller conflicts.
+            # Verified empirically in both /bin/zsh (the panes' actual $SHELL on
+            # these Macs) and /bin/bash. Fix: keep EVERY prefix assignment
+            # (TELEGRAM_STATE_DIR, `env -u`) directly attached to `exec` — the one
+            # command that must actually receive them — and group the
+            # source+cleanup+exec in `{ ...; }` so a failed `cd` (short-circuited
+            # by `&&`) can never fall through to an exec in the wrong directory:
+            # semicolon-joined commands after a failed `&&` are NOT otherwise
+            # gated by it. The tmpfile path is single-quoted so it stays a plain,
+            # safe literal once the pane's shell re-parses this string.
+            claude_launch="cd '${dept_dir}' && { set -a; . '\$_lll_inline_file'; set +a; rm -f '\$_lll_inline_file'; TELEGRAM_STATE_DIR='${tg_state}' exec ${env_unset_prefix}'${claude_bin}' ${claude_flags}; }"
+        else
+            claude_launch="cd '${dept_dir}' && TELEGRAM_STATE_DIR='${tg_state}' exec ${env_unset_prefix}'${claude_bin}' ${claude_flags}"
         fi
-        claude_launch="cd '${dept_dir}' && ${inline_prefix}exec ${env_unset_prefix}'${claude_bin}' ${claude_flags}"
     else
         claude_launch="exec '${claude_bin}' ${claude_flags}"
     fi
