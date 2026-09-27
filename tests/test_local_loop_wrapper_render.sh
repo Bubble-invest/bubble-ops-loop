@@ -70,10 +70,18 @@ echo "== inline-env =="
 LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN" \
   render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/inline.sh"
 bash -n "$TMP/inline.sh"; ok "T4a inline render valid" $?
-want "T4b TELEGRAM_BOT_TOKEN inlined" "TELEGRAM_BOT_TOKEN='\${TELEGRAM_BOT_TOKEN:-}'" "$TMP/inline.sh"
-want "T4c OAUTH inlined"              "CLAUDE_CODE_OAUTH_TOKEN='\${CLAUDE_CODE_OAUTH_TOKEN:-}'" "$TMP/inline.sh"
+# Board #1520: inline-env vars are written to a fresh 0600 tmpfile (wrapper's own
+# process, never argv) — the tmux command only SOURCES that file's path.
+want   "T4b TELEGRAM_BOT_TOKEN written to the 0600 inline-env tmpfile" "printf 'export %s=%q\\n' 'TELEGRAM_BOT_TOKEN'" "$TMP/inline.sh"
+want   "T4c OAUTH written to the 0600 inline-env tmpfile"              "printf 'export %s=%q\\n' 'CLAUDE_CODE_OAUTH_TOKEN'" "$TMP/inline.sh"
+want   "T4d tmux command sources + deletes the tmpfile (no VAR= assignment)" "set -a; . \"\$_lll_inline_file\"; set +a; rm -f \"\$_lll_inline_file\"" "$TMP/inline.sh"
+nowant "T4e old vuln pattern absent: no raw VAR='\${VAR:-}' assignment in the tmux command" "TELEGRAM_BOT_TOKEN='\${TELEGRAM_BOT_TOKEN:-}'" "$TMP/inline.sh"
+nowant "T4f old vuln pattern absent: OAUTH not assigned inline either" "CLAUDE_CODE_OAUTH_TOKEN='\${CLAUDE_CODE_OAUTH_TOKEN:-}'" "$TMP/inline.sh"
+want   "T4g inline-env tmpfile created under umask 077 + explicit chmod 600" "umask 077 && mktemp" "$TMP/inline.sh"
+want   "T4h inline-env tmpfile explicit chmod 600"                          'chmod 600 "$_lll_inline_file"' "$TMP/inline.sh"
 LOOP_INLINE_ENV="" render /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" "" > "$TMP/noinline.sh"
 nowant "T5 explicit empty inline => no tokens" "TELEGRAM_BOT_TOKEN='" "$TMP/noinline.sh"
+nowant "T5b explicit empty inline => no inline-env tmpfile machinery either" "_lll_inline_file" "$TMP/noinline.sh"
 
 echo "== model / chrome / continue =="
 LOOP_MODEL="claude-opus-4-8[1m]" LOOP_CHROME=1 LOOP_CONTINUE=1 \
@@ -105,6 +113,27 @@ want "T9a hermes cd + PATH inline" "PATH='/bin:\$PATH' exec hermes -p 'demo' gat
 echo "== secrecy: no VALUES embedded (env -i render) =="
 env -i bash -c 'source "$0"; TELEGRAM_BOT_TOKEN=SUPERSECRET LOOP_INLINE_ENV="TELEGRAM_BOT_TOKEN" render_loop_wrapper /tmp/dept demo /usr/bin/claude /usr/bin/tmux /tmp/tg /bin "" ""' "$LIB" > "$TMP/secref.sh" 2>/dev/null
 nowant "T10 no secret value embedded at render time" "SUPERSECRET" "$TMP/secref.sh"
+
+echo "== board #1520: rendered tmux argv carries no token value / VAR= literal =="
+# The line handed to \`tmux new-session\` is exactly what becomes argv for the
+# tmux client AND the pane's shell (\$SHELL -c "<this line>") — both ps/pgrep-fl
+# visible until exec. Extract that exact line (the 2nd line of start_claude()'s
+# tmux new-session call, the quoted string argument) and assert it contains
+# neither a live secret value nor a literal \`VAR=\` assignment for any
+# requested inline-env var — only a sourced tmpfile PATH.
+TMUX_ARG_LINE="$(awk '/\$TMUX_BIN" new-session -d -s "\$SESSION"/{getline; print; exit}' "$TMP/inline.sh")"
+ok "T17a tmux argv line extracted from the inline render" $([[ -n "$TMUX_ARG_LINE" ]] && echo 0 || echo 1)
+if printf '%s' "$TMUX_ARG_LINE" | grep -qE "(TELEGRAM_BOT_TOKEN|CLAUDE_CODE_OAUTH_TOKEN)='?="; then
+  echo "  FAIL: T17b tmux argv line contains a literal VAR= assignment: $TMUX_ARG_LINE"; FAIL=$((FAIL+1))
+else
+  echo "  PASS: T17b tmux argv line contains no literal TELEGRAM_BOT_TOKEN=/CLAUDE_CODE_OAUTH_TOKEN= assignment"; PASS=$((PASS+1))
+fi
+if printf '%s' "$TMUX_ARG_LINE" | grep -qF '$_lll_inline_file'; then
+  echo "  PASS: T17c tmux argv line instead sources the inline-env tmpfile"; PASS=$((PASS+1))
+else
+  echo "  FAIL: T17c tmux argv line does not source the inline-env tmpfile: $TMUX_ARG_LINE"; FAIL=$((FAIL+1))
+fi
+nowant "T17d no literal VAR=value assignment for a live secret rendered anywhere" "TELEGRAM_BOT_TOKEN='SUPERSECRET'" "$TMP/secref.sh"
 
 echo "== extra-export (per-agent wrapper exports, e.g. Géraldine PYTHONPATH) =="
 LOOP_EXTRA_EXPORTS='PYTHONPATH="$HOME/x:${PYTHONPATH:-}"' \
