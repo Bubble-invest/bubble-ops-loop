@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1972,6 +1972,114 @@ def load_management_exports(dept_slug: str) -> Dict[str, Any]:
         "children": children_entries,
         "total_open_gates": total_open_gates,
         "stale_children": stale_children,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Board #1524 — weekly CFO report (Géraldine/accountant) on /dept/<slug>
+# ---------------------------------------------------------------------------
+
+# How far back to look for the latest weekly report. The mission
+# (`weekly_cfo_report`, Layer 4) fires every Wednesday, so 5 weeks is a
+# generous window against a missed week or two — a report older than this
+# is treated as "none" (an empty state is the right signal that the weekly
+# mission itself has stalled, not a stale render of a months-old report).
+_CFO_REPORT_LOOKBACK_WEEKS = 5
+
+# Short history list length ({{OPERATOR}} ask: "ideally a short history").
+_CFO_REPORT_HISTORY_LIMIT = 6
+
+_CFO_REPORT_REL_PATH = "4/cfo-report.md"
+
+
+def load_cfo_report(slug: str) -> Dict[str, Any]:
+    """Return the latest weekly CFO report + a short history, for /dept/<slug>.
+
+    Board #1524 (Jade/CEO via Telegram msg 740, 2026-09-25): Géraldine's
+    weekly `outputs/<YYYY-MM-DD>/4/cfo-report.md` (mission `weekly_cfo_report`,
+    Layer 4, fires Wednesdays) is today only reachable by going into GitHub.
+    Success = {{OPERATOR}} opens /dept/accountant and sees the latest report
+    without leaving the cockpit.
+
+    Mirrors the EXACT mechanism `_load_child_entry`/`_find_latest_output_date`
+    already use for the daily `risk-brief.md` (GAP 11, board #1299): same
+    `repo_path()` root, same `outputs/<date>/` scan via
+    `date.fromisoformat(child.name)`, same plain-text read — no new
+    dependency, no new repo-resolution logic. The one difference: that
+    helper only ever checks the SINGLE most-recent output date (risk-brief.md
+    is daily, so "latest date dir" and "latest report" are the same thing).
+    This report is WEEKLY, so a `4/` dir can exist for days with no
+    `cfo-report.md` in it (any non-Wednesday) — this scans every dated dir
+    within the lookback window and picks the newest one that actually HAS
+    the file, rather than assuming the newest `outputs/` date is the report's
+    date.
+
+    Returns:
+      {
+        "latest": {"date": "YYYY-MM-DD", "content": str, "rel_path": str}
+                   | None,
+        "history": [{"date": "YYYY-MM-DD", "rel_path": str}, ...],
+                    # newest first, includes `latest`, capped at
+                    # _CFO_REPORT_HISTORY_LIMIT entries.
+      }
+
+    Never raises: a missing dept root, missing outputs/, unreadable file, or
+    a non-date-named dir under outputs/ all degrade gracefully — worst case
+    {"latest": None, "history": []}, same "nothing found" shape the empty
+    state on the page expects.
+    """
+    empty: Dict[str, Any] = {"latest": None, "history": []}
+    root = repo_path(slug)
+    if root is None:
+        return empty
+    outputs_dir = root / "outputs"
+    if not outputs_dir.exists():
+        return empty
+
+    cutoff = date.today() - timedelta(weeks=_CFO_REPORT_LOOKBACK_WEEKS)
+    try:
+        children = list(outputs_dir.iterdir())
+    except OSError as exc:
+        _log.warning("load_cfo_report: could not list %s: %s", outputs_dir, exc)
+        return empty
+
+    found_dates: List[date] = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        try:
+            d = date.fromisoformat(child.name)
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+        if (child / _CFO_REPORT_REL_PATH).exists():
+            found_dates.append(d)
+
+    if not found_dates:
+        return empty
+
+    found_dates.sort(reverse=True)
+    history = [
+        {"date": d.isoformat(), "rel_path": f"outputs/{d.isoformat()}/{_CFO_REPORT_REL_PATH}"}
+        for d in found_dates[:_CFO_REPORT_HISTORY_LIMIT]
+    ]
+
+    latest_date = found_dates[0]
+    latest_path = outputs_dir / latest_date.isoformat() / _CFO_REPORT_REL_PATH
+    try:
+        content = latest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _log.warning("load_cfo_report: could not read %s: %s", latest_path, exc)
+        return {"latest": None, "history": history}
+
+    return {
+        "latest": {
+            "date": latest_date.isoformat(),
+            "content": content,
+            "rel_path": history[0]["rel_path"],
+        },
+        "history": history,
     }
 
 
