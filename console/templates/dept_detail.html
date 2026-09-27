@@ -507,6 +507,50 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
     </details>
   {% endif %}
 
+  {# ─── Rapport CFO hebdomadaire (board #1524) ─────────────────────────────
+     Jade/CEO ask via Telegram msg 740 (2026-09-25): Géraldine's weekly
+     `outputs/<date>/4/cfo-report.md` (mission `weekly_cfo_report`, Layer 4,
+     fires Wednesdays) is today only reachable via GitHub. Success = opening
+     /dept/accountant shows the latest report without leaving the cockpit.
+     Same trust boundary + rendering as the free-space whiteboard below
+     (agent-authored → sanitized markdown→HTML via markdown_render, never
+     raw). Gated on having ever seen a report OR being the accountant dept
+     itself, so every OTHER dept's page (Ben, Maya, content…) doesn't grow
+     a permanently-empty "CFO report" card that means nothing to them. #}
+  {% if cfo_report.latest or cfo_report.history or dept.slug == 'accountant' %}
+  <details class="whiteboard-free-details" {% if cfo_report.latest %}open{% endif %}>
+    <summary class="whiteboard-free-summary">
+      📊 <span class="whiteboard-free-title">Rapport CFO hebdomadaire</span>
+      <span class="whiteboard-free-sub">
+        {% if cfo_report.latest %}semaine du {{ cfo_report.latest.date }}{% else %}aucun rapport récent{% endif %}
+      </span>
+    </summary>
+    <div class="whiteboard-free">
+      {% if cfo_report.latest %}
+        {# cfo_report_html is sanitized markdown→HTML (markdown_render) — a
+           Markup object, rendered unescaped, same as whiteboard_freeform. #}
+        <article class="whiteboard-free-body markdown-body">{{ cfo_report_html }}</article>
+        <p class="loop-extra">
+          <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ cfo_report.latest.rel_path | urlencode }}">Voir le fichier source →</a>
+        </p>
+      {% else %}
+        <div class="whiteboard-free-empty">
+          <p class="whiteboard-free-empty-lede">Aucun rapport CFO hebdomadaire trouvé ces {{ 5 }} dernières semaines.</p>
+          <p class="whiteboard-free-hint">Le rapport est généré chaque mercredi par la mission <code>weekly_cfo_report</code> (Layer 4) : <code>outputs/&lt;date&gt;/4/cfo-report.md</code>.</p>
+        </div>
+      {% endif %}
+      {% if cfo_report.history|length > 1 %}
+        <div class="loop-extra" style="margin-top:12px;">
+          <span class="loop-extra-label">Historique :</span>
+          {% for h in cfo_report.history[1:] %}
+            <a class="loop-file loop-file--inline" href="/dept/{{ dept.slug }}/output?f={{ h.rel_path | urlencode }}">{{ h.date }}</a>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endif %}
+
   {# ─── Whiteboard — espace libre ({{OPERATOR}} msg 1174) ─────────────────
      A real blank canvas the dept manager fills with anything. Content comes
      from <repo>/whiteboard.md, rendered verbatim. #534: the free-space canvas

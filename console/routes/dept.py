@@ -318,6 +318,22 @@ def dept_detail(
     if l1_band is not None:
         layer_bands[1] = l1_band
     gate_band = mission_pieces.resolve_gate_band(missions_full)
+    # Weekly CFO report (board #1524) — Géraldine's `weekly_cfo_report`
+    # mission (L4, fires Wednesdays) writes outputs/<date>/4/cfo-report.md;
+    # today only reachable via GitHub. Mirrors the risk-brief.md /
+    # management-export.yaml dated-output-dir scan (GAP 11) — see
+    # github_reader.load_cfo_report docstring. Graceful/empty for every
+    # other dept (no cfo-report.md ever written → cfo_report["latest"] is
+    # None, template renders the empty state).
+    cfo_report = github_reader.load_cfo_report(slug)
+    # Agent-authored content — sanitized markdown→HTML, same trust boundary
+    # as whiteboard_freeform (render_markdown_safe: nh3-sanitized, no new
+    # dependency).
+    cfo_report_html = (
+        markdown_render.render_markdown_safe(cfo_report["latest"]["content"])
+        if cfo_report["latest"] is not None
+        else None
+    )
     return request.app.state.templates.TemplateResponse(
         "dept_detail.html",
         {
@@ -341,6 +357,8 @@ def dept_detail(
             "whiteboard_notes_rendered": whiteboard_notes_rendered,
             "whiteboard_freeform": whiteboard_freeform,
             "whiteboard_graphs": whiteboard_graphs,
+            "cfo_report": cfo_report,
+            "cfo_report_html": cfo_report_html,
             "nav_chart": nav_chart,
             "nav_range_options": list(nav_history.RANGE_DAYS.keys()),
             "risk_clusters": risk_cluster_table,
