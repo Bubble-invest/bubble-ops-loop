@@ -1007,8 +1007,12 @@ PYEOF
 # renders the SAME kind of deterministic DUE_MISSIONS envelope the floor's
 # FORCE_LAYER tick already trusts (`build_mission_tick_prompt`). Try it FIRST;
 # fall back to the historical free text, UNCHANGED, on any refusal or error
-# (unknown schema, nothing due right now, or a hard error) — never fatal, and
-# never silently different: `_inject_wake_text` always returns non-empty text.
+# (unknown/broken schema, or a hard error) — never fatal, and never silently
+# different: `_inject_wake_text` always returns non-empty text. Board #1513:
+# "nothing due right now" on a valid manifest is no longer a refusal — the
+# generator itself now emits a machine-generated `DUE_MISSIONS=[]` idle
+# envelope (exit 0) for that case, so this log line's "or nothing due" branch
+# below only fires for a genuine schema/manifest problem now.
 _inject_wake_now_epoch() {
     if [[ "${BUBBLE_BACKUP_TEST_UID_OK:-0}" == "1" && -n "${BUBBLE_BACKUP_TEST_NOW_UTC:-}" ]]; then
         "$PY" -c 'import sys, datetime

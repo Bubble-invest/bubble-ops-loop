@@ -94,10 +94,11 @@ grep -q 'inject using generated DUE_MISSIONS wake-prompt' "$WORK/content.log" \
 
 # ── Case 2: recurring_missions configured but NOTHING due right now ────────
 # select_due_missions has no eligible mission this instant (every mission's
-# own cadence/time gate is unmet) — wake-prompt's fail-closed contract (#1484
-# PR review: never emit an empty DUE_MISSIONS=[]) refuses, and the runner
-# MUST fall back to the historical generic WAKE_MESSAGE, byte-for-byte
-# unchanged, exactly like #501 did for loop-backup.sh's inject_live_loop.
+# own cadence/time gate is unmet). Board #1513: this is a genuine heartbeat
+# tick, not a schema/manifest error, so wake-prompt now emits the machine-
+# generated `DUE_MISSIONS=[]` idle envelope (exit 0) instead of refusing —
+# the runner uses IT, not the historical generic WAKE_MESSAGE fallback
+# (pre-#1513 behaviour, kept only for a genuine refusal/error case).
 NOTDUE="$WORK/accountant"
 NOTDUE_STATE="$WORK/accountant-state"
 mkdir -p "$NOTDUE/missions/weekly_cfo_report" "$NOTDUE/layers/4" "$NOTDUE/outputs" "$NOTDUE_STATE"
@@ -128,17 +129,20 @@ LOCAL_LOOP_NOW_EPOCH=1789905600 run "${notdue_args[@]}" >"$WORK/accountant.log" 
 rc=$?
 prompt2="$(tail -n 1 "$NOTDUE_STATE/inject" 2>/dev/null)"
 [[ "$rc" -eq 0 && -n "$prompt2" ]] \
-    && ok "accountant: a wake was still injected (fallback path, not a hard failure)" \
+    && ok "accountant: a wake was still injected" \
     || bad "accountant: wake injection failed outright (rc=$rc): $(cat "$WORK/accountant.log")"
-[[ "$prompt2" == *"$FALLBACK_NEEDLE"* ]] \
-    && ok "accountant: fallback free text used, unchanged, when nothing is due" \
-    || bad "accountant: fallback text missing/changed: $prompt2"
-[[ "$prompt2" != *'DUE_MISSIONS='* ]] \
-    && ok "accountant: no DUE_MISSIONS envelope leaked in when nothing is due" \
-    || bad "accountant: a DUE_MISSIONS envelope leaked in despite nothing due"
-grep -q 'wake-prompt generator refused/errored' "$WORK/accountant.log" \
-    && ok "accountant: log records the generator refusal, non-fatally" \
-    || bad "accountant: log did not record the generator refusal: $(cat "$WORK/accountant.log")"
+[[ "$prompt2" == *'DUE_MISSIONS=[].'* ]] \
+    && ok "accountant: #1513 idle envelope used (explicit DUE_MISSIONS=[]), not the free-text fallback" \
+    || bad "accountant: idle envelope missing/malformed: $prompt2"
+[[ "$prompt2" != *"$FALLBACK_NEEDLE"* ]] \
+    && ok "accountant: free-text fallback NOT used now that #1513's idle envelope covers this tick" \
+    || bad "accountant: fallback free text leaked in despite the #1513 idle envelope existing"
+[[ "$prompt2" == *'STALENESS:'* ]] \
+    && ok "accountant: idle envelope still carries the staleness re-check clause" \
+    || bad "accountant: idle envelope missing the staleness clause: $prompt2"
+grep -q 'inject using generated DUE_MISSIONS wake-prompt' "$WORK/accountant.log" \
+    && ok "accountant: log records the generator path was used (idle envelope, not a refusal)" \
+    || bad "accountant: log did not record generator use: $(cat "$WORK/accountant.log")"
 
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
