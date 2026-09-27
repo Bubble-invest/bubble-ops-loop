@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from scripts.lib.loop_backup import (
+    _MISSION_ID_RE,
     DueMissionConfigError,
     claim_due_missions,
     due_mission_plan,
@@ -670,6 +671,174 @@ def test_command_wake_prompt_emits_idle_envelope_on_vps_recurring_missions_schem
     # its cadence, never a fabricated next-fire timestamp.
     assert "data_update(daily@07:30)" in out
     assert "do not infer or state an exact next-due time" in out
+
+
+# ── #1513 PR-review follow-up: structural validation gate for recurring_
+# missions ────────────────────────────────────────────────────────────────
+#
+# Independent review flagged that `_plan_for_wake_recurring` did no
+# structural validation of `recurring_missions` entries: `select_due_
+# missions`/`_mission_cadence_due` are permissive BY DESIGN for a mission
+# that can never become due (out-of-range `layer`, unrecognized `cadence`,
+# missing `time`/`day`) — it is just silently never selected, never an
+# exception. Pre-#1513 that silence didn't matter (wake-prompt refused on
+# ANY empty plan regardless of why). #1513 turned "empty plan" into a
+# trusted, printed `DUE_MISSIONS=[]` — so a broken entry now silently
+# produces a confident-looking idle envelope instead of a refusal, exactly
+# the #1487 "well-formed but wrong" failure this whole family of cards
+# exists to catch. These tests pin the fix: `_validate_recurring_missions`
+# (called unconditionally inside `_plan_for_wake_recurring`) must still
+# refuse for each of these shapes, and the idle envelope must still fire
+# for an all-valid, nothing-due manifest.
+
+
+def _recurring_missions_dept_yaml_custom(dept_dir: Path, missions: list) -> None:
+    """Like `_recurring_missions_dept_yaml` but with a caller-supplied
+    `recurring_missions` list, for exercising `_validate_recurring_missions`
+    against specific broken shapes. Creates the same Layer-1 PROMPT.md the
+    default fixture uses (mission-file existence is validated too), plus a
+    per-mission `missions/<id>/PROMPT.md` for every mission whose id is a
+    safe snake_case string (so the mission-file-existence check is never
+    what trips a test aimed at a DIFFERENT structural problem)."""
+    import yaml
+
+    (dept_dir / "layers" / "1").mkdir(parents=True, exist_ok=True)
+    (dept_dir / "layers" / "1" / "PROMPT.md").write_text("# layer 1\n", encoding="utf-8")
+    for mission in missions:
+        mission_id = mission.get("id")
+        if isinstance(mission_id, str) and _MISSION_ID_RE.fullmatch(mission_id):
+            (dept_dir / "missions" / mission_id).mkdir(parents=True, exist_ok=True)
+            (dept_dir / "missions" / mission_id / "PROMPT.md").write_text(
+                f"# {mission_id}\n", encoding="utf-8"
+            )
+    (dept_dir / "dept.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "department": {"slug": "ben", "display_name": "Ben"},
+                "layers": {"subscribed": [1, 2, 3, 4]},
+                "recurring_missions": missions,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_command_wake_prompt_refuses_on_out_of_range_layer(tmp_path: Path, capsys):
+    """`layer: 99` — the exact PR-review repro. `select_due_missions` would
+    silently never select this mission (no layer 1..4 walk ever matches 99),
+    turning it into a confident `DUE_MISSIONS=[]` pre-fix. Must now refuse."""
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml_custom(
+        dept_dir,
+        [
+            {
+                "id": "ghost_layer_mission",
+                "layer": 99,
+                "cadence": "daily",
+                "time": "07:30",
+            }
+        ],
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    with pytest.raises(DueMissionConfigError, match="layer must be an int in 1..4"):
+        command_wake_prompt(args)
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_refuses_on_unrecognized_cadence(tmp_path: Path, capsys):
+    """A typo'd/unsupported cadence string — `_mission_cadence_due` would
+    silently fail closed ("Unknown cadence string") forever, never raising.
+    The idle envelope must not paper over that."""
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml_custom(
+        dept_dir,
+        [{"id": "typo_cadence_mission", "layer": 1, "cadence": "dailyy"}],
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    with pytest.raises(DueMissionConfigError, match="unrecognized cadence"):
+        command_wake_prompt(args)
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_refuses_on_missing_id(tmp_path: Path, capsys):
+    """An entry with no `id` at all — sorting/formatting would silently
+    coerce it to `""` (e.g. `m.get('id', '')` elsewhere in the selector)
+    rather than raising. Must refuse instead."""
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml_custom(
+        dept_dir,
+        [{"layer": 1, "cadence": "daily", "time": "07:30"}],
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    with pytest.raises(DueMissionConfigError, match="id must be a safe snake_case string"):
+        command_wake_prompt(args)
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_refuses_on_daily_missing_time(tmp_path: Path, capsys):
+    """`cadence: daily` with no `time:` — `_mission_cadence_due`'s daily
+    branch returns False forever without it (silently). Must refuse."""
+    from scripts.due_missions import DueMissionConfigError, command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml_custom(
+        dept_dir,
+        [{"id": "no_time_mission", "layer": 1, "cadence": "daily"}],
+    )
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    with pytest.raises(DueMissionConfigError, match="requires a time"):
+        command_wake_prompt(args)
+    assert capsys.readouterr().out == ""
+
+
+def test_command_wake_prompt_emits_idle_envelope_when_all_recurring_missions_valid_but_not_due(
+    tmp_path: Path, capsys
+):
+    """Sibling of the earlier idle-envelope test, but explicitly exercising
+    the NEW validation gate: two structurally valid missions (different
+    layers, different recognized cadences, including a `cron:` entry),
+    neither due yet. Must still emit the idle envelope (exit 0), and the
+    hint must name only these validated missions."""
+    from scripts.due_missions import command_wake_prompt, parser
+
+    dept_dir = tmp_path / "ben"
+    dept_dir.mkdir()
+    _recurring_missions_dept_yaml_custom(
+        dept_dir,
+        [
+            {"id": "quiet_daily", "layer": 1, "cadence": "daily", "time": "07:30"},
+            {"id": "quiet_quarterly", "layer": 4, "cadence": "cron:0 8 1 1,4,7,10 *"},
+        ],
+    )
+    # 2026-09-13T04:00:00Z == 06:00 Paris — before the daily mission's own
+    # 07:30 floor, and nowhere near the quarterly cron's next fire.
+    args = parser().parse_args(
+        ["wake-prompt", "--dept-dir", str(dept_dir), "--now-epoch", "1789272000"]
+    )
+    rc = command_wake_prompt(args)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DUE_MISSIONS=[]." in out
+    assert "quiet_daily(daily@07:30)" in out
+    assert "quiet_quarterly(cron:0 8 1 1,4,7,10 *)" in out
 
 
 def test_command_wake_prompt_fails_closed_on_unrecognized_manifest_schema(tmp_path: Path, capsys):
