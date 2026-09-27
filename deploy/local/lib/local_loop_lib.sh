@@ -201,6 +201,22 @@ _lll_xml_escape() {
 #                     exported secrets would NOT reach the harness otherwise.
 #   LOOP_ENV_UNSET    space-sep VAR names to `env -u` before exec (e.g.
 #                     CLAUDE_CODE_OAUTH_TOKEN so a keychain login wins — Géraldine).
+#   LOOP_TOKEN_TO_STATE_ENV  space-sep VAR names that must NEVER reach the
+#                     claude REPL env (board #1548 — every Agent-tool subagent
+#                     + its Bash subshells inherit that env; a worker `cat`
+#                     printed a live bot token into its transcript this way).
+#                     Default TELEGRAM_BOT_TOKEN: the telegram plugin
+#                     (server.ts) loads its token straight from
+#                     $TELEGRAM_STATE_DIR/.env itself ("real env wins" — it
+#                     fills anything NOT already set), so it never needed the
+#                     REPL env in the first place. Any name listed here is (a)
+#                     filtered OUT of LOOP_INLINE_ENV even if the caller also
+#                     requested it there, (b) written — current value,
+#                     atomically, 0600 — to <telegram-state-dir>/.env below
+#                     (preserving every other line already in that file), and
+#                     (c) `env -u`'d on the exec too, belt-and-suspenders
+#                     against a stale value already sitting in the tmux
+#                     SERVER's own persistent global env. Pass "" to opt out.
 #   LOOP_HARNESS_SELECTOR_DIR  dir holding harness-<slug> (default
 #                     $HOME/Library/Application Support/bubble-ops-loop).
 #   LOOP_HERMES_BIN   hermes binary (default `hermes`).
@@ -243,6 +259,23 @@ render_loop_wrapper() {
     # the no-knobs render behaviour-identical to the pre-alignment generic wrapper.
     local inline_env_vars="${LOOP_INLINE_ENV-}"
     local env_unset_vars="${LOOP_ENV_UNSET:-}"                               # e.g. CLAUDE_CODE_OAUTH_TOKEN (Géraldine keychain override)
+    local token_state_vars="${LOOP_TOKEN_TO_STATE_ENV-TELEGRAM_BOT_TOKEN}"    # board #1548; "" opts out
+    # Board #1548: filter every token_state_vars name OUT of inline_env_vars —
+    # it must never be embedded into the claude-REPL-inherited inline-env
+    # tmpfile, even if the caller's LOOP_INLINE_ENV also names it (so an old
+    # config that still says --inline-env "TELEGRAM_BOT_TOKEN ..." gets the
+    # SAFE behavior automatically instead of silently continuing to leak).
+    if [[ -n "$token_state_vars" && -n "$inline_env_vars" ]]; then
+        local _iev="" _iv _tv _managed
+        for _iv in $inline_env_vars; do
+            _managed=0
+            for _tv in $token_state_vars; do
+                [[ "$_iv" == "$_tv" ]] && _managed=1
+            done
+            [[ "$_managed" == "0" ]] && _iev+="${_iev:+ }$_iv"
+        done
+        inline_env_vars="$_iev"
+    fi
     local selector_dir="${LOOP_HARNESS_SELECTOR_DIR:-\$HOME/Library/Application Support/bubble-ops-loop}"
     local hermes_bin="${LOOP_HERMES_BIN:-hermes}"
     # Extra per-agent wrapper exports (newline-separated KEY=VALUE entries, e.g.
@@ -310,6 +343,21 @@ render_loop_wrapper() {
         return 1
     fi
 
+    # TOKEN-TO-STATE-ENV WRITER (board #1548) — same fail-loud contract as the
+    # safe-secrets loader above: read from its own template (never a heredoc
+    # nested in this command substitution, for the same bash-3.2 parser reason
+    # as #1529), and refuse to render a wrapper that would call an undefined
+    # _lll_write_state_env.
+    local token_state_writer
+    token_state_writer="$(cat "${_LLL_DIR}/token_state_env_writer.sh.tmpl" 2>&1)" || {
+        echo "render_loop_wrapper: failed to read ${_LLL_DIR}/token_state_env_writer.sh.tmpl: $token_state_writer" >&2
+        return 1
+    }
+    if [[ -z "$token_state_writer" || "$token_state_writer" != *"_lll_write_state_env()"* ]]; then
+        echo "render_loop_wrapper: ${_LLL_DIR}/token_state_env_writer.sh.tmpl is missing, empty, or does not define _lll_write_state_env() — refusing to render a wrapper that would call an undefined function" >&2
+        return 1
+    fi
+
     # SOPS_AGE_KEY_FILE export + vault-decrypt block (only when a vault is given).
     local age_export="" vault_block=""
     if [[ -n "$vault_path" ]]; then
@@ -344,6 +392,22 @@ if [ -f \"${legacy_env}\" ]; then
 fi"
     fi
 
+    # TOKEN-TO-STATE-ENV WRITE (board #1548): after the vault/legacy-env block
+    # above has (maybe) loaded each token_state_vars name into THIS wrapper's
+    # own process env, write its CURRENT value straight into the telegram
+    # plugin's own 0600 state-dir .env — never into the claude REPL env. The
+    # plugin (server.ts) loads $TELEGRAM_STATE_DIR/.env itself ("real env
+    # wins"), so this is the only place it needs the value. Runs before either
+    # harness is started, regardless of which one the selector below picks.
+    local token_write_block=""
+    if [[ -n "$token_state_vars" ]]; then
+        token_write_block="
+# Board #1548: route the current value(s) of ${token_state_vars} straight
+# into the plugin's own state-dir .env — never the claude REPL env that every
+# Agent-tool subagent + Bash subshell inherits.
+_lll_write_state_env \"${tg_state}/.env\" ${token_state_vars}"
+    fi
+
     local patch_block=""
     if [[ -n "$channel_patches_script" ]]; then
         patch_block="
@@ -358,6 +422,25 @@ fi
     # env -u prefix (drop vars so a lower-precedence source wins, e.g. keychain).
     local env_unset_prefix="" _v
     for _v in $env_unset_vars; do env_unset_prefix+="-u ${_v} "; done
+    # Board #1548 (independent review follow-up — execution-confirmed bug):
+    # token_state_vars must be `env -u`'d on the exec UNCONDITIONALLY, not
+    # only when --inline-env/--env-unset are ALSO used. A --vault-only render
+    # (no inline-env, no env-unset) still loads TELEGRAM_BOT_TOKEN into THIS
+    # wrapper's own process env via _lll_load_secrets_safe, and a freshly
+    # spawned tmux SERVER inherits the STARTING client's env as its global
+    # session environment — so the previous gating left a real leak on every
+    # vault-only config. Fold token_state_vars in every time, regardless of
+    # what else is set; this also means the branch below always takes the
+    # explicit cd+TELEGRAM_STATE_DIR+exec form once a default token_state_vars
+    # is in play (safer AND simpler than trying to special-case a "truly
+    # bare" render around it). --token-to-state-env "" (opt out) is the only
+    # way back to the historical bare-exec render with zero other knobs.
+    for _v in $token_state_vars; do
+        case " $env_unset_vars " in
+            *" $_v "*) : ;;  # already unset above, don't duplicate the flag
+            *) env_unset_prefix+="-u ${_v} " ;;
+        esac
+    done
     [[ -n "$env_unset_prefix" ]] && env_unset_prefix="env ${env_unset_prefix}"
     # claude flags
     local chrome_flag="" model_flag=""
@@ -512,9 +595,11 @@ export BUBBLE_DEPT="${slug}"
 export BUBBLE_HOST="local"
 export OPS_LOOP_BOOT_REARM=1
 ${safe_loader}
+${token_state_writer}
 ${age_export}
 ${extra_export_block}cd "${dept_dir}"
 ${vault_block}
+${token_write_block}
 ${patch_block}
 TMUX_BIN="${tmux_bin}"
 SESSION="ops-loop-${slug}"

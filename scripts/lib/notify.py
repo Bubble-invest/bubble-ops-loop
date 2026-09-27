@@ -895,10 +895,12 @@ class TelegramBackend:
     """Telegram Bot API backend for urgent alerts (and as a fallback channel).
 
     Reads ``TELEGRAM_BOT_TOKEN`` from the environment (set by
-    ``tools/sync-secrets.sh``). Sends to a ``chat_id`` recipient via
-    ``api.telegram.org/bot{token}/sendMessage`` (or ``sendDocument`` for
-    attachments ≤20MB). Payload metadata may set ``telegram_plain_text`` to
-    omit parse mode and send subject/body literally.
+    ``tools/sync-secrets.sh``), falling back to
+    ``$TELEGRAM_STATE_DIR/.env`` when it isn't (board #1548). Sends to a
+    ``chat_id`` recipient via ``api.telegram.org/bot{token}/sendMessage`` (or
+    ``sendDocument`` for attachments ≤20MB). Payload metadata may set
+    ``telegram_plain_text`` to omit parse mode and send subject/body
+    literally.
     """
 
     name = "telegram-alert"
@@ -920,11 +922,39 @@ class TelegramBackend:
     def _read_token(self) -> str:
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
         if not token:
+            token = self._read_token_from_state_dir()
+        if not token:
             raise MissingCredentialError(
-                "TELEGRAM_BOT_TOKEN missing from env [REDACTED]. "
-                "Run tools/sync-secrets.sh."
+                "TELEGRAM_BOT_TOKEN missing from env [REDACTED] and from "
+                "$TELEGRAM_STATE_DIR/.env. Run tools/sync-secrets.sh."
             )
         return token
+
+    @staticmethod
+    def _read_token_from_state_dir() -> str | None:
+        """Board #1548 fallback: the Mac local-loop wrapper (and the telegram
+        MCP plugin itself) now keep TELEGRAM_BOT_TOKEN OUT of the claude REPL
+        env on purpose — every Agent-tool subagent + Bash subshell inherits
+        that env, which is exactly the leak #1548 closes. The wrapper still
+        writes the CURRENT token straight into ``$TELEGRAM_STATE_DIR/.env``
+        (0600) for the plugin to read, so a Bash-tool call to this backend
+        (e.g. ``tools/notify_layer.py`` at CLAUDE.md STEP F) mirrors the
+        SAME "real env wins, else load the state-dir .env" loader the plugin
+        (``server.ts``) uses, instead of silently losing its token. Never
+        raises: any I/O error or missing dir just means "no fallback found".
+        """
+        state_dir = os.environ.get("TELEGRAM_STATE_DIR")
+        if not state_dir:
+            return None
+        env_path = Path(state_dir) / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                m = re.match(r"^(\w+)=(.*)$", line)
+                if m and m.group(1) == "TELEGRAM_BOT_TOKEN":
+                    return m.group(2)
+        except OSError:
+            return None
+        return None
 
     def _build_telegram_body(self, payload: NotificationPayload) -> str:
         # Long generated briefs opt into literal plaintext so chunk boundaries
