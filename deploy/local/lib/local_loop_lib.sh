@@ -384,11 +384,18 @@ if ls \"\$_proj\"/*.jsonl >/dev/null 2>&1; then CONT_FLAG=\"--continue\"; fi"
     fi
 
     # Build the claude launch string (the inner command handed to tmux new-session).
-    # When there is inline-env or env -u to apply, use the INLINE form: cd + a
-    # TELEGRAM_STATE_DIR literal + each requested var as a runtime-expanded,
-    # single-quoted assignment (survives tmux's re-parse) + env -u + exec. Otherwise
-    # emit the plain bare-exec form (identical to the pre-alignment generic wrapper —
-    # no secrets in argv). \$1 is the leading flag ("--continue" or "").
+    # SECURITY (board #1520): inline-env secret VALUES must never be embedded in
+    # this string — it becomes argv for the tmux client AND the pane's shell
+    # ($SHELL -c "<this string>"), both readable via `ps`/`pgrep -fl` by any local
+    # process until `exec` replaces the pane's image (exactly how Rick caught a
+    # live bot token in a session transcript, 2026-09-25). Instead, when inline-env
+    # vars are requested, start_claude() below writes their CURRENT values
+    # (already loaded into the WRAPPER's own env — never argv) to a fresh 0600
+    # tmpfile (mktemp under `umask 077`, belt-and-suspenders `chmod 600`) right
+    # before calling tmux, and this string only sources that file's PATH (never a
+    # secret value) inside the pane, then deletes it. `env -u` and the plain
+    # bare-exec form (no inline-env at all) are unchanged. \$1 is the leading
+    # flag ("--continue" or "").
     #
     # --disallowedTools AskUserQuestion (Joris 2026-09-20): headless/always-on loop
     # agents must never call AskUserQuestion. It opens an interactive blocking menu
@@ -399,10 +406,32 @@ if ls \"\$_proj\"/*.jsonl >/dev/null 2>&1; then CONT_FLAG=\"--continue\"; fi"
     # every Mac fleet agent (Rick, Tonio, Miranda, Géraldine, Ellie) launched via
     # this lib, so the whole fleet is uniformly protected.
     local claude_flags="\$1${chrome_flag}${model_flag} --dangerously-skip-permissions --disallowedTools AskUserQuestion --channels plugin:telegram@claude-plugins-official${add_dir_arg}"
+
+    # inline_file_block (board #1520): wrapper-RUNTIME statements spliced into
+    # start_claude() below (run in the WRAPPER's own process — never argv) that
+    # write the requested inline-env vars' CURRENT values to a fresh 0600 tmpfile,
+    # %q-escaped so the file can be safely sourced. Empty when no inline-env vars
+    # are requested — env_unset-only / plain launches are untouched.
+    local inline_file_block=""
+    if [[ -n "$inline_env_vars" ]]; then
+        inline_file_block="
+  _lll_inline_file=\"\$(umask 077 && mktemp -t '${slug}-inline-env')\"
+  chmod 600 \"\$_lll_inline_file\""
+        for _v in $inline_env_vars; do
+            inline_file_block+="
+  printf 'export %s=%q\\n' '${_v}' \"\${${_v}:-}\" >> \"\$_lll_inline_file\""
+        done
+    fi
+
     local claude_launch
     if [[ -n "$inline_env_vars" || -n "$env_unset_prefix" ]]; then
         local inline_prefix="TELEGRAM_STATE_DIR='${tg_state}' "
-        for _v in $inline_env_vars; do inline_prefix+="${_v}='\${${_v}:-}' "; done
+        if [[ -n "$inline_env_vars" ]]; then
+            # Source the 0600 tmpfile's PATH (never a secret value) inside the
+            # pane, then delete it — the token/oauth value itself never touches
+            # this command string, so it never touches argv.
+            inline_prefix+="set -a; . \"\$_lll_inline_file\"; set +a; rm -f \"\$_lll_inline_file\"; "
+        fi
         claude_launch="cd '${dept_dir}' && ${inline_prefix}exec ${env_unset_prefix}'${claude_bin}' ${claude_flags}"
     else
         claude_launch="exec '${claude_bin}' ${claude_flags}"
@@ -476,6 +505,14 @@ ${patch_block}
 TMUX_BIN="${tmux_bin}"
 SESSION="ops-loop-${slug}"
 
+# Board #1520 (review follow-up): reap stale inline-env tmpfiles at wrapper
+# start. The tmux-new-session-FAILED case is cleaned up synchronously in
+# start_claude() below; this bounds the other leak mode — the pane itself
+# dying/erroring AFTER tmux new-session already returned success (so the
+# in-pane \`rm -f\` never ran) — across restarts/KeepAlive crash-loops. -mmin
+# +5 / -maxdepth 1 are BSD-find (and bash 3.2) safe — no GNU-only flags.
+find "\${TMPDIR:-/tmp}" -maxdepth 1 -name '${slug}-inline-env.*' -mmin +5 -exec rm -f {} + 2>/dev/null || true
+
 # --- HARNESS SELECTOR (#1133): claude (default) | hermes ---
 # The Mac twin of the VPS /etc/bubble-harness/<slug> selector. A switch flips this
 # file then \`launchctl kickstart -k\` restarts the wrapper, which re-reads it here.
@@ -488,9 +525,24 @@ ${cont_gate}
 
 # The inner command is handed to tmux new-session, which runs it in the tmux
 # SERVER's global env (NOT this wrapper's env) — hence the inline cd/PATH/secrets.
-start_claude() {  # \$1 = leading flag(s): "--continue" or "" (fresh)
+# Board #1520: any inline-env secret is written to a fresh 0600 tmpfile HERE (in
+# this wrapper's own process, never argv) before tmux is invoked; the command
+# string handed to tmux only references that file's PATH.
+# Board #1520 (review follow-up): if tmux new-session ITSELF fails (non-zero),
+# the pane never started, so it will never reach the in-pane \`rm -f\` — clean
+# the tmpfile up synchronously here, ON FAILURE ONLY. Do NOT delete
+# unconditionally (e.g. via a blanket trap): \`tmux new-session -d\` returns
+# before the pane has actually sourced the file, so an unconditional delete
+# would race a SUCCESSFUL launch and could remove the file before the pane
+# reads it.
+start_claude() {  # \$1 = leading flag(s): "--continue" or "" (fresh)${inline_file_block}
+  _lll_start_rc=0
   "\$TMUX_BIN" new-session -d -s "\$SESSION" \\
-    "${claude_launch}"
+    "${claude_launch}" || _lll_start_rc=\$?
+  if [ "\$_lll_start_rc" -ne 0 ]; then
+    [ -n "\${_lll_inline_file:-}" ] && rm -f "\$_lll_inline_file"
+    return "\$_lll_start_rc"
+  fi
 }
 
 start_hermes() {  # #1133 alternate harness — hermes reads its own profile (${slug})

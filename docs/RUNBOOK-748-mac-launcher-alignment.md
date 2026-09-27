@@ -45,6 +45,17 @@ install-local-loop.sh --dept-dir ~/claude-workspaces/Tony_CEO --slug main \
 > no-knobs render is the plain bare-exec generic wrapper, so uncustomized depts
 > never get a token baked into the tmux argv). Agents that need secrets to reach
 > the harness through tmux opt in explicitly, as above.
+>
+> **Board #1520 (2026-09-27):** when `--inline-env` IS used, the requested vars'
+> VALUES are no longer embedded as `VAR='${VAR:-}'` text in the tmux command
+> string (that string is argv for both the tmux client and the pane's shell,
+> `ps`/`pgrep -fl`-visible until `exec` replaces the pane — this is exactly how a
+> live Miranda/content bot token landed in a session transcript, 2026-09-25).
+> `start_claude()` now writes the current values to a fresh 0600 tmpfile (mktemp
+> under `umask 077`, explicit `chmod 600`) in the WRAPPER's own process — never
+> argv — and the tmux command only sources that file's PATH, then deletes it. No
+> action needed here: this is transparent to every `--inline-env` invocation
+> above: re-render (this doc's flags are unchanged) to pick it up.
 
 ### Joris Mac — Rick (rnd)  [regenerate LAST; do NOT restart — this is the live session]
 ```
