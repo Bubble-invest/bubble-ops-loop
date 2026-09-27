@@ -86,6 +86,12 @@ _LIB_DIR = Path(__file__).resolve().parent / "lib"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 from dispatch_helpers import _env_with_bearer_auth_header  # noqa: E402
+# board #1550: the ONE canonical `approved_by` value this relay's approval
+# gate accepts. bubble-ops-tony's directive_writer imports the vendored copy
+# of this same module (scripts/vendor-dept-libs.sh) so the label can never
+# drift between emitter and relay again — see directive_constants.py's
+# docstring for the incident this fixes.
+from directive_constants import DIRECTIVE_APPROVED_BY  # noqa: E402
 
 _OUTBOUND_REL = "queues/management/outbound"
 _INBOX_REL = "queues/management"
@@ -353,9 +359,13 @@ def dispatch(
         # ── APPROVAL GATE ──────────────────────────────────────────────
         if status == "dispatched":
             continue  # idempotent: already done
-        if approved_by != "operator" or status != "approved":
-            _log(f"SKIP {draft.name}: gate not satisfied "
-                 f"(approved_by={approved_by!r} status={status!r}) — {{OPERATOR}} must approve")
+        if approved_by != DIRECTIVE_APPROVED_BY or status != "approved":
+            _log(
+                f"SKIP {draft.name}: gate not satisfied — expected "
+                f"approved_by={DIRECTIVE_APPROVED_BY!r} status='approved'; "
+                f"saw approved_by={approved_by!r} status={status!r} "
+                f"— {{OPERATOR}} must approve via the cockpit gate"
+            )
             skipped += 1
             continue
         if not isinstance(did_raw, str) or not _DIRECTIVE_ID_RE.fullmatch(did_raw):
@@ -510,7 +520,7 @@ def dispatch(
                 if (
                     not isinstance(remote_data, dict)
                     or remote_id != did
-                    or remote_data.get("approved_by") != "operator"
+                    or remote_data.get("approved_by") != DIRECTIVE_APPROVED_BY
                     or remote_data.get("status") not in {"approved", "dispatched"}
                     or _payload_digest(_normalized_payload(remote_data, manager))
                     != expected_digest
