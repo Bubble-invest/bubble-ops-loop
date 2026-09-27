@@ -372,9 +372,12 @@ ben/tony/maya use on the VPS — board #1491 wires this same runner to
 built for that schema, already trusted by the VPS floor's own idle-nudge,
 `scripts/loop-backup.sh::inject_live_loop`). It has no lease/claims concept to
 reuse (VPS-style completion is a timestamp ledger, not a calendar-period
-watermark), so on any refusal or error (unrecognized schema, nothing due this
-instant, hard error) the runner falls back to the historical generic wake
-text, byte-for-byte unchanged — never fatal.
+watermark), so on any refusal or error (unrecognized/broken schema, hard
+error) the runner falls back to the historical generic wake text, byte-for-
+byte unchanged — never fatal. Board #1513: a valid manifest with genuinely
+nothing due this instant is no longer a refusal — `wake-prompt` emits a
+machine-generated `DUE_MISSIONS=[]` idle envelope instead (exit 0), so the
+runner uses that, not the free-text fallback, on that tick.
 
 ### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
 

@@ -341,15 +341,28 @@ def command_claim(args: argparse.Namespace) -> int:
 # scheduled work listed. `wake-prompt` now REFUSES (raises
 # `DueMissionConfigError`, non-zero exit, EMPTY stdout — nothing is ever
 # printed before the checks below pass) whenever it cannot positively
-# confirm real, live, currently-due work: `loop.due_dispatch` absent (schema
-# not understood — deliberately still true for VPS today, see board #1487 for
-# the follow-up) OR the resolved plan is empty (nothing is due this instant —
-# including "no live missions are configured at all"). The caller
-# (boot_rearm.ts / rearm-loop-on-compact.py / the agent's own re-arm step)
-# MUST fall back to the previous free-text tick-protocol wake and record the
-# refusal in its HEARTBEAT ONLY — never Telegram, since this fires on every
-# re-arm/compaction and would spam the operator over a known, tracked gap —
-# rather than trust a plausible-looking empty envelope.
+# confirm real, live work is correctly configured: `loop.due_dispatch` /
+# `recurring_missions` absent or malformed (schema not understood, or a
+# structurally broken manifest) OR resolving the plan itself errors.
+#
+# #1513 REFINEMENT (Chesterton's fence, kept intact): the property #1483/#1484
+# actually protects is WHO composes `DUE_MISSIONS` — never the agent, always
+# this generator — not "the list may never legitimately be empty". Board
+# #1513: at boot (05:3xZ), "nothing is due yet" is not a schema error or a
+# broken manifest, it is the NORMAL, most-common tick for a mostly-calendar-
+# cadence VPS dept — so the pre-#1513 behaviour made the FALLBACK (free,
+# self-composed tick text) the NORMAL path, exactly defeating #1484/#1487's
+# point on their single most common tick. So: once the manifest is confirmed
+# valid and parseable (schema recognized, every scoped/mission-file/layer
+# check in `_validate_scoped_files` passes) and the resolver returns a
+# genuinely empty plan (nothing is currently due), `wake-prompt` now emits a
+# second, still fully machine-generated envelope — `_wake_idle_prompt` /
+# `_wake_idle_prompt_recurring` below — with an explicit `DUE_MISSIONS=[]`,
+# exit 0, instead of refusing. It carries the same guardrail text (never
+# self-merge, preserve every human-approval gate) and the same staleness
+# re-check clause as the non-empty envelope. Nothing about "an unrecognized
+# schema, or a structurally broken/unparseable manifest, still refuses"
+# changes — see `command_wake_prompt` below for exactly where the line sits.
 
 WAKE_PROMPT_FOOTER = (
     " Before acting on this wake, read WORKING_MEMORY/HANDOFF.md for current state. "
@@ -416,6 +429,103 @@ def _wake_prompt(plan: list[dict], dept_dir: Path, dept_label: str) -> str:
     CLI (`command_wake_prompt`) enforces that gate; this function only renders.
     """
     return _prompt(plan, dept_dir, dept_label) + _staleness_clause(dept_dir) + WAKE_PROMPT_FOOTER
+
+
+# ─── wake-prompt: "nothing due right now" envelope (#1513) ─────────────────
+#
+# Board #1513: the manifest is valid and parseable and the resolver
+# genuinely has nothing due THIS instant — a real, frequent state (boot at
+# 05:3xZ, before any calendar-cadence mission's own time floor), not a schema
+# error. This is still fully machine-generated: same envelope grammar as
+# `_prompt()`/`_prompt_recurring()`, explicit `DUE_MISSIONS=[]`, same
+# guardrail + staleness text — only the value is honestly empty instead of
+# refusing. `_idle_mission_notes*` are best-effort, data-only context (which
+# known live missions exist and their own cadence) — deliberately NOT a
+# fabricated next-fire timestamp: this module has no simple, always-correct
+# way to predict exactly when a calendar-period or layer-eligibility mission
+# next becomes due (timezone rollovers, pending leases, and — for the
+# recurring_missions/VPS schema — `select_due_missions`'s own round-counter
+# and time-floor eligibility walk), and a wrong guess dressed up as fact is
+# worse than an honest "not due, no ETA" (the same lesson as #1330/#1316's
+# "never let a plausible-looking output stand in for a verified one").
+
+
+def _idle_mission_notes_due_dispatch(manifest: dict) -> str:
+    """Best-effort ``id(cadence)`` list of the Mac schema's scoped LIVE
+    missions, for the idle envelope's informational hint. Never raises —
+    `_validate_scoped_files` has already confirmed the manifest is
+    structurally sound by the time this is called."""
+    loop = manifest.get("loop")
+    config = loop.get("due_dispatch") if isinstance(loop, dict) else None
+    scope = config.get("mission_ids") if isinstance(config, dict) else None
+    raw = manifest.get("recurring_missions", [])
+    by_id = {item.get("id"): item for item in raw if isinstance(item, dict)}
+    notes = []
+    for mission_id in scope or []:
+        mission = by_id.get(mission_id)
+        if not isinstance(mission, dict) or mission.get("status") != _MISSION_LIVE_STATUS:
+            continue
+        notes.append(f"{mission_id}({mission.get('cadence', '?')})")
+    return ", ".join(notes)
+
+
+def _idle_mission_notes_recurring(manifest: dict) -> str:
+    """Best-effort ``id(cadence[@time])`` list of the VPS schema's configured
+    missions, for the idle envelope's informational hint. Never raises."""
+    missions = manifest.get("recurring_missions")
+    if not isinstance(missions, list):
+        return ""
+    notes = []
+    for item in missions:
+        if not isinstance(item, dict):
+            continue
+        mission_id = item.get("id", "?")
+        cadence = item.get("cadence", "?")
+        time_field = item.get("time")
+        suffix = f"@{time_field}" if isinstance(time_field, str) and time_field else ""
+        notes.append(f"{mission_id}({cadence}{suffix})")
+    return ", ".join(notes)
+
+
+def _idle_prompt(dept_label: str, mission_notes: str = "") -> str:
+    """The `DUE_MISSIONS=[]` "nothing due right now" body (#1513). Shares its
+    guardrail wording with `_prompt()`/`_prompt_recurring()`; callers append
+    `_staleness_clause()` + `WAKE_PROMPT_FOOTER` exactly as the non-empty
+    envelopes do (see `_wake_idle_prompt`/`_wake_idle_prompt_recurring`)."""
+    hint = (
+        f" Known scheduled mission(s), not due this instant: {mission_notes} — "
+        "each becomes due on its own cadence/lease/eligibility, not on a fixed "
+        "clock this generator predicts; do not infer or state an exact next-due "
+        "time beyond what is listed here."
+        if mission_notes
+        else ""
+    )
+    return (
+        f"Resume {dept_label} OODA loop and run one full tick now. "
+        "DUE_MISSIONS=[]. "
+        "No scheduled mission is due right now — this is a genuine heartbeat tick, "
+        "not a refusal and not an error: write the normal heartbeat, handle any "
+        "inbound, and arm only the existing normal self-paced next wake." + hint + " "
+        "Preserve every human-approval gate and the PR-to-Joris-only self-modification "
+        "guardrail; never self-merge mission/mandate/loop/agent-def changes. This "
+        "DUE_MISSIONS=[] is machine-generated and authoritative for this tick — never "
+        "compose, paraphrase, or append your own mission list just because none is due."
+    )
+
+
+def _wake_idle_prompt(dept_dir: Path, dept_label: str, mission_notes: str = "") -> str:
+    """`_wake_prompt()`'s counterpart for the empty-plan case (#1513) — the
+    Mac `loop.due_dispatch` schema's idle envelope."""
+    return _idle_prompt(dept_label, mission_notes) + _staleness_clause(dept_dir) + WAKE_PROMPT_FOOTER
+
+
+def _wake_idle_prompt_recurring(dept_dir: Path, dept_label: str, mission_notes: str = "") -> str:
+    """`_wake_prompt_recurring()`'s counterpart for the empty-plan case
+    (#1513) — the VPS/content/accountant `recurring_missions` schema's idle
+    envelope. Byte-identical guardrail/staleness/footer text to the Mac idle
+    envelope above (both re-check via the same schema-agnostic `wake-prompt`
+    CLI) — only the source of `mission_notes` differs."""
+    return _idle_prompt(dept_label, mission_notes) + _staleness_clause(dept_dir) + WAKE_PROMPT_FOOTER
 
 
 def _plan_for_wake(dept_dir: Path, manifest: dict, now_epoch: "int | None") -> list[dict]:
@@ -592,46 +702,43 @@ def command_wake_prompt(args: argparse.Namespace) -> int:
         isinstance(loop, dict) and "due_dispatch" in loop and loop.get("due_dispatch") is not None
     )
     if due_dispatch_configured:
-        # Mac schema (#1484) — UNCHANGED behaviour from #1484, byte-for-byte.
+        # Mac schema (#1484). `_plan_for_wake` itself still raises fail-closed
+        # for anything structurally broken (bad mission_ids, missing mission
+        # files/layer prompts, etc. — see `_validate_scoped_files`); only a
+        # clean, empty resolution reaches here.
         plan = _plan_for_wake(dept_dir, manifest, args.now_epoch)
         if not plan:
-            # FAIL-CLOSED: schema IS understood, but nothing is currently live/due —
-            # never emit an empty envelope (#1484 PR review: "never emit or accept
-            # an empty envelope"). This is expected to self-heal on the next tick
-            # (continuous missions are always due; a purely calendar-cadence dept
-            # can legitimately have a quiet moment) and is not itself an error in
-            # the dept.yaml, so the caller's fallback + flag is the correct response,
-            # not a crash.
-            raise DueMissionConfigError(
-                "wake-prompt: loop.due_dispatch is configured but no live mission is "
-                "currently due — refusing to emit an empty DUE_MISSIONS=[] envelope "
-                "(#1484 PR review: never emit or accept an empty envelope). The caller "
-                "MUST fall back to the previous free-text wake instruction for this tick "
-                "and record this refusal in its heartbeat ONLY (never Telegram); a later "
-                "tick is expected to resolve this on its own."
-            )
+            # #1513: schema IS understood and the manifest IS valid, but no
+            # live mission is due THIS instant (continuous missions are
+            # always due, so this only happens when every scoped live
+            # mission is calendar-cadence and already satisfied/leased for
+            # its current period) — a genuine, frequent heartbeat tick, not
+            # an error. Emit the machine-generated idle envelope (exit 0)
+            # instead of refusing; see the #1513 note above this function's
+            # section header for why this keeps the #1483/#1484 property
+            # intact rather than reopening it.
+            notes = _idle_mission_notes_due_dispatch(manifest)
+            print(_wake_idle_prompt(dept_dir, _dept_label(manifest), notes))
+            return 0
         print(_wake_prompt(plan, dept_dir, _dept_label(manifest)))
         return 0
 
     recurring = manifest.get("recurring_missions")
     if isinstance(recurring, list) and recurring:
-        # VPS / content / accountant schema (#1487).
+        # VPS / content / accountant schema (#1487). `_plan_for_wake_recurring`
+        # still raises fail-closed for anything the underlying selector
+        # itself cannot resolve; only a clean, empty resolution reaches here.
         plan = _plan_for_wake_recurring(dept_dir, manifest, args.now_epoch)
         if not plan:
-            # FAIL-CLOSED, same never-emit-empty contract as the Mac branch above
-            # (#1484 PR review) — nothing is currently due per select_due_missions
-            # (a true heartbeat tick, or every eligible layer's own cadence/time
-            # gate is not yet reached). This is expected to self-heal on a later
-            # tick and is not itself a dept.yaml error.
-            raise DueMissionConfigError(
-                "wake-prompt: recurring_missions is configured (VPS/content/accountant "
-                "schema, board #1487) but select_due_missions has nothing due right now "
-                "— refusing to emit an empty DUE_MISSIONS=[] envelope (same never-emit-"
-                "empty contract as #1484). The caller MUST fall back to the previous "
-                "free-text wake instruction for this tick and record this refusal in its "
-                "heartbeat ONLY (never Telegram); a later tick is expected to resolve "
-                "this on its own."
-            )
+            # #1513: same relaxation as the Mac branch above — schema IS
+            # understood and the manifest IS valid, but select_due_missions
+            # has nothing due right now (a true heartbeat tick: no layer is
+            # currently eligible, or the eligible layer's own due list is
+            # empty). This is the board #1513 repro case (VPS boot at
+            # 05:3xZ) — emit the idle envelope (exit 0) instead of refusing.
+            notes = _idle_mission_notes_recurring(manifest)
+            print(_wake_idle_prompt_recurring(dept_dir, _dept_label(manifest), notes))
+            return 0
         print(_wake_prompt_recurring(plan, dept_dir, _dept_label(manifest)))
         return 0
 
