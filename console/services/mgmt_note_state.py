@@ -32,13 +32,17 @@ scripts/lib/dispatch_helpers.py:
   - `_load_consumed_ids(mgmt_dir)`       — the `.consumed.json` reader
   - `_parse_iso(s)`                      — tolerant ISO-8601 parser (handles
                                             trailing 'Z' on py<3.11)
+  - `_note_effective_created_at(data)`   — #1587: max(created_at,
+                                            delivered_at) when both parse,
+                                            else whichever parses, else None
 
 We import these (not vendor/reimplement them) so the console can never drift
-from the dispatcher's actual behaviour. `_load_consumed_ids`/`_parse_iso` are
-underscore-prefixed (module-private by convention) but carry no `__all__`
-restriction; the alternative — hand-copying the parsing/fail-open logic —
-is exactly the drift risk card #459 warns against, so we accept the
-import-a-private-helper trade-off with this comment as the paper trail.
+from the dispatcher's actual behaviour. `_load_consumed_ids`/`_parse_iso`/
+`_note_effective_created_at` are underscore-prefixed (module-private by
+convention) but carry no `__all__` restriction; the alternative — hand-
+copying the parsing/fail-open logic — is exactly the drift risk card #459
+warns against, so we accept the import-a-private-helper trade-off with this
+comment as the paper trail.
 
 Per-note PENDING rule (mirrors `_scan_mgmt_notes`'s per-note loop body,
 including the #198 consumed-first fix and its fail-open behaviour):
@@ -50,9 +54,13 @@ including the #198 consumed-first fix and its fail-open behaviour):
      pending no matter how its timestamp looks.
   3. Unreadable/malformed YAML → fail-open (treat as pending; we would
      rather over-show than silently swallow real work).
-  4. Missing/unparseable `created_at` → fail-open (treat as pending).
-  5. Otherwise: pending iff `created_at > watermark` (watermark = None means
-     "never scanned" → everything not-yet-consumed is pending).
+  4. Missing/unparseable `created_at` AND `delivered_at` → fail-open (treat
+     as pending).
+  5. Otherwise: pending iff `effective_ts > watermark`, where `effective_ts`
+     is `max(created_at, delivered_at)` when `delivered_at` is present and
+     parseable, else `created_at` alone (#1587 —
+     `_note_effective_created_at()`). watermark = None means "never
+     scanned" → everything not-yet-consumed is pending.
 
 This module additionally groups/collapses for display (NOT part of the
 dispatcher's semantics — purely a rendering concern local to the console):
@@ -80,6 +88,7 @@ if str(_PROJ_ROOT) not in sys.path:
 
 from scripts.lib.dispatch_helpers import (  # noqa: E402  (see sys.path setup above)
     _load_consumed_ids,
+    _note_effective_created_at,
     _parse_iso,
     read_last_mgmt_scan,
 )
@@ -247,23 +256,19 @@ def scan_mgmt_inbox(
             consumed_count += 1
             continue
 
-        # Rule 5 vs. rule 4: watermark comparison. When created_at is missing or
-        # unparseable, FALL BACK TO FILE MTIME instead of failing open forever
-        # (#1197) — mirrors dispatch_helpers._scan_mgmt_notes so the cockpit's
-        # pending count matches the dispatcher's L1 trigger exactly. An undated
-        # note older than the watermark (mtime <= watermark) is already-seen; one
-        # newer than it (by created_at, or by mtime when undated) is pending.
+        # Rule 5 vs. rule 4: watermark comparison. Effective timestamp is
+        # max(created_at, delivered_at) when both parse, else whichever
+        # parses (#1587 — _note_effective_created_at()); when NEITHER parses,
+        # FALL BACK TO FILE MTIME instead of failing open forever (#1197) —
+        # mirrors dispatch_helpers._scan_mgmt_notes so the cockpit's pending
+        # count matches the dispatcher's L1 trigger exactly. An undated note
+        # older than the watermark (mtime <= watermark) is already-seen; one
+        # newer than it (by effective timestamp, or by mtime when undated)
+        # is pending.
         pending = True
         if watermark is not None:
             from datetime import timezone, datetime as _dt
-            ts = None
-            if created_at:
-                try:
-                    ts = _parse_iso(created_at)
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                except (ValueError, TypeError):
-                    ts = None
+            ts = _note_effective_created_at(data)
             if ts is None:
                 try:
                     ts = _dt.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)

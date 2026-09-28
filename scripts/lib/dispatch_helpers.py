@@ -896,10 +896,56 @@ def _load_consumed_ids(mgmt_dir: "Path") -> "set[str]":
     return set()
 
 
+def _parse_note_ts(raw: "Any") -> "datetime | None":
+    """Parse a single note field (`created_at`/`delivered_at`) into a
+    tz-aware datetime, or None if absent/unparseable. Shared by
+    `_note_effective_created_at()` below."""
+    if raw is None:
+        return None
+    try:
+        ts = _parse_iso(str(raw))
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def _note_effective_created_at(data: "dict") -> "datetime | None":
+    """#1587: a note's *effective* timestamp for scan/watermark comparison —
+    `max(created_at, delivered_at)` when `delivered_at` is present and
+    parseable, else `created_at` alone (or `delivered_at` alone if only that
+    is present). Returns None if neither is present/parseable, in which case
+    callers fall back to the file mtime (#1197 fallback, unchanged).
+
+    Why: `scripts/dispatch_directives.py` stamps `delivered_at` on the CHILD
+    copy at delivery time, which can be well after `created_at` for a
+    directive that sat queued before being routed. Comparing only
+    `created_at` against the `.last-mgmt-scan` watermark meant a same-day
+    re-wake between `created_at` and `delivered_at` would treat the
+    directive as already-seen even though it was never actually delivered
+    (issue #1587, reproduced live by the #1584 review). It isn't lost — the
+    next daily L1 still picks it up via `.consumed.json` — but same-day
+    handling was defeated.
+
+    Shared by `_scan_mgmt_notes()` below AND
+    `console/services/mgmt_note_state.py:scan_mgmt_inbox()` (imported there,
+    not reimplemented — see that module's docstring: the two must never
+    drift).
+    """
+    created_ts = _parse_note_ts(data.get("created_at"))
+    delivered_ts = _parse_note_ts(data.get("delivered_at"))
+    if created_ts is not None and delivered_ts is not None:
+        return max(created_ts, delivered_ts)
+    return created_ts if created_ts is not None else delivered_ts
+
+
 def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
     """Return True if `queues/management/` contains at least one inbound note
-    with `created_at` strictly after `since` (or any note if `since` is None)
-    that has NOT already been consumed.
+    whose EFFECTIVE timestamp — `max(created_at, delivered_at)` when
+    `delivered_at` is present and parseable, else `created_at` alone (#1587;
+    see `_note_effective_created_at()`) — is strictly after `since` (or any
+    note if `since` is None) that has NOT already been consumed.
 
     "Inbound" = a regular `*.yaml` file whose `audience` includes the dept slug
     OR whose `created_by`/`from` field is a manager (non-dept author). Because
@@ -922,10 +968,13 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
              already-consumed note is silently skipped no matter what its
              timestamp looks like.
           2. If `since` is None → treat as unconsumed.
-          3. Parse `created_at`; if `created_at > since` → unconsumed.
-          4. Files still unparseable or missing `created_at` after the consumed
-             check → fail-open (better to fire L1 once than to silently miss a
-             note that hasn't been acted on yet).
+          3. Parse `created_at` AND `delivered_at`; if the effective timestamp
+             `max(created_at, delivered_at)` (#1587 — falls back to whichever
+             of the two parses when only one does) is after `since` →
+             unconsumed.
+          4. Files still unparseable or missing both timestamps after the
+             consumed check → fail-open (better to fire L1 once than to
+             silently miss a note that hasn't been acted on yet).
 
     The scan intentionally does NOT read `audience` or `created_by` to avoid
     false negatives from structural variation across note kinds (directive vs
@@ -983,26 +1032,20 @@ def _scan_mgmt_notes(repo_dir: "Path | str", since: "datetime | None") -> bool:
             # Marker absent → any non-consumed note is considered new
             return True
 
-        # Effective timestamp: prefer created_at; when it is absent or
-        # unparseable, FALL BACK TO THE FILE MTIME instead of failing open
-        # forever (#1197). The old fail-open-on-undated path meant any ancient
-        # yaml with no created_at (delivered management-exports, resolved
-        # directives, market_wrapup drafts that were never archived) counted as
-        # "unconsumed" on EVERY scan, so once a dept's research queue emptied,
-        # C.mgmt re-fired layer_1 every quiet tick fleet-wide regardless of the
-        # .last-mgmt-scan marker. With the mtime fallback, an undated note older
-        # than the marker (mtime <= since) is treated as already-seen; only a
-        # note NEWER than the marker (by created_at, or by mtime when undated)
-        # retriggers L1. Keep console/services/mgmt_note_state.py in sync.
-        raw_ts = data.get("created_at")
-        note_ts = None
-        if raw_ts is not None:
-            try:
-                note_ts = _parse_iso(str(raw_ts))
-                if note_ts.tzinfo is None:
-                    note_ts = note_ts.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                note_ts = None
+        # Effective timestamp: max(created_at, delivered_at) when both parse
+        # (#1587 — see _note_effective_created_at()), else whichever of the
+        # two parses, else FALL BACK TO THE FILE MTIME instead of failing
+        # open forever (#1197). The old fail-open-on-undated path meant any
+        # ancient yaml with no created_at (delivered management-exports,
+        # resolved directives, market_wrapup drafts that were never archived)
+        # counted as "unconsumed" on EVERY scan, so once a dept's research
+        # queue emptied, C.mgmt re-fired layer_1 every quiet tick fleet-wide
+        # regardless of the .last-mgmt-scan marker. With the mtime fallback,
+        # an undated note older than the marker (mtime <= since) is treated
+        # as already-seen; only a note NEWER than the marker (by effective
+        # timestamp, or by mtime when undated) retriggers L1. Keep
+        # console/services/mgmt_note_state.py in sync.
+        note_ts = _note_effective_created_at(data)
         if note_ts is None:
             try:
                 note_ts = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
