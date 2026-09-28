@@ -1,39 +1,9 @@
-"""Regression: guard must not crash when invoked from a non-git directory
-or in the [ahead N, behind 0] no-staged-files state.
+"""Repository validation and clean-worktree push regressions.
 
-Bug discovered 2026-05-20 when {{OPERATOR}}'s main agent tried to push a patched
-CLAUDE.md via the guard from his home directory. The guard's
-`staged_paths_for_push()` calls `git diff --cached --name-only -z`; when
-git cannot find a repo (cwd is OUTSIDE any worktree, or `--git-dir` not
-discoverable), git silently falls back to `--no-index` mode where the
-`--cached` option does not exist:
-
-    $ cd /tmp && git diff --cached --name-only -z
-    error: unknown option `cached'
-    usage: git diff --no-index [<options>] <path> <path>
-    (exit 129)
-
-The current code raises a CalledProcessError with this stderr buried in
-it, killing the entire push flow even though the actual problem is "you
-ran me from the wrong cwd".
-
-What the user reported as the symptom: a push from a repo with a local
-commit but no staged files failed. The root cause is identical — if the
-guard's --repo-dir resolves to something git cannot interpret as a repo
-(missing `.git/`, or cwd outside any worktree), the FIRST git command
-fails with this misleading "no-index" error rather than a clear
-"not a git repository" message.
-
-Fix: validate we are inside a git repo BEFORE running any diff/log
-command, and emit a clear error message if not. We use
-`git rev-parse --is-inside-work-tree` which is the canonical guard
-(exits 0 inside a repo, 128 outside).
-
-Also covered: the [ahead N, behind 0] state with NO staged files —
-i.e. a clean working tree but unpushed commits. This is the exact
-shape of the loop's normal happy path (commits land on HEAD as the
-loop ticks, then the guard is asked to push them). The fix must not
-regress that path.
+The actor repository is now used only to resolve the immutable source SHA,
+but a wrong ``--repo-dir`` must still fail with a clear repository/worktree
+diagnostic. A clean working tree with committed, unpushed changes remains the
+normal happy path; a source identical to the destination produces no paths.
 """
 
 from __future__ import annotations
@@ -80,7 +50,9 @@ def test_staged_paths_for_push_rejects_non_git_directory(tmp_path: Path):
     non_git_dir.mkdir()
 
     with pytest.raises((subprocess.CalledProcessError, RuntimeError)) as exc_info:
-        staging.staged_paths_for_push(non_git_dir)
+        staging.staged_paths_for_push(
+            non_git_dir, destination_url=str(tmp_path / "remote.git")
+        )
 
     msg = str(exc_info.value) + " " + (
         exc_info.value.stderr if hasattr(exc_info.value, "stderr") and exc_info.value.stderr else ""
@@ -128,7 +100,9 @@ def test_staged_paths_for_push_handles_ahead_n_no_staged(temp_git_repo: Path):
         f"setup wrong, working tree should be clean: {status!r}"
     )
 
-    out = staging.staged_paths_for_push(temp_git_repo)
+    out = staging.staged_paths_for_push(
+        temp_git_repo, destination_url=str(temp_git_repo.parent / "remote.git")
+    )
     assert "outputs/2026-05-20/tick.md" in out, (
         f"the loop's ahead-N-no-staged happy path must detect unpushed-commit paths; got {out!r}"
     )
@@ -137,21 +111,7 @@ def test_staged_paths_for_push_handles_ahead_n_no_staged(temp_git_repo: Path):
 def test_staged_paths_for_push_handles_clean_tree_no_unpushed(temp_git_repo: Path):
     """A perfectly clean tree with NO unpushed commits returns []. No crash."""
     # Fixture is already in this state (seed commit pushed, nothing more)
-    out = staging.staged_paths_for_push(temp_git_repo)
+    out = staging.staged_paths_for_push(
+        temp_git_repo, destination_url=str(temp_git_repo.parent / "remote.git")
+    )
     assert out == [], f"clean state must return []; got {out!r}"
-
-
-def test_currently_staged_rejects_non_git_directory(tmp_path: Path):
-    """Same guard for the lower-level `currently_staged()` helper."""
-    non_git_dir = tmp_path / "outside-any-repo"
-    non_git_dir.mkdir()
-
-    with pytest.raises((subprocess.CalledProcessError, RuntimeError)) as exc_info:
-        staging.currently_staged(non_git_dir)
-
-    msg = str(exc_info.value) + " " + (
-        exc_info.value.stderr if hasattr(exc_info.value, "stderr") and exc_info.value.stderr else ""
-    )
-    assert "unknown option" not in msg.lower(), (
-        "currently_staged() must also fail loud BEFORE git's --no-index fallback fires"
-    )

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_broker_not_called_when_path_denied(
@@ -19,6 +19,7 @@ def test_broker_not_called_when_path_denied(
 ):
     """Stage a denied path, run guard.push(), assert mock broker log is empty."""
     stage_files(temp_git_repo, ["MANDATE.md"])  # denied for runtime_write_own
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(
@@ -44,6 +45,7 @@ def test_broker_called_when_all_paths_allowed(
         temp_git_repo,
         ["outputs/2026-05-20/1/summary.md", "queues/research/x.yaml"],
     )
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(

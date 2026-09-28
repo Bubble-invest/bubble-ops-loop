@@ -15,7 +15,7 @@ import pytest
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from src.staging import currently_staged, hardened_git_command, hardened_git_env
+from src.staging import hardened_git_command, hardened_git_env, staged_paths_for_push
 from tests.conftest import stage_files
 
 
@@ -167,6 +167,10 @@ def test_final_push_also_bypasses_pre_push_explicitly(
     mock_git_push,
 ):
     stage_files(temp_git_repo, ["outputs/no-verify.txt"], "allowed\n")
+    subprocess.run(
+        ["git", "commit", "-m", "allowed no-verify regression"],
+        cwd=temp_git_repo, check=True, capture_output=True, text=True,
+    )
     guard = Guard(
         load_policy(fixture_policy_yaml),
         broker_cmd=[str(mock_broker_binary)],
@@ -195,6 +199,8 @@ def test_repo_dir_nested_inside_another_worktree_fails_closed(temp_git_repo):
     nested.mkdir()
 
     with pytest.raises(subprocess.CalledProcessError) as exc_info:
-        currently_staged(nested)
+        staged_paths_for_push(
+            nested, destination_url=str(temp_git_repo.parent / "remote.git")
+        )
 
     assert "outside requested repo dir" in (exc_info.value.stderr or "")

@@ -106,7 +106,11 @@ def test_explicit_source_is_checked_instead_of_checkout(temp_git_repo):
     stage_files(temp_git_repo, ["MANDATE.md"])
     _git(temp_git_repo, "commit", "-m", "structural source")
     _git(temp_git_repo, "checkout", "main")
-    assert staged_paths_for_push(temp_git_repo, ref="other:main") == ["MANDATE.md"]
+    assert staged_paths_for_push(
+        temp_git_repo,
+        destination_url=str(temp_git_repo.parent / "remote.git"),
+        ref="other:main",
+    ) == ["MANDATE.md"]
 
 
 def test_selected_remote_and_destination_are_checked(temp_git_repo, tmp_path):
@@ -131,11 +135,17 @@ def test_selected_remote_and_destination_are_checked(temp_git_repo, tmp_path):
 
     stage_files(temp_git_repo, ["outputs/heartbeat.log"])
     _git(temp_git_repo, "commit", "-m", "runtime")
-    assert staged_paths_for_push(temp_git_repo, remote="backup", ref="HEAD:release") == ["outputs/heartbeat.log"]
+    assert staged_paths_for_push(
+        temp_git_repo, destination_url=str(backup_remote), ref="HEAD:release"
+    ) == ["outputs/heartbeat.log"]
 
 
 def test_missing_destination_checks_complete_source_tree(diverged_repo):
-    paths = staged_paths_for_push(diverged_repo, ref="HEAD:new-branch")
+    paths = staged_paths_for_push(
+        diverged_repo,
+        destination_url=str(diverged_repo.parent / "remote.git"),
+        ref="HEAD:new-branch",
+    )
     assert {".gitkeep", "requirements.txt", "outputs/heartbeat.log"} <= set(paths)
 
 
@@ -173,9 +183,11 @@ def test_head_swap_during_broker_mint_cannot_change_the_pushed_commit(
     attacker.join()
     assert not errors
     assert rc == 0
-    assert _git(temp_git_repo, "rev-parse", "refs/remotes/origin/main").stdout.strip() == checked_sha
+    assert _git(
+        temp_git_repo, "ls-remote", "origin", "refs/heads/main"
+    ).stdout.split()[0] == checked_sha
     remote_paths = _git(
-        temp_git_repo, "ls-tree", "-r", "--name-only", "refs/remotes/origin/main"
+        temp_git_repo, "ls-tree", "-r", "--name-only", checked_sha
     ).stdout.splitlines()
     assert "outputs/safe.txt" in remote_paths
     assert "MANDATE.md" not in remote_paths
@@ -260,7 +272,9 @@ def test_rename_of_structural_path_into_allowed_path_is_denied(
     _git(temp_git_repo, "mv", "MANDATE.md", "outputs/archived.md")
     _git(temp_git_repo, "commit", "-m", "rename mandate into runtime output")
 
-    paths = staged_paths_for_push(temp_git_repo)
+    paths = staged_paths_for_push(
+        temp_git_repo, destination_url=str(temp_git_repo.parent / "remote.git")
+    )
     assert "MANDATE.md" in paths
     assert "outputs/archived.md" in paths
 
@@ -299,7 +313,9 @@ def test_replace_object_cannot_substitute_clean_tree_for_checked_commit(
     _git(temp_git_repo, "replace", real_sha, clean_commit)
     _git(temp_git_repo, "reset", "--hard", real_sha)
 
-    paths = staged_paths_for_push(temp_git_repo)
+    paths = staged_paths_for_push(
+        temp_git_repo, destination_url=str(temp_git_repo.parent / "remote.git")
+    )
     assert "MANDATE.md" in paths
     assert "outputs/safe.txt" in paths
 
@@ -350,7 +366,10 @@ def test_push_argv_binds_checked_sha_and_expected_remote_tip(
     cmd, _env = mock_git_push.calls[0]
     assert "HEAD" not in cmd
     assert f"--force-with-lease=refs/heads/main:{expected_remote_sha}" in cmd
-    assert cmd[-2:] == ["origin", f"{checked_sha}:refs/heads/main"]
+    assert cmd[-2:] == [
+        str(temp_git_repo.parent / "remote.git"),
+        f"{checked_sha}:refs/heads/main",
+    ]
 
 
 def test_new_branch_push_lease_requires_destination_to_remain_absent(
@@ -376,7 +395,10 @@ def test_new_branch_push_lease_requires_destination_to_remain_absent(
 
     cmd, _env = mock_git_push.calls[0]
     assert "--force-with-lease=refs/heads/new-branch:" in cmd
-    assert cmd[-2:] == ["origin", f"{checked_sha}:refs/heads/new-branch"]
+    assert cmd[-2:] == [
+        str(temp_git_repo.parent / "remote.git"),
+        f"{checked_sha}:refs/heads/new-branch",
+    ]
 
 
 def test_allowed_new_branch_push_succeeds_with_absence_lease(
@@ -414,6 +436,7 @@ def test_allowed_new_branch_push_succeeds_with_absence_lease(
 
 def test_staged_structural_change_still_denied(diverged_repo, fixture_policy_yaml):
     stage_files(diverged_repo, ["MANDATE.md"])
+    _git(diverged_repo, "commit", "-m", "structural change")
     guard = Guard(load_policy(fixture_policy_yaml))
     assert guard.push(diverged_repo, "fixture", "runtime_write_own", "bubble-ops-fixture",
                       dry_run=True) == 1
@@ -512,7 +535,11 @@ def test_deleted_remote_ref_falls_back_to_conservative_sweep(temp_git_repo):
     stage_files(temp_git_repo, ["MANDATE.md"])
     _git(temp_git_repo, "commit", "-m", "after remote deletion")
 
-    paths = staged_paths_for_push(temp_git_repo, ref="HEAD:short-lived")
+    paths = staged_paths_for_push(
+        temp_git_repo,
+        destination_url=str(temp_git_repo.parent / "remote.git"),
+        ref="HEAD:short-lived",
+    )
     assert {".gitkeep", "outputs/a.md", "MANDATE.md"} <= set(paths)
 
 
@@ -539,10 +566,12 @@ def test_unreachable_remote_fails_closed(temp_git_repo, fixture_policy_yaml):
     network down, auth failure, ...), the guard must fail CLOSED — never
     silently fall back to treating the push as if nothing changed."""
     _git(temp_git_repo, "remote", "set-url", "origin", str(temp_git_repo / "does-not-exist.git"))
+    stage_files(temp_git_repo, ["outputs/remote-config-ignored.txt"])
+    _git(temp_git_repo, "commit", "-m", "actor remote config is not routing")
     guard = Guard(load_policy(fixture_policy_yaml))
     assert guard.push(
         temp_git_repo, "fixture", "runtime_write_own", "bubble-ops-fixture", dry_run=True
-    ) == 1
+    ) == 0
 
 
 def test_ls_remote_and_fetch_never_read_local_remotes_ref(temp_git_repo):
@@ -550,7 +579,7 @@ def test_ls_remote_and_fetch_never_read_local_remotes_ref(temp_git_repo):
     forged to an unrelated, unreachable-from-history object must have ZERO
     effect on the sha `_ls_remote_sha` reports or the object `staging`
     diffs against — both are re-derived from the real remote every call."""
-    from src.staging import _ls_remote_sha
+    from src.staging import GuardRepository
 
     real_sha = _git(temp_git_repo, "rev-parse", "main").stdout.strip()
     # A real, but locally-fabricated (attacker-controlled), object --
@@ -560,4 +589,10 @@ def test_ls_remote_and_fetch_never_read_local_remotes_ref(temp_git_repo):
     bogus = _git(temp_git_repo, "commit-tree", existing_tree, "-m", "bogus forged base").stdout.strip()
     _git(temp_git_repo, "update-ref", "refs/remotes/origin/main", bogus)
 
-    assert _ls_remote_sha(temp_git_repo, "origin", "main") == real_sha
+    isolated = GuardRepository.create()
+    try:
+        assert isolated.remote_sha(
+            str(temp_git_repo.parent / "remote.git"), "main"
+        ) == real_sha
+    finally:
+        isolated.close()

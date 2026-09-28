@@ -27,7 +27,7 @@ import base64
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_git_push_uses_http_basic_with_x_access_token(
@@ -38,6 +38,7 @@ def test_git_push_uses_http_basic_with_x_access_token(
 ):
     """The `GIT_CONFIG_*`-carried extraHeader must use HTTP Basic, NOT Bearer."""
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(
@@ -98,6 +99,7 @@ def test_git_askpass_is_not_dev_null(
     use /bin/true (or any executable that exits 0 silently) instead.
     """
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(

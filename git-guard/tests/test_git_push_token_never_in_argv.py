@@ -31,7 +31,7 @@ import base64
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 # A syntactically-plausible but fake installation token — never a real
 # credential. Chosen to be distinctive enough that an accidental argv leak
@@ -41,6 +41,7 @@ _FAKE_TOKEN_PREFIX = "ghs_MOCK"
 
 def _run_guard_push(fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push):
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(
@@ -130,8 +131,8 @@ def test_remote_and_immutable_refspec_passed_positionally(
     cmd, _env = _run_guard_push(
         fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
     )
-    assert cmd[0] == "git"
-    assert cmd[-2] == "origin", f"remote must still be positional argv, got: {cmd!r}"
+    assert cmd[0] == "/usr/bin/git"
+    assert cmd[-2] == str(temp_git_repo.parent / "remote.git")
     source, destination = cmd[-1].split(":", 1)
     assert len(source) == 40 and all(c in "0123456789abcdef" for c in source)
     assert destination == "refs/heads/main"

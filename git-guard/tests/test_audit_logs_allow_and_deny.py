@@ -22,7 +22,7 @@ from pathlib import Path
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -40,6 +40,7 @@ def test_audit_line_for_pushed_has_paths_count_and_token_ttl(
     tmp_path,
 ):
     stage_files(temp_git_repo, ["outputs/x.md", "queues/y.yaml"])
+    commit_staged(temp_git_repo)
     audit = tmp_path / "audit.jsonl"
     policy = load_policy(fixture_policy_yaml)
     g = Guard(
@@ -74,6 +75,7 @@ def test_audit_line_for_deny_has_denied_paths_listed(
     tmp_path,
 ):
     stage_files(temp_git_repo, ["outputs/x.md", "MANDATE.md"])
+    commit_staged(temp_git_repo)
     audit = tmp_path / "audit.jsonl"
     policy = load_policy(fixture_policy_yaml)
     g = Guard(
@@ -106,6 +108,7 @@ def test_audit_line_for_push_failed_when_git_returns_nonzero(
     tmp_path,
 ):
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
     mock_git_push.state["returncode"] = 1
     mock_git_push.state["stderr"] = "fatal: simulated remote rejection"
     audit = tmp_path / "audit.jsonl"

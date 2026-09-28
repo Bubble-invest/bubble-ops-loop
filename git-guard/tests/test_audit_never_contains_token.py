@@ -16,7 +16,7 @@ import pytest
 from src.audit import GuardAudit
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_token_value_never_in_audit_jsonl_after_push(
@@ -28,6 +28,7 @@ def test_token_value_never_in_audit_jsonl_after_push(
 ):
     """Run a real allowed push, then grep audit for 'ghs_'."""
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     audit = tmp_path / "audit.jsonl"
     policy = load_policy(fixture_policy_yaml)
     g = Guard(

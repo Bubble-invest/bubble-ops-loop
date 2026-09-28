@@ -15,11 +15,12 @@
 #       --audit-log /var/log/bubble-git-guard/audit.jsonl
 #
 # The guard:
-#   1. Reads `git diff --cached` + `git diff @{upstream}..HEAD` for staged paths
-#   2. Runs each path through the policy (fail-CLOSED on any deny)
-#   3. Invokes the broker to mint a short-lived (≤60 min) installation token
-#   4. Runs `git push` with the token via http.extraheader (process-private)
-#   5. Drops the token reference and logs the outcome (status only)
+#   1. Resolves the source commit once, read-only, in the actor checkout
+#   2. Imports it into a guard-owned temporary bare repository
+#   3. Reads/diffs the literal policy-derived GitHub destination there
+#   4. Runs each committed path through policy (fail-CLOSED on any deny)
+#   5. Mints a short-lived token and pushes only from the temporary repo
+#   6. Removes the temporary repo and logs status only
 
 set -euo pipefail
 

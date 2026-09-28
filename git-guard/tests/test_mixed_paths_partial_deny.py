@@ -48,7 +48,7 @@ def test_all_allowed_returns_allowed(fixture_policy_yaml):
 
 
 def test_empty_paths_returns_denied(fixture_policy_yaml):
-    """Empty staged set = nothing to push. Fail-closed: don't mint a token
+    """Empty committed diff = nothing to push. Fail-closed: don't mint a token
     for a no-op (and surface the situation as denial so the loop logs it)."""
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy)

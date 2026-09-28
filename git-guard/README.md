@@ -24,18 +24,24 @@ ops-loop-fixture (the /loop agent)
        v
   bubble-git-guard push --dept --action --repo --policy
        |
-       |-- 1. read git diff --cached + git diff <remote>/<destination>..<source>
+       |-- 1. resolve source commit SHA once in the actor checkout (read-only)
        |
-       |-- 2. policy.enforce(each_path)   <-- reuses token-broker's Policy class
-       |       any deny? ---> audit:denied + exit 1, NO broker call, NO push
+       |-- 2. create mode-0700 temporary bare repo with guard-written config
+       |       fetch <actor-path> <sha>; verify imported object == <sha>
        |
-       |-- 3. subprocess: bubble-token-broker mint --paths ...
+       |-- 3. ls-remote/fetch literal https://github.com/Bubble-invest/<repo>.git
+       |       diff + ls-tree run only in the temporary repo
+       |
+       |-- 4. policy.enforce(each_path)   <-- reuses token-broker's Policy class
+       |       any deny? ---> audit:denied + exit 1, NO write-token mint/push
+       |
+       |-- 5. subprocess: bubble-token-broker mint --paths ...
        |       broker exits non-zero ---> audit:mint_failed + exit 1, NO push
        |
-       |-- 4. git -c http.extraheader='AUTHORIZATION: bearer <token>' push
-       |       (token captured into local var; GITHUB_TOKEN env stripped)
+       |-- 6. push <sha>:refs/heads/<dest> from the temporary repo
+       |       Basic header via process env; fixed URL; leased; --no-verify
        |
-       |-- 5. audit:pushed / audit:push_failed
+       |-- 7. remove temporary repo; audit:pushed / audit:push_failed
        v
   exit 0 (success) | exit 1 (any fail, fail-CLOSED)
 ```
@@ -62,7 +68,7 @@ bubble-git-guard push \
     --broker /opt/bubble-token-broker/bin/bubble-token-broker \
     --audit-log /var/log/bubble-git-guard/audit.jsonl
 
-# Dry-run (offline, no broker, no network)
+# Dry-run (no write token and no push; remote read still occurs)
 bubble-git-guard push --dept fixture --action runtime_write_own \
     --repo bubble-ops-fixture \
     --policy /opt/bubble-token-broker/deploy/policies/fixture-policy.yaml \
@@ -77,15 +83,16 @@ bubble-git-guard push --dept tony --action open_priority_pr \
 
 ## Push changeset (#1413, hardened by #543)
 
-The guard checks staged paths plus the diff from the push destination's
-**real remote state** to the push source. For example, `--remote origin
---ref HEAD:main` checks the destination `main` branch on `origin`; the
-default `--ref HEAD` uses the current local branch name as the destination.
+The guard checks the committed tree diff from the push destination's **real
+remote state** to the resolved push source. Uncommitted index/worktree changes
+are not part of `git push` and are not authorization inputs. The default
+`--ref HEAD` uses the current local branch name as the destination.
 A branch name or a single `source:destination` branch refspec is supported.
 Unsupported refspecs fail before token minting.
 
-**The destination's state is asked from the remote over the network on every
-call — never read from a local ref.** Concretely: `git ls-remote <remote>
+**The destination's state is asked from the literal policy-derived URL on every
+call — never read from actor config or a local ref.** Concretely: `git ls-remote
+https://github.com/Bubble-invest/<repo>.git
 refs/heads/<destination>` gets the authoritative current SHA, then `git
 fetch` pulls that exact object into a guard-private ref (`refs/git-guard/base`,
 never `refs/remotes/*`) and re-verifies the fetched object matches before
@@ -95,8 +102,10 @@ destination doesn't exist on the remote (a genuinely new branch), the
 guard checks every path in the source commit's complete tree with `git
 ls-tree -r --name-only`. It does not walk history: a normal `git log
 --name-only` suppresses merge-commit diffs and can miss a path introduced
-only in the merge result. Any `ls-remote`/`fetch` transport or auth error is
-fail-closed: no path check, no broker call, no push.
+only in the merge result. Public repositories are read without a token. On a
+private-repository authentication failure, the guard reuses the broker flow to
+mint a separate `runtime_read` token and retries only inside the isolated repo;
+failure remains fail-closed.
 
 The source ref is resolved to one immutable commit SHA before diffing and
 policy evaluation. The final command pushes exactly
@@ -107,8 +116,8 @@ expected SHA for a branch verified absent), so a destination change between
 the initial `ls-remote` and the push fails closed rather than silently
 updating a different remote state.
 
-The checkout's upstream, `origin/HEAD`, `BUBBLE_GUARD_DIFF_BASE`, and any
-local `refs/remotes/<remote>/<destination>` value **do not** select this
+The checkout's upstream, `origin/HEAD`, `BUBBLE_GUARD_DIFF_BASE`, actor
+`remote.*`, and local `refs/remotes/*` **do not** select the destination or
 base and are never read for this decision. This closes a critical bypass
 (card #1413, PR #543 independent review): the guarded actor controls its
 own checkout, so a forged `git update-ref refs/remotes/<remote>/<destination>
@@ -117,21 +126,20 @@ able to make `staged_paths_for_push()` return `[]` (or omit a path) while a
 forbidden path still rode along in the real `git push`. See
 `tests/test_1413_push_target.py::test_forged_refs_remotes_cannot_hide_a_structural_path`
 for the regression test that proves this specific attack is now blocked.
-This also still works when the sandbox makes `.git/config` read-only: no
-upstream configuration change is required, and the guard's own fetch writes
-only to `refs/git-guard/base`, never to `.git/config`.
+This also works when the sandbox makes `.git/config` read-only: every guard ref
+write occurs in the temporary bare repository, never in the actor checkout.
 
-Every Git subprocess is invoked with `-c core.hooksPath=/dev/null`. The final
-push additionally uses `--no-verify`, so neither the checkout's default
-`.git/hooks/pre-push` nor an attacker-controlled local `core.hooksPath` can
-read the short-lived authorization header from the push environment. The
-global hook override also neutralizes hooks such as `reference-transaction`
-when the guard fetches its verified base. Repository-routing variables
-(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, object/alternate/common-dir
-overrides, and `GIT_NAMESPACE`) are removed from every Git subprocess. The
-guard verifies that `git rev-parse --absolute-git-dir` resolves inside the
-requested `--repo-dir` both during inspection and immediately before push;
-an ancestor or redirected repository fails closed.
+The actor checkout is used only for hardened, read-only source resolution.
+The exact SHA is fetched by local path into a fresh mode-0700 bare repository,
+then re-verified. That repo has a guard-written config, private HOME,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no hooks,
+`GIT_NO_REPLACE_OBJECTS=1`, and no inherited `GIT_*` or proxy routing. Every
+remote read, diff, tree walk, and token-bearing push happens there. The final
+push also uses `--no-verify`, `http.proxy=`, `http.sslVerify=true`, an immutable
+SHA refspec, and the literal GitHub URL. Actor `pushurl`, `insteadOf`, proxy,
+include, credential-helper, receive-pack, SSH-command, hook, and environment
+settings are therefore outside the command boundary rather than individually
+blocklisted.
 
 ## Path policy (canonical, from Notion v4 line 620 + 700)
 
@@ -187,7 +195,8 @@ never `runtime_write_own`.
 | **Destination-ref TOCTOU** — another writer changes or creates the remote branch after `ls-remote` | The push uses an explicit `--force-with-lease` expectation bound to the SHA (or verified absence) returned by that same `ls-remote`; mismatch fails closed. |
 | **Merge-only path on a new branch** — `git log --name-only` hides a path added only in a merge result | New branches are checked by full-tree enumeration (`git ls-tree -r --name-only <checked-sha>`), so every path that would land is policy-checked. Existing branches use a base-tree-to-source-tree diff, which also includes merge results. |
 | **Minted-token theft by a client-side Git hook** — `.git/hooks/pre-push` or local `core.hooksPath` reads `GIT_CONFIG_VALUE_0` from the push environment | Every Git command uses `-c core.hooksPath=/dev/null`; the final push also uses `--no-verify`. Real-subprocess regressions cover both exploit paths. |
-| **Repository redirection through inherited Git environment** — `GIT_DIR`, work-tree/index/object/alternate/common-dir, or namespace variables select a different view | All repository-routing variables are scrubbed, and the resolved absolute Git directory must remain under the requested repo directory (rechecked just before push). |
+| **Repository redirection through inherited Git environment** — `GIT_DIR`, work-tree/index/object/alternate/common-dir, namespace, or proxy variables select a different view/route | All inherited `GIT_*` and proxy variables are removed. Remote operations run only in the temporary repo with a private HOME and disabled global/system config. |
+| **Token exfiltration through actor Git config** — `remote.*.pushurl`, `url.*.insteadOf`, `http.proxy`, `include.path`, `credential.helper`, `remote.*.receivepack`, or `core.sshCommand` reroutes or executes during push | No remote or token-bearing command runs in the actor repo. The guard-owned bare repo has only a guard-written config and pushes to the literal policy-derived GitHub URL. Capture-server regressions cover every listed variant. |
 | **Token leak via audit** | `FORBIDDEN_FIELDS` drops `token`/`access_token`/`pem`/`private_key`/`jwt`/`secret`. Any value starting with `ghs_` raises `ValueError` before write. |
 | **Token leak via stderr** | Token captured into LOCAL var, never `print()`ed. `git push` stderr is redacted (token replaced with `<TOKEN-REDACTED>`) before being surfaced. |
 | **Fallback to PAT / env GITHUB_TOKEN** | `GITHUB_TOKEN` is stripped from the env passed to `git push`. No code path reads it. |
@@ -206,18 +215,19 @@ never `runtime_write_own`.
 | Policy YAML malformed | exit 1, no broker call |
 | Action class unknown | exit 1, no broker call |
 | Any path denied | exit 1, no broker call |
-| Empty path set (nothing staged) | exit 1, no broker call (audit:denied with reason="empty path set") |
+| Empty committed diff | exit 1, no write-token broker call (audit:denied with reason="empty path set") |
 | Broker binary not in PATH | exit 1, no push |
 | Broker exits non-zero | exit 1, no push |
 | Broker stdout doesn't start with `ghs_` | exit 1, no push |
 | `git push` exits non-zero | exit 1, audit:push_failed |
-| `ls-remote`/`fetch` against the real remote errors (auth/network/host) | exit 1, no path check, no broker call, no push |
+| Public `ls-remote`/`fetch` has an auth error | retry in isolated repo with a separately brokered `runtime_read` token |
+| Remote read-token mint/retry or any non-auth transport fails | exit 1, no path check, no write token, no push |
 | Fetched object doesn't match the SHA `ls-remote` reported | exit 1, no path check, no broker call, no push |
 | Destination no longer matches the SHA (or absence) `ls-remote` reported | leased push rejected, exit 1, audit:push_failed |
 
 ## Atomicity
 
-If the staged set is `[outputs/x.md, MANDATE.md, queues/y.yaml]`:
+If the committed push diff is `[outputs/x.md, MANDATE.md, queues/y.yaml]`:
 - 2 paths individually pass policy
 - 1 path (`MANDATE.md`) is denied
 - **The entire push is denied.** No "push the 2, ignore the 1" behavior.
@@ -229,12 +239,13 @@ otherwise-legitimate push.
 
 ```bash
 cd git-guard
-python3 -m pytest tests/ -v                 # 142/142 passing
+python3 -m pytest tests/ -v                 # 150/150 passing
 python3 -m pytest --cov=src tests/          # 90% coverage
 ```
 
-21 test files cover:
-- Staging detection (`git diff --cached` + `git diff <remote>/<destination>..<source>`)
+22 test files cover:
+- Guard-owned temporary-repo source import and remote tree diff
+- Actor-config isolation (`pushurl`, `insteadOf`, proxy, include, credential helper, receive-pack, SSH command)
 - Allow paths: `outputs/`, `queues/`, `inbox/` for `runtime_write_own`
 - Deny paths: `dept.yaml`, `MANDATE.md`, `CLAUDE.md`, `layers/`, `subagents/`, `skills/`, `tools/`, `.claude/`
 - Settings-PR class: same structural paths ALLOWED under `settings_pr`
@@ -281,8 +292,8 @@ git-guard/
 │   ├── cli.py                         # argparse, push subcommand
 │   ├── guard.py                       # Guard class: check_paths + push pipeline
 │   ├── policy_loader.py               # imports token-broker's Policy via spec_from_file_location
-│   └── staging.py                     # git diff --cached + ls-remote/fetch-verified diff vs the REAL remote destination
-├── tests/                             # 21 files, 142 tests, 90% coverage
+│   └── staging.py                     # isolated bare repo + verified source/base imports and tree diff
+├── tests/                             # 22 files, 150 tests
 └── deploy/
     ├── bubble-git-guard.template.sh   # wrapper installed to /opt/bubble-git-guard/bin/
     └── INSTALL-ON-MORTY.md            # full operator runbook

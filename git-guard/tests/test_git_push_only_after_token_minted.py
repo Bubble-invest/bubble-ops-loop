@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_git_push_not_called_when_broker_fails(
@@ -19,6 +19,7 @@ def test_git_push_not_called_when_broker_fails(
     mock_git_push,
 ):
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_failed_broker_binary)])
     rc = g.push(
@@ -47,6 +48,7 @@ def test_guard_does_not_fall_back_to_env_github_token(
     """Even if GITHUB_TOKEN is set in the environment, the guard must NOT use it."""
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_LEAKED_PAT_xxxxxxxxxxxxxxxxxxxx")
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_failed_broker_binary)])
     rc = g.push(

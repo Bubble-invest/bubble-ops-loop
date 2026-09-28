@@ -14,7 +14,7 @@ Usage examples:
       --repo bubble-ops-fixture \\
       --policy /opt/bubble-token-broker/deploy/policies/fixture-policy.yaml
 
-  # 2. Offline dry-run (no broker call, no git push, no network) — show plan
+  # 2. Dry-run (no write-token mint or push; remote read still occurs)
   bubble-git-guard push \\
       --dept fixture \\
       --action runtime_write_own \\
@@ -69,8 +69,9 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="bubble-git-guard",
         description=(
             "Path-allow-list enforcement at the git-push boundary on Morty.\n"
-            "Wraps `git push` with: staged-path detection → policy check → "
-            "broker mint → push. Fails closed if ANY path violates the policy."
+            "Wraps `git push` with: isolated committed-tree diff → policy "
+            "check → broker mint → leased push. Fails closed if ANY path "
+            "violates the policy."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EXAMPLES,
@@ -114,9 +115,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the plan; do NOT mint, do NOT push, do NOT touch the network.",
+        help="Show the committed plan; do NOT mint a write token or push (remote read still occurs).",
     )
-    p.add_argument("--remote", default="origin", help="git push remote (default: origin)")
+    p.add_argument(
+        "--remote", default="origin",
+        help="Compatibility flag; only 'origin' is accepted and its config is never read.",
+    )
     p.add_argument("--ref", default="HEAD", help="git push refspec (default: HEAD)")
 
     return parser

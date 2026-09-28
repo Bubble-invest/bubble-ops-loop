@@ -56,7 +56,7 @@ def _git(repo: Path, *args: str, env: Optional[dict] = None) -> subprocess.Compl
 
 
 @pytest.fixture
-def temp_git_repo(tmp_path: Path) -> Path:
+def temp_git_repo(tmp_path: Path, monkeypatch) -> Path:
     """Create an initialized git repo with a configured upstream (bare remote).
 
     Layout:
@@ -84,6 +84,11 @@ def temp_git_repo(tmp_path: Path) -> Path:
     # Wire up the remote and push the seed so HEAD matches origin/main exactly.
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "-u", "origin", "main")
+    # Production always derives a literal github.com URL. Tests substitute the
+    # fixture's bare remote at this trusted function boundary; no actor config
+    # participates in the guard implementation itself.
+    from src import guard as guard_module
+    monkeypatch.setattr(guard_module, "github_repo_url", lambda _repo: str(remote))
     return repo
 
 
@@ -97,6 +102,12 @@ def stage_files(repo: Path, paths: Iterable[str], content: str = "x\n") -> List[
         _git(repo, "add", p)
         out.append(p)
     return out
+
+
+def commit_staged(repo: Path, message: str = "test guarded push") -> str:
+    """Commit fixture changes and return the immutable source SHA."""
+    _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 # Expose as fixture for tests that want a callable
@@ -237,7 +248,8 @@ def mock_git_push(monkeypatch):
 
     def fake_run(cmd, *args, **kwargs):
         # Only intercept `git push` invocations originating from the guard.
-        if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == "git" and "push" in cmd:
+        if (isinstance(cmd, (list, tuple)) and len(cmd) >= 2
+                and Path(cmd[0]).name == "git" and "push" in cmd):
             # Redact env: only record whether AUTHORIZATION header includes ghs_
             env = kwargs.get("env") or {}
             calls.append((list(cmd), {k: v for k, v in env.items() if k.startswith("GIT_") or k == "GITHUB_TOKEN"}))
