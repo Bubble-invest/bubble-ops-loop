@@ -3652,31 +3652,83 @@ def _due_scheduled_catchup_layer(
     ctx: "dict[str, Any]",
     missions: "list[dict]",
 ) -> "int | None":
-    """Catch-up safeguard (#428, Fix 2) — anti "Mac asleep at the scheduled slot".
+    """Catch-up safeguard (#428, Fix 2; broadened #1571) — anti "Mac asleep at
+    the scheduled slot" AND anti "this layer's queue-signal gate never fires
+    for a dept that has no such queue at all".
 
     Returns the highest-priority layer that has a SCHEDULED producer mission whose
-    slot has already passed today and which has NOT actually run today (no real
-    per-mission STEP 0 marker), or None.
+    slot has already passed today and which has NOT actually run today, or None.
 
-    WHY: a producer mission like `newsletter_redaction` (weekly Tue/Fri 18:03) or
-    `linkedin_sage_batch` (weekly Sun 18:30) only gets dispatched when its LAYER is
-    the highest-priority eligible layer — and L2's eligibility is gated by
-    `has_research`. If the Mac was asleep at 18:03 and the research queue happens to
-    be empty when it wakes, the layer is not eligible and the scheduled slot is
-    silently lost for the WEEK. This safeguard lets a missed scheduled slot wake its
-    OWN layer so the mission becomes DUE on the next tick (catch-up).
+    WHY (#428 origin): a producer mission like `newsletter_redaction` (weekly
+    Tue/Fri 18:03) or `linkedin_sage_batch` (weekly Sun 18:30) only gets dispatched
+    when its LAYER is the highest-priority eligible layer — and L2's eligibility is
+    gated by `has_research`. If the Mac was asleep at 18:03 and the research queue
+    happens to be empty when it wakes, the layer is not eligible and the scheduled
+    slot is silently lost for the WEEK. This safeguard lets a missed scheduled slot
+    wake its OWN layer so the mission becomes DUE on the next tick (catch-up).
+
+    WHY BROADENED, ONLY FOR L2/L3 (#1571): Tony's `dept_kpi_watch` (L2, daily
+    10:30) and `directive_review` (L3, daily 14:00) are legacy layer-shim
+    missions (no `missions/<id>/PROMPT.md` — they resolve via
+    `resolve_mission_prompt`'s fallback to `layers/<N>/PROMPT.md`) on a
+    management dept that has NO research queue and NO inbox/decisions queue at
+    all — `has_research`/`has_decisions` are permanently False, so L2/L3 are
+    NEVER independently eligible and these two scheduled missions never ran
+    (last real run 2026-09-05, 23 days stale). The original #428 scope excluded
+    shim-resolved missions here because, AT THE TIME, a shim mission's
+    idempotence depended on `materialize_due_missions_for_tick` pre-stamping
+    its per-mission marker as a side effect of the dispatch DECISION — catching
+    a shim mission here, before that pre-stamp ran, risked either fire-spin or
+    a premature-stamp lie. That concern no longer applies: `build_dispatch_ctx`
+    is unconditionally read-only since #1117 (`materialize` is a deprecated,
+    ignored kwarg) and `materialize_due_missions_for_tick` has zero production
+    callers left — for EVERY mission (shim or dedicated-prompt) in this live
+    path, the sole per-mission completion signal is `commit_dispatch`'s ledger
+    (`_ledger_completion`, checked first by `_mission_last_fired`), written
+    only once the mission's own subagent actually returns via the wake-prompt's
+    `COMPLETE <id> => ... commit_dispatch(...)` contract. So a shim mission's
+    "already fired today" signal here is exactly as honest as a dedicated-
+    prompt mission's for THIS purpose.
+
+    L1 and L4 deliberately KEEP the original dedicated-prompt-only
+    restriction — this is NOT the same class of gap:
+      • L1 never needed catch-up (its own gate has no queue-signal dead-end:
+        `not l1_fired OR has_mgmt_notes OR cycle-gate`, never permanently
+        False), so restricting it there is a no-op.
+      • L4's prerequisite `(l2_fired or not has_research) AND (l3_fired or not
+        has_decisions)` is DELIBERATE CROSS-LAYER SEQUENCING (L4's debrief
+        must wait for L2/L3 to resolve or be explicitly deferred — see #1085's
+        `maybe_defer_ad_hoc_l3`), not a "this queue is structurally empty
+        forever" dead-end like L2/has_research or L3/has_decisions. Catch-up
+        deliberately does not re-check that prerequisite (see below), so
+        broadening shim eligibility to L4 would let a shim L4 producer
+        (e.g. the accountant's `daily_risk_audit`, #1085's live example) fire
+        BEFORE L3 has been resolved — reopening the exact deadlock #1085
+        fixed (pinned by
+        test_1085_maybe_defer_ad_hoc_l3.py::test_reproduces_the_deadlock_before_the_fix).
+        L2 and L3 have no such cross-layer prerequisite to protect (their own
+        eligibility depends only on THEIR OWN time floor + THEIR OWN queue
+        signal), so broadening them is safe.
 
     Deliberately narrow / safe:
       • ONLY producer missions (no `input_queue`) — consumers are correctly gated
-        by their input queue being non-empty.
-      • ONLY dedicated-prompt missions (`missions/<id>/PROMPT.md`) — these author
-        their own per-mission marker at STEP 0, so the marker is an honest "ran"
-        signal and the catch-up self-terminates once the real run stamps it. (This
-        also means it never triggers for the legacy layer-shim primaries, whose
-        behaviour is left exactly as before.)
+        by their input queue being non-empty. A queue-signal-only consumer mission
+        (or any mission without an explicit `time:`) is NEVER caught here, so
+        "queue-signal-only layer work must not start firing on an empty queue" is
+        unchanged — this fallback only ever fires a mission with its OWN explicit
+        cadence + time contract, independent of any queue.
       • ONLY daily/weekly cadences with an explicit `time:` — `is_mission_due`
         enforces "never before the scheduled time" and "once per day/week", so this
         cannot fire early or double-fire.
+      • Shim-resolved (no dedicated prompt) missions are only eligible here on
+        L2/L3 — L1/L4 still require `_mission_authors_own_marker` (see above).
+      • Idempotence is the SAME `is_mission_due` + `_mission_last_fired` (ledger +
+        marker union) the normal per-layer path already uses — once the mission
+        completes and its subagent commits, it will not be selected again for the
+        same period, shim or not.
+      • Catch-up does NOT re-check a layer's cross-layer prerequisites (L4's
+        l2_fired/l3_fired) — only its own time+cadence — exactly as before #1571;
+        this is why L4 stays dedicated-prompt-only (see above).
 
     Used by select_due_missions ONLY as a fallback when no layer is eligible the
     normal way (an otherwise-heartbeat tick), so it can never out-rank or steal a
@@ -3698,8 +3750,8 @@ def _due_scheduled_catchup_layer(
                 continue
             if not m.get("time"):
                 continue
-            if not _mission_authors_own_marker(repo_dir, m):
-                continue
+            if layer not in (2, 3) and not _mission_authors_own_marker(repo_dir, m):
+                continue  # L1/L4: shim missions keep the original #428 scope
             last_fired = _mission_last_fired(ctx, m)
             if is_mission_due(m, now=now_utc, last_fired=last_fired):
                 return layer

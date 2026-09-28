@@ -15,6 +15,10 @@ Two-part fix in dispatch_helpers.py:
   catch-up safeguard so a scheduled producer whose slot passed while the Mac was
   asleep is not silently skipped for the week. It only acts as a fallback when no
   layer is eligible the normal way — it can never out-rank a real-work layer.
+
+  #1571 broadened Fix 2 to also cover shim-resolved (no dedicated PROMPT.md)
+  scheduled producers — see test_catchup_returns_layer_for_shim_scheduled_mission
+  below for why the original dedicated-prompt-only restriction no longer applies.
 """
 from __future__ import annotations
 
@@ -278,9 +282,18 @@ def test_catchup_none_when_already_ran(tmp_path: Path):
     )
 
 
-def test_catchup_none_for_shim_mission(tmp_path: Path):
-    """A producer WITHOUT a dedicated prompt is never caught up (its behaviour
-    is left exactly as before — the legacy layer-shim primaries)."""
+def test_catchup_returns_layer_for_shim_scheduled_mission(tmp_path: Path):
+    """#1571: a producer WITHOUT a dedicated prompt (legacy layer-shim, e.g.
+    Tony's `dept_kpi_watch`/`directive_review`) IS now caught up too, once its
+    scheduled slot has passed. Broadened from the original #428 dedicated-
+    prompt-only scope: `materialize_due_missions_for_tick`'s premature-stamp
+    risk (the reason shim missions were excluded) no longer applies in the
+    live path — `build_dispatch_ctx` is read-only since #1117, so every
+    mission's real idempotence signal is `commit_dispatch`'s ledger, shim or
+    not. Without this, a scheduled shim producer on a queue-signal-gated layer
+    (L2/L3) with no matching queue at all (e.g. a management dept with no
+    research/decisions queue) would never fire — exactly the dept_kpi_watch
+    bug (last real run 23 days stale)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     missions = [
@@ -295,12 +308,12 @@ def test_catchup_none_for_shim_mission(tmp_path: Path):
         }
     ]
     _make_dept_yaml(repo, missions)
-    # NO _add_prompt.
+    # NO _add_prompt — this is the legacy layer-shim case.
     _today_dir(repo)
     ctx = _bare_ctx(repo, _FRI)
 
-    assert _due_scheduled_catchup_layer(ctx, missions) is None, (
-        "catch-up only applies to dedicated-prompt missions"
+    assert _due_scheduled_catchup_layer(ctx, missions) == 2, (
+        "catch-up now also applies to shim-resolved scheduled producers (#1571)"
     )
 
 
