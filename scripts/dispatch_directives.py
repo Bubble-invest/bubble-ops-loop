@@ -63,10 +63,13 @@ import datetime as _dt
 import fcntl
 import hashlib
 import os
+import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:
@@ -100,6 +103,10 @@ _GH_ORG = "Bubble-invest"
 _SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _DIRECTIVE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _TRANSPORT_FIELDS = {"status", "dispatched_at", "delivered_at", "delivery_digest"}
+_TRANSPORT_MAX_RETRIES = 3
+_RETRY_BASE_SECONDS = 5.0
+_RETRY_MULTIPLIER = 3.0
+_RETRY_MAX_SECONDS = 45.0
 
 # board #1551: `_push_repo`'s commit runs inside `_clone_remote_repo`'s fresh,
 # throwaway `git clone` (ISOLATED FLOOR MODE, #606) — a directory bootstrap-
@@ -208,6 +215,39 @@ def _run(
     )
 
 
+def _transport_failure_class(output: str) -> tuple[str, bool]:
+    """Return a safe log label and whether a transport failure is transient.
+
+    Never return the raw output: although credentials are passed only through
+    the environment, keeping transport logs to a small allow-list makes it
+    impossible for an unexpected helper/git diagnostic to disclose a token.
+    """
+    lowered = output.lower()
+    if "repository not found" in lowered:
+        return "repository-not-found", True
+    if (
+        re.search(r"(?:^|\D)403(?:\D|$)", lowered)
+        or "write access to repository not granted" in lowered
+    ):
+        return "http-403", True
+    return "transport-error", False
+
+
+def _sleep_before_transport_retry(retry_number: int) -> None:
+    """Bounded exponential backoff with equal jitter.
+
+    retry_number is one-based: retry 1 has a 5-second cap, retry 2 a
+    15-second cap, and retry 3 a 45-second cap. Equal jitter keeps each wait
+    in the upper half of its window while preventing synchronized floors.
+    """
+    cap = min(
+        _RETRY_MAX_SECONDS,
+        _RETRY_BASE_SECONDS * (_RETRY_MULTIPLIER ** (retry_number - 1)),
+    )
+    delay = (cap / 2.0) + random.uniform(0.0, cap / 2.0)
+    time.sleep(delay)
+
+
 def _mint_token(repo_name: str, repo_dir: "Path | None" = None) -> "str | None":
     """Mint a short-lived GitHub App token for Bubble-invest/<repo_name> via the
     sudo-wrapped credential helper. Returns the ghs_ token or None on failure.
@@ -270,9 +310,6 @@ def _push_repo(
         if "nothing to commit" in out:
             return True, "nothing to commit"
         return False, f"git commit failed: {(commit.stderr or commit.stdout).strip()[:160]}"
-    token = _mint_token(repo_name, repo_dir)
-    if not token:
-        return False, f"could not mint token for {repo_name}"
     # #923 (same class as #921): token travels via env (GIT_CONFIG_*
     # extraHeader), NEVER in the URL/argv — see
     # dispatch_helpers._env_with_bearer_auth_header's docstring. The remote
@@ -285,36 +322,91 @@ def _push_repo(
     # #310 generic-fallback push in dispatch_helpers.py byte-for-byte in
     # shape (same env mechanism + same argv-level neutralization flag).
     url = f"https://github.com/{_GH_ORG}/{repo_name}.git"
-    push_env = _env_with_bearer_auth_header(os.environ.copy(), token)
-    push = _run(
-        ["git", "-C", str(repo_dir), "-c", "credential.helper=", "push", url, "HEAD:main"],
-        env=push_env,
-    )
-    if push.returncode != 0:
-        return False, f"push rejected: {(push.stderr or push.stdout).strip()[:200]}"
-    return True, "pushed"
+    total_attempts = _TRANSPORT_MAX_RETRIES + 1
+    last_failure = "mint-empty"
+    for attempt in range(1, total_attempts + 1):
+        _log(f"push attempt {attempt}/{total_attempts} for {repo_name}")
+        token = _mint_token(repo_name, repo_dir)
+        if not token:
+            last_failure = "mint-empty"
+            retryable = True
+        else:
+            push_env = _env_with_bearer_auth_header(os.environ.copy(), token)
+            token = ""  # do not retain the credential longer than push setup
+            push = _run(
+                [
+                    "git", "-C", str(repo_dir), "-c", "credential.helper=",
+                    "push", url, "HEAD:main",
+                ],
+                env=push_env,
+            )
+            if push.returncode == 0:
+                _log(f"push attempt {attempt}/{total_attempts} succeeded for {repo_name}")
+                return True, "pushed"
+            last_failure, retryable = _transport_failure_class(
+                push.stderr or push.stdout
+            )
+
+        _log(
+            f"push attempt {attempt}/{total_attempts} failed for {repo_name} "
+            f"({last_failure})"
+        )
+        if not retryable or attempt == total_attempts:
+            break
+        _sleep_before_transport_retry(attempt)
+
+    if last_failure == "mint-empty":
+        return False, f"could not mint token for {repo_name} after {attempt} attempts"
+    return False, f"push rejected after {attempt} attempts ({last_failure})"
 
 
 def _clone_remote_repo(destination: Path, repo_name: str) -> tuple[bool, str]:
     """Clone one target into a private temporary tree using the existing
     credential-helper capability. The token stays in environment headers,
     never argv/logs. A rejected clone leaves the directive approved+pending."""
-    token = _mint_token(repo_name)
-    if not token:
-        return False, "could not mint target token"
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    clone_env = _env_with_bearer_auth_header(os.environ.copy(), token)
-    token = ""  # do not retain the credential longer than the clone setup
-    result = _run(
-        [
-            "git", "-c", "credential.helper=", "clone", "--quiet", "--depth", "1",
-            f"https://github.com/{_GH_ORG}/{repo_name}.git", str(destination),
-        ],
-        env=clone_env,
-    )
-    if result.returncode != 0:
-        return False, "target clone failed"
-    return True, "cloned"
+    total_attempts = _TRANSPORT_MAX_RETRIES + 1
+    last_failure = "mint-empty"
+    for attempt in range(1, total_attempts + 1):
+        _log(f"clone attempt {attempt}/{total_attempts} for {repo_name}")
+        token = _mint_token(repo_name)
+        if not token:
+            last_failure = "mint-empty"
+            retryable = True
+        else:
+            clone_env = _env_with_bearer_auth_header(os.environ.copy(), token)
+            token = ""  # do not retain the credential longer than clone setup
+            result = _run(
+                [
+                    "git", "-c", "credential.helper=", "clone", "--quiet",
+                    "--depth", "1",
+                    f"https://github.com/{_GH_ORG}/{repo_name}.git",
+                    str(destination),
+                ],
+                env=clone_env,
+            )
+            if result.returncode == 0:
+                _log(f"clone attempt {attempt}/{total_attempts} succeeded for {repo_name}")
+                return True, "cloned"
+            last_failure, retryable = _transport_failure_class(
+                result.stderr or result.stdout
+            )
+            # A failed clone may leave a partial destination which would make
+            # the next attempt fail locally before it reaches GitHub.
+            if destination.exists():
+                shutil.rmtree(destination)
+
+        _log(
+            f"clone attempt {attempt}/{total_attempts} failed for {repo_name} "
+            f"({last_failure})"
+        )
+        if not retryable or attempt == total_attempts:
+            break
+        _sleep_before_transport_retry(attempt)
+
+    if last_failure == "mint-empty":
+        return False, f"could not mint target token after {attempt} attempts"
+    return False, f"target clone failed after {attempt} attempts ({last_failure})"
 
 
 class _NoopLock:
