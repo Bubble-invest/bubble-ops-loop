@@ -456,3 +456,94 @@ class TestUndoRoute:
         """POST /gate/unknown-dept/<id>/undo must 404 for unknown dept."""
         r = client.post("/gate/nonexistent-dept/any-gate/undo")
         assert r.status_code == 404
+
+
+# #1597: HTMX follows HX-Redirect and discards the POST body.
+def test_redirect_preserves_confirmation_and_pending_state(client, fixture_repo):
+    _write_gate(fixture_repo, "recorded-1597")
+    response = client.post("/gate/fixture/recorded-1597/decide",
+                           data={"action": "approve"})
+    assert response.status_code == 200
+    decision = yaml.safe_load(
+        (fixture_repo / "inbox/decisions/recorded-1597.yaml").read_text())
+    assert decision["action"] == "approve"
+    assert decision["decided_by"] == "operator"
+    page = client.get(response.headers["HX-Redirect"])
+    assert page.status_code == 200
+    assert "Décision enregistrée — approve" in page.text
+    assert "la traitera lors de son prochain cycle" in page.text
+    assert "recorded-1597" in page.text
+    assert "En attente de traitement par" in page.text
+    # Consumption removes the pending entry on the next page load.
+    decision_path = fixture_repo / "inbox/decisions/recorded-1597.yaml"
+    processed = decision_path.parent / ".processed"
+    processed.mkdir(exist_ok=True)
+    decision_path.rename(processed / decision_path.name)
+    page = client.get("/dept/fixture")
+    assert "Décision enregistrée — approve" not in page.text
+    assert 'aria-label="Décisions en attente de traitement"' not in page.text
+
+
+def test_failed_write_does_not_confirm_or_redirect(client, fixture_repo, monkeypatch):
+    from console.services import github_reader
+    _write_gate(fixture_repo, "failed-1597")
+    monkeypatch.setattr(github_reader, "write_gate_decision", lambda *args: None)
+    response = client.post("/gate/fixture/failed-1597/decide",
+                           data={"action": "approve"})
+    assert response.status_code == 502
+    assert "HX-Redirect" not in response.headers
+
+
+def test_recent_decisions_uses_runtime_checkout(tmp_path, monkeypatch):
+    from console.services import github_reader
+    mirror = _make_dept_repo(tmp_path, "mirror")
+    runtime = _make_dept_repo(tmp_path, "runtime")
+    _write_decision(mirror, "stale")
+    _write_decision(runtime, "current")
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: mirror)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: runtime)
+    assert [d["gate_id"] for d in github_reader.list_recent_decisions(
+        ["fixture"], limit=None)] == ["current"]
+
+
+def test_remote_decision_marker_pending_until_consumed(tmp_path, monkeypatch):
+    from console.services import github_reader
+    mirror = _make_dept_repo(tmp_path, "mirror")
+    runtime = _make_dept_repo(tmp_path, "runtime")
+    _write_gate(runtime, "remote-1597")
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: mirror)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: runtime)
+    from console.services import dept_registry
+    monkeypatch.setattr(dept_registry, "get_department", lambda slug: None)
+    monkeypatch.setattr(github_reader, "_sign_decision", lambda slug, gid, dec: dec)
+    monkeypatch.setattr(github_reader, "_write_gate_decision_github",
+                        lambda *args: Path("inbox/decisions/remote-1597.yaml"))
+    assert github_reader.write_gate_decision("fixture", "remote-1597", {
+        "gate_id": "remote-1597", "action": "approve", "decided_by": "jade",
+    }) is not None
+    rows = github_reader.list_recent_decisions(["fixture"])
+    assert [(d["gate_id"], d["processed"]) for d in rows] == [("remote-1597", False)]
+    _write_decision(runtime, "remote-1597", processed=True)
+    rows = github_reader.list_recent_decisions(["fixture"])
+    assert [(d["gate_id"], d["processed"]) for d in rows] == [("remote-1597", True)]
+
+
+def test_dept_lists_remote_marker_as_pending_not_actionable(
+    client, fixture_repo, tmp_path, monkeypatch,
+):
+    from console.services import github_reader
+    mirror = _make_dept_repo(tmp_path, "mirror")
+    _write_gate(fixture_repo, "remote-list-1597")
+    _write_decision(mirror, "remote-list-1597")
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: mirror)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: fixture_repo)
+    page = client.get("/dept/fixture")
+    assert page.status_code == 200
+    assert "remote-list-1597" in page.text
+    assert "En attente de traitement par" in page.text
+    # History may still link to the gate; the actionable decision grid must not.
+    import re
+    assert not re.search(
+        r'class="decision-card[^" ]*(?: [^"]*)?"\s+href="/gate/fixture/remote-list-1597"',
+        page.text,
+    )

@@ -106,12 +106,20 @@ def _kanban_snapshot(limit: int = 6) -> "dict | None":
 def dept_detail(
     slug: str, request: Request,
     nav_range: str = Query(nav_history.DEFAULT_RANGE),
+    decision_recorded: str = Query(""),
 ):
     d = dept_registry.get_department(slug)
     if d is None:
         raise HTTPException(status_code=404, detail=f"Unknown dept: {slug}")
     dept_yaml = github_reader.load_dept_yaml(slug)
-    gates = github_reader.list_pending_gates(slug)
+    pending_decisions = [
+        dec for dec in github_reader.list_recent_decisions([slug], limit=None)
+        if not dec["processed"]
+    ]
+    decided_ids = {dec["gate_id"] for dec in pending_decisions
+                   if dec["action"] != "modify"}
+    gates = [gate for gate in github_reader.list_pending_gates(slug)
+             if gate.get("id") not in decided_ids]
     # Group gates by kind so /dept/<slug> mirrors / (msg 3030 — "shouldn't
     # they be grouped?"). Same helper as home.py, single source of truth.
     gate_groups = group_gates_by_kind(gates)
@@ -344,6 +352,10 @@ def dept_detail(
             "checkout_staleness": checkout_staleness,
             "gates": gates,
             "gate_groups": gate_groups,
+            "decision_recorded": decision_recorded if decision_recorded in {
+                "approve", "reject", "defer", "choose"
+            } else "",
+            "pending_decisions": pending_decisions,
             "missions": missions,
             "missions_full": missions_full,
             "missions_by_layer": missions_by_layer,

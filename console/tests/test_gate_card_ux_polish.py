@@ -106,17 +106,17 @@ class TestPostDecisionRedirect:
         _write_gate(fixture_repo, "ux-redir-approve")
         r = self._post(client, "ux-redir-approve", "approve")
         assert r.status_code == 200, r.text
-        assert r.headers.get("HX-Redirect") == "/dept/fixture"
+        assert r.headers.get("HX-Redirect") == "/dept/fixture?decision_recorded=approve"
 
     def test_reject_sets_hx_redirect(self, client, fixture_repo):
         _write_gate(fixture_repo, "ux-redir-reject")
         r = self._post(client, "ux-redir-reject", "reject")
-        assert r.headers.get("HX-Redirect") == "/dept/fixture"
+        assert r.headers.get("HX-Redirect") == "/dept/fixture?decision_recorded=reject"
 
     def test_defer_sets_hx_redirect(self, client, fixture_repo):
         _write_gate(fixture_repo, "ux-redir-defer")
         r = self._post(client, "ux-redir-defer", "defer")
-        assert r.headers.get("HX-Redirect") == "/dept/fixture"
+        assert r.headers.get("HX-Redirect") == "/dept/fixture?decision_recorded=defer"
 
     def test_modify_does_not_redirect(self, client, fixture_repo):
         """modify is NOT terminal — the gate stays visible 'en révision', so the

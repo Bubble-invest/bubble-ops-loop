@@ -163,7 +163,7 @@ def test_choose_option_writes_decision_file(client, fixture_repo, fixture_root):
     )
     assert r.status_code == 200, r.text
     # Terminal decision → back to the dept page (same UX as approve)
-    assert r.headers.get("HX-Redirect") == "/dept/fixture"
+    assert r.headers.get("HX-Redirect") == "/dept/fixture?decision_recorded=choose"
 
     decision_path = (
         fixture_root / "bubble-ops-fixture" / "inbox" / "decisions"
