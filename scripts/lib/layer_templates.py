@@ -82,15 +82,17 @@ Tony (management) issues instructions through `queues/management/`. Notes arrive
    is a manager (`tony`, `operator`, `operator2`) — i.e. NOT authored by you. \
    EXCLUDE your own outbound escalations (files you wrote, e.g. `rick-*.yaml`).
    For each inbound note NOT already in `queues/management/.consumed.json` \
-   (tracked by `directive_id` or `id` field):
+   (tracked by the note's `id` field, falling back to `directive_id` only when \
+   there is no `id` — same priority `dispatch_helpers.py`'s consumed-check uses):
    - Read it. A directive has `directive_id`, `from`, `body`; a `management_note` \
      has `id`, `created_by`, `title`, `detail`.
    - **Act on it within your mandate this cycle** — fold the instruction into your \
      work. A directive is an order from management, not a suggestion; honour it unless \
      it conflicts with a hard guardrail (if so, do NOT act — log it and raise a \
      `strategic_question` card for {{OPERATOR}}).
-   - Log outcome: append `{{"ts": ..., "directive_id": ..., "action": "applied|deferred|conflict", "note": ...}}` \
-     to `logs.jsonl` and add the id to `.consumed.json`.
+   - Log outcome: append `{{"ts": ..., "id": ..., "action": "applied|deferred|conflict", "note": ...}}` \
+     to `logs.jsonl` and add that same id (`id`, or `directive_id` if there is no `id`) \
+     to `.consumed.json`.
 2. If no unconsumed inbound notes: continue silently.
 3. **After reading (whether or not there were notes)**: stamp the scan marker so the \
    dispatcher knows this tick covered the queue:
