@@ -62,6 +62,35 @@ def test_ack_wrong_actor_or_changed_payload_refused(remote):
     assert len(m.transact('rnd', 'scan')) == 1
 
 
+@pytest.mark.parametrize('remaining', ['empty', 'consumed', 'other_actor'])
+def test_empty_scan_makes_no_commit_or_push(remote, monkeypatch, remaining):
+    bare, work = remote
+    inbox = work / m.INBOX
+    if remaining == 'consumed':
+        (inbox / '.consumed.json').write_text(json.dumps(['rnd', 'tonio']))
+    else:
+        (inbox / 'directive-rnd.yaml').unlink()
+        if remaining == 'empty':
+            (inbox / 'directive-tonio.yaml').unlink()
+    m.git(work, 'add', '.')
+    m.git(work, 'commit', '-qm', 'prepare empty scan')
+    m.git(work, 'push', 'origin', 'main')
+    original = m.git
+    before = original(bare, 'rev-parse', 'main')
+    calls = []
+
+    def checked_git(root, *args):
+        calls.append(args)
+        assert 'commit' not in args and 'push' not in args
+        return original(root, *args)
+
+    monkeypatch.setattr(m, 'git', checked_git)
+    assert m.transact('rnd', 'scan') == []
+    assert len(calls) == 1 and calls[0][0] == 'clone'
+    assert original(bare, 'rev-parse', 'main') == before
+    assert original(bare, 'show', 'main:queues/management/.last-mgmt-scan') == '2099-01-01T00:00:00Z'
+
+
 def test_retry_preserves_concurrent_ack(remote, monkeypatch):
     note = m.transact('rnd', 'scan')[0]
     other = m.transact('tonio', 'scan')[0]

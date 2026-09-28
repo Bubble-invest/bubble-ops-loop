@@ -15,6 +15,7 @@ the standard `.consumed.json` ledger is keyed by ID, not by recipient. This
 routing does not add Tonio to Tony's hierarchy, change mandate, bypass approval,
 or grant access to the client workspace. The cockpit lists both under rnd;
 ack metadata includes `actor`. Accept that display limitation for this minimum.
+Tonio's write access to bubble-ops-rnd comes from the Mac's shared `vdk888` Git identity; no new scoped grant is added.
 
 ## Install after review
 
@@ -40,8 +41,11 @@ Each command uses a fresh private clone, stages only the scan marker or consumed
 ledger, commits and pushes main without force. Push races retry from remote,
 preserving concurrent acknowledgements. An ack matches recipient and exact
 scanned bytes; changed notes require a rescan. Scan uses unconsumed IDs, never
-creation-time watermarks. The shared `.last-mgmt-scan` means the inbox was
-scanned, not that both actors handled every note. No new scheduler is introduced.
+creation-time watermarks. Scans with no pending notes for the actor leave the
+marker unchanged and make no commit or push. The marker is retained because
+shared dispatcher and console code read it. The shared `.last-mgmt-scan` records
+a scan that found pending notes, not that both actors handled every note.
+No new scheduler is introduced.
 
 On failure log `[context-skip directives]` and continue the tick; retry next tick.
 An action may have succeeded before a failed ack: consult outcome evidence before

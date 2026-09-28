@@ -72,6 +72,8 @@ def update(root, actor, command, note_id=None, digest=None, action=None, outcome
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     if command == 'scan':
         pending = [n for key, n in notes.items() if n['recipient'] == actor and key not in ledger]
+        if not pending:
+            return pending, []
         marker.write_text(now + '\n')
         return pending, [str(INBOX / '.last-mgmt-scan')]
     note = notes.get(note_id)
