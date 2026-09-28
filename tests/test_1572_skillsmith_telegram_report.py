@@ -178,3 +178,53 @@ def test_missing_token_is_a_loud_warn_not_a_silent_drop(tmp_path: Path) -> None:
     assert "WARN: no TELEGRAM_BOT_TOKEN resolved for mode=skillsmith" in result.log
     assert "/run/bubble-headless-cloud-wiki-skillsmith/env" in result.log
     assert report.exists()
+
+
+# --------------------------------------------------------------------------
+# (e) board #1573: the token must never appear in curl's argv (ps/proc/
+#     cmdline visibility on the multi-uid VPS) — it must travel only via the
+#     `-K -` stdin config. Defense-in-depth alongside
+#     tests/test_1573_telegram_token_argv_leak.sh's fleet-wide static scan,
+#     scoped to exactly this function since board #1572/#1573 both touched it.
+# --------------------------------------------------------------------------
+def test_token_never_appears_in_curl_argv(tmp_path: Path) -> None:
+    report = tmp_path / "telegram-report.txt"
+    report.write_text("hello joris", encoding="utf-8")
+
+    log_file = tmp_path / "log.txt"
+    log_file.write_text("", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_log = tmp_path / "curl_argv.log"
+    stdin_log = tmp_path / "curl_stdin.log"
+    stub = bin_dir / "curl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f"for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{argv_log}'; done\n"
+        f"if ! [ -t 0 ]; then cat >> '{stdin_log}'; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    fake_token = "FAKE-1572-BOT-TOKEN-abc123"
+    script = tmp_path / "harness.sh"
+    script.write_text(
+        HARNESS_PREFIX + SNIPPET + f'\nsend_queued_telegram_report "{report}"\necho DONE\n',
+        encoding="utf-8",
+    )
+    full_env = {
+        **os.environ,
+        "MODE": "skillsmith",
+        "TELEGRAM_BOT_TOKEN": fake_token,
+        "LOG_FILE": str(log_file),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=full_env)
+    assert "DONE" in result.stdout, result.stderr
+
+    argv_text = argv_log.read_text(encoding="utf-8") if argv_log.exists() else ""
+    assert fake_token not in argv_text, f"token leaked into curl argv: {argv_text!r}"
+    stdin_text = stdin_log.read_text(encoding="utf-8") if stdin_log.exists() else ""
+    assert fake_token in stdin_text, "token must travel via the -K stdin config"
+    assert not report.exists()  # successful send clears the queue
