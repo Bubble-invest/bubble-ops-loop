@@ -259,7 +259,7 @@ case "$MODE" in
     *) log "FATAL: unknown mode '$MODE' (expected compile|synthesis|pruning|skillsmith)"; exit 1 ;;
 esac
 
-PROMPT="${TASK} Follow the skill step-by-step, end-to-end. Today is ${DATE_STAMP} (UTC). At the end, post the Telegram report ONLY if the SKILL's reporting rule says to (silent on quiet runs)."
+PROMPT="${TASK} Follow the skill step-by-step, end-to-end. Today is ${DATE_STAMP} (UTC). At the end, post the Telegram report according to the SKILL's reporting rule (skillsmith reports even on quiet weeks)."
 
 cd /home/claude || exit 1
 

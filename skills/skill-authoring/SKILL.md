@@ -42,7 +42,7 @@ UTC). The Sunday order is synthesis(18:00) → pruning(19:00) → compile+STEP-4
 transcripts are mined and 4.6's `candidates.md` (stamped with Sunday's ISO week)
 already exists, and still ON Sunday so the ISO-week stamp matches (Monday would
 roll to the next week and miss the file). Cheap model (Haiku). Run BOTH arms,
-then report. Be silent on a quiet week (nothing authored, nothing to prune).
+then report, including quiet weeks (zero authored and zero prune flags).
 
 Bundled evidence collectors (call them; never re-implement their logic inline):
 - `scripts/lib/list_candidates.py` — locate + structure THIS week's 4.6 candidates + enumerate the skill registry (ARM A).
@@ -87,9 +87,33 @@ know-how becomes a new skill.
 ### A3. Draft the survivors (cheap) into staging — never live
 Write each draft to a **staging dir** (`skills-proposed/<name>/SKILL.md` under a
 scratch path — NEVER into `~/.claude/skills` and NEVER into a dept's live skill
-dir). Follow the SKILL.md spec (frontmatter `name` + `description`, tight prose,
-bundled scripts only if they exist). Reuse the `skill-creator` meta-skill if it
-is registered; if not, author by hand to the spec.
+dir). Read [the bundled authoring template](references/authoring-template.md)
+and fill it in; it adapts `anthropic-skills:skill-creator`'s structure/checklist
+without requiring that plugin at runtime. Reuse a registered `skill-creator`
+for additional guidance, but keep these staging and validation gates.
+
+### A3.1. Check the description's trigger boundary (AGENTIC)
+Before A4, generate two should-trigger queries and three realistic
+should-NOT-trigger near misses for this candidate. Vary the desired action or
+artifact while retaining overlapping vocabulary; unrelated queries are not a
+useful test. Using only the draft's name and description (not its body), judge
+whether each query would select it and explain why. Record the queries,
+expected/observed selection and rationale in `<staging>/description-check.md`.
+If a near miss selects it or a positive case fails, narrow/clarify the
+description and repeat all five checks. Unresolved ambiguity → hold the draft;
+do not route it to A5. This is agent judgment, not a keyword/score gate, and
+is separate from A4's task-quality comparison.
+
+Synthetic worked example: a draft for reconciling two CSV exports has the
+initial description "Help with CSV files." Both "reconcile invoice rows
+against payment rows" (positive) and "convert this CSV to JSON" (negative)
+select it. Revise to "Reconcile invoice and payment CSV exports by invoice ID;
+report unmatched rows and amount differences. Use for reconciliation, not
+format conversion, charting, or explaining CSV syntax." The positive still
+selects it; conversion, "chart revenue from this CSV", and "explain CSV quoting"
+now do not. A second positive, "find missing payments and mismatched totals in
+these exports", still selects it. Save equivalent candidate-specific evidence;
+this illustrative manual check is not measured live trigger accuracy.
 
 ### A4. Eval-first gate (the anti-bloat mechanism) — AUTHOR ONLY IF IT HELPS
 For each draft, generate 2–3 self-contained probe prompts from the candidate's
@@ -180,6 +204,19 @@ needs:human) with the usage evidence (count, last_used, agents) + your rationale
 and send a Telegram heads-up. Nudge the owning agent. **Do not delete or move any
 skill file.** (Mirrors `memory_hygiene_notify`: detect → nudge, never delete.)
 
+### B4. Record weekly counts, including quiet weeks
+After B3, run the same collector with `--flagged-count P --history-dir
+/home/claude/monitoring/skillsmith/counts`, retaining B1's registry and window
+arguments. P counts distinct skills judged dead this run, including flags whose
+stable board card already exists; it is NOT the zero-use candidate count or the
+number of newly created cards. The collector emits `weekly_counts`: live
+registered skills, this week's flags, and deltas against the preceding ISO week.
+Missing/corrupt previous data means `null` deltas: report "n/a (no baseline)",
+never invent zero. Same-week reruns replace that week's snapshot. Counts cover
+this registry only, not every installed plugin or every host. If collection
+fails, report counts/trend as unavailable, not zero. Counts never authorize
+pruning.
+
 ---
 
 ## Filing + nudging (shared plumbing — reuse, don't reinvent)
@@ -195,9 +232,9 @@ skill file.** (Mirrors `memory_hygiene_notify`: detect → nudge, never delete.)
   (`memory_hygiene_notify.py`) — VPS depts inject locally, Mac agents via the
   outbox. Only nudge when you filed something actionable for that agent.
 
-## Reporting rule (stay cheap + quiet — best-effort notification QUEUE, mirrors cloud-wiki-compile's STEP 10)
-Post ONE Telegram line at the end **only if** you authored/proposed a skill OR
-flagged a prune (i.e. real output). On a quiet week, be silent.
+## Reporting rule (weekly — best-effort notification QUEUE, mirrors cloud-wiki-compile's STEP 10)
+Queue ONE Telegram line after every completed weekly pass, including quiet
+weeks. Include B4's live count and flag-count trend even when all actions are 0.
 
 **You do not have the credential to send it, and that is by design** — the
 bot token lives in `/run/claude-agent/env`, which this headless session's
@@ -221,16 +258,14 @@ instead and trust the launcher to send it):
 REPORT_DIR=/home/claude/monitoring/skillsmith
 REPORT_FILE="$REPORT_DIR/telegram-report.txt"
 mkdir -p "$REPORT_DIR"
-# Quiet week / nothing to report: make sure no stale message lingers.
-rm -f "$REPORT_FILE"
-# Otherwise, atomically queue the composed message text (plain UTF-8 — the
+# Atomically replace any stale queued report with this week's text (plain UTF-8 — the
 # launcher passes it through --data-urlencode, not shell interpolation):
 TMP_REPORT="$(mktemp "${REPORT_FILE}.XXXXXX")"
-printf '%s' "🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q" > "$TMP_REPORT"
+printf '%s' "🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P (Δ D vs previous ISO week), live-skills L (Δ E), discarded-by-eval Q" > "$TMP_REPORT"
 mv -f "$TMP_REPORT" "$REPORT_FILE"
 ```
 
-Format: `🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q`.
+Format: `🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P (Δ D vs previous ISO week), live-skills L (Δ E), discarded-by-eval Q`.
 
 If the queue write itself fails (disk full, permission oddity — all
 unexpected), do NOT retry it as a blocker and do NOT surface it in your final

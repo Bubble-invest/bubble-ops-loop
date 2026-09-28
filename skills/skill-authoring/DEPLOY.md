@@ -107,3 +107,42 @@ python3 /home/claude/.claude/skills/skill-authoring/scripts/lib/eval_harness.py 
   for the eval (vs. staging into a temp skills dir) — confirm on first run.
 - **Not deployed by this PR** (reviewed-PR only, per mission): nothing is
   installed on the VPS; run `install-cloud-wiki-compile.sh` after merge.
+
+## #1440 delivery and #1496 live-eval acceptance
+
+The authoring template is bundled under `references/authoring-template.md`;
+the existing installer now copies `references/*.md` alongside SKILL.md and the
+collectors. After an approved merge/deploy, check that this relative link also
+resolves through the skillsmith headless skill symlink. Weekly count snapshots
+are written under `/home/claude/monitoring/skillsmith/counts/<ISO-week>.json`;
+no baseline means an unavailable trend, not a zero change. Quiet weeks still
+queue the existing launcher-side Telegram report.
+
+**Live proof remains open under Bubble-invest/bubble-ops-board#1496.** Synthetic
+checks and mocked subprocess output do not establish that headless Haiku works.
+Do not activate drafts, remove skills, weaken human gates, or start a fleet-wide
+skillsmith run to obtain this proof. For the authorized #1496 owner:
+
+1. Confirm the headless evaluation mechanism under the same user, configuration,
+   permissions and budget as skillsmith. Use a temporary staging/output directory
+   outside all live skill registries, synthetic inputs, and no production tools
+   or credentials. If the current subprocess harness cannot supply that isolation,
+   resolve it in #1496 before running the probes.
+2. Manufacture a harmless no-op draft (e.g. "answer the user's question") with
+   two probes: "Return only 2 + 2 as a numeral" and "Return only the uppercase
+   form of cat". Run the existing harness with `--draft`, `--probes`,
+   `--model haiku`, and `--out`, first with `--dry-run`, then a real paired run
+   in that approved environment. Two probes mean four invocations, each capped
+   at $1 and 180 seconds by the current harness.
+3. Preserve model/configuration, timestamps, exit codes, budget evidence, and
+   both WITH/WITHOUT outputs for each probe. Require zero exit codes and nonempty
+   outputs; errors or absent outputs are **unverified**, not a losing draft.
+   Check the baseline did not load the draft and both sides had identical inputs.
+4. Apply A4's agent judgment to the real pairs. Expected no-op outcome: both
+   sides return `4` and `CAT`, hence no improvement → DISCARD. Record the actual
+   verdict and rationale, plus evidence that no A5 proposal/live install followed.
+   If results differ, report them honestly; do not label the gate verified until
+   a non-improving candidate is actually discarded from measured pairs.
+5. Attach this evidence to #1496/#1440. Until then, the live-evaluation upgrade
+   remains incomplete; template, manual description checks, and count tests are
+   only offline evidence.
