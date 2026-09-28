@@ -7,9 +7,8 @@
 #   <dept-slug>  e.g. ben, maya, tony, rnd  → filters label dept:<slug>
 #   [host]       local|vps (default: vps)   → filters label host:<host>
 #
-# Auth: same pattern as emit_kanban_item.sh — use an already-authenticated gh
-# (Mac dev), else mint a board-scoped token via bubble-board-token.sh and export
-# it as GH_TOKEN (VPS depts). Degrades silently if neither is available.
+# Auth: mirror emit_kanban_item.sh (ambient, dept/shared token files, minter,
+# Mac fallback). Degrades gracefully when the board is unavailable.
 
 set -uo pipefail
 
@@ -19,18 +18,50 @@ HOST="${2:-vps}"
 
 BOARD_REPO="Bubble-invest/bubble-ops-board"
 
-# Resolve gh auth (mirror emit_kanban_item.sh)
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  : # already authenticated
-else
-  MINTER=/usr/local/bin/bubble-board-token.sh
-  if [ -x "$MINTER" ]; then
-    TOK="$("$MINTER" 2>/dev/null || true)"
-    [ -n "$TOK" ] && export GH_TOKEN="$TOK"
+# Mirror emit_kanban_item.sh: ambient board access, dept/shared files,
+# sudo minter, then the Mac Tailscale fallback. Never log credentials.
+_resolve_gh_token() {
+  local _gt="${GH_TOKEN-}" _ght="${GITHUB_TOKEN-}"
+  [ -n "${_gt//[[:space:]]/}" ] || unset GH_TOKEN
+  [ -n "${_ght//[[:space:]]/}" ] || unset GITHUB_TOKEN
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
+     && gh api "repos/${BOARD_REPO}" --jq .name >/dev/null 2>&1; then
+    return 0
   fi
-fi
+  unset GH_TOKEN GITHUB_TOKEN
+  local tokfile="${BOARD_TOKEN_FILE:-/run/bubble-board/token}"
+  local dept_tokfile="" _tf ftok
+  [ -n "${BUBBLE_DEPT:-}" ] && dept_tokfile="${tokfile}.${BUBBLE_DEPT}"
+  for _tf in "$dept_tokfile" "$tokfile"; do
+    [ -n "$_tf" ] || continue
+    if command -v gh >/dev/null 2>&1 && [ -r "$_tf" ]; then
+      ftok=$(cat "$_tf" 2>/dev/null || true)
+      case "$ftok" in
+        ghs_*) export GH_TOKEN="$ftok"; return 0 ;;
+      esac
+    fi
+  done
+  local minter=/usr/local/bin/bubble-board-token.sh tok
+  if command -v gh >/dev/null 2>&1 && [ -x "$minter" ]; then
+    tok=$(sudo -n "$minter" 2>/dev/null || true)
+    if [ -n "$tok" ]; then
+      export GH_TOKEN="$tok"
+      return 0
+    fi
+  fi
+  if command -v gh >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    tok=$(ssh -o BatchMode=yes -o ConnectTimeout=6 claude@joris-cx33 'cat /run/bubble-board/token' 2>/dev/null || true)
+    case "$tok" in
+      ghs_*) export GH_TOKEN="$tok"; return 0 ;;
+    esac
+  fi
+  return 1
+}
 
-command -v gh >/dev/null 2>&1 || { echo "list_my_board_cards: gh not available — skip" >&2; exit 0; }
+if ! _resolve_gh_token; then
+  echo "list_my_board_cards: board auth unavailable — skip" >&2
+  exit 0
+fi
 
 gh issue list --repo "$BOARD_REPO" --state open \
   --label "dept:${SLUG}" --limit 100 \
