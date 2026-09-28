@@ -575,6 +575,9 @@ The loop-backup freshness check and cockpit depend on this file; a missing
 heartbeat looks like a dead loop. `<today>` = `$(date -u +%Y-%m-%d)` recomputed
 EVERY tick (and `<ISO-ts>` = `$(date -u +%Y-%m-%dT%H:%M:%SZ)`). NEVER write
 `HEARTBEAT.log`/`logs.jsonl` at the repo root (outside push policy).
+After appending, run `chmod 0644 outputs/<today>/heartbeat.log`: this file is
+non-secret fleet evidence and the #1120-isolated CEO reader is not in each
+child's Unix group. Do not relax permissions on any other file or secret.
 
 **STEP E** — commit+push via `bubble-git-guard push --action runtime_write_own`.
 
@@ -924,7 +927,7 @@ each Moment task to a stateless subagent via Agent. The subagents
       line in `outputs/<today>/heartbeat.log`.
 
 4. If `due` is empty (`heartbeat` tick — nothing fired): `<ISO-ts> tick idle <queues-summary>` >>
-   `outputs/<today>/heartbeat.log`.
+   `outputs/<today>/heartbeat.log`; after every append run `chmod 0644 outputs/<today>/heartbeat.log` because it is non-secret fleet evidence readable across #1120-isolated UIDs. Do not relax permissions on any other file or secret.
 
 5. Commit + push via `bubble-git-guard push --action runtime_write_own`
    (unless Moment 4 already pushed itself via an artifact, see layers/4/PROMPT.md).
