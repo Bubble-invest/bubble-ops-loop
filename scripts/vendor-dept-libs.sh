@@ -228,6 +228,8 @@ KANBAN_MAP=(
   "skills/emit-kanban-task/scripts/emit.sh   skills/emit-kanban-task/scripts/emit.sh"
   "tools/kanban/emit_kanban_item.sh          tools/kanban/emit_kanban_item.sh"
   "tools/kanban/drain_kanban_queue.sh        tools/kanban/drain_kanban_queue.sh"
+  "tools/kanban/list_my_board_cards.sh      tools/kanban/list_my_board_cards.sh"
+  "tools/kanban/view_board_card.sh          tools/kanban/view_board_card.sh"
   # Fleet-wide Jev / System-One decisions skill (board #1505; Joris 2026-09-25
   # Telegram msg 9731 "give this skill to every dept"). evals/ intentionally not
   # vendored (framework-side tests only).

@@ -80,6 +80,10 @@ make_framework() {
   chmod +x "$dir/skills/emit-kanban-task/scripts/emit.sh"
   printf '#!/bin/sh\necho kanban\n'   > "$dir/tools/kanban/emit_kanban_item.sh"
   chmod +x "$dir/tools/kanban/emit_kanban_item.sh"
+  for reader in list_my_board_cards.sh view_board_card.sh; do
+    printf '#!/bin/sh\necho reader\n' > "$dir/tools/kanban/$reader"
+    chmod +x "$dir/tools/kanban/$reader"
+  done
 }
 
 # ── helper: build a minimal fake dept tree (git init so skip-worktree works) ──
@@ -193,6 +197,12 @@ unset BUBBLE_FRAMEWORK_ROOT
 "$SCRIPT_UNDER_TEST" "$DEPT6" >/dev/null 2>&1
 POST6="$(cat "$DEPT6/scripts/lib/dispatch_helpers.py")"
 chk_eq "T6 post-run: missing copy installed from canonical" "# canonical dispatch_helpers" "$POST6"
+for reader in list_my_board_cards.sh view_board_card.sh; do
+  cmp -s "$FW6/tools/kanban/$reader" "$DEPT6/tools/kanban/$reader"
+  chk "T6 board reader $reader vendored unchanged" 0 "$?"
+  if [[ -x "$DEPT6/tools/kanban/$reader" ]]; then rc=0; else rc=1; fi
+  chk "T6 board reader $reader executable" 0 "$rc"
+done
 
 # =============================================================================
 # T7: idempotency — second run does not re-copy (cmp -s matches)
