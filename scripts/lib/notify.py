@@ -501,7 +501,7 @@ class SMTPEmailBackend:
         Env vars are read at ``send()`` time and validated there.
         """
         if not isinstance(config, dict):
-            raise TypeError(f"SMTPEmailBackend config must be dict, got {type(config)}")
+            raise TypeError("SMTPEmailBackend config must be dict")
         smtp_cfg = config.get("smtp") or {}
         self.host = smtp_cfg.get("host", "smtp.gmail.com")
         self.port = int(smtp_cfg.get("port", 587))
@@ -641,7 +641,7 @@ class SMTPEmailBackend:
                 recipient=recipient,
                 success=False,
                 delivered_at=delivered_at,
-                error=f"MIME build failed: {exc}",
+                error=f"MIME build failed: {type(exc).__name__}",
             )
 
         # Recipient may be a comma-joined list (multi-account To:);
@@ -685,7 +685,7 @@ class SMTPEmailBackend:
                 recipient=recipient,
                 success=False,
                 delivered_at=delivered_at,
-                error=f"SMTP send failed: {type(exc).__name__}: {exc}",
+                error=f"SMTP send failed: {type(exc).__name__}",
             )
 
         return DeliveryReceipt(
@@ -952,7 +952,7 @@ class TelegramBackend:
                 m = re.match(r"^(\w+)=(.*)$", line)
                 if m and m.group(1) == "TELEGRAM_BOT_TOKEN":
                     return m.group(2)
-        except OSError:
+        except (OSError, UnicodeError):
             return None
         return None
 
@@ -1006,27 +1006,24 @@ class TelegramBackend:
         if parse_mode:
             body_payload["parse_mode"] = parse_mode
         data = json.dumps(body_payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with self._opener(req, timeout=SMTP_CONNECTION_TIMEOUT_S) as resp:
                 resp_bytes = resp.read()
                 status = getattr(resp, "status", 200)
         except urllib.error.HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                body = ""
+            # Response bodies and exception messages may echo the bot URL/token.
             return DeliveryReceipt(
                 channel=self.name,
                 recipient=chat_id,
                 success=False,
                 delivered_at=delivered_at,
-                error=f"Telegram HTTP {exc.code}: {body[:200]}",
+                error=f"Telegram HTTP {exc.code}",
             )
         except Exception as exc:  # noqa: BLE001
             return DeliveryReceipt(
@@ -1034,7 +1031,7 @@ class TelegramBackend:
                 recipient=chat_id,
                 success=False,
                 delivered_at=delivered_at,
-                error=f"Telegram send failed: {type(exc).__name__}: {exc}",
+                error=f"Telegram send failed: {type(exc).__name__}",
             )
 
         try:
@@ -1048,7 +1045,7 @@ class TelegramBackend:
                 recipient=chat_id,
                 success=False,
                 delivered_at=delivered_at,
-                error=f"Telegram API not ok: status={status}, body={str(resp_json)[:200]}",
+                error=f"Telegram API not ok: status={status}",
             )
 
         # Best-effort attachment notes (Telegram = buzzer, not file carrier).
@@ -1223,7 +1220,7 @@ def resolve_recipients(
     for channel in channels:
         if channel not in SUPPORTED_CHANNELS:
             raise ValueError(
-                f"Unknown channel: {channel!r}. Supported: {SUPPORTED_CHANNELS}"
+                f"Unknown channel. Supported: {SUPPORTED_CHANNELS}"
             )
         recipients: list[str] = []
         seen: set[str] = set()
@@ -1246,8 +1243,7 @@ def resolve_recipients(
                 recipients.append(rec)
         if not recipients:
             raise ValueError(
-                f"No recipient configured for account={accounts_requested!r} "
-                f"channel={channel!r}. Check config.yaml accounts block."
+                "No recipient configured. Check config.yaml accounts block."
             )
         result[channel] = ", ".join(recipients)
     return result
@@ -1268,13 +1264,13 @@ def _get_backend(channel: str, config: dict) -> NotificationBackend:
         if backend_name == "smtp":
             return SMTPEmailBackend(email_cfg)
         raise ValueError(
-            f"Unknown email backend: {backend_name!r}. "
+            "Unknown email backend. "
             "Implemented: smtp. Future: resend, postmark, sendgrid."
         )
     if channel == CHANNEL_TELEGRAM_ALERT:
         return TelegramBackend(config)
     raise ValueError(
-        f"Unknown channel: {channel!r}. Supported: {SUPPORTED_CHANNELS}"
+        f"Unknown channel. Supported: {SUPPORTED_CHANNELS}"
     )
 
 
@@ -1333,7 +1329,7 @@ def deliver(
                 recipient=recipient,
                 success=False,
                 delivered_at=_now_iso_paris(),
-                error=f"backend setup failed: {type(exc).__name__}: {exc}",
+                error=f"backend setup failed: {type(exc).__name__}",
             )
         receipts.append(receipt)
 

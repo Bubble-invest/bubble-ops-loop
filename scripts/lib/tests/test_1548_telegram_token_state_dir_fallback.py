@@ -68,9 +68,9 @@ def _backend(opener):
     return notify.TelegramBackend(CONFIG, _opener=opener)
 
 
-def test_env_var_present_used_directly(monkeypatch):
+def test_env_var_present_used_directly(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TESTTOKEN:fromenv")
-    monkeypatch.delenv("TELEGRAM_STATE_DIR", raising=False)
+    monkeypatch.setenv("TELEGRAM_STATE_DIR", str(tmp_path / "unused-state"))
     backend = _backend(_CapturingOpener())
     assert backend._read_token() == "TESTTOKEN:fromenv"
 
