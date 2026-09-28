@@ -4,7 +4,7 @@
 # Established 2026-09-04 (Joris). Docs: skills/codex-write/SKILL.md + shared-wiki miranda_socials/codex-cli-model-and-usage.md
 #
 # Usage:
-#   scripts/lib/codex_write.sh --brief BRIEF.txt --out OUT.txt [--model gpt-6-sol] [--effort high]
+#   scripts/lib/codex_write.sh --brief BRIEF.txt --out OUT.txt [--model gpt-5.6-sol] [--effort high]
 #   (BRIEF.txt = the assembled writing brief: topic + selected pool item + imposed voice-file reading + hard rules)
 #
 # Exit codes:
@@ -13,7 +13,7 @@
 #        directly (and flag it to operators). NEVER let writing halt.
 set -uo pipefail
 
-MODEL="gpt-6-sol"; EFFORT="high"; BRIEF=""; OUT=""
+MODEL="gpt-5.6-sol"; EFFORT="high"; BRIEF=""; OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --brief) BRIEF="$2"; shift 2;;

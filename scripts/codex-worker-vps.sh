@@ -112,7 +112,7 @@ chmod 700 "$REPO_DIR"
   CODEX_WORK_REPO="$REPO_DIR" \
   CODEX_WORKER_TASK_FILE="$TASK_FILE" \
     "$CODEX_BIN" exec \
-      -m gpt-6-sol \
+      -m gpt-5.6-sol \
       -c model_reasoning_effort=high \
       -s "$SANDBOX" \
       --skip-git-repo-check - < "$TASK_FILE"
