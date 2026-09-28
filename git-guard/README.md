@@ -121,6 +121,18 @@ This also still works when the sandbox makes `.git/config` read-only: no
 upstream configuration change is required, and the guard's own fetch writes
 only to `refs/git-guard/base`, never to `.git/config`.
 
+Every Git subprocess is invoked with `-c core.hooksPath=/dev/null`. The final
+push additionally uses `--no-verify`, so neither the checkout's default
+`.git/hooks/pre-push` nor an attacker-controlled local `core.hooksPath` can
+read the short-lived authorization header from the push environment. The
+global hook override also neutralizes hooks such as `reference-transaction`
+when the guard fetches its verified base. Repository-routing variables
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, object/alternate/common-dir
+overrides, and `GIT_NAMESPACE`) are removed from every Git subprocess. The
+guard verifies that `git rev-parse --absolute-git-dir` resolves inside the
+requested `--repo-dir` both during inspection and immediately before push;
+an ancestor or redirected repository fails closed.
+
 ## Path policy (canonical, from Notion v4 line 620 + 700)
 
 ### `runtime_write_own` — direct commit/push allowed for:
@@ -174,6 +186,8 @@ never `runtime_write_own`.
 | **Source-ref TOCTOU** — the actor advances `HEAD` after path checks but before the broker returns | Resolve the source once, check that immutable SHA, and push exactly the same `<sha>:refs/heads/<destination>` refspec. Symbolic sources never reach `git push`. |
 | **Destination-ref TOCTOU** — another writer changes or creates the remote branch after `ls-remote` | The push uses an explicit `--force-with-lease` expectation bound to the SHA (or verified absence) returned by that same `ls-remote`; mismatch fails closed. |
 | **Merge-only path on a new branch** — `git log --name-only` hides a path added only in a merge result | New branches are checked by full-tree enumeration (`git ls-tree -r --name-only <checked-sha>`), so every path that would land is policy-checked. Existing branches use a base-tree-to-source-tree diff, which also includes merge results. |
+| **Minted-token theft by a client-side Git hook** — `.git/hooks/pre-push` or local `core.hooksPath` reads `GIT_CONFIG_VALUE_0` from the push environment | Every Git command uses `-c core.hooksPath=/dev/null`; the final push also uses `--no-verify`. Real-subprocess regressions cover both exploit paths. |
+| **Repository redirection through inherited Git environment** — `GIT_DIR`, work-tree/index/object/alternate/common-dir, or namespace variables select a different view | All repository-routing variables are scrubbed, and the resolved absolute Git directory must remain under the requested repo directory (rechecked just before push). |
 | **Token leak via audit** | `FORBIDDEN_FIELDS` drops `token`/`access_token`/`pem`/`private_key`/`jwt`/`secret`. Any value starting with `ghs_` raises `ValueError` before write. |
 | **Token leak via stderr** | Token captured into LOCAL var, never `print()`ed. `git push` stderr is redacted (token replaced with `<TOKEN-REDACTED>`) before being surfaced. |
 | **Fallback to PAT / env GITHUB_TOKEN** | `GITHUB_TOKEN` is stripped from the env passed to `git push`. No code path reads it. |
@@ -215,11 +229,11 @@ otherwise-legitimate push.
 
 ```bash
 cd git-guard
-python3 -m pytest tests/ -v                 # 67/67 passing
+python3 -m pytest tests/ -v                 # 142/142 passing
 python3 -m pytest --cov=src tests/          # 90% coverage
 ```
 
-13 test files cover:
+21 test files cover:
 - Staging detection (`git diff --cached` + `git diff <remote>/<destination>..<source>`)
 - Allow paths: `outputs/`, `queues/`, `inbox/` for `runtime_write_own`
 - Deny paths: `dept.yaml`, `MANDATE.md`, `CLAUDE.md`, `layers/`, `subagents/`, `skills/`, `tools/`, `.claude/`
@@ -268,7 +282,7 @@ git-guard/
 │   ├── guard.py                       # Guard class: check_paths + push pipeline
 │   ├── policy_loader.py               # imports token-broker's Policy via spec_from_file_location
 │   └── staging.py                     # git diff --cached + ls-remote/fetch-verified diff vs the REAL remote destination
-├── tests/                             # 13 files, 67 tests, 90% coverage
+├── tests/                             # 21 files, 142 tests, 90% coverage
 └── deploy/
     ├── bubble-git-guard.template.sh   # wrapper installed to /opt/bubble-git-guard/bin/
     └── INSTALL-ON-MORTY.md            # full operator runbook

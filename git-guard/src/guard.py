@@ -42,6 +42,7 @@ from typing import Any, List, Optional, Tuple
 from .audit import GuardAudit
 from .policy_loader import KNOWN_ACTIONS
 from .staging import (
+    _assert_inside_work_tree,
     hardened_git_command,
     hardened_git_env,
     legacy_grafts_error,
@@ -432,6 +433,10 @@ class Guard:
         cmd = hardened_git_command(
             "-c", "credential.helper=",
             "push",
+            # Bypass pre-push explicitly; core.hooksPath=/dev/null in
+            # hardened_git_command() independently prevents every client-side
+            # hook (including reference-transaction) from being discovered.
+            "--no-verify",
             lease,
             remote,
             refspec,
@@ -458,8 +463,13 @@ class Guard:
         env[f"GIT_CONFIG_VALUE_{gc_count}"] = f"Authorization: Basic {basic_b64}"
         env["GIT_CONFIG_COUNT"] = str(gc_count + 1)
 
-        # Recheck immediately before push: an attacker must not be able to add
-        # info/grafts during broker minting after the read-side check passed.
+        # Recheck immediately before push: an attacker must not be able to
+        # redirect .git outside repo_dir or add info/grafts during broker
+        # minting after the read-side checks passed.
+        try:
+            _assert_inside_work_tree(repo_dir)
+        except subprocess.CalledProcessError as exc:
+            return exc.returncode or 128, exc.stderr or "repository validation failed"
         grafts_error = legacy_grafts_error(repo_dir, env)
         if grafts_error is not None:
             return 128, grafts_error

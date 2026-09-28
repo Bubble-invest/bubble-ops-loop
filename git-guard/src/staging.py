@@ -71,9 +71,26 @@ GUARD_BASE_REF = "refs/git-guard/base"
 # invocation on one hardened command/environment path so a caller's ambient
 # config cannot selectively re-enable replacement objects or rename folding.
 GIT_CONFIG_OVERRIDES: tuple[str, ...] = (
+    # The guarded actor controls both .git/hooks and local core.hooksPath.
+    # Disable hook discovery for EVERY Git subprocess, including reads whose
+    # implementation may update refs (notably fetch/reference-transaction).
+    "core.hooksPath=/dev/null",
     "core.useReplaceRefs=false",
     "diff.renames=false",
     "core.quotepath=off",
+)
+
+# These variables can redirect Git away from the repository named by
+# ``repo_dir`` or splice attacker-controlled indexes/object namespaces into
+# it.  None may cross the guard's subprocess boundary from its caller.
+GIT_REPOSITORY_ROUTING_ENV: tuple[str, ...] = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
 )
 
 DIFF_SAFETY_ARGS: tuple[str, ...] = (
@@ -109,6 +126,8 @@ def hardened_git_env(base: Optional[Mapping[str, str]] = None) -> dict[str, str]
     env.pop("GIT_EXTERNAL_DIFF", None)
     env.pop("GIT_DIFF_OPTS", None)
     env.pop("GIT_REPLACE_REF_BASE", None)
+    for name in GIT_REPOSITORY_ROUTING_ENV:
+        env.pop(name, None)
 
     # Do not inherit command-scope configuration injected by the caller.  The
     # push path adds its own single http.extraheader after this scrub.
@@ -246,6 +265,32 @@ def _assert_inside_work_tree(repo_dir: Path) -> None:
             proc.returncode or 128,
             ["git", "rev-parse", "--is-inside-work-tree"],
             proc.stdout,
+            clear_stderr,
+        )
+
+    # Being *somewhere* inside a work tree is insufficient: Git walks parent
+    # directories, so a typo such as --repo-dir=/repo/subdir would otherwise
+    # silently select /repo/.git.  Bind all subsequent reads and the final
+    # push to a Git directory physically contained by the requested path.
+    git_dir_proc = _run_git(repo_dir, "rev-parse", "--absolute-git-dir")
+    if git_dir_proc.returncode != 0 or not git_dir_proc.stdout.strip():
+        raise subprocess.CalledProcessError(
+            git_dir_proc.returncode or 128,
+            ["git", "rev-parse", "--absolute-git-dir"],
+            git_dir_proc.stdout,
+            git_dir_proc.stderr or "could not resolve the repository Git directory",
+        )
+    requested_root = repo_dir.resolve()
+    resolved_git_dir = Path(git_dir_proc.stdout.strip()).resolve()
+    if resolved_git_dir != requested_root and requested_root not in resolved_git_dir.parents:
+        clear_stderr = (
+            f"resolved git directory {resolved_git_dir!s} is outside requested "
+            f"repo dir {requested_root!s}; refusing ancestor or redirected repository"
+        )
+        raise subprocess.CalledProcessError(
+            128,
+            ["git", "rev-parse", "--absolute-git-dir"],
+            git_dir_proc.stdout,
             clear_stderr,
         )
 
