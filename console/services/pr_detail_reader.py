@@ -6,12 +6,11 @@ structural or not — board #1432's whole point), the structural-merge-guard's
 check status, and the Approve button. This module does the read-only GitHub
 fetch behind that page.
 
-Same token + REST approach as `merge_ready_reader.py` and `routes/kanban.py`
-(short-lived board token, direct `urllib` REST calls, no `gh` CLI) — reused
-here rather than re-invented. Fails SAFE: any missing token or GitHub API
-error returns a dict with `error` set instead of raising, so the page renders
-a readable message instead of a 500 (same convention as every other cockpit
-read surface).
+Reuse the approval service's short-lived App token for PR reads (private
+department repos require pull_requests scope); fall back to the board token
+when the App token is unavailable. Direct `urllib` REST calls, no `gh` CLI.
+Fails safe: a missing token or failed PR fetch returns None; secondary
+files/check fetch failures degrade the affected field instead of raising.
 """
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ import urllib.error
 import urllib.request
 
 from console.routes.kanban import _read_board_token
+from console.services import pr_approver
 from console.services.structural_paths import is_structural_for_repo
 
 _log = logging.getLogger(__name__)
@@ -93,12 +93,12 @@ def _guard_status(owner: str, repo: str, head_sha: str, token: str) -> str:
 def fetch_pr_detail(owner: str, repo: str, number: int) -> dict | None:
     """Fetch one PR's title/files/guard-status for the deep-link page.
 
-    Returns None only when the PR itself could not be resolved (404 from
-    GitHub, or no board token — dev/CI). A GitHub error on the SECONDARY
+    Returns None when the PR itself could not be resolved (GitHub/API
+    error, or no read token — dev/CI). A GitHub error on the SECONDARY
     calls (files, check-runs) degrades that one field instead of failing the
     whole page (see `_guard_status` and the try/except around the files call).
     """
-    token = _read_board_token()
+    token = pr_approver._mint_token() or _read_board_token()
     if not token:
         return None
 

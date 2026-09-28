@@ -76,7 +76,7 @@ def pr_detail(owner: str, repo: str, number: int, request: Request):
 
     Read-only: no RBAC check here (same convention as gate_card.html), only
     the POST /approve below enforces gate_rbac.may_decide. 404s (rather than
-    500s) when the PR can't be resolved at all (missing board token, the
+    500s) when the PR can't be resolved at all (missing read token, the
     owner/repo isn't on the allowlist, or the PR/repo genuinely doesn't
     exist — one opaque outcome for all three, no existence oracle) — the
     secondary fields (files, guard status) degrade individually instead, see
