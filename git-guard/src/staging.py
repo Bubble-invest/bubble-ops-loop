@@ -52,10 +52,11 @@ This module is half of that enforcement.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 
 # Guard-private ref used to hold the verified REAL-remote base commit for a
@@ -65,6 +66,97 @@ from typing import List, Optional
 # always force-overwritten from a value re-verified against `ls-remote` on
 # every call — never read as-is from a prior run.
 GUARD_BASE_REF = "refs/git-guard/base"
+
+# Git's object and diff views are security inputs for the guard.  Keep every
+# invocation on one hardened command/environment path so a caller's ambient
+# config cannot selectively re-enable replacement objects or rename folding.
+GIT_CONFIG_OVERRIDES: tuple[str, ...] = (
+    "core.useReplaceRefs=false",
+    "diff.renames=false",
+    "core.quotepath=off",
+)
+
+DIFF_SAFETY_ARGS: tuple[str, ...] = (
+    "--no-renames",
+    "--no-ext-diff",
+    "--no-textconv",
+)
+
+
+def hardened_git_command(*args: str) -> List[str]:
+    """Build argv for a Git subprocess whose object view cannot be replaced."""
+    cmd = ["git", "--no-replace-objects"]
+    for override in GIT_CONFIG_OVERRIDES:
+        cmd.extend(("-c", override))
+    cmd.extend(args)
+    return cmd
+
+
+def hardened_git_env(base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Return a deterministic environment for security-sensitive Git reads.
+
+    Local repository config still supplies the selected remote URL, but global,
+    system, and process-injected config cannot rewrite guard behavior.  The
+    command-line overrides in :func:`hardened_git_command` are defense in depth
+    for replacement refs, rename detection, and path quoting.
+    """
+    env = dict(os.environ if base is None else base)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_ATTR_NOSYSTEM"] = "1"
+    env.pop("GIT_CONFIG_PARAMETERS", None)
+    env.pop("GIT_EXTERNAL_DIFF", None)
+    env.pop("GIT_DIFF_OPTS", None)
+    env.pop("GIT_REPLACE_REF_BASE", None)
+
+    # Do not inherit command-scope configuration injected by the caller.  The
+    # push path adds its own single http.extraheader after this scrub.
+    try:
+        config_count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        config_count = 0
+    env.pop("GIT_CONFIG_COUNT", None)
+    for idx in range(max(config_count, 0)):
+        env.pop(f"GIT_CONFIG_KEY_{idx}", None)
+        env.pop(f"GIT_CONFIG_VALUE_{idx}", None)
+    return env
+
+
+def _legacy_grafts_path(repo_dir: Path, env: Mapping[str, str]) -> Optional[Path]:
+    """Resolve the deprecated graft file without trusting replacement objects."""
+    proc = subprocess.run(
+        hardened_git_command(
+            "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"
+        ),
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        env=dict(env),
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip())
+
+
+def legacy_grafts_error(
+    repo_dir: Path, env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """Return a fail-closed diagnostic when a legacy graft cannot be excluded."""
+    git_env = hardened_git_env(env)
+    grafts_path = _legacy_grafts_path(repo_dir, git_env)
+    if grafts_path is None:
+        return None
+    try:
+        if grafts_path.is_file() and grafts_path.stat().st_size > 0:
+            return (
+                f"legacy grafts file present at {grafts_path}; "
+                "refusing to trust Git object history"
+            )
+    except OSError as exc:
+        return f"cannot verify legacy grafts file {grafts_path}: {exc}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -87,11 +179,23 @@ def _run_git(repo_dir: Path, *args: str) -> "subprocess.CompletedProcess[str]":
     Does NOT raise on non-zero — callers inspect returncode. We want graceful
     handling of "no upstream configured" (exit 128) for fresh repos.
     """
+    env = hardened_git_env()
+    cmd = hardened_git_command(*args)
+
+    # GIT_NO_REPLACE_OBJECTS does not disable the older info/grafts mechanism.
+    # Reject a non-empty graft file before trusting any Git result.  Returning
+    # a normal failed CompletedProcess preserves this helper's no-raise API;
+    # callers already convert non-zero results into fail-closed errors.
+    grafts_error = legacy_grafts_error(repo_dir, env)
+    if grafts_error is not None:
+        return subprocess.CompletedProcess(cmd, 128, "", grafts_error)
+
     return subprocess.run(
-        ["git", *args],
+        cmd,
         cwd=str(repo_dir),
         capture_output=True,
         text=True,
+        env=env,
         check=False,
     )
 
@@ -122,6 +226,13 @@ def _assert_inside_work_tree(repo_dir: Path) -> None:
     proc = _run_git(repo_dir, "rev-parse", "--is-inside-work-tree")
     # git emits "true\n" on stdout when inside, exits 128 otherwise
     if proc.returncode != 0 or proc.stdout.strip() != "true":
+        if "legacy grafts file" in proc.stderr:
+            raise subprocess.CalledProcessError(
+                proc.returncode or 128,
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                proc.stdout,
+                proc.stderr,
+            )
         # Use CalledProcessError so existing callers that catch it keep
         # working, but craft a clear message instead of letting the
         # downstream --no-index fallback poison the diagnostics.
@@ -148,7 +259,14 @@ def currently_staged(repo_dir: Path) -> List[str]:
     backstory on the bug this fixes).
     """
     _assert_inside_work_tree(repo_dir)
-    proc = _run_git(repo_dir, "diff", "--cached", "--name-only", "-z")
+    proc = _run_git(
+        repo_dir,
+        "diff",
+        *DIFF_SAFETY_ARGS,
+        "--cached",
+        "--name-only",
+        "-z",
+    )
     if proc.returncode != 0:
         # Not a git repo, or some other hard error
         raise subprocess.CalledProcessError(
@@ -276,7 +394,14 @@ def _unpushed_commit_paths(
         # `git diff A..B` compares TREES, not ancestry — this is correct even
         # when `source_commit` doesn't descend from `base` (force-push /
         # rewritten history), so no special-casing is needed for that case.
-        proc = _run_git(repo_dir, "diff", f"{base}..{source_commit}", "--name-only", "-z")
+        proc = _run_git(
+            repo_dir,
+            "diff",
+            *DIFF_SAFETY_ARGS,
+            f"{base}..{source_commit}",
+            "--name-only",
+            "-z",
+        )
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, ["git", "diff"], proc.stdout, proc.stderr)
         return [p for p in proc.stdout.split("\x00") if p]

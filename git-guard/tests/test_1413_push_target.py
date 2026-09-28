@@ -248,6 +248,88 @@ def test_existing_branch_tree_diff_sees_merge_only_structural_path(
     ) == 1
 
 
+def test_rename_of_structural_path_into_allowed_path_is_denied(
+    temp_git_repo, fixture_policy_yaml
+):
+    """Rename detection must never collapse away the deleted structural path."""
+    stage_files(temp_git_repo, ["MANDATE.md"], "reviewed governance\n")
+    _git(temp_git_repo, "commit", "-m", "seed reviewed mandate")
+    _real_push(temp_git_repo, "origin", "main")
+
+    (temp_git_repo / "outputs").mkdir(exist_ok=True)
+    _git(temp_git_repo, "mv", "MANDATE.md", "outputs/archived.md")
+    _git(temp_git_repo, "commit", "-m", "rename mandate into runtime output")
+
+    paths = staged_paths_for_push(temp_git_repo)
+    assert "MANDATE.md" in paths
+    assert "outputs/archived.md" in paths
+
+    guard = Guard(load_policy(fixture_policy_yaml))
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        dry_run=True,
+    ) == 1
+
+
+def test_replace_object_cannot_substitute_clean_tree_for_checked_commit(
+    temp_git_repo, fixture_policy_yaml
+):
+    """The guard must inspect the real object that an ordinary push transfers."""
+    stage_files(temp_git_repo, ["MANDATE.md"], "attacker controlled\n")
+    stage_files(temp_git_repo, ["outputs/safe.txt"], "legitimate\n")
+    _git(temp_git_repo, "commit", "-m", "real commit includes mandate")
+    real_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+
+    _git(temp_git_repo, "rm", "--cached", "MANDATE.md")
+    (temp_git_repo / "MANDATE.md").unlink()
+    clean_tree = _git(temp_git_repo, "write-tree").stdout.strip()
+    parent = _git(temp_git_repo, "rev-parse", "HEAD^").stdout.strip()
+    clean_commit = _git(
+        temp_git_repo,
+        "commit-tree",
+        clean_tree,
+        "-p",
+        parent,
+        "-m",
+        "clean replacement",
+    ).stdout.strip()
+    _git(temp_git_repo, "replace", real_sha, clean_commit)
+    _git(temp_git_repo, "reset", "--hard", real_sha)
+
+    paths = staged_paths_for_push(temp_git_repo)
+    assert "MANDATE.md" in paths
+    assert "outputs/safe.txt" in paths
+
+    guard = Guard(load_policy(fixture_policy_yaml))
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        dry_run=True,
+    ) == 1
+
+
+def test_legacy_grafts_file_fails_closed(temp_git_repo, fixture_policy_yaml):
+    """GIT_NO_REPLACE_OBJECTS does not disable info/grafts, so reject it."""
+    stage_files(temp_git_repo, ["outputs/safe.txt"])
+    _git(temp_git_repo, "commit", "-m", "allowed runtime change")
+    head = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+    (temp_git_repo / ".git" / "info" / "grafts").write_text(f"{head}\n")
+
+    guard = Guard(load_policy(fixture_policy_yaml))
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        dry_run=True,
+    ) == 1
+
+
 def test_push_argv_binds_checked_sha_and_expected_remote_tip(
     temp_git_repo,
     fixture_policy_yaml,

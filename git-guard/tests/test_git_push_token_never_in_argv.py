@@ -138,6 +138,27 @@ def test_remote_and_immutable_refspec_passed_positionally(
     assert "HEAD" not in cmd
 
 
+def test_push_disables_replace_objects_and_ambient_git_config(
+    fixture_policy_yaml,
+    temp_git_repo,
+    mock_broker_binary,
+    mock_git_push,
+    monkeypatch,
+):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.useReplaceRefs")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    cmd, env = _run_guard_push(
+        fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
+    )
+    assert "--no-replace-objects" in cmd
+    assert "core.useReplaceRefs=false" in cmd
+    assert "diff.renames=false" in cmd
+    assert env.get("GIT_NO_REPLACE_OBJECTS") == "1"
+    assert env.get("GIT_CONFIG_COUNT") == "1"
+    assert env.get("GIT_CONFIG_KEY_0") == "http.extraheader"
+
+
 def test_git_askpass_and_terminal_prompt_still_scrubbed(
     fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
 ):

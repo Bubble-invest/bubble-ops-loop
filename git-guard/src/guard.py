@@ -41,7 +41,12 @@ from typing import Any, List, Optional, Tuple
 
 from .audit import GuardAudit
 from .policy_loader import KNOWN_ACTIONS
-from .staging import prepare_push
+from .staging import (
+    hardened_git_command,
+    hardened_git_env,
+    legacy_grafts_error,
+    prepare_push,
+)
 
 
 # Hard cap (matches broker MAX_TTL_MINUTES — Notion v4 audit example line 612).
@@ -424,17 +429,18 @@ class Guard:
         # force-with-lease then rejects creation if another actor won the race.
         lease = f"--force-with-lease={destination_ref}:{expected_remote_sha or ''}"
         refspec = f"{source_commit}:{destination_ref}"
-        cmd = [
-            "git",
+        cmd = hardened_git_command(
             "-c", "credential.helper=",
             "push",
             lease,
             remote,
             refspec,
-        ]
+        )
         # Scrubbed env: keep PATH but DO NOT propagate any GITHUB_TOKEN
         # the caller might have set (fail-closed against PAT fallback).
-        env = {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
+        env = hardened_git_env(
+            {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
+        )
         # /bin/true exits 0 with empty stdout — guarantees git CANNOT obtain
         # any credential via the askpass fallback. /dev/null cannot be exec'd
         # on Linux (it's a char device), which would itself raise an error.
@@ -443,15 +449,20 @@ class Guard:
         # #923: the auth header travels via the GIT_CONFIG_* env triad,
         # NEVER via argv (see docstring). Append at the next free index
         # rather than clobbering index 0, in case an ambient GIT_CONFIG_*
-        # entry is already present in the environment (defensive — no
-        # caller of this method currently sets one).
-        try:
-            gc_count = int(env.get("GIT_CONFIG_COUNT", "0"))
-        except ValueError:
-            gc_count = 0
+        # entry is already present in the environment. hardened_git_env()
+        # intentionally removes all caller-supplied GIT_CONFIG_* entries, so
+        # this is always the sole command-scope config value and cannot inherit
+        # a repo-view mutation from the caller.
+        gc_count = 0
         env[f"GIT_CONFIG_KEY_{gc_count}"] = "http.extraheader"
         env[f"GIT_CONFIG_VALUE_{gc_count}"] = f"Authorization: Basic {basic_b64}"
         env["GIT_CONFIG_COUNT"] = str(gc_count + 1)
+
+        # Recheck immediately before push: an attacker must not be able to add
+        # info/grafts during broker minting after the read-side check passed.
+        grafts_error = legacy_grafts_error(repo_dir, env)
+        if grafts_error is not None:
+            return 128, grafts_error
 
         proc = subprocess.run(
             cmd,

@@ -74,3 +74,38 @@ def test_runtime_write_own_denies_dot_claude(fixture_policy_yaml):
         repo="bubble-ops-fixture",
     )
     assert not allowed
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "mandate.md",
+        "Mandate.MD",
+        "LAYERS/1/prompt.md",
+        ".CLAUDE/SETTINGS.JSON",
+    ],
+)
+def test_structural_matching_is_case_insensitive_even_if_allowlist_matches(
+    tmp_path, path
+):
+    policy_path = tmp_path / "case-policy.yaml"
+    policy_path.write_text(
+        """github_access:
+  actor: ops-loop-fixture
+  own_repo: bubble-ops-fixture
+  read: [bubble-ops-fixture]
+  write:
+    - repo: bubble-ops-fixture
+      allowed_paths: ["**"]
+      mode: direct_runtime_commit
+  pull_requests:
+    can_open_to: []
+"""
+    )
+    g = Guard(policy=load_policy(policy_path))
+    allowed, ok_paths, denied = g.check_paths(
+        [path], action="runtime_write_own", repo="bubble-ops-fixture"
+    )
+    assert not allowed
+    assert path not in ok_paths
+    assert any("structural" in reason for reason in denied)
