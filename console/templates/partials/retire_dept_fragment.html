@@ -1,19 +1,27 @@
-{# Sprint Lifecycle — HTMX fragment returned by POST /agents/<slug>/retire.
-   Shows the farewell Telegram message that was sent to the dept's chat.
-#}
-<div class="lifecycle-result lifecycle-result--retired">
+{# Preview only: the cockpit never sends or executes retirement. #}
+<div class="lifecycle-result lifecycle-result--preview">
   <h3 class="lifecycle-result-title">
-    {{ display_name }} prend sa retraite
+    Préparer la retraite de {{ display_name }}
   </h3>
   <p class="lifecycle-result-body">
-    {{ display_name }} ne fait plus partie de l'équipe active. Son dépôt
-    et son historique restent consultables en lecture seule dans la
-    section <em>Anciens collègues</em>.
+    Ceci est un aperçu : {{ display_name }} reste dans l'équipe active.
+    Aucun message n'a été envoyé et aucun service ni fichier n'a été modifié.
   </p>
-  <h4 class="lifecycle-result-subtitle">
-    Message d'au revoir envoyé sur Telegram
-  </h4>
-  <blockquote class="lifecycle-result-quote">
-    {{ final_telegram_msg }}
-  </blockquote>
+  <h4 class="lifecycle-result-subtitle">Message d'au revoir prévu sur Telegram</h4>
+  <blockquote class="lifecycle-result-quote">{{ final_telegram_msg }}</blockquote>
+  <p class="lifecycle-result-body">
+    Pour effectuer le départ, un opérateur doit lancer la commande ci-dessous
+    depuis le dépôt bubble-ops-loop, sur l'hôte du département, avec les droits
+    nécessaires pour désactiver le service et mettre les secrets en quarantaine.
+    Sélectionner au préalable les identifiants Telegram de ce département
+    (<code>TELEGRAM_STATE_DIR</code> vers son dossier contenant <code>.env</code>,
+    ou son jeton dans l'environnement) et son <code>TELEGRAM_CHAT_ID</code>.
+    Ne pas placer le jeton dans la commande.
+  </p>
+  <pre><code>{{ retire_command }}</code></pre>
+  <p class="lifecycle-result-body">
+    Ajouter <code>--dry-run</code> pour revoir le plan sans effet.
+    Cet aperçu ne vérifie ni les identifiants ni la livraison Telegram.
+    Le départ réel exige la confirmation Telegram avant toute désactivation.
+  </p>
 </div>
