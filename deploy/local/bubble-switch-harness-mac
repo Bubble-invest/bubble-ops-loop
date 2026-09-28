@@ -205,7 +205,9 @@ say "readiness: tmux '$SESSION' pane running '$TARGET' (other gone)"
 TOK="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$HOME/.hermes/profiles/$PROFILE/.env" 2>/dev/null | cut -d= -f2-)"
 bot="?"; bot_verified=no
 if [[ -n "$TOK" ]]; then
-  bot=$(curl -s "https://api.telegram.org/bot$TOK/getMe" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("username","?"))' 2>/dev/null || echo "?")
+  # Token goes into a curl -K config read from stdin, never into argv
+  # (ps/proc/cmdline visibility on multi-uid hosts — board #1573).
+  bot=$(curl -s -K - <<<"url = \"https://api.telegram.org/bot${TOK}/getMe\"" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("username","?"))' 2>/dev/null || echo "?")
   [[ "$bot" != "?" ]] && bot_verified=yes
   say "readiness: bot=@$bot (getMe $bot_verified) chat_id=$CHAT_ID"
 else

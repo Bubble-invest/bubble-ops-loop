@@ -87,21 +87,20 @@ fi
 REINIT_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 REINIT_MSG="[auto-restart ${REINIT_TS}] /loop re-initialize"
 
-# Send the message via Telegram Bot API. Token is passed via environment
-# to curl (never appears on command line in ps output).
-TELEGRAM_API_URL="https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
-
+# Send the message via Telegram Bot API. The URL (with the token embedded,
+# per Telegram's API shape) is fed to curl via -K on stdin, so it never
+# appears as an argv element — a variable substitution still shows up in
+# `ps`/`/proc/<pid>/cmdline` on the multi-uid VPS (board #1573).
+#
 # We use --data-urlencode so special characters in the message are safe.
-# Token is embedded in the URL (Telegram's API requirement) — this is the
-# standard approach and does not appear in process-table `ps` output because
-# we use a variable substitution, not a literal string argument.
 HTTP_STATUS=$(
     curl --silent --show-error --max-time 10 \
         --output /dev/null \
         --write-out "%{http_code}" \
-        -X POST "${TELEGRAM_API_URL}" \
+        -X POST -K - \
         --data-urlencode "chat_id=${CHAT_ID}" \
         --data-urlencode "text=${REINIT_MSG}" \
+        <<<"url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\"" \
     2>&1
 ) || true  # never block the service start
 

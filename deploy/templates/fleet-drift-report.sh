@@ -104,8 +104,12 @@ if [[ -z "$BOT_TOKEN" || -z "$OPERATOR_CHAT_ID" ]]; then
 fi
 
 MSG="🟡 fleet drift: $(IFS='; '; echo "${drifted_lines[*]}")"
-curl -s --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-     -d chat_id="$OPERATOR_CHAT_ID" --data-urlencode text="$MSG" >/dev/null 2>&1 \
+# Token goes into a curl -K config read from stdin, never into argv
+# (ps/proc/cmdline visibility on the multi-uid VPS — board #1573).
+curl -s --max-time 10 -K - \
+     -d chat_id="$OPERATOR_CHAT_ID" --data-urlencode text="$MSG" \
+     <<<"url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\"" \
+     >/dev/null 2>&1 \
     && log "drift alert sent to chat_id=$OPERATOR_CHAT_ID" \
     || log "warn — telegram alert curl failed (non-fatal)"
 

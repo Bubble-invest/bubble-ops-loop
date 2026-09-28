@@ -302,9 +302,13 @@ PY
             fi
             JORIS_TG=6532205130
             if [ -n "$REPORT_BOT_TOKEN" ]; then
-                if curl -s --max-time 10 "https://api.telegram.org/bot${REPORT_BOT_TOKEN}/sendMessage" \
+                # Token goes into a curl -K config read from stdin, never into
+                # argv (ps/proc/cmdline visibility on the multi-uid VPS —
+                # board #1573; this is the case the card was filed for).
+                if curl -s --max-time 10 -K - \
                     --data-urlencode chat_id="$JORIS_TG" \
-                    --data-urlencode "text@${REPORT_FILE}" >/dev/null 2>&1; then
+                    --data-urlencode "text@${REPORT_FILE}" \
+                    <<<"url = \"https://api.telegram.org/bot${REPORT_BOT_TOKEN}/sendMessage\"" >/dev/null 2>&1; then
                     rm -f "$REPORT_FILE"
                     log "telegram report sent and queue cleared"
                 else

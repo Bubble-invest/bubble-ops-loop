@@ -247,10 +247,12 @@ _budget_reject_alert() {
   msg="⚠️ emit REJECTED — missing/invalid budget= on card '${title}' from ${owner:-?} (task=${task}). Card NOT created. Add budget=<int USD> and retry. (Got: '${got}')"
 
   # Best-effort POST; never let the alert itself crash the emitter.
-  curl -s -m 5 -o /dev/null \
-    "https://api.telegram.org/bot${tok}/sendMessage" \
+  # Token goes into a curl -K config read from stdin, never into argv —
+  # ps/proc/cmdline visibility on the multi-uid VPS (board #1573).
+  curl -s -m 5 -o /dev/null -K - \
     --data-urlencode "chat_id=${chat}" \
     --data-urlencode "text=${msg}" \
+    <<<"url = \"https://api.telegram.org/bot${tok}/sendMessage\"" \
     2>/dev/null || true
 }
 
@@ -650,10 +652,12 @@ Queue: ${queue}
 Rick must run drain_kanban_queue.sh to replay."
 
   # Best-effort POST; never let the alert itself crash the emitter.
-  curl -s -m 5 -o /dev/null \
-    "https://api.telegram.org/bot${tok}/sendMessage" \
+  # Token goes into a curl -K config read from stdin, never into argv —
+  # ps/proc/cmdline visibility on the multi-uid VPS (board #1573).
+  curl -s -m 5 -o /dev/null -K - \
     --data-urlencode "chat_id=${chat}" \
     --data-urlencode "text=${msg}" \
+    <<<"url = \"https://api.telegram.org/bot${tok}/sendMessage\"" \
     2>/dev/null || true
 }
 

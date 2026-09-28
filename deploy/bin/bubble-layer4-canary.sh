@@ -45,9 +45,13 @@ elif [ -r /run/claude-agent/env ]; then
   source /run/claude-agent/env 2>/dev/null
   if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
     MSG="🎯 Layer-4 canary check for $FIXTURE_AGENT, $TODAY:%0A%0A$STATUS"
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    # Token goes into a curl -K config read from stdin, never into argv
+    # (ps/proc/cmdline visibility on the multi-uid VPS — board #1573).
+    curl -s -X POST -K - \
       --data-urlencode "chat_id=${OPERATOR_CHAT_ID}" \
-      --data-urlencode "text=${MSG}" > /dev/null 2>&1 \
+      --data-urlencode "text=${MSG}" \
+      <<<"url = \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\"" \
+      > /dev/null 2>&1 \
       && echo "TELEGRAM: sent" || echo "TELEGRAM: failed (curl error)"
   else
     echo "TELEGRAM: TELEGRAM_BOT_TOKEN not in env, skip"
