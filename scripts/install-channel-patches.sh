@@ -442,7 +442,18 @@ run_critical_section() {
 }
 
 apply_bubble_inject() {
-  if grep -q "bubble-inject" "$SERVER_TS" 2>/dev/null; then
+  if SERVER="$SERVER_TS" BLOCK="$INJECT_BLOCK" python3 - <<'PY_CHECK'
+import os
+try:
+    begin, end = '// === BUBBLE-INJECT PATCH BEGIN ===', '// === BUBBLE-INJECT PATCH END ==='
+    def block(p):
+        s = open(p).read()
+        return s[s.index(begin):s.index(end) + len(end)]
+    raise SystemExit(0 if block(os.environ['SERVER']) == block(os.environ['BLOCK']) else 1)
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY_CHECK
+  then
     log "bubble-inject: already present — no-op"
     return 0
   fi
@@ -483,7 +494,19 @@ patch = raw[i:j + len(END)]
 
 s = open(p).read()
 line = anchor + "\n"
-if line in s:
+if BEGIN in s and END in s:
+    s = s[:s.index(BEGIN)] + patch + s[s.index(END) + len(END):]
+elif 'bubble-inject' in s:
+    # Pre-marker legacy apply-inject-patch block: replace only the exact bounded
+    # section; unknown variants fail closed instead of adding a second watcher.
+    start = s.find('// ─── Local inject channel')
+    tail = "telegram inject: setup failed (non-fatal):"
+    stop = s.find(tail, start)
+    close = s.find('\n}', stop)
+    if min(start, stop, close) < 0:
+        raise SystemExit('unrecognized legacy inject block')
+    s = s[:start] + patch + s[close + 2:]
+elif line in s:
     s = s.replace(line, line + patch + "\n", 1)
 else:
     m = re.search(re.escape(anchor), s)
