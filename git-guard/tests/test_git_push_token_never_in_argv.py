@@ -123,21 +123,19 @@ def test_credential_helper_neutralized_via_argv_flag(
     assert cmd[idx - 1] == "-c"
 
 
-def test_remote_and_ref_still_passed_positionally(
+def test_remote_and_immutable_refspec_passed_positionally(
     fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
 ):
-    """Guard behavior unchanged: push still targets the right remote/ref.
-
-    `git push <remote> <ref>` — remote defaults to "origin" and ref is the
-    branch being pushed. This must be byte-identical to pre-#923 behavior;
-    only the credential transport changed.
-    """
+    """Push targets the right remote with an immutable-SHA refspec."""
     cmd, _env = _run_guard_push(
         fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
     )
     assert cmd[0] == "git"
     assert cmd[-2] == "origin", f"remote must still be positional argv, got: {cmd!r}"
-    assert cmd[-1], f"ref must still be positional argv, got: {cmd!r}"
+    source, destination = cmd[-1].split(":", 1)
+    assert len(source) == 40 and all(c in "0123456789abcdef" for c in source)
+    assert destination == "refs/heads/main"
+    assert "HEAD" not in cmd
 
 
 def test_git_askpass_and_terminal_prompt_still_scrubbed(

@@ -8,15 +8,18 @@ Notion v4 line 725 (verbatim):
 This module IS the "wrapper local / git guard sur Morty". Flow:
 
   1. Caller invokes Guard.push(repo_dir, dept, action, repo).
-  2. Guard computes staged_paths_for_push() — staged + unpushed-commit files.
+  2. Guard prepares one immutable push plan: checked source SHA, authoritative
+     remote destination SHA, and staged + unpushed-commit paths.
   3. Guard runs policy.enforce() for each path.
      - If ANY denied → audit `status:denied`, return 1, NO broker call.
   4. If dry_run → audit `status:would_allow`, print plan, return 0.
   5. Else → subprocess-invoke the broker to mint a token.
      - If broker exits non-zero → audit `status:mint_failed`, return 1, NO push.
-  6. Invoke `git push` with the token injected via `http.extraheader` ONLY for
-     this single command, set via env (GIT_CONFIG_* triad — #923), never
-     argv. Token never echoed, never logged, never persisted.
+  6. Push exactly the checked SHA under a force-with-lease bound to the
+     authoritative destination SHA, with the token injected via
+     `http.extraheader` ONLY for this single command, set via env
+     (GIT_CONFIG_* triad — #923), never argv. Token never echoed, never
+     logged, never persisted.
   7. Audit `status:pushed` or `status:push_failed`. Return 0 or 1 accordingly.
 
 Design invariants (enforced by tests):
@@ -38,7 +41,7 @@ from typing import Any, List, Optional, Tuple
 
 from .audit import GuardAudit
 from .policy_loader import KNOWN_ACTIONS
-from .staging import staged_paths_for_push
+from .staging import prepare_push
 
 
 # Hard cap (matches broker MAX_TTL_MINUTES — Notion v4 audit example line 612).
@@ -190,7 +193,8 @@ class Guard:
 
         # Step 1: compute staged paths
         try:
-            paths = staged_paths_for_push(Path(repo_dir), remote=remote, ref=ref)
+            plan = prepare_push(Path(repo_dir), remote=remote, ref=ref)
+            paths = plan.paths
         except subprocess.CalledProcessError as exc:
             self._safe_audit(
                 ts=ts, actor=actor, dept=dept, repo=repo, action=action,
@@ -321,7 +325,12 @@ class Guard:
         # Step 5: run `git push` with the token injected via http.extraheader
         # for THIS process only. We do NOT export GITHUB_TOKEN globally.
         push_rc, push_stderr = self._run_git_push(
-            repo_dir=Path(repo_dir), remote=remote, ref=ref, token=_token
+            repo_dir=Path(repo_dir),
+            remote=remote,
+            source_commit=plan.source_commit,
+            destination_ref=plan.destination_ref,
+            expected_remote_sha=plan.expected_remote_sha,
+            token=_token,
         )
 
         # Drop our reference promptly (Python can't truly wipe but at least
@@ -361,7 +370,13 @@ class Guard:
             print(f"WARNING: audit refused event: {exc}", file=sys.stderr)
 
     def _run_git_push(
-        self, repo_dir: Path, remote: str, ref: str, token: str
+        self,
+        repo_dir: Path,
+        remote: str,
+        source_commit: str,
+        destination_ref: str,
+        expected_remote_sha: Optional[str],
+        token: str,
     ) -> Tuple[int, str]:
         """Invoke `git push` with the token injected ONLY for this command.
 
@@ -402,12 +417,20 @@ class Guard:
         # credential.helper="" is NOT a secret — safe to keep on argv. It
         # disables any ambient helper chain so the explicit extraHeader
         # (set via env below, never argv) is what git actually uses.
+        # Bind the authorization decision to exactly the object and remote
+        # state that were inspected before token minting. Never pass `HEAD`
+        # (or any other symbolic source) here: it may have moved meanwhile.
+        # An empty expected value means the destination was verified absent;
+        # force-with-lease then rejects creation if another actor won the race.
+        lease = f"--force-with-lease={destination_ref}:{expected_remote_sha or ''}"
+        refspec = f"{source_commit}:{destination_ref}"
         cmd = [
             "git",
             "-c", "credential.helper=",
             "push",
+            lease,
             remote,
-            ref,
+            refspec,
         ]
         # Scrubbed env: keep PATH but DO NOT propagate any GITHUB_TOKEN
         # the caller might have set (fail-closed against PAT fallback).

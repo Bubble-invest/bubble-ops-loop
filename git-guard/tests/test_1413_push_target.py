@@ -1,6 +1,8 @@
 """The checked changeset must match the source and destination passed to push."""
 
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -25,6 +27,34 @@ def _real_push(repo, *args):
     return _REAL_SUBPROCESS_RUN(
         ["git", "push", *args], cwd=str(repo), check=True, capture_output=True, text=True
     )
+
+
+def _write_runtime_policy(path):
+    path.write_text(
+        """github_access:
+  actor: ops-loop-fixture
+  own_repo: bubble-ops-fixture
+  read: [bubble-ops-fixture]
+  write:
+    - repo: bubble-ops-fixture
+      allowed_paths: ["outputs/**", "queues/**", "inbox/**", "tests/**", ".gitkeep"]
+      mode: direct_runtime_commit
+  pull_requests:
+    can_open_to: []
+"""
+    )
+    return path
+
+
+def _write_broker(path, *, delay=0):
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        f"time.sleep({delay!r})\n"
+        "sys.stdout.write('ghs_MOCK' + ('a' * 40))\n"
+    )
+    path.chmod(0o755)
+    return path
 
 
 @pytest.fixture
@@ -104,9 +134,200 @@ def test_selected_remote_and_destination_are_checked(temp_git_repo, tmp_path):
     assert staged_paths_for_push(temp_git_repo, remote="backup", ref="HEAD:release") == ["outputs/heartbeat.log"]
 
 
-def test_missing_destination_keeps_inclusive_history_fallback(diverged_repo):
+def test_missing_destination_checks_complete_source_tree(diverged_repo):
     paths = staged_paths_for_push(diverged_repo, ref="HEAD:new-branch")
     assert {".gitkeep", "requirements.txt", "outputs/heartbeat.log"} <= set(paths)
+
+
+def test_head_swap_during_broker_mint_cannot_change_the_pushed_commit(
+    temp_git_repo, tmp_path
+):
+    """The exact TOCTOU PoC from security review round 3.
+
+    The path check must bind the operation to one immutable source SHA. Moving
+    symbolic HEAD while the broker is minting may change the checkout, but it
+    must not change the object sent by the already-authorized push.
+    """
+    policy_path = _write_runtime_policy(tmp_path / "policy.yaml")
+    broker_path = _write_broker(tmp_path / "slow-broker", delay=1.0)
+
+    stage_files(temp_git_repo, ["outputs/safe.txt"], "legitimate\n")
+    _git(temp_git_repo, "commit", "-m", "runtime heartbeat")
+    checked_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+    errors = []
+
+    def swap_head():
+        try:
+            time.sleep(0.25)
+            stage_files(temp_git_repo, ["MANDATE.md"], "attacker controlled\n")
+            _git(temp_git_repo, "commit", "-m", "swap HEAD during mint")
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    attacker = threading.Thread(target=swap_head)
+    attacker.start()
+    guard = Guard(load_policy(policy_path), broker_cmd=[str(broker_path)])
+    rc = guard.push(
+        temp_git_repo, "fixture", "runtime_write_own", "bubble-ops-fixture"
+    )
+    attacker.join()
+    assert not errors
+    assert rc == 0
+    assert _git(temp_git_repo, "rev-parse", "refs/remotes/origin/main").stdout.strip() == checked_sha
+    remote_paths = _git(
+        temp_git_repo, "ls-tree", "-r", "--name-only", "refs/remotes/origin/main"
+    ).stdout.splitlines()
+    assert "outputs/safe.txt" in remote_paths
+    assert "MANDATE.md" not in remote_paths
+
+
+def test_new_branch_merge_only_structural_path_is_denied(
+    temp_git_repo, tmp_path
+):
+    """The exact merge-hidden-path PoC from security review round 3."""
+    policy_path = _write_runtime_policy(tmp_path / "policy.yaml")
+    broker_path = _write_broker(tmp_path / "broker")
+
+    _git(temp_git_repo, "checkout", "-b", "tony/directive/new-thing")
+    stage_files(temp_git_repo, ["outputs/safe.txt"], "legitimate\n")
+    _git(temp_git_repo, "commit", "-m", "legit new-branch change")
+
+    _git(temp_git_repo, "checkout", "-b", "side", "main")
+    stage_files(temp_git_repo, ["outputs/side.txt"], "safe too\n")
+    _git(temp_git_repo, "commit", "-m", "safe side change")
+
+    _git(temp_git_repo, "checkout", "tony/directive/new-thing")
+    _git(temp_git_repo, "merge", "--no-ff", "--no-commit", "side")
+    stage_files(temp_git_repo, ["MANDATE.md"], "merge-only structural change\n")
+    _git(temp_git_repo, "commit", "-m", "merge with resolution-only path")
+
+    guard = Guard(load_policy(policy_path), broker_cmd=[str(broker_path)])
+    rc = guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        ref="HEAD:tony/directive/new-thing",
+    )
+    assert rc == 1
+    remote_ref = _git(
+        temp_git_repo,
+        "ls-remote",
+        "--heads",
+        "origin",
+        "refs/heads/tony/directive/new-thing",
+    ).stdout
+    assert remote_ref == ""
+
+
+def test_existing_branch_tree_diff_sees_merge_only_structural_path(
+    temp_git_repo, fixture_policy_yaml
+):
+    """An existing destination is checked by final-tree diff, including merges."""
+    _git(temp_git_repo, "checkout", "-b", "candidate")
+    stage_files(temp_git_repo, ["outputs/safe.txt"])
+    _git(temp_git_repo, "commit", "-m", "safe candidate change")
+
+    _git(temp_git_repo, "checkout", "-b", "side", "main")
+    stage_files(temp_git_repo, ["outputs/side.txt"])
+    _git(temp_git_repo, "commit", "-m", "safe side change")
+
+    _git(temp_git_repo, "checkout", "candidate")
+    _git(temp_git_repo, "merge", "--no-ff", "--no-commit", "side")
+    stage_files(temp_git_repo, ["MANDATE.md"], "merge-only structural change\n")
+    _git(temp_git_repo, "commit", "-m", "merge with resolution-only path")
+
+    guard = Guard(load_policy(fixture_policy_yaml))
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        ref="HEAD:main",
+        dry_run=True,
+    ) == 1
+
+
+def test_push_argv_binds_checked_sha_and_expected_remote_tip(
+    temp_git_repo,
+    fixture_policy_yaml,
+    mock_broker_binary,
+    mock_git_push,
+):
+    """The final push carries neither a symbolic source nor an unleased ref."""
+    expected_remote_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+    stage_files(temp_git_repo, ["outputs/safe.txt"])
+    _git(temp_git_repo, "commit", "-m", "allowed runtime change")
+    checked_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+
+    guard = Guard(load_policy(fixture_policy_yaml), broker_cmd=[str(mock_broker_binary)])
+    assert guard.push(
+        temp_git_repo, "fixture", "runtime_write_own", "bubble-ops-fixture"
+    ) == 0
+
+    cmd, _env = mock_git_push.calls[0]
+    assert "HEAD" not in cmd
+    assert f"--force-with-lease=refs/heads/main:{expected_remote_sha}" in cmd
+    assert cmd[-2:] == ["origin", f"{checked_sha}:refs/heads/main"]
+
+
+def test_new_branch_push_lease_requires_destination_to_remain_absent(
+    temp_git_repo,
+    tmp_path,
+    mock_git_push,
+):
+    policy_path = _write_runtime_policy(tmp_path / "policy.yaml")
+    broker_path = _write_broker(tmp_path / "broker")
+    _git(temp_git_repo, "checkout", "-b", "new-branch")
+    stage_files(temp_git_repo, ["outputs/safe.txt"])
+    _git(temp_git_repo, "commit", "-m", "allowed new branch")
+    checked_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+
+    guard = Guard(load_policy(policy_path), broker_cmd=[str(broker_path)])
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        ref="HEAD:new-branch",
+    ) == 0
+
+    cmd, _env = mock_git_push.calls[0]
+    assert "--force-with-lease=refs/heads/new-branch:" in cmd
+    assert cmd[-2:] == ["origin", f"{checked_sha}:refs/heads/new-branch"]
+
+
+def test_allowed_new_branch_push_succeeds_with_absence_lease(
+    temp_git_repo, tmp_path
+):
+    """Exercise the empty lease expectation against a real bare remote."""
+    policy_path = _write_runtime_policy(tmp_path / "policy.yaml")
+    broker_path = _write_broker(tmp_path / "broker")
+    _git(temp_git_repo, "checkout", "-b", "allowed-new-branch")
+    stage_files(temp_git_repo, ["outputs/safe.txt"])
+    _git(temp_git_repo, "commit", "-m", "allowed new branch")
+    checked_sha = _git(temp_git_repo, "rev-parse", "HEAD").stdout.strip()
+
+    guard = Guard(
+        load_policy(policy_path),
+        broker_cmd=[str(broker_path)],
+        audit_log_path=tmp_path / "audit.jsonl",
+    )
+    assert guard.push(
+        temp_git_repo,
+        "fixture",
+        "runtime_write_own",
+        "bubble-ops-fixture",
+        ref="HEAD:allowed-new-branch",
+    ) == 0
+    remote_line = _git(
+        temp_git_repo,
+        "ls-remote",
+        "--heads",
+        "origin",
+        "refs/heads/allowed-new-branch",
+    ).stdout
+    assert remote_line.split()[0] == checked_sha
 
 
 def test_staged_structural_change_still_denied(diverged_repo, fixture_policy_yaml):
@@ -197,9 +418,9 @@ def test_deleted_remote_ref_falls_back_to_conservative_sweep(temp_git_repo):
     """A branch that WAS on the remote and is now deleted must be detected
     as absent via `ls-remote` (not "no local tracking ref happens to
     exist," which a stale or forged local ref could fake either way). The
-    fallback then conservatively reports EVERY path in the pushed branch's
-    full history — nothing is silently hidden just because the destination
-    is gone."""
+    fallback then conservatively reports EVERY path in the pushed commit's
+    full tree — nothing is silently hidden just because the destination is
+    gone."""
     _git(temp_git_repo, "checkout", "-b", "short-lived")
     stage_files(temp_git_repo, ["outputs/a.md"])
     _git(temp_git_repo, "commit", "-m", "on short-lived")

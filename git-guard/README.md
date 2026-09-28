@@ -92,10 +92,20 @@ never `refs/remotes/*`) and re-verifies the fetched object matches before
 it is diffed against. `git diff A..B` compares trees, not ancestry, so this
 is correct across a force-push too. If `ls-remote` positively confirms the
 destination doesn't exist on the remote (a genuinely new branch), the
-existing conservative inclusive-source-history fallback applies (treats
-every path ever touched on the pushed branch as changing — can only
-over-count). Any `ls-remote`/`fetch` transport or auth error is fail-closed:
-no path check, no broker call, no push.
+guard checks every path in the source commit's complete tree with `git
+ls-tree -r --name-only`. It does not walk history: a normal `git log
+--name-only` suppresses merge-commit diffs and can miss a path introduced
+only in the merge result. Any `ls-remote`/`fetch` transport or auth error is
+fail-closed: no path check, no broker call, no push.
+
+The source ref is resolved to one immutable commit SHA before diffing and
+policy evaluation. The final command pushes exactly
+`<checked-sha>:refs/heads/<destination>`—never `HEAD` or another symbolic
+source. It also carries
+`--force-with-lease=refs/heads/<destination>:<ls-remote-sha>` (an empty
+expected SHA for a branch verified absent), so a destination change between
+the initial `ls-remote` and the push fails closed rather than silently
+updating a different remote state.
 
 The checkout's upstream, `origin/HEAD`, `BUBBLE_GUARD_DIFF_BASE`, and any
 local `refs/remotes/<remote>/<destination>` value **do not** select this
@@ -105,7 +115,7 @@ own checkout, so a forged `git update-ref refs/remotes/<remote>/<destination>
 <anything>` — no push, no network, no broker call required — used to be
 able to make `staged_paths_for_push()` return `[]` (or omit a path) while a
 forbidden path still rode along in the real `git push`. See
-`tests/test_1413_push_target.py::test_forged_local_remote_tracking_ref_is_ignored`
+`tests/test_1413_push_target.py::test_forged_refs_remotes_cannot_hide_a_structural_path`
 for the regression test that proves this specific attack is now blocked.
 This also still works when the sandbox makes `.git/config` read-only: no
 upstream configuration change is required, and the guard's own fetch writes
@@ -161,6 +171,9 @@ never `runtime_write_own`.
 |--------|-----------|
 | **Path exfiltration** — stage 9 allowed + 1 structural file | Atomicity: any single deny fails the whole batch. No partial push. |
 | **Forged `refs/remotes/<remote>/<destination>`** — the guarded actor's own checkout makes the destination look falsely "ahead" so a forbidden path is omitted from the checked set (card #1413/#543) | The diff base is never read from `refs/remotes/*`. It is fetched from the real remote (`ls-remote` + verified `fetch` into `refs/git-guard/base`) on every call. `ls-remote`/`fetch` failure is fail-closed. |
+| **Source-ref TOCTOU** — the actor advances `HEAD` after path checks but before the broker returns | Resolve the source once, check that immutable SHA, and push exactly the same `<sha>:refs/heads/<destination>` refspec. Symbolic sources never reach `git push`. |
+| **Destination-ref TOCTOU** — another writer changes or creates the remote branch after `ls-remote` | The push uses an explicit `--force-with-lease` expectation bound to the SHA (or verified absence) returned by that same `ls-remote`; mismatch fails closed. |
+| **Merge-only path on a new branch** — `git log --name-only` hides a path added only in a merge result | New branches are checked by full-tree enumeration (`git ls-tree -r --name-only <checked-sha>`), so every path that would land is policy-checked. Existing branches use a base-tree-to-source-tree diff, which also includes merge results. |
 | **Token leak via audit** | `FORBIDDEN_FIELDS` drops `token`/`access_token`/`pem`/`private_key`/`jwt`/`secret`. Any value starting with `ghs_` raises `ValueError` before write. |
 | **Token leak via stderr** | Token captured into LOCAL var, never `print()`ed. `git push` stderr is redacted (token replaced with `<TOKEN-REDACTED>`) before being surfaced. |
 | **Fallback to PAT / env GITHUB_TOKEN** | `GITHUB_TOKEN` is stripped from the env passed to `git push`. No code path reads it. |
@@ -186,6 +199,7 @@ never `runtime_write_own`.
 | `git push` exits non-zero | exit 1, audit:push_failed |
 | `ls-remote`/`fetch` against the real remote errors (auth/network/host) | exit 1, no path check, no broker call, no push |
 | Fetched object doesn't match the SHA `ls-remote` reported | exit 1, no path check, no broker call, no push |
+| Destination no longer matches the SHA (or absence) `ls-remote` reported | leased push rejected, exit 1, audit:push_failed |
 
 ## Atomicity
 

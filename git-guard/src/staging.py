@@ -33,13 +33,15 @@ Fix: ask the REAL remote, over the network, every time:
      `refs/git-guard/base..<source>`. `git diff A..B` compares trees, not
      ancestry, so this is correct even across a force-push / rewritten
      history.
-  3. If the remote ref does NOT exist (genuinely new branch): fall back to
-     the conservative inclusive-history sweep — `git log --name-only
-     <source>` — treating every path ever touched on the pushed branch as
-     "about to change". This can only be MORE restrictive than reality,
-     never less; the old "destination unknown locally" fallback already had
-     this shape, it is now reached only once the remote has been asked and
-     genuinely has no matching ref (not merely "no local tracking ref").
+  3. If the remote ref does NOT exist (genuinely new branch): inspect every
+     path in the source commit's complete tree with `git ls-tree -r`. A
+     history walk is insufficient because ordinary `git log --name-only`
+     suppresses merge-commit diffs and can miss paths introduced only by a
+     merge result.
+
+The source ref is resolved to an immutable commit SHA once and returned with
+the checked paths. The caller must push that exact SHA, never re-resolve the
+symbolic source after policy evaluation.
 
 `refs/remotes/*` and `BUBBLE_GUARD_DIFF_BASE` are never read for this
 decision — see `_unpushed_commit_paths()` below.
@@ -51,6 +53,7 @@ This module is half of that enforcement.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -62,6 +65,20 @@ from typing import List, Optional
 # always force-overwritten from a value re-verified against `ls-remote` on
 # every call — never read as-is from a prior run.
 GUARD_BASE_REF = "refs/git-guard/base"
+
+
+@dataclass(frozen=True)
+class PushPlan:
+    """Immutable identity and policy input for one guarded push attempt."""
+
+    paths: List[str]
+    source_commit: str
+    destination: str
+    expected_remote_sha: Optional[str]
+
+    @property
+    def destination_ref(self) -> str:
+        return f"refs/heads/{self.destination}"
 
 
 def _run_git(repo_dir: Path, *args: str) -> "subprocess.CompletedProcess[str]":
@@ -212,16 +229,8 @@ def _fetch_verified_base(repo_dir: Path, remote: str, destination: str, sha: str
     return GUARD_BASE_REF
 
 
-def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
-    """Diff the actual push source against its destination on the REAL remote.
-
-    SECURITY (card #1413 / PR #543 independent-review finding, critical):
-    the destination's current state is NEVER read from a local
-    `refs/remotes/*` ref (see module docstring for the forgery this closes).
-    It is asked from the remote directly via `_ls_remote_sha()` and only
-    trusted after `_fetch_verified_base()` re-confirms the fetched object
-    matches — on every single call, not cached across invocations.
-    """
+def _resolve_push_target(repo_dir: Path, remote: str, ref: str) -> tuple[str, str]:
+    """Resolve a supported refspec to one immutable source SHA + branch name."""
     source, separator, destination = ref.partition(":")
     if not separator:
         branch = _run_git(repo_dir, "rev-parse", "--symbolic-full-name", source)
@@ -233,9 +242,6 @@ def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
     destination = destination.removeprefix("refs/heads/")
     # Only single branch pushes are supported; fail closed on malformed,
     # deletion, wildcard, or non-branch destinations before minting a token.
-    # Validated against `refs/heads/<destination>` directly (a plain branch-
-    # name-shape check) — this no longer depends on any local remote-tracking
-    # ref existing.
     if (not source or source.startswith(("-", "+"))
             or remote.startswith("-") or destination == "HEAD"
             or destination.startswith("refs/")
@@ -246,9 +252,25 @@ def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
     tip = _run_git(repo_dir, "rev-parse", "--verify", "--end-of-options", f"{source}^{{commit}}")
     if tip.returncode != 0:
         raise subprocess.CalledProcessError(tip.returncode, ["git", "rev-parse"], tip.stdout, tip.stderr)
-    source_commit = tip.stdout.strip()
+    return tip.stdout.strip(), destination
 
-    remote_sha = _ls_remote_sha(repo_dir, remote, destination)
+
+def _unpushed_commit_paths(
+    repo_dir: Path,
+    remote: str,
+    source_commit: str,
+    destination: str,
+    remote_sha: Optional[str],
+) -> List[str]:
+    """Diff an immutable push source against its destination on the REAL remote.
+
+    SECURITY (card #1413 / PR #543 independent-review finding, critical):
+    the destination's current state is NEVER read from a local
+    `refs/remotes/*` ref (see module docstring for the forgery this closes).
+    It is asked from the remote directly via `_ls_remote_sha()` and only
+    trusted after `_fetch_verified_base()` re-confirms the fetched object
+    matches — on every single call, not cached across invocations.
+    """
     if remote_sha is not None:
         base = _fetch_verified_base(repo_dir, remote, destination, remote_sha)
         # `git diff A..B` compares TREES, not ancestry — this is correct even
@@ -259,16 +281,37 @@ def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
             raise subprocess.CalledProcessError(proc.returncode, ["git", "diff"], proc.stdout, proc.stderr)
         return [p for p in proc.stdout.split("\x00") if p]
 
-    # Genuinely new branch: the REAL remote (not a stale/forgeable local ref)
-    # just confirmed no such ref exists. Conservative fallback — every path
-    # ever touched on the pushed branch counts as "about to change". This
-    # can only over-count (deny more), never under-count.
-    proc = _run_git(repo_dir, "log", "--name-only", "--pretty=format:", source_commit)
+    # Genuinely new branch: check the complete final tree. A history walk is
+    # unsafe here: `git log --name-only` suppresses merge-commit diffs by
+    # default, hiding a path introduced only in a merge result.
+    proc = _run_git(repo_dir, "ls-tree", "-r", "--name-only", "-z", source_commit)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(
-            proc.returncode, ["git", "log"], proc.stdout, proc.stderr
+            proc.returncode, ["git", "ls-tree"], proc.stdout, proc.stderr
         )
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return [p for p in proc.stdout.split("\x00") if p]
+
+
+def prepare_push(repo_dir: Path, remote: str = "origin", ref: str = "HEAD") -> PushPlan:
+    """Resolve and inspect one push without leaving any symbolic ref to re-read."""
+    staged = currently_staged(repo_dir)
+    source_commit, destination = _resolve_push_target(repo_dir, remote, ref)
+    remote_sha = _ls_remote_sha(repo_dir, remote, destination)
+    unpushed = _unpushed_commit_paths(
+        repo_dir, remote, source_commit, destination, remote_sha
+    )
+    seen: set = set()
+    paths: List[str] = []
+    for path in list(staged) + list(unpushed):
+        if path and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return PushPlan(
+        paths=paths,
+        source_commit=source_commit,
+        destination=destination,
+        expected_remote_sha=remote_sha,
+    )
 
 
 def staged_paths_for_push(repo_dir: Path, remote: str = "origin", ref: str = "HEAD") -> List[str]:
@@ -277,12 +320,4 @@ def staged_paths_for_push(repo_dir: Path, remote: str = "origin", ref: str = "HE
     This is the SET-TO-CHECK before invoking the broker. If any element of
     this set is denied by policy, the entire push is denied (atomicity).
     """
-    staged = currently_staged(repo_dir)
-    unpushed = _unpushed_commit_paths(repo_dir, remote, ref)
-    seen: set = set()
-    out: List[str] = []
-    for p in list(staged) + list(unpushed):
-        if p and p not in seen:
-            seen.add(p)
-            out.append(p)
-    return out
+    return prepare_push(repo_dir, remote=remote, ref=ref).paths
