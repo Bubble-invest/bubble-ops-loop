@@ -217,3 +217,45 @@ def test_pagination_error_shows_error_not_partial_list(monkeypatch):
     assert detail is not None
     assert detail["files"] == []
     assert detail["files_error"]
+
+
+def test_board_token_fallback_when_app_unavailable(monkeypatch):
+    monkeypatch.setattr(pdr.pr_approver, "_mint_token", lambda: None)
+    monkeypatch.setattr(pdr, "_read_board_token", lambda: "board_test")
+    seen = []
+
+    def get_json(url, token):
+        seen.append(token)
+        if "/files?" in url:
+            return []
+        if "/check-runs" in url:
+            return {"check_runs": []}
+        return {"title": "Fallback", "head": {"sha": _SHA}}
+
+    monkeypatch.setattr(pdr, "_get_json", get_json)
+    assert pdr.fetch_pr_detail(_OWNER, _REPO, 1)["title"] == "Fallback"
+    assert seen == ["board_test"] * 3
+
+
+def test_no_read_token_returns_none_without_http(monkeypatch):
+    monkeypatch.setattr(pdr.pr_approver, "_mint_token", lambda: None)
+    monkeypatch.setattr(pdr, "_read_board_token", lambda: None)
+
+    def unexpected(*args):
+        raise AssertionError("HTTP must not be called without a token")
+
+    monkeypatch.setattr(pdr, "_get_json", unexpected)
+    assert pdr.fetch_pr_detail(_OWNER, _REPO, 1) is None
+
+
+def test_app_permission_error_stays_fail_safe(monkeypatch):
+    import urllib.error
+
+    monkeypatch.setattr(pdr.pr_approver, "_mint_token", lambda: "ghs_test_app")
+
+    def forbidden(url, token):
+        assert token == "ghs_test_app"
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(pdr, "_get_json", forbidden)
+    assert pdr.fetch_pr_detail(_OWNER, "bubble-ops-tony", 1) is None

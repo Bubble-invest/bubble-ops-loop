@@ -248,3 +248,65 @@ def test_approve_narrow_rbac_denies_unlisted_principal(client_noauth, app, monke
         headers={"Cookie": cookie},
     )
     assert resp.status_code == 403
+
+
+def test_private_dept_pr_renders_and_approves_with_app_token(client, monkeypatch):
+    """Exercise both routes through real services with only HTTP stubbed.
+
+    The board credential cannot read this private repo. A dept PR without
+    structural files must still allow an explicit, SHA-pinned App approval.
+    """
+    import io
+    import json
+    import urllib.error
+    import urllib.request
+
+    route = _pr_route()
+    monkeypatch.setattr(route.pr_approver, "_mint_token", lambda: "ghs_test_app")
+    monkeypatch.setattr(route.pr_detail_reader, "_read_board_token", lambda: "board_test")
+    base = "https://api.github.com/repos/Bubble-invest/bubble-ops-tony"
+    calls = []
+
+    def urlopen(req, timeout):
+        token = req.get_header("Authorization")
+        if token == "Bearer board_test":
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+        assert token == "Bearer ghs_test_app"
+        payload = json.loads(req.data) if req.data else None
+        calls.append((req.get_method(), req.full_url, payload))
+        responses = {
+            ("GET", f"{base}/pulls/42"): {
+                "title": "Private department change", "state": "open",
+                "head": {"sha": _SHA}, "base": {"ref": "main"},
+            },
+            ("GET", f"{base}/pulls/42/files?per_page=100&page=1"): [
+                {"filename": "docs/notes.md", "status": "modified"},
+            ],
+            ("GET", f"{base}/commits/{_SHA}/check-runs"): {"check_runs": []},
+            ("GET", f"{base}/commits/{_SHA}/status"): {"statuses": []},
+            ("POST", f"{base}/pulls/42/reviews"): {"id": 123},
+            ("POST", f"{base}/statuses/{_SHA}"): {"id": 456},
+        }
+        response = io.BytesIO(json.dumps(responses[(req.get_method(), req.full_url)]).encode())
+        response.status = 201 if req.get_method() == "POST" else 200
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    resp = client.get("/pr/Bubble-invest/bubble-ops-tony/42")
+    assert resp.status_code == 200
+    assert "Private department change" in resp.text
+    assert "docs/notes.md" in resp.text
+    assert "bubbleApprovePR" in resp.text
+    assert f"'{_SHA}'" in resp.text
+
+    resp = client.post(f"/pr/Bubble-invest/bubble-ops-tony/42/approve?head_sha={_SHA}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "approved"
+    posts = [(url, data) for method, url, data in calls if method == "POST"]
+    assert len(posts) == 2
+    assert posts[0][0] == f"{base}/pulls/42/reviews"
+    assert posts[0][1]["event"] == "APPROVE"
+    assert posts[0][1]["commit_id"] == _SHA
+    assert posts[1][0] == f"{base}/statuses/{_SHA}"
+    assert posts[1][1]["context"] == "structural-approval"
+    assert posts[1][1]["state"] == "success"
