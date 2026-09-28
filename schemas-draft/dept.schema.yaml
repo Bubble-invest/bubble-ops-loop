@@ -188,6 +188,22 @@ properties:
       required: [id, layer, cadence, description, output_queue, creates]
       additionalProperties: false
       properties:
+        business_unit:
+          type: string
+          enum: [fund, ai_methods, pro_clients, steering]
+          description: Optional business pipeline fed by this mission; absent means unmapped.
+        serves_intents:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            pattern: '^[^/\\]+$'
+          uniqueItems: true
+          description: Filenames without .md under shared/operator-intents/ in the shared wiki.
+        floor:
+          type: string
+          enum: [distribute, package, produce, measure]
+          description: Optional business pipeline stage, independent of the execution layer.
         id:
           type: string
           pattern: "^[a-z][a-z0-9_]*$"
