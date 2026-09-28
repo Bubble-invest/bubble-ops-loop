@@ -12,7 +12,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import yaml
+
 LIB = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(LIB))
 
 import skill_usage_count as suc  # noqa: E402
@@ -262,6 +265,18 @@ class TestEvalHarness(unittest.TestCase):
         self.assertNotIn("--append-system-prompt", without)
         self.assertIn("--append-system-prompt", withc)
         self.assertEqual(withc[-1], "P")
+
+
+class TestSkillFrontmatter(unittest.TestCase):
+    def test_allowed_tools_present_and_includes_required_set(self):
+        # Regression (card #1440): a prior fix silently dropped the
+        # allowed-tools frontmatter entirely. #538 requires it for the
+        # native headless eval Task subagents.
+        text = (REPO / "skills/skill-authoring/SKILL.md").read_text()
+        frontmatter = yaml.safe_load(text.split("---", 2)[1])
+        allowed = frontmatter.get("allowed-tools")
+        self.assertIsNotNone(allowed)
+        self.assertTrue({"Task", "Read", "Write", "Bash", "Skill"} <= set(allowed))
 
 
 if __name__ == "__main__":
