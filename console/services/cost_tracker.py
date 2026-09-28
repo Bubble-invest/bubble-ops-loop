@@ -3,7 +3,10 @@
 
 Ported from the local Tailscale dashboard's `token_usage.py` (Tony_CEO/workspace/
 org-dashboard/lib), adapted for the VPS:
-  - VPS agent session dirs live under ~/.claude/projects/-home-claude-agents-<...>
+  - isolated VPS sessions are mirrored into
+    /home/claude/.claude/projects/_vps-<slug>/<mangled-workdir>/
+  - legacy shared-uid sessions remain under
+    /home/claude/.claude/projects/-home-claude-agents-<...>
   - the wiki-compile + loop-backup floor cron run as `claude -p` under -home-claude
   - Mac caches (_mac-{{OPERATOR_USER}}, _mac-{{OPERATOR_2_USER}}) are rsync'd in (Rick + local Tony live on the Mac)
 
@@ -35,7 +38,14 @@ from typing import Optional
 _log = logging.getLogger(__name__)
 
 HOME = Path(os.environ.get("HOME", "/home/claude"))
-PROJECTS_DIR = HOME / ".claude" / "projects"
+# Production sets this explicitly because the cockpit runs as `bubble-console`:
+# its own $HOME has no Claude sessions. Root's transcript-sync timer mirrors
+# isolated `/home/agent-<slug>/.claude/projects` trees into this shared,
+# read-only source. The HOME-relative fallback keeps local development and the
+# existing hermetic tests unchanged.
+PROJECTS_DIR = Path(os.environ.get(
+    "BUBBLE_COST_PROJECTS_DIR", str(HOME / ".claude" / "projects")
+))
 CACHE_DIR = HOME / ".claude" / "cache"
 CACHE_FILE = CACHE_DIR / "console-cost-sessions.json"
 
@@ -128,6 +138,17 @@ def classify(dir_name: str) -> Optional[str]:
         return rest
     if d == "-home-claude":
         return "_p_crons"  # split into jobs by cron-marker in parse
+    # Post-#1120 isolated VPS agents are copied by wiki-transcript-sync into
+    # `_vps-<slug>/<mangled-workdir>/`. The slug belongs to the source root,
+    # not the mangled child path. Hermes mirrors use the sibling
+    # `_vps-<slug>-hermes/` convention; accept those too if their JSONL schema
+    # carries compatible usage records.
+    if d.startswith("_vps-"):
+        source = d.split("/", 1)[0]
+        slug = source[len("_vps-"):]
+        if slug.endswith("-hermes"):
+            slug = slug[:-len("-hermes")]
+        return slug or None
     # Mac caches (nested): "_mac-<operator>/<workspace-dir>" — one cache dir per
     # operator Mac. The operator label is derived from the dir suffix so no
     # operator name is hardcoded here.
@@ -433,13 +454,13 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
             empty["day_requested"] = day
         return empty
 
-    # Build (label, jsonl-files) work units. Flat dirs map directly; the nested
-    # Mac caches (_mac-{{OPERATOR_USER}}/<ws>, _mac-{{OPERATOR_2_USER}}/<ws>) are descended one level.
+    # Build (label, jsonl-files) work units. Flat dirs map directly; nested Mac
+    # caches and post-isolation VPS mirrors are descended one level.
     work = []  # list of (label0, file_iterable)
     for proj in PROJECTS_DIR.iterdir():
         if not proj.is_dir():
             continue
-        if proj.name.startswith("_mac-"):
+        if proj.name.startswith(("_mac-", "_vps-")):
             for sub in proj.iterdir():
                 if not sub.is_dir():
                     continue
@@ -635,11 +656,13 @@ def mission_budget_total(dept_yaml: Optional[dict]) -> Optional[float]:
 
 
 # Report agent-keys carry disambiguation suffixes (e.g. "miranda (jade-mac)",
-# "ben (mac-legacy)") and a couple of workspace→agent aliases (content→miranda).
+# "ben (mac-legacy)") and workspace/agent names that differ from dept slugs.
 # To roll a dept's spend up from the per-agent report we normalise each agent
 # key back to its dept slug: strip any " (...)" suffix, then map known aliases.
 _AGENT_KEY_TO_SLUG_ALIAS = {
     "miranda": "content",  # Miranda IS the content dept's agent (workspace bubble-ops-content)
+    "rick": "rnd",
+    "eliot": "security",
 }
 
 
@@ -655,7 +678,7 @@ def spent_by_dept(report: dict, span: str = "week") -> dict:
     """Roll the per-agent report up to a {dept_slug: real-$ spend} map.
 
     Matches each report agent-key to a dept slug by its normalised base name
-    (see agent_key_base) plus a small alias map (miranda→content). Agent keys
+    (see agent_key_base) plus the small known agent→dept alias map. Agent keys
     that don't map to a dept slug (e.g. `claude -p` cron jobs like
     'wiki-compile') are simply left out of the map. Never raises.
     """
@@ -672,6 +695,38 @@ def spent_by_dept(report: dict, span: str = "week") -> dict:
             cost = 0.0
         out[slug] = round(out.get(slug, 0.0) + cost, 3)
     return out
+
+
+def session_health(report: dict, recent_heartbeat_depts: list[str]) -> dict:
+    """Check the /costs data-path invariant for recently-active departments.
+
+    A department with a heartbeat in the last 24 hours must have at least one
+    session in the report's seven-day bucket. Keeping this pure (the caller
+    supplies the recent heartbeat slugs) makes the cross-source check easy to
+    exercise with fixtures and avoids coupling transcript parsing to the
+    heartbeat reader.
+    """
+    runs_by_dept: dict[str, int] = {}
+    agents = report.get("agents") if isinstance(report, dict) else None
+    if isinstance(agents, dict):
+        for key, agent in agents.items():
+            base = agent_key_base(str(key))
+            slug = _AGENT_KEY_TO_SLUG_ALIAS.get(base, base)
+            try:
+                runs = int(agent.get("week", {}).get("runs", 0))
+            except (AttributeError, TypeError, ValueError):
+                runs = 0
+            runs_by_dept[slug] = runs_by_dept.get(slug, 0) + max(runs, 0)
+
+    recent = sorted(set(recent_heartbeat_depts))
+    violations = [slug for slug in recent if runs_by_dept.get(slug, 0) <= 0]
+    return {
+        "ok": not violations,
+        "invariant": "sessions>0 when a dept had a heartbeat in the last 24h",
+        "recent_heartbeat_depts": recent,
+        "violations": violations,
+        "sessions_by_dept": {slug: runs_by_dept.get(slug, 0) for slug in recent},
+    }
 
 
 def budget_status(spent: float, budget: Optional[float]) -> dict:

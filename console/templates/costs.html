@@ -43,6 +43,18 @@
   </p>
 </section>
 
+{% if report.health and report.health.violations %}
+<section class="cabinet-section" role="alert" aria-labelledby="cost-data-health-heading"
+         style="border-left:4px solid var(--ochre);padding-left:1rem">
+  <h2 id="cost-data-health-heading" class="section-heading">Données de coût incomplètes</h2>
+  <p>
+    Activité récente détectée mais aucune session mesurée sur 7 jours pour&nbsp;:
+    <strong>{{ report.health.violations | join(', ') }}</strong>.
+    Vérifier le miroir de transcripts avant d'utiliser ces montants.
+  </p>
+</section>
+{% endif %}
+
 <section class="cabinet-section" aria-labelledby="dept-budgets-heading">
   <h2 id="dept-budgets-heading" class="section-heading">
     <span class="section-heading-number">€</span>
