@@ -36,6 +36,13 @@ Arguments:
                      Telegram / Morty / git / STATE.yaml.
   --help             Show this message.
 
+Telegram configuration:
+  Select the retiring dept's credentials: BUBBLE_BOT_TOKEN_<SLUG> (uppercase,
+  hyphens replaced by underscores), or TELEGRAM_BOT_TOKEN, or its
+  TELEGRAM_STATE_DIR/.env containing TELEGRAM_BOT_TOKEN. Set TELEGRAM_CHAT_ID
+  to the dept's paired chat ID. Missing config or failed delivery blocks
+  retirement before disabling the unit or quarantining secrets.
+
 Exit codes:
   0    Success (retired, or --dry-run plan rendered)
   2    Blocked (e.g. dept not Live -> operator must use cancel-eclosion)

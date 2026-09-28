@@ -22,7 +22,7 @@ Doctrine:
   - The dept shows up in `/agents` -> "Anciens collègues" section (read-only).
 
 Side effects (mocked in tests; real in production):
-  1. Telegram: send the final message via the dept's bot (curl / API).
+  1. Telegram: send the final message via the dept's bot (urllib / API).
   2. SSH to Morty: `systemctl disable ops-loop-<slug>.service` (no --now).
   2b. Secret quarantine (security): lock the Telegram bot (access.json ->
       denied), archive the SOPS env (reversible), wipe the runtime decrypted
@@ -36,9 +36,12 @@ Public API:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -51,6 +54,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import state_yaml  # noqa: E402
+from notify import TelegramBackend  # noqa: E402
 
 
 UNIT_PATTERN = "bubble-agent@{slug}.service"
@@ -92,23 +96,44 @@ def compose_final_telegram_message(display_name: str, reason: str) -> str:
 
 def _send_final_telegram(slug: str, message: str
                          ) -> subprocess.CompletedProcess:
-    """Send the farewell message via the dept's bot.
+    """Send with Python-resolved credentials, never putting a token in argv.
 
-    Production wiring: looks up the bot token in the dept's SOPS-encrypted
-    secrets file and POSTs to https://api.telegram.org/bot<token>/sendMessage.
-    In tests the subprocess.run is mocked, so we just record the curl call.
+    Prefer BUBBLE_BOT_TOKEN_<SLUG>, then TELEGRAM_BOT_TOKEN from the env
+    or the existing $TELEGRAM_STATE_DIR/.env loader. The caller must select
+    the retiring dept's credentials and set TELEGRAM_CHAT_ID to its chat.
+    Return only safe diagnostics: HTTP errors can contain the token URL.
     """
-    # In real life this would source SOPS secrets first. For the v1 of
-    # retire-dept the production hook is a placeholder — the operator
-    # may still send the message manually via the BotFather flow. The
-    # CRITICAL invariant for tests: subprocess.run IS called, with
-    # something that looks like a Telegram API request.
-    cmd = [
-        "curl", "-s", "-X", "POST",
-        f"https://api.telegram.org/bot${{BUBBLE_BOT_TOKEN_{slug.replace('-', '_').upper()}}}/sendMessage",
-        "-d", f"text={message}",
-    ]
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    token_key = f"BUBBLE_BOT_TOKEN_{slug.replace('-', '_').upper()}"
+    token = (os.environ.get(token_key)
+             or os.environ.get("TELEGRAM_BOT_TOKEN")
+             or TelegramBackend._read_token_from_state_dir())
+    error = ""
+    if not token:
+        error = (f"Telegram token missing: set {token_key}, TELEGRAM_BOT_TOKEN "
+                 "or TELEGRAM_STATE_DIR pointing to the dept's .env")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not error and not chat_id:
+        error = "Telegram chat missing: set TELEGRAM_CHAT_ID for the retiring dept"
+    if not error:
+        try:
+            request = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = json.loads(response.read())
+            if not isinstance(body, dict) or body.get("ok") is not True:
+                error = "Telegram API did not confirm farewell delivery"
+        except urllib.error.HTTPError as exc:
+            error = f"Telegram farewell failed: HTTP {exc.code}"
+        except (OSError, ValueError):
+            error = "Telegram farewell failed: transport error or invalid response"
+    return subprocess.CompletedProcess(
+        args=["telegram", "sendMessage"], returncode=1 if error else 0,
+        stdout="", stderr=error,
+    )
 
 
 def _disable_morty_unit_graceful(slug: str, remote: str = DEFAULT_REMOTE
@@ -265,11 +290,8 @@ def retire_dept(
     # ---- Side effect 1: Telegram farewell ---------------------------------
     tel_result = _send_final_telegram(slug, final_msg)
     if tel_result.returncode != 0:
-        print(
-            f"[retire-dept] WARN: telegram send returned "
-            f"{tel_result.returncode}: {tel_result.stderr.strip()[:200]}",
-            file=sys.stderr,
-        )
+        return {"status": "blocked", "reasons": [tel_result.stderr],
+                "final_telegram_msg": final_msg}
 
     # ---- Side effect 2: graceful systemd disable on Morty ----------------
     morty_result = _disable_morty_unit_graceful(slug)
@@ -334,7 +356,7 @@ def _format_summary(slug: str, result: dict) -> str:
         for r in result["reasons"]:
             out.append(f"  - {r}")
     out.append("")
-    out.append("Farewell message (sent to the dept's Telegram chat):")
+    out.append("Farewell message:")
     out.append(f"  > {result['final_telegram_msg']}")
     out.append("")
     return "\n".join(out)
