@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 BUSINESS_UNITS = ("fund", "ai_methods", "pro_clients", "steering")
-FLOORS = ("distribute", "package", "produce", "measure")
+FLOORS = ("distribute", "package", "produce", "measure", "steer", "support")
 
 
 def default_intents_dir() -> Path:
@@ -50,8 +50,14 @@ def inspect_department(dept: str, manifest: object, intents: set[str] | None) ->
         missing = not unit or not slugs
         if missing:
             issues.append("unmapped")
-        if unit is not None and unit not in BUSINESS_UNITS:
-            issues.append("invalid_business_unit")
+        if unit is not None:
+            # business_unit is a string or a list of strings; every entry
+            # must be a known unit (multi-BU missions exist, e.g. content
+            # missions serving both fund and ai_methods).
+            units = unit if isinstance(unit, list) else [unit]
+            valid_unit = bool(units) and all(isinstance(u, str) and u in BUSINESS_UNITS for u in units)
+            if not valid_unit:
+                issues.append("invalid_business_unit")
         valid_slugs = isinstance(slugs, list) and all(
             isinstance(s, str) and bool(s) and s not in (".", "..")
             and "/" not in s and "\\" not in s and not s.endswith(".md")

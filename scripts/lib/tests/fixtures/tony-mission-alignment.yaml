@@ -1,0 +1,727 @@
+source: live dept.yaml::recurring_missions under /srv/agents/* (tony, ben, maya, content,
+  accountant, rnd), read 2026-09-28; Tonio (Mac) not visible from the VPS
+departments:
+  tony:
+    recurring_missions:
+    - id: morning_brief
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      floor: steer
+    - id: dept_kpi_watch
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      floor: steer
+    - id: directive_review
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      floor: steer
+    - id: ceo_debrief
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      floor: steer
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      - system-convergence-north-star
+      floor: support
+    - id: inbox_watch
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - tony-gated-operational-management
+      - maya-qualified-commercial-growth
+      floor: steer
+  ben:
+    recurring_missions:
+    - id: data_update
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: produce
+    - id: execution
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: produce
+    - id: research
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: produce
+    - id: risk_control
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: produce
+    - id: market_wrapup
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: package
+    - id: ideas_scout
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: produce
+    - id: weekly_review
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      floor: measure
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - ben-prudent-portfolio-stewardship
+      - system-convergence-north-star
+      floor: support
+  maya:
+    recurring_missions:
+    - id: discovery
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: distribute
+    - id: qualify
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: package
+    - id: draft_batch
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: package
+    - id: morning_sync
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: measure
+    - id: reply_handler
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: package
+    - id: send_approved
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      floor: distribute
+    - id: news_relay
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - maya-qualified-commercial-growth
+      - miranda-brand-disciplined-content-growth
+      floor: distribute
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - maya-qualified-commercial-growth
+      - system-convergence-north-star
+      floor: support
+  content:
+    recurring_missions:
+    - id: gather_internal_work
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: produce
+    - id: gather_newsletter_signal
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: produce
+    - id: gather_x_timeline
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: produce
+    - id: gather_youtube_taste
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: produce
+    - id: draft_x
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: package
+    - id: draft_linkedin
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: package
+    - id: draft_substack_note
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: package
+    - id: draft_substack_essay
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: package
+    - id: draft_substack_ic
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      - ben-prudent-portfolio-stewardship
+      floor: package
+    - id: draft_substack_ben_report
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: fund
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      - ben-prudent-portfolio-stewardship
+      floor: package
+    - id: draft_newsletter
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: package
+    - id: publish_execution
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit:
+      - fund
+      - ai_methods
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: distribute
+    - id: synthesizing_content_feedback
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit:
+      - ai_methods
+      - fund
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      floor: measure
+    - id: maya_bridge_execution
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      - maya-qualified-commercial-growth
+      floor: distribute
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - miranda-brand-disciplined-content-growth
+      - system-convergence-north-star
+      floor: support
+  accountant:
+    recurring_missions:
+    - id: daily_ledger_cash_sync
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: daily_invoice_receipt_intake
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: daily_categorisation_reconciliation
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: weekly_timesheet_collection
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: produce
+    - id: weekly_cfo_report
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: quarterly_vat_audit
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: client_legal_docs_drafting
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: pro_clients
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: package
+    - id: annual_statutory_calendar
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: daily_controls_report
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      floor: support
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - geraldine-controlled-financial-operations
+      - system-convergence-north-star
+      floor: support
+  rnd:
+    recurring_missions:
+    - id: fleet_snapshot
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: steer
+    - id: kanban_board
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: steer
+    - id: security_guard
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: support
+    - id: fleet_hygiene
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: support
+    - id: skill_authoring
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: produce
+    - id: follow_through
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: steer
+    - id: intent_drift
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: steer
+    - id: compliance_drift
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: support
+    - id: wiki_compile
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      floor: support
+    - id: website_guardian
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: ai_methods
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      - tonio-safe-external-product-delivery
+      floor: distribute
+    - id: session_handoff
+      layer: 1
+      cadence: daily
+      description: Fixture mission mapped from Tony operations-map for alignment regression
+        coverage.
+      output_queue: queues/data/
+      creates:
+      - fixture
+      business_unit: steering
+      serves_intents:
+      - rick-controlled-rnd-convergence
+      - system-convergence-north-star
+      floor: support

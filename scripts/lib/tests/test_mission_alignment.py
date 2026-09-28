@@ -20,14 +20,32 @@ def test_statuses_and_mission_counts():
         {"id": "legacy"},
         {"id": "mapped", "business_unit": "fund", "serves_intents": ["growth"]},
         {"id": "unknown", "business_unit": "steering", "serves_intents": ["bad", "worse"]},
-        {"id": "unit", "business_unit": ["fund"], "serves_intents": ["growth"]},
+        {"id": "multi_unit", "business_unit": ["fund", "ai_methods"], "serves_intents": ["growth"]},
+        {"id": "multi_unit_bad", "business_unit": ["fund", "bogus"], "serves_intents": ["growth"]},
         {"id": "shape", "serves_intents": "growth", "floor": {}},
         {"id": "partial", "business_unit": "fund", "serves_intents": []},
     ]
     result = alignment_report([("dept", {"recurring_missions": missions})], {"growth"})
-    assert result["totals"] == dict(mapped=1, unmapped=3, unknown_intents=1,
+    assert result["totals"] == dict(mapped=2, unmapped=3, unknown_intents=1,
                                     invalid_business_unit=1, unverified=0, invalid_metadata=2)
     assert result["departments"][0]["missions"][2]["unknown_intents"] == ["bad", "worse"]
+
+
+def test_business_unit_list_valid_unknown_entry_invalid():
+    # A list of known units is valid (multi-BU missions, e.g. content/publish_execution
+    # serving both fund and ai_methods per Tony's real mapping). A list containing an
+    # unknown unit is invalid_business_unit.
+    valid = inspect_department("dept", {"recurring_missions": [
+        {"id": "multi", "business_unit": ["fund", "ai_methods"], "serves_intents": ["growth"]}]},
+        {"growth"})
+    assert valid["missions"][0]["statuses"] == ["mapped"]
+    assert valid["invalid_business_unit"] == 0
+
+    invalid = inspect_department("dept", {"recurring_missions": [
+        {"id": "multi_bad", "business_unit": ["fund", "not_a_unit"], "serves_intents": ["growth"]}]},
+        {"growth"})
+    assert "invalid_business_unit" in invalid["missions"][0]["statuses"]
+    assert invalid["invalid_business_unit"] == 1
 
 
 def test_missing_catalog_does_not_claim_unknown_or_mapped(tmp_path):
@@ -77,7 +95,13 @@ def test_schema_backward_compat_and_optional_fields(inline):
     jsonschema.validate(mission, schema)
     mission.update(business_unit="pro_clients", serves_intents=["growth"], floor="produce")
     jsonschema.validate(mission, schema)
-    for key, value in [("business_unit", "bogus"), ("serves_intents", "growth"), ("floor", "bogus")]:
+    # A list of known units is valid (multi-BU missions), and each of the 6
+    # real-world floors from Tony's mapping validates.
+    jsonschema.validate(dict(mission, business_unit=["fund", "ai_methods"]), schema)
+    for floor in ("distribute", "package", "produce", "measure", "steer", "support"):
+        jsonschema.validate(dict(mission, floor=floor), schema)
+    for key, value in [("business_unit", "bogus"), ("business_unit", ["fund", "bogus"]),
+                        ("serves_intents", "growth"), ("floor", "bogus")]:
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(dict(mission, **{key: value}), schema)
 
@@ -105,3 +129,30 @@ def test_scaffold_retains_declared_alignment():
     rendered = yaml.safe_load(env.get_template("mission.yaml.template").render(mission=mission))
     for key in ("business_unit", "serves_intents", "floor"):
         assert rendered[key] == mission[key]
+
+
+def test_tony_real_mission_alignment_fixture_has_no_invalid_floor_or_business_unit():
+    """Regression for board #1602: framework must match Tony's real operations map
+    (Bubble-invest/bubble-ops-tony: outputs/operations-map/mission-alignment.yaml).
+
+    Fixture is a copy of that 58-mission file, mapped to dept.yaml mission shape
+    (mission_id -> id, when dropped; business_unit/serves_intents/floor kept
+    as-is, including the two multi-BU missions with a list business_unit).
+    """
+    fixture = yaml.safe_load((ROOT / "scripts/lib/tests/fixtures/tony-mission-alignment.yaml").read_text())
+    departments = fixture["departments"]
+    mission_count = sum(len(dept["recurring_missions"]) for dept in departments.values())
+    assert mission_count == 58
+
+    # All 58 missions' intent slugs are treated as known so this fixture isolates
+    # floor/business_unit validity from the separate (and unrelated) intent-catalog check.
+    all_intents = {slug for dept in departments.values()
+                   for mission in dept["recurring_missions"]
+                   for slug in mission.get("serves_intents", [])}
+    result = alignment_report(list(departments.items()), all_intents)
+
+    assert result["totals"]["invalid_business_unit"] == 0
+    for dept in result["departments"]:
+        for mission in dept["missions"]:
+            assert "invalid_floor" not in mission["statuses"], (dept["dept"], mission)
+            assert "invalid_business_unit" not in mission["statuses"], (dept["dept"], mission)

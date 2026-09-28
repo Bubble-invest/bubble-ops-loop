@@ -145,9 +145,9 @@ layers:
 # agents/ben/missions/session_handoff/PROMPT.md for the canonical prompt. The
 # recurring_missions entry it adds:
 #   - id: session_handoff
-#     business_unit: steering  # fund | ai_methods | pro_clients | steering
+#     business_unit: steering  # fund | ai_methods | pro_clients | steering (or a list, for multi-BU missions)
 #     serves_intents: [operator-intent-slug]  # shared/operator-intents/<slug>.md
-#     floor: measure  # distribute | package | produce | measure (optional)
+#     floor: measure  # distribute | package | produce | measure | steer | support (optional)
 #     layer: 4
 #     cadence: daily
 #     description: FLEET-STANDARD (board #1195). Write an honest, up-to-date

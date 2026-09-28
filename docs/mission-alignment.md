@@ -4,9 +4,9 @@ Recurring missions may declare these optional fields in `dept.yaml` or a
 standalone mission YAML:
 
 ```yaml
-business_unit: steering  # fund | ai_methods | pro_clients | steering
+business_unit: steering  # fund | ai_methods | pro_clients | steering (or a list of these, for multi-BU missions)
 serves_intents: [operator-intent-slug]
-floor: measure          # distribute | package | produce | measure
+floor: measure          # distribute | package | produce | measure | steer | support
 ```
 
 Intent slugs are filenames without `.md` in the shared wiki's

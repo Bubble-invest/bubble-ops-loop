@@ -15,9 +15,20 @@ required: [id, layer, cadence, description, output_queue, creates]
 additionalProperties: false
 properties:
   business_unit:
-    type: string
-    enum: [fund, ai_methods, pro_clients, steering]
-    description: Optional business pipeline fed by this mission; absent means unmapped.
+    description: |
+      Optional business pipeline(s) fed by this mission; absent means
+      unmapped. A string for a single unit, or an array of strings for
+      missions that serve more than one unit (e.g. a content mission
+      serving both fund and ai_methods).
+    oneOf:
+      - type: string
+        enum: [fund, ai_methods, pro_clients, steering]
+      - type: array
+        items:
+          type: string
+          enum: [fund, ai_methods, pro_clients, steering]
+        minItems: 1
+        uniqueItems: true
   serves_intents:
     type: array
     items:
@@ -28,7 +39,7 @@ properties:
     description: Filenames without .md under shared/operator-intents/ in the shared wiki.
   floor:
     type: string
-    enum: [distribute, package, produce, measure]
+    enum: [distribute, package, produce, measure, steer, support]
     description: Optional business pipeline stage, independent of the execution layer.
   id:
     type: string
