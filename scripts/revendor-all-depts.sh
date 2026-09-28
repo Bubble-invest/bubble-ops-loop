@@ -32,8 +32,8 @@
 #                  vendor-dept-libs.sh via BUBBLE_FRAMEWORK_ROOT so its own
 #                  host-aware resolution logic (env > sibling > VPS default)
 #                  stays the single source of truth for "what is canonical".
-#   --agents-root  base dir holding bubble-ops-<slug> clones.
-#                  Default /home/claude/agents (parameterized for tests).
+#   --agents-root  base dir holding <slug> isolated workdirs (legacy bubble-ops-* supported).
+#                  Default /srv/agents (parameterized for tests).
 #   --dry-run      report which dept/file pairs WOULD be refreshed, without
 #                  copying anything. Compares framework vs dept bytes directly
 #                  (does not shell out to vendor-dept-libs.sh, which has no
@@ -51,7 +51,7 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FRAMEWORK="${BUBBLE_FRAMEWORK_ROOT:-}"
-AGENTS_ROOT="${BUBBLE_REVENDOR_AGENTS_ROOT:-/home/claude/agents}"
+AGENTS_ROOT="${BUBBLE_REVENDOR_AGENTS_ROOT:-/srv/agents}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -127,7 +127,7 @@ SWEPT=0
 SKIPPED=0
 STALE_TOTAL=0
 
-for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
+for dir in "${AGENTS_ROOT}"/*; do
   [[ -d "$dir" ]] || continue   # no match → glob stays literal; -d guards it
   slug="$(basename "$dir")"; slug="${slug#bubble-ops-}"
   TOTAL=$((TOTAL + 1))
@@ -178,7 +178,21 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
   # is identical whether triggered by a restart or by this proactive sweep.
   # vendor-dept-libs.sh is itself fail-open (always exits 0) — a missing dest
   # dir (e.g. no scripts/lib) is a per-file no-op there, not a sweep failure.
-  out="$(BUBBLE_FRAMEWORK_ROOT="$FRAMEWORK" "$VENDOR_SCRIPT" "$dir" 2>&1)"
+  if [[ "$(id -u)" == 0 ]]; then
+    # Never run a cross-user writer as root. The isolated account must exist;
+    # a missing account is a deployment error, not permission to use root.
+    out="$(runuser -u "agent-$slug" -- env BUBBLE_FRAMEWORK_ROOT="$FRAMEWORK" \
+      bash "$VENDOR_SCRIPT" "$dir" 2>&1)" || {
+      log "WARN: ${slug}: runuser vendor failed: $out"
+      if [[ -f "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" ]]; then
+        bash "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" \
+          task=vendor-dept-libs "title=Vendor refresh failed: $slug" \
+          "body=$dir: runuser vendor failed: $out" type=incident priority=high owner=rnd budget=0 || true
+      fi
+    }
+  else
+    out="$(BUBBLE_FRAMEWORK_ROOT="$FRAMEWORK" bash "$VENDOR_SCRIPT" "$dir" 2>&1)"
+  fi
   while IFS= read -r line; do echo "  [${slug}] ${line}"; done <<< "$out"
   SWEPT=$((SWEPT + 1))
 done
