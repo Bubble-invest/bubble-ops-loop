@@ -190,7 +190,7 @@ class Guard:
 
         # Step 1: compute staged paths
         try:
-            paths = staged_paths_for_push(Path(repo_dir))
+            paths = staged_paths_for_push(Path(repo_dir), remote=remote, ref=ref)
         except subprocess.CalledProcessError as exc:
             self._safe_audit(
                 ts=ts, actor=actor, dept=dept, repo=repo, action=action,

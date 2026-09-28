@@ -9,8 +9,8 @@ through on push.
 
 Two git commands cover the picture:
   (a) `git diff --cached --name-only` — staged in the index, not yet committed
-  (b) `git diff @{upstream}..HEAD --name-only` — committed locally, not yet pushed
-      (if no upstream is configured, we fall back to `git log HEAD --name-only`
+  (b) `git diff <remote>/<destination>..<source> --name-only` — committed, not yet pushed
+      (if the destination is not known locally, fall back to `git log <source> --name-only`
       collecting every changed path on the current branch — fail-LOUD-and-CLOSED
       rather than missing a path).
 
@@ -103,56 +103,61 @@ def currently_staged(repo_dir: Path) -> List[str]:
     return [p for p in proc.stdout.split("\x00") if p]
 
 
-def _unpushed_commit_paths(repo_dir: Path) -> List[str]:
-    """Return paths touched by commits on the current branch that aren't on
-    the configured upstream yet.
+def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
+    """Diff the actual push source against its destination, never origin/HEAD.
 
-    Strategy:
-      1. Try `git diff @{upstream}..HEAD --name-only -z`.
-      2. If that fails (no upstream configured), fall back to
-         `git log --name-only --pretty=format: HEAD` to cover the entire
-         branch history — fail-CLOSED by being inclusive.
+    Keep the inclusive history fallback for a new/unfetched destination.
+    Neither the checkout's upstream nor BUBBLE_GUARD_DIFF_BASE describes
+    an explicit push reliably (and an override of HEAD could hide changes).
     """
-    # Attempt 0: explicit base override (BUBBLE_GUARD_DIFF_BASE, e.g. "origin/main").
-    # This lets a caller diff against a known ref WITHOUT relying on a configured
-    # upstream — needed under the OS-sandbox, which bind-mounts .git/config READ-ONLY
-    # so `git branch --set-upstream-to` (the usual way to make @{upstream} resolve)
-    # fails with EBUSY. The base must be a valid rev; if it doesn't resolve we fall
-    # through to the upstream/log attempts (fail-closed inclusive).
-    import os as _os
-    _base = _os.environ.get("BUBBLE_GUARD_DIFF_BASE", "").strip()
-    if _base:
-        _verify = _run_git(repo_dir, "rev-parse", "--verify", "--quiet", _base)
-        if _verify.returncode == 0:
-            proc = _run_git(repo_dir, "diff", f"{_base}..HEAD", "--name-only", "-z")
-            if proc.returncode == 0:
-                return [p for p in proc.stdout.split("\x00") if p]
-        # base didn't resolve / diff failed → fall through (inclusive)
-
-    # Attempt 1: upstream-aware diff
-    proc = _run_git(repo_dir, "diff", "@{upstream}..HEAD", "--name-only", "-z")
-    if proc.returncode == 0:
+    source, separator, destination = ref.partition(":")
+    if not separator:
+        branch = _run_git(repo_dir, "rev-parse", "--symbolic-full-name", source)
+        destination = branch.stdout.strip()
+        if branch.returncode != 0 or not destination.startswith("refs/heads/"):
+            raise subprocess.CalledProcessError(
+                1, ["git", "push", remote, ref], stderr="push source must name a branch or specify a destination"
+            )
+    destination = destination.removeprefix("refs/heads/")
+    base = f"refs/remotes/{remote}/{destination}"
+    # Only single branch pushes are supported; fail closed on malformed,
+    # deletion, wildcard, or non-branch destinations before minting a token.
+    if (not source or source.startswith(("-", "+"))
+            or remote.startswith("-") or destination == "HEAD"
+            or destination.startswith("refs/")
+            or _run_git(repo_dir, "check-ref-format", base).returncode != 0):
+        raise subprocess.CalledProcessError(
+            1, ["git", "push", remote, ref], stderr="unsupported push refspec or remote"
+        )
+    tip = _run_git(repo_dir, "rev-parse", "--verify", "--end-of-options", f"{source}^{{commit}}")
+    if tip.returncode != 0:
+        raise subprocess.CalledProcessError(tip.returncode, ["git", "rev-parse"], tip.stdout, tip.stderr)
+    source_commit = tip.stdout.strip()
+    exists = _run_git(repo_dir, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    if exists.returncode == 0:
+        proc = _run_git(repo_dir, "diff", f"{base}..{source_commit}", "--name-only", "-z")
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, ["git", "diff"], proc.stdout, proc.stderr)
         return [p for p in proc.stdout.split("\x00") if p]
 
-    # Attempt 2: no upstream — collect everything on this branch
-    proc = _run_git(repo_dir, "log", "--name-only", "--pretty=format:", "HEAD")
+    # Unknown destination: inspect the entire source history, not an unrelated
+    # upstream/default branch that could silently omit structural changes.
+    proc = _run_git(repo_dir, "log", "--name-only", "--pretty=format:", source_commit)
     if proc.returncode != 0:
-        # Genuine git failure — be loud, don't pretend the set is empty
         raise subprocess.CalledProcessError(
             proc.returncode, ["git", "log"], proc.stdout, proc.stderr
         )
-    paths = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    return paths
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
-def staged_paths_for_push(repo_dir: Path) -> List[str]:
+def staged_paths_for_push(repo_dir: Path, remote: str = "origin", ref: str = "HEAD") -> List[str]:
     """Return the deduped union of staged-in-index + unpushed-commit paths.
 
     This is the SET-TO-CHECK before invoking the broker. If any element of
     this set is denied by policy, the entire push is denied (atomicity).
     """
     staged = currently_staged(repo_dir)
-    unpushed = _unpushed_commit_paths(repo_dir)
+    unpushed = _unpushed_commit_paths(repo_dir, remote, ref)
     seen: set = set()
     out: List[str] = []
     for p in list(staged) + list(unpushed):

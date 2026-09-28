@@ -24,7 +24,7 @@ ops-loop-fixture (the /loop agent)
        v
   bubble-git-guard push --dept --action --repo --policy
        |
-       |-- 1. read git diff --cached + git diff @{upstream}..HEAD
+       |-- 1. read git diff --cached + git diff <remote>/<destination>..<source>
        |
        |-- 2. policy.enforce(each_path)   <-- reuses token-broker's Policy class
        |       any deny? ---> audit:denied + exit 1, NO broker call, NO push
@@ -74,6 +74,21 @@ bubble-git-guard push --dept tony --action open_priority_pr \
     --policy /opt/bubble-token-broker/deploy/policies/tony-policy.yaml \
     --ref tony/directive/buy-aapl
 ```
+
+## Push changeset (#1413)
+
+The guard checks staged paths plus the diff from the selected remote-tracking
+branch to the push source. For example, `--remote origin --ref HEAD:main`
+checks `refs/remotes/origin/main..HEAD`; the default `--ref HEAD` uses the
+current local branch name as the destination. A branch name or a single
+`source:destination` branch refspec is supported. Unsupported refspecs fail
+before token minting.
+
+The checkout's upstream, `origin/HEAD`, and `BUBBLE_GUARD_DIFF_BASE` do not
+select this base. This also works when the sandbox makes `.git/config`
+read-only: no upstream configuration change is required. If the destination
+is absent locally, the existing inclusive source-history fallback applies.
+The guard does not fetch; remote-tracking refs must be maintained by the caller.
 
 ## Path policy (canonical, from Notion v4 line 620 + 700)
 
@@ -167,7 +182,7 @@ python3 -m pytest --cov=src tests/          # 90% coverage
 ```
 
 13 test files cover:
-- Staging detection (`git diff --cached` + `git diff @{upstream}..HEAD`)
+- Staging detection (`git diff --cached` + `git diff <remote>/<destination>..<source>`)
 - Allow paths: `outputs/`, `queues/`, `inbox/` for `runtime_write_own`
 - Deny paths: `dept.yaml`, `MANDATE.md`, `CLAUDE.md`, `layers/`, `subagents/`, `skills/`, `tools/`, `.claude/`
 - Settings-PR class: same structural paths ALLOWED under `settings_pr`
@@ -214,7 +229,7 @@ git-guard/
 │   ├── cli.py                         # argparse, push subcommand
 │   ├── guard.py                       # Guard class: check_paths + push pipeline
 │   ├── policy_loader.py               # imports token-broker's Policy via spec_from_file_location
-│   └── staging.py                     # git diff --cached + git diff @{upstream}..HEAD
+│   └── staging.py                     # git diff --cached + git diff <remote>/<destination>..<source>
 ├── tests/                             # 13 files, 67 tests, 90% coverage
 └── deploy/
     ├── bubble-git-guard.template.sh   # wrapper installed to /opt/bubble-git-guard/bin/
