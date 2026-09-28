@@ -86,7 +86,7 @@ class VendorIsolation(unittest.TestCase):
         self.assertIn('task=vendor-dept-libs', alert)
         self.assertIn('title=Vendor refresh failed: alpha', alert)
         self.assertIn('dest is a symlink', alert)
-        self.assertIn('budget=0', alert)
+        self.assertIn('budget=1', alert)
         self.assertEqual(target.read_text(), 'private\n')
 
     def test_copy_failure_preserves_live_bytes_and_reports(self):

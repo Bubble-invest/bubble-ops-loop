@@ -81,7 +81,7 @@ report_failures() {
   # The existing emitter deduplicates by task + title and queues on outage.
   bash "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" \
     "task=vendor-dept-libs" "title=Vendor refresh failed: $(basename "$DEPT")" \
-    "body=$DEPT: $failures" type=incident priority=high owner=rnd budget=0 >&2 || true
+    "body=$DEPT: $failures" type=incident priority=high owner=rnd budget=1 >&2 || true
 }
 trap report_failures EXIT
 

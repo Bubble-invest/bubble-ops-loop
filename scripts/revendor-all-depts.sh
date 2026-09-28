@@ -187,7 +187,7 @@ for dir in "${AGENTS_ROOT}"/*; do
       if [[ -f "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" ]]; then
         bash "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" \
           task=vendor-dept-libs "title=Vendor refresh failed: $slug" \
-          "body=$dir: runuser vendor failed: $out" type=incident priority=high owner=rnd budget=0 || true
+          "body=$dir: runuser vendor failed: $out" type=incident priority=high owner=rnd budget=1 || true
       fi
     }
   else
