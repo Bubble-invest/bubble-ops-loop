@@ -29,10 +29,13 @@ the board card. `Closes`, `Fixes`, and `Resolves` and their common inflections
 are recognized.
 
 The taxonomy is derived from the actual `.md` filenames under
-`operator-intents/` in the OS-specific, root-controlled read-only mirror of
-`Bubble-invest/bubble-operator-intents@main`. README, TEMPLATE, and documents with
-`status: superseded` are excluded. `[[shared/operator-intents/<slug>]]` remains
-the logical provenance syntax; it does not name a writable physical baseline.
+`operator-intents/` in the shared wiki's own git-tracked
+`shared/operator-intents/` (board #1333, Option C; the retired root-controlled
+OS mirror of `Bubble-invest/bubble-operator-intents@main` is no longer read
+directly — see "Triage-time inventory" below). README, TEMPLATE, and documents
+with `status: superseded` are excluded. `[[shared/operator-intents/<slug>]]`
+remains the logical provenance syntax; it does not name a writable physical
+baseline.
 
 ```text
 intent:system-convergence-north-star
@@ -40,7 +43,8 @@ intent:system-convergence-north-star
 
 Shared-wiki proposal artifacts are not live intents and are deliberately not
 labels. They enter the taxonomy only after Joris promotes them to the private
-vault and the root mirror refreshes.
+vault and the wiki's own `shared/operator-intents/` copy is updated via a
+Joris-merged PR (board #1333).
 
 Agents write proposals only under `shared/operator-intents-proposals/` on a
 Joris-reviewed shared-wiki PR. They never write, commit, push, or open a PR
@@ -79,11 +83,19 @@ python3 tools/kanban/intent_alignment_check.py \
   --format json
 ```
 
-The operational default reads and verifies `BUBBLE_OPERATOR_INTENTS_MIRROR`, or
-`/opt/bubble-operator-intents` on Linux and
-`/Library/Application Support/Bubble/operator-intents` on Darwin. It fails
-closed on missing/stale metadata, manifest drift, symlinks, ownership drift, or
-writable modes. It never defaults to GitHub or the writable shared wiki.
+The operational default resolves `$BUBBLE_OPERATOR_INTENTS_MIRROR` (an
+optional override for an external operator-intents source) first, then falls
+back to the shared wiki's own `shared/operator-intents/` — the wiki checkout
+defaults to `~/.claude/agent-memory/shared-wiki`, which resolves correctly on
+both the Mac (`joris`) and the VPS (`claude`) since it is home-relative rather
+than a single hardcoded path (board #1570, reusing bubble-ops-loop#451's
+`wiki_intent_audit.validate_intents_root` resolver instead of the retired,
+root-owned, filesystem-immutable mirror validator).
+`validate_intents_root` only confirms the resolved path is a real, readable
+directory whose `operator-intents/` subdirectory holds at least one `.md`
+file — the tamper guarantee is the wiki's git-level branch-hook (a human
+merges every PR into its protected `main`), not filesystem
+ownership/mode/symlink/manifest immutability. It never defaults to GitHub.
 Tests inject a private, already-validated fixture through the Python entrypoint;
 there is no CLI bypass for agents. The tool reads all open board issues
 and searches all open PRs owned by both `Bubble-invest` and `vdk888`, deduped by
@@ -153,8 +165,11 @@ remove stale labels, rename casing drift, or touch work items.
 ## Deployment and verification
 
 Merging this code alone does not change the board, fleet, or loop runtime.
-Deployment requires first installing the reviewed root-owned VPS/Mac mirror,
-passing the isolation verifier for every agent OS user, updating the framework
+Deployment requires only that the shared wiki checkout (host-default
+`~/.claude/agent-memory/shared-wiki`, or `$BUBBLE_OPERATOR_INTENTS_MIRROR` for
+an explicit override) exists with its `shared/operator-intents/` collection —
+board #1570 removed the root-owned VPS/Mac mirror and its isolation-verifier
+install step for this tool. Deployment still requires updating the framework
 checkout used on each relevant host, re-vendoring the emitter and
 `emit-kanban-task` skill into departments, and wiring the canonical R&D loop to
 run the inventory. Then verify, without creating production cards first:

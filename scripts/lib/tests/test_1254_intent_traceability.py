@@ -290,9 +290,19 @@ esac
     assert output["selection"]["selected_count"] == 1
 
 
-def test_default_intent_source_is_os_mirror_never_github(monkeypatch) -> None:
-    monkeypatch.setenv("BUBBLE_OPERATOR_INTENTS_MIRROR", "/controlled/mirror")
-    assert module.default_mirror_root() == Path("/controlled/mirror")
+def test_default_intent_source_prefers_env_override_never_github(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Board #1570 (bubble-ops-loop#451's own named follow-up): the retired,
+    # root-owned OS mirror invariant this test used to guard is gone — reads
+    # now go through the wiki-layout resolver (`default_intents_root`), reusing
+    # #451's fallback chain. The env override this test guards is the one
+    # thing #451 explicitly kept: an operator can still point at an external
+    # operator-intents source instead of the wiki's own copy.
+    override = tmp_path / "controlled-mirror"
+    (override / "operator-intents").mkdir(parents=True)
+    monkeypatch.setenv("BUBBLE_OPERATOR_INTENTS_MIRROR", str(override))
+    assert module.default_intents_root() == override
     source = SCRIPT.read_text(encoding="utf-8")
     assert "load_intents_from_github" not in source
     assert "--intent-repo" not in source
@@ -301,11 +311,17 @@ def test_default_intent_source_is_os_mirror_never_github(monkeypatch) -> None:
     assert "gh\", \"api\"" not in source
 
 
-def test_default_mirror_validation_fails_closed_on_writable_fixture(tmp_path: Path) -> None:
-    mirror = tmp_path / "mirror"
-    mirror.mkdir()
-    with pytest.raises(module.MirrorValidationError, match="not a stable symlink"):
-        module.validate_mirror(mirror)
+def test_intents_root_validation_rejects_a_directory_with_no_intents_collection(
+    tmp_path: Path,
+) -> None:
+    # Replaces the old strict-mirror invariant (symlink/root-owned/manifest):
+    # board #1333 retired that guarantee for this consumer in favor of the
+    # git-level branch-hook on the wiki. What's still rejected is a directory
+    # that plainly isn't an operator-intents collection at all.
+    empty = tmp_path / "not-a-wiki"
+    empty.mkdir()
+    with pytest.raises(module.IntentsRootValidationError, match="operator-intents"):
+        module.validate_intents_root(empty)
 
 
 def fake_gh(path: Path) -> Path:

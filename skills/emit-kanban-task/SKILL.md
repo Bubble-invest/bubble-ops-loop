@@ -73,23 +73,28 @@ lands, with `Serves-intent(s): UNRESOLVED` when necessary. Do not choose the nor
 to silence the warning. Canonical wikilinks are case-exact and omit `.md`; a suffixed or
 otherwise malformed link remains unresolved rather than being silently repaired.
 
-The taxonomy comes only from `operator-intents/` under the verified read-only
-mirror selected by `BUBBLE_OPERATOR_INTENTS_MIRROR` (otherwise
-`/opt/bubble-operator-intents` on Linux or
-`/Library/Application Support/Bubble/operator-intents` on Darwin), excluding
-README/TEMPLATE and superseded documents. Never derive taxonomy from GitHub or
-the writable shared wiki. Read it through `tools/kanban/intent_alignment_check.py`;
-never edit the vault or mirror from this skill.
+The taxonomy comes only from `operator-intents/` under the resolved
+operator-intents source: `$BUBBLE_OPERATOR_INTENTS_MIRROR` if set (an optional
+override for an external source), otherwise the shared wiki's own
+`shared/operator-intents/` (wiki checkout defaults to
+`~/.claude/agent-memory/shared-wiki`, home-relative so it resolves on both the
+Mac and the VPS) — excluding README/TEMPLATE and superseded documents. Never
+derive taxonomy from GitHub. Read it through
+`tools/kanban/intent_alignment_check.py`; never edit the vault or the wiki's
+`shared/operator-intents/` from this skill.
 
-Note this is a **separate, deliberately unchanged** path from board #1333: that
-card retired the isolated host mirror only for the cloud-wiki-compile
-pipeline (`wiki_intent_audit.py` now reads the wiki's own
-`shared/operator-intents/` directly, git-PR-gated — see
-`skills/cloud-wiki-compile/SKILL.md`). `intent_alignment_check.py`'s stricter
-`readonly_intents_mirror.validate_mirror()` gate (board #1254) is untouched
-and still requires a real, root-owned, filesystem-immutable mirror for THIS
-taxonomy lookup — a future card could align the two, but that has not
-happened yet.
+Board #1333 retired the isolated, root-owned, filesystem-immutable mirror
+(`/opt/bubble-operator-intents` on Linux, `/Library/Application
+Support/Bubble/operator-intents` on Darwin) for the cloud-wiki-compile
+pipeline first (`wiki_intent_audit.py` — see
+`skills/cloud-wiki-compile/SKILL.md`); board #1570 aligned
+`intent_alignment_check.py` (board #1254) the same way, reusing #451's
+`validate_intents_root` resolver rather than a parallel one. The tamper
+guarantee for both is now the wiki's git-level branch-hook (a human merges
+every PR into its protected `main`), not filesystem ownership/mode/symlink/
+manifest immutability. `tools/readonly_intents_mirror.py`'s stricter
+`validate_mirror()` gate remains, unchanged, for the separate, still-dormant
+`tools/fleet_architecture.py` (board #1249) consumer only.
 
 **Picking a budget** (per-run/per-card USD estimate, tied to scope):
 - **Small** (~$2–5): a quick lookup, a one-file fix, a single triage pass.
