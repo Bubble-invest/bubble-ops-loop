@@ -29,6 +29,47 @@ RUN_LOG=/tmp/cloud-wiki-compile-${DATE_STAMP}.log
 LOG_TAG=cloud-wiki-compile
 log() { logger -t "$LOG_TAG" "$*"; echo "[$TS] $*"; }
 
+# Shared by every mode's success path (COMPILE's STEP 10, SKILLSMITH's
+# Reporting rule): send a queued Telegram report file using the pre-filtered,
+# per-mode headless token. Neither SKILL is allowed to read that token itself
+# (their sandbox denies /run/claude-agent/env by design — board #1482); each
+# mode's SKILL only queues plain message text to REPORT_FILE, and this runs
+# OUTSIDE the model's sandbox, reusing the SAME per-mode env every
+# cloud-wiki-compile@ unit already gets from its templated ExecStartPre
+# (filter-headless-env.py -> /run/bubble-headless-cloud-wiki-<mode>/env) — no
+# new token, no new secret (board #1572, mirrors the #1495 fix's "point at
+# the token the fleet already uses" doctrine). A missing/unsendable token is a
+# loud WARN to this unit's journal (read by fleet monitoring), never a quiet
+# drop — the report stays queued so the next successful run retries it.
+send_queued_telegram_report() {
+    local report_file="$1"
+    [ -s "$report_file" ] || return 0
+    local headless_env="/run/bubble-headless-cloud-wiki-${MODE}/env"
+    local report_bot_token
+    report_bot_token=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "$headless_env" 2>/dev/null)
+    # Fallback: whatever this process already inherited (e.g. a manual/test
+    # invocation outside the templated unit).
+    if [ -z "${report_bot_token:-}" ]; then
+        report_bot_token="${TELEGRAM_BOT_TOKEN:-}"
+    fi
+    local joris_tg=6532205130
+    if [ -n "$report_bot_token" ]; then
+        # Token goes into a curl -K config read from stdin, never into argv
+        # (ps/proc/cmdline visibility on the multi-uid VPS — board #1573).
+        if curl -s --max-time 10 -K - \
+            --data-urlencode chat_id="$joris_tg" \
+            --data-urlencode "text@${report_file}" \
+            <<<"url = \"https://api.telegram.org/bot${report_bot_token}/sendMessage\"" >/dev/null 2>&1; then
+            rm -f "$report_file"
+            log "telegram report sent and queue cleared"
+        else
+            log "WARN: telegram report send failed (curl/network error); report file left queued for next successful run"
+        fi
+    else
+        log "WARN: no TELEGRAM_BOT_TOKEN resolved for mode=${MODE} (checked ${headless_env}); report file left queued for next successful run"
+    fi
+}
+
 # Env (TELEGRAM_BOT_TOKEN for the optional report) — already decrypted into
 # /run/claude-agent/env at agent boot. Optional: the SKILL handles absence.
 ENV_FILE=/run/claude-agent/env
@@ -90,6 +131,14 @@ WIKI_DIR=/home/claude/.claude/agent-memory/shared-wiki
 if [ "$MODE" != "skillsmith" ] && [ ! -d "${WIKI_DIR}/.git" ]; then
     log "FATAL: ${WIKI_DIR} is not a git repo — cannot compile."
     exit 1
+fi
+
+# skillsmith's own report queue dir (board #1572, mirrors DELTA_DIR below for
+# compile mode). Must exist BEFORE the model runs, since its sandbox can write
+# files under /home/claude/monitoring but is not relied on to mkdir a fresh
+# tree; created here so a first-ever run isn't the one that fails to queue.
+if [ "$MODE" = "skillsmith" ]; then
+    mkdir -p /home/claude/monitoring/skillsmith
 fi
 
 # #1333 Option C (Joris-approved 2026-09-14): the isolated, root-owned,
@@ -286,39 +335,10 @@ PY
         # committed. STEP 10 of the SKILL is deliberately best-effort and
         # cannot send this itself (its sandbox denies reading /run/claude-agent/env
         # by design — board #1482); it only QUEUES the composed message as a
-        # plain file. Sending it is the launcher's job, done here, OUTSIDE the
-        # model's sandbox, using the token this unit's own
-        # ExecStartPre (filter-headless-env.py) already allow-listed into
-        # /run/bubble-headless-cloud-wiki-<mode>/env — no secret file read by
-        # the model, no Telegram MCP/poller involved, just one plain HTTP POST.
-        REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt
-        if [ -s "$REPORT_FILE" ]; then
-            HEADLESS_ENV="/run/bubble-headless-cloud-wiki-${MODE}/env"
-            REPORT_BOT_TOKEN=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "$HEADLESS_ENV" 2>/dev/null)
-            # Fallback: whatever this process already inherited (e.g. a
-            # manual/test invocation outside the templated unit).
-            if [ -z "${REPORT_BOT_TOKEN:-}" ]; then
-                REPORT_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-            fi
-            JORIS_TG=6532205130
-            if [ -n "$REPORT_BOT_TOKEN" ]; then
-                # Token goes into a curl -K config read from stdin, never into
-                # argv (ps/proc/cmdline visibility on the multi-uid VPS —
-                # board #1573; this is the case the card was filed for).
-                if curl -s --max-time 10 -K - \
-                    --data-urlencode chat_id="$JORIS_TG" \
-                    --data-urlencode "text@${REPORT_FILE}" \
-                    <<<"url = \"https://api.telegram.org/bot${REPORT_BOT_TOKEN}/sendMessage\"" >/dev/null 2>&1; then
-                    rm -f "$REPORT_FILE"
-                    log "telegram report sent and queue cleared"
-                else
-                    log "WARN: telegram report send failed (curl/network error); report file left queued for next successful run"
-                fi
-            else
-                log "WARN: no TELEGRAM_BOT_TOKEN resolved; report file left queued for next successful run"
-            fi
-            unset REPORT_BOT_TOKEN
-        fi
+        # plain file. Sending it is the launcher's job (send_queued_telegram_report,
+        # defined above), done here, OUTSIDE the model's sandbox. That shared
+        # function itself carries #1573's -K/stdin fix (token never in argv).
+        send_queued_telegram_report /home/claude/monitoring/wiki-compile-delta/telegram-report.txt
     fi
 fi
 
@@ -361,6 +381,13 @@ PY
         EXIT=1
     else
         log "skillsmith completion marker verified: ${SKILLSMITH_MARKER}"
+        # Board #1572: skillsmith previously had NO launcher-side send at all
+        # (this call did not exist), so the SKILL's "Reporting rule" had no
+        # mechanism to actually reach Telegram; the model correctly could not
+        # send it and narrated that as "no fleet-wiki bot token" before
+        # silently skipping. Mirrors COMPILE's STEP 10 call above — same
+        # function, same per-mode pre-filtered token, no new secret.
+        send_queued_telegram_report /home/claude/monitoring/skillsmith/telegram-report.txt
     fi
 fi
 
