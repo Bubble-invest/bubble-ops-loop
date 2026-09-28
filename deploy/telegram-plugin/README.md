@@ -108,3 +108,7 @@ the ABSENCE of a loss signal, not just the drop.
 this investigation — only morty's was enabled — so Claudette's poller liveness
 was not being auto-checked either) and wire `BUBBLE_MAIN_BOT_TOKEN` into
 `/run/telegram-gap-detector/env` from the commander secret scope.
+
+## Authenticated A2A relay
+
+The canonical inject block now verifies OpenSSH signed envelopes before emitting sender metadata. See [RUNBOOK-1600](../../docs/RUNBOOK-1600-signed-a2a.md) for provisioning, upgrade, replay recovery and trust limits. The legacy `telegram-message-A2A` guidance is provided repository-locally as [telegram-message-a2a](../../skills/telegram-message-a2a/SKILL.md); [telegram-inject](../../skills/telegram-inject/SKILL.md) covers unsigned maintenance traffic.

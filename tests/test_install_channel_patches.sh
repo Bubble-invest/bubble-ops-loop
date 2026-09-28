@@ -546,5 +546,34 @@ K_MODE="$(stat -f %Lp "$PEER_K/watcher.json" 2>/dev/null || stat -c %a "$PEER_K/
 unset RUN_PEER_CONFIG RUN_PEER_WATCHER_CONFIG RUN_PEER_INSTALLER
 
 echo ""
+# L. Upgrades replace old marked and pre-marker consumers without duplication.
+for format in marked legacy; do
+  ROOT_L="$WORK/cache-upgrade-$format"
+  TGT_L="$(make_fixture "$ROOT_L")"
+  python3 - "$TGT_L/server.ts" "$format" <<'PY_UPGRADE'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+old="""// ─── Local inject channel (old fixture)
+try {
+  process.stderr.write('bubble-inject old consumer')
+} catch (e) {
+  process.stderr.write(`telegram inject: setup failed (non-fatal): ${String(e)}\\n`)
+}
+"""
+if sys.argv[2] == 'marked':
+    old='// === BUBBLE-INJECT PATCH BEGIN ===\n'+old+'// === BUBBLE-INJECT PATCH END ===\n'
+s=s.replace('await mcp.connect(new StdioServerTransport())', 'await mcp.connect(new StdioServerTransport())\n'+old)
+p.write_text(s)
+PY_UPGRADE
+  run_installer "$ROOT_L/claude-plugins-official/telegram/*/" --strict
+  [[ "$RC" == "0" ]] && ok "L $format: upgrade succeeds" || bad "L $format: upgrade exit $RC"
+  [[ "$(grep -c 'BUBBLE-A2A verifier v1' "$TGT_L/server.ts")" == "1" ]] && ok "L $format: exactly one verifier" || bad "L $format: missing/duplicate verifier"
+  ! grep -q 'old consumer' "$TGT_L/server.ts" && ok "L $format: old consumer removed" || bad "L $format: old consumer remains"
+  L_SHA="$(shasum -a 256 "$TGT_L/server.ts" | awk '{print $1}')"
+  run_installer "$ROOT_L/claude-plugins-official/telegram/*/" --strict
+  [[ "$RC" == "0" && "$(shasum -a 256 "$TGT_L/server.ts" | awk '{print $1}')" == "$L_SHA" ]] && ok "L $format: upgraded rerun idempotent" || bad "L $format: upgraded rerun differs"
+done
+
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ "$FAIL" == "0" ]] && exit 0 || exit 1
