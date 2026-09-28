@@ -1,0 +1,17 @@
+# cockpit-health.timer — run the collect+judge pass hourly (per the brief:
+# "systemd service+timer templates (hourly)"). Paired with
+# cockpit-health.service.
+[Unit]
+Description=Run the cockpit-health collect+judge pass hourly
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/tree/main/scripts/cockpit_health
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+# Offset from the top of the hour so this doesn't land on every other
+# hourly/on-the-hour timer at once (mirrors telegram-gap-detector.timer's
+# RandomizedDelaySec use for the same reason).
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
