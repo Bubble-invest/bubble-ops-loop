@@ -13,12 +13,20 @@
 # source of truth: drift self-heals on the next restart, no per-dept commit needed.
 #
 # Usage:  vendor-dept-libs.sh <dept-workdir>
-#   e.g.  vendor-dept-libs.sh /home/claude/agents/bubble-ops-ben
+#   e.g.  vendor-dept-libs.sh /srv/agents/ben
 #
 # Idempotent, fail-OPEN (a copy problem must NEVER block the loop from starting):
-# any error logs a warning and exits 0. Only copies when the framework file
-# differs (cheap) and preserves the dept's own files for anything not in the set.
+# Root invocation is rejected with exit 1. Ordinary copy errors log a warning,
+# emit a deduplicated incident, and exit 0. Copies when the framework file differs
+# (cheap) and preserves the dept's own files for anything not in the set.
 set -uo pipefail
+
+# bubble-agent-prepare invokes this through runuser as BUBBLE_AGENT_OS_USER.
+# Reject accidental privileged invocation before any writes or alert hooks.
+if [[ "$(id -u)" == 0 ]]; then
+  echo "[vendor-dept-libs] ERROR: refusing to run as root; run as the department OS user" >&2
+  exit 1
+fi
 
 DEPT="${1:-}"
 
@@ -30,9 +38,9 @@ DEPT="${1:-}"
 #      bubble-vps-platform's tasks/access/framework_checkout.py, cloned
 #      directly from GitHub via a dedicated read-only deploy key,
 #      independent of the claude-writable checkout below). This script is
-#      invoked from ExecStartPre=+ (i.e. it runs AS ROOT) — reading the
-#      framework source from a directory `claude` cannot write to closes
-#      the "root executes claude-controlled code" gap for THIS script.
+#      invoked by bubble-agent-prepare via runuser -u "$BUBBLE_AGENT_OS_USER"
+#      with the department HOME, so it runs as the agent UID. Reading the
+#      root-owned framework keeps the shared source outside dept control.
 #      Checked ahead of the legacy candidates below so a box that HAS
 #      completed the #1115 cutover automatically prefers it, with zero
 #      further changes needed once /opt/bubble-ops-loop exists.
@@ -64,7 +72,26 @@ else
   fi
 fi
 
-log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*" >&2; }
+failures=""
+log() {
+  logger -t vendor-dept-libs "$*" 2>/dev/null
+  echo "[vendor-dept-libs] $*" >&2
+  case "$*" in
+    WARN:*)
+      # Successful backups are informational, not failed publications.
+      [[ "$*" == "WARN: backed up prior "* ]] || failures="${failures}$*"$'\n'
+      ;;
+  esac
+}
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+report_failures() {
+  [[ -n "$failures" && -f "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" ]] || return 0
+  # The existing emitter deduplicates by task + title and queues on outage.
+  bash "$FRAMEWORK/tools/kanban/emit_kanban_item.sh" \
+    "task=vendor-dept-libs" "title=Vendor refresh failed: $(basename "$DEPT")" \
+    "body=$DEPT: $failures" type=incident priority=high owner=rnd budget=1 >&2 || true
+}
+trap report_failures EXIT
 
 [[ -n "$DEPT" && -d "$DEPT" ]] || { log "WARN: dept dir '$DEPT' missing — skip (fail-open)"; exit 0; }
 [[ -d "$FRAMEWORK" ]] || { log "WARN: framework '$FRAMEWORK' missing — skip (fail-open)"; exit 0; }
@@ -74,7 +101,8 @@ log() { logger -t vendor-dept-libs "$*" 2>/dev/null; echo "[vendor-dept-libs] $*
 #   1. missing destination: copy canonical and record the baseline;
 #   2. identical destination: record it as the baseline without rewriting;
 #   3. destination == recorded baseline: update from canonical;
-#   4. no baseline, or destination changed since baseline: DEFER and preserve.
+#   4. no baseline: bootstrap only from proven canonical history; otherwise DEFER;
+#   5. destination changed since baseline: DEFER and preserve.
 # A backup followed by overwrite is not safe for a required fork: the daemon
 # must keep running the reviewed working bytes while an operator reconciles it.
 GIT_DIR="$(git -C "$DEPT" rev-parse --absolute-git-dir 2>/dev/null || true)"
@@ -91,27 +119,48 @@ record_last_vendored() {
     log "WARN: cannot create last-vendored state dir for $rel"
     return 0
   }
-  cp -f "$dst" "$last" 2>/dev/null || \
+  copy_canonical_file "$dst" "$last" 2>/dev/null || \
     log "WARN: cannot record last-vendored copy for $rel"
 }
 
 copy_canonical_file() {
-  local src="$1" dst="$2" dst_dir
-  # GNU cp is the reviewed VPS/root path: -T refuses directory-target
-  # reinterpretation and --no-dereference refuses a source symlink.
-  if cp -T --no-dereference "$src" "$dst" 2>/dev/null; then
-    return 0
-  fi
-  # macOS ships BSD cp without those flags.  The host:local vendor runs as
-  # the same UID that owns the dept tree, never as a privileged cross-user
-  # writer.  Keep the fallback Darwin-only and require that ownership before
-  # using plain BSD cp; a root/foreign-owned destination continues to fail open.
-  [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || return 1
-  [[ ! -L "$src" && -f "$src" && ! -L "$dst" ]] || return 1
+  local src="$1" dst="$2" tmp mode=644
+  [[ -f "$src" && ! -L "$src" && ! -L "$dst" ]] || return 1
   [[ ! -e "$dst" || -f "$dst" ]] || return 1
-  dst_dir="$(dirname "$dst")"
-  [[ "$(stat -f %u "$dst_dir" 2>/dev/null)" == "$(id -u)" ]] || return 1
-  cp -f "$src" "$dst" 2>/dev/null
+  # Publish a new inode as the dept UID. This repairs legacy claude-owned
+  # 0644 files without privileged chown or writing through a hardlink.
+  tmp="$(mktemp "$(dirname "$dst")/.vendor.XXXXXX")" || return 1
+  [[ -x "$src" ]] && mode=755
+  if cp "$src" "$tmp" && chmod "$mode" "$tmp"; then
+    # GNU -T refuses a destination directory, including a raced replacement.
+    if mv -fT "$tmp" "$dst" 2>/dev/null; then
+      return 0
+    fi
+    # BSD mv has no -T; only permit the same-UID Mac worktree fallback.
+    if [[ "$(uname -s)" == Darwin && -O "$(dirname "$dst")" && ! -L "$dst" && ! -d "$dst" ]] \
+        && mv -f "$tmp" "$dst"; then
+      return 0
+    fi
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+historical_canonical() {
+  local dst="$1" rel="$2" blob commit
+  [[ -f "$dst" && ! -L "$dst" ]] || return 1
+  blob="$(git -c safe.directory="$FRAMEWORK" -C "$FRAMEWORK" hash-object --no-filters "$dst" 2>/dev/null)" || return 1
+  # The canonical VPS checkout is root-owned; trust only this exact source
+  # path for read-only Git queries made by the isolated dept UID.
+  # Scope history to the canonical path and HEAD ancestry, then verify the
+  # actual tree entry: a blob elsewhere in the object database is not proof.
+  while IFS= read -r commit; do
+    [[ -n "$commit" ]] || continue
+    if [[ "$(git -c safe.directory="$FRAMEWORK" -C "$FRAMEWORK" rev-parse "$commit:$rel" 2>/dev/null)" == "$blob" ]]; then
+      return 0
+    fi
+  done < <(git -c safe.directory="$FRAMEWORK" -C "$FRAMEWORK" log --format=%H --find-object="$blob" HEAD -- "$rel" 2>/dev/null)
+  return 1
 }
 
 permit_vendor_refresh() {
@@ -125,6 +174,13 @@ permit_vendor_refresh() {
   # No baseline means ownership is unknown.  Preserve the live file in place:
   # a backup followed by overwrite is still an outage when the fork is required.
   if [[ -z "$last" || ! -f "$last" || -L "$last" ]]; then
+    if [[ -n "$last" && ! -e "$last" && ! -L "$last" ]] && historical_canonical "$dst" "${src#"$FRAMEWORK/"}"; then
+      record_last_vendored "$dst" "$rel"
+      if [[ -f "$last" && ! -L "$last" ]] && cmp -s "$dst" "$last"; then
+        log "bootstrapped trusted baseline for $rel from canonical history"
+        return 0
+      fi
+    fi
     log "DEFERRED: $rel differs from canonical with no trusted last-vendored baseline — preserved destination"
     return 1
   fi
@@ -161,13 +217,9 @@ for pair in "${MAP[@]}"; do
   # only copy if the dest dir exists (don't create new surfaces a dept doesn't use)
   dst_dir="$(dirname "$dst")"
   [[ -d "$dst_dir" ]] || { log "skip $2 — dept has no $dst_dir/"; continue; }
-  # board #1115: refuse a symlink DEST outright rather than writing through
-  # it. Plain `cp` (without --remove-destination) opens+truncates whatever
-  # an existing dest symlink points to — this script runs as ROOT
-  # (ExecStartPre=+), so a dept dir with a dst path replaced by a symlink
-  # (e.g. by a compromised claude session with write access to the dept
-  # tree) could otherwise redirect a root-run write to an arbitrary
-  # root-writable path on the NEXT service restart.
+  # board #1115: refuse a symlink DEST rather than writing through it.
+  # This runs as the agent UID via bubble-agent-prepare's runuser invocation;
+  # a replaced destination must not redirect writes to other agent-owned files.
   if [[ -L "$dst" ]]; then
     log "WARN: refusing $2 — dest is a symlink, not a regular file (fail-open, not copied)"
     continue
@@ -197,14 +249,12 @@ for pair in "${MAP[@]}"; do
         log "WARN: could not back up $2 before vendor refresh (proceeding, fail-open)"
       fi
     fi
-    # -T: dst is always a normal file target (never "copy into directory").
-    # --no-dereference: never follow a symlink SRC either (defense in depth).
+    # Publish as the dept UID, refusing symlinks and directory targets.
     if copy_canonical_file "$src" "$dst"; then
       # Preserve the canonical file's executable bit: shell-lib entries like
       # codex_write.sh must stay runnable (`scripts/lib/codex_write.sh …`);
       # plain-source .py entries are non-exec and left untouched.
       [[ -x "$src" ]] && chmod +x "$dst" 2>/dev/null || true
-      chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
       log "re-vendored $2 (was stale/missing)"
       vendored=$((vendored+1))
@@ -213,6 +263,11 @@ for pair in "${MAP[@]}"; do
     fi
   else
     # Bootstrap/repair the baseline even when no refresh was necessary.
+    # Even matching bytes may retain the retired claude UID. Recreate the
+    # managed inode as the current dept account without privileged chown.
+    if [[ ! -O "$dst" ]] && ! copy_canonical_file "$src" "$dst"; then
+      log "WARN: could not repair ownership of $2 (fail-open)"
+    fi
     record_last_vendored "$dst" "$2"
   fi
 done
@@ -259,7 +314,6 @@ for pair in "${KANBAN_MAP[@]}"; do
     fi
     if copy_canonical_file "$src" "$dst"; then
       chmod +x "$dst" 2>/dev/null || true   # the .sh files must stay executable
-      chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
       log "re-vendored kanban $2 (was stale/missing)"
       vendored=$((vendored+1))
@@ -267,6 +321,11 @@ for pair in "${KANBAN_MAP[@]}"; do
       log "WARN: could not copy $2 (fail-open)"
     fi
   else
+    # Even matching bytes may retain the retired claude UID. Recreate the
+    # managed inode as the current dept account without privileged chown.
+    if [[ ! -O "$dst" ]] && ! copy_canonical_file "$src" "$dst"; then
+      log "WARN: could not repair ownership of $2 (fail-open)"
+    fi
     record_last_vendored "$dst" "$2"
   fi
 done
@@ -305,7 +364,6 @@ for pair in "${WIKI_SEARCH_MAP[@]}"; do
       continue
     fi
     if copy_canonical_file "$src" "$dst"; then
-      chown claude:claude "$dst" 2>/dev/null || true
       record_last_vendored "$dst" "$2"
       log "re-vendored wiki-search $2 (was stale/missing)"
       vendored=$((vendored+1))
@@ -313,6 +371,11 @@ for pair in "${WIKI_SEARCH_MAP[@]}"; do
       log "WARN: could not copy $2 (fail-open)"
     fi
   else
+    # Even matching bytes may retain the retired claude UID. Recreate the
+    # managed inode as the current dept account without privileged chown.
+    if [[ ! -O "$dst" ]] && ! copy_canonical_file "$src" "$dst"; then
+      log "WARN: could not repair ownership of $2 (fail-open)"
+    fi
     record_last_vendored "$dst" "$2"
   fi
 done
