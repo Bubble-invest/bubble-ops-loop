@@ -246,6 +246,27 @@
 
 {% block content %}
 
+<section class="cabinet-section m4-section" aria-labelledby="operations-map-title"
+         style="padding:24px; border:2px solid var(--ochre); background:var(--paper-soft); margin-bottom:24px;">
+  <h2 id="operations-map-title"><a href="https://claude.ai/artifact/YB7yT9rUh2eC7SEcudhRXH"
+     target="_blank" rel="noopener noreferrer">Chantiers Bubble — carte des opérations ↗</a></h2>
+  <p>Carte de référence et commentaires de Joris.</p>
+  {% if alignment is defined %}
+  <p><strong>{{ alignment.totals.mapped }} missions alignées</strong> ·
+     {{ alignment.totals.unmapped }} non alignées ·
+     {{ alignment.totals.unknown_intents }} avec intentions inconnues ·
+     {{ alignment.totals.invalid_metadata }} avec métadonnées invalides</p>
+  {% if not alignment.catalog_available %}<p>Catalogue des intentions indisponible — {{ alignment.totals.unverified }} missions à vérifier.</p>{% endif %}
+  <details><summary>Alignement par département</summary>
+    <ul>{% for dept in alignment.departments %}
+      <li><strong>{{ dept.dept }}</strong> : {{ dept.mapped }} alignées · {{ dept.unmapped }} non alignées ·
+        {{ dept.unknown_intents }} avec intentions inconnues · {{ dept.invalid_metadata }} invalides · {{ dept.unverified }} à vérifier
+        {% if dept.errors %} — manifeste indisponible ou invalide{% endif %}</li>
+    {% else %}<li>Aucun département disponible.</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+
 <section class="page-hero m4-hero" aria-labelledby="kanban-hero-title">
   <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>KANBAN</div>
   <h1 class="page-hero-title" id="kanban-hero-title">Kanban</h1>
