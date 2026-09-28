@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inventory board-card and PR links to the read-only operator-intent mirror.
+"""Inventory board-card and PR links to the shared wiki's operator-intents.
 
 The collector is deliberately structural.  It can prove that a card or PR has
 no usable intent link (an orphan), but it cannot prove semantic alignment or a
@@ -9,6 +9,17 @@ work item and the resolved intent chain.
 All modes are read-only by default.  ``--mode labels --apply`` is the only
 write path and merely creates missing ``intent:<slug>`` labels; it never edits
 issues, pull requests, or ``shared/operator-intents/**``.
+
+Board #1333 (Option C, Joris-approved 2026-09-14) retired the isolated,
+root-owned, filesystem-immutable operator-intents mirror (#430/#1267).
+bubble-ops-loop#451 rewired the cloud-wiki-compile consumers to read intents
+straight from the shared wiki's own git-tracked ``shared/operator-intents/``
+instead (tamper guarantee = the git-level branch-hook, not filesystem
+immutability). Board #1570 (#451's own named follow-up) rewires THIS
+consumer the same way, reusing #451's ``validate_intents_root`` rather than
+inventing a parallel validator. ``tools/readonly_intents_mirror.py``'s
+stricter ``validate_mirror`` stays untouched for the separate, still-strict
+``tools/fleet_architecture.py`` (#1249) consumer, out of this card's scope.
 """
 from __future__ import annotations
 
@@ -24,12 +35,18 @@ from pathlib import Path
 from typing import Any, Iterable
 
 _TOOLS_DIR = Path(__file__).resolve().parents[1]
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
-from readonly_intents_mirror import (  # noqa: E402
-    MirrorValidationError,
-    platform_default,
-    validate_mirror,
+_REPO_ROOT = _TOOLS_DIR.parent
+# Reuse #451's resolver/validator (bubble-ops-loop#451) rather than
+# reimplementing it: `validate_intents_root` accepts any real, readable
+# directory whose `operator-intents/` subdirectory holds at least one `.md`
+# file (no root-ownership/symlink/manifest checks — the wiki's git-PR gate is
+# the tamper guarantee now).
+_WIKI_INTENT_AUDIT_DIR = _REPO_ROOT / "skills" / "cloud-wiki-compile" / "scripts"
+if str(_WIKI_INTENT_AUDIT_DIR) not in sys.path:
+    sys.path.insert(0, str(_WIKI_INTENT_AUDIT_DIR))
+from wiki_intent_audit import (  # noqa: E402
+    IntentsRootValidationError,
+    validate_intents_root,
 )
 
 
@@ -37,6 +54,9 @@ DEFAULT_BOARD = "Bubble-invest/bubble-ops-board"
 DEFAULT_PR_OWNERS = ("Bubble-invest", "vdk888")
 INTENT_DIR = "shared/operator-intents"
 MIRROR_INTENT_DIR = "operator-intents"
+# Kept exactly as #451 kept it for cloud-wiki-compile.sh / wiki_intent_audit.py:
+# an optional override for an external operator-intents source, checked first
+# in the fallback chain below.
 MIRROR_ENV = "BUBBLE_OPERATOR_INTENTS_MIRROR"
 LABEL_COLOR = "1d76db"
 LABEL_DESCRIPTION_PREFIX = "Operator intent: "
@@ -194,11 +214,38 @@ def parse_intent_documents(documents: dict[str, str]) -> dict[str, Intent]:
     return intents
 
 
-def default_mirror_root() -> Path:
-    configured = os.environ.get(MIRROR_ENV)
-    if configured:
-        return Path(configured)
-    return platform_default()
+def default_wiki_dir() -> Path:
+    """The shared wiki's checkout root.
+
+    Home-relative rather than a single hardcoded host path (unlike
+    cloud-wiki-compile.sh's VPS-only ``WIKI_DIR=/home/claude/...`` constant),
+    because this tool also runs on the Mac as the operator: ``~/.claude/agent-
+    memory/shared-wiki`` resolves correctly on both — ``/Users/joris/...`` on
+    the Mac, ``/home/claude/...`` on the VPS where the compile pipeline runs
+    as the ``claude`` user.
+    """
+    return Path.home() / ".claude" / "agent-memory" / "shared-wiki"
+
+
+def default_intents_root() -> Path:
+    """Resolve the operator-intents source via #451's own fallback chain.
+
+    First-existing-wins, exactly as cloud-wiki-compile.sh's ``INTENTS_ROOT``
+    resolution does it:
+      1. ``$BUBBLE_OPERATOR_INTENTS_MIRROR`` — optional override for an
+         external operator-intents source.
+      2. ``<wiki>/shared`` — the wiki's own copy, the #1333 default.
+    If neither candidate's ``operator-intents/`` subdirectory exists yet, the
+    wiki default is still returned so the validation error raised downstream
+    names the real path that was checked, rather than an env var name alone.
+    """
+    override = os.environ.get(MIRROR_ENV)
+    wiki_shared = default_wiki_dir() / "shared"
+    candidates = ([Path(override)] if override else []) + [wiki_shared]
+    for candidate in candidates:
+        if (candidate / MIRROR_INTENT_DIR).is_dir():
+            return candidate
+    return candidates[-1]
 
 
 def load_intents_from_root(root: Path) -> dict[str, Intent]:
@@ -709,9 +756,9 @@ def main(
     try:
         if _validated_release_for_tests is None:
             try:
-                release = validate_mirror(default_mirror_root())
-            except MirrorValidationError as exc:
-                raise CommandError(f"read-only intent mirror validation failed: {exc}") from exc
+                release = validate_intents_root(default_intents_root())
+            except IntentsRootValidationError as exc:
+                raise CommandError(f"operator-intents source validation failed: {exc}") from exc
         else:
             release = _validated_release_for_tests
         intents = load_intents_from_root(release)

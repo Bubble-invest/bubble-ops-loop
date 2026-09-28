@@ -8,11 +8,15 @@ its own lenient `validate_intents_root()` (see `tests/test_wiki_intent_audit.py`
 and reads the wiki's own `shared/operator-intents/` by default.
 
 `tools/readonly_intents_mirror.py`'s strict `validate_mirror()` is
-DELIBERATELY left unchanged by #1333: it is a separate, still-live
-dependency of `tools/fleet_architecture.py` (#1249) and
-`tools/kanban/intent_alignment_check.py` (#1254, exercised by
-`scripts/lib/tests/test_1254_intent_traceability.py`), both out of this
-card's scope. This file used to live inside
+DELIBERATELY left unchanged by #1333: at the time, it was a separate,
+still-live dependency of `tools/fleet_architecture.py` (#1249) and
+`tools/kanban/intent_alignment_check.py` (#1254), both out of #1333's scope.
+Board #1570 later aligned `intent_alignment_check.py` to the same
+wiki-reading model as `wiki_intent_audit.py` (reusing its
+`validate_intents_root()`, see
+`scripts/lib/tests/test_1254_intent_traceability.py`); `validate_mirror()`
+now remains live only for the separate, still-dormant
+`tools/fleet_architecture.py` consumer. This file used to live inside
 `tests/test_operator_intents_mac_mirror.py` alongside the Mac
 install/sync/plist/verify daemon scripts that #1333 retired; those files are
 removed (git history preserves them) and this one assertion — the only part
