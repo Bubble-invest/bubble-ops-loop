@@ -13,7 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deploy-to-morty.sh"
-PLATFORM_ROOT = ROOT.parent / "bubble-vps-platform"
+PLATFORM_ROOT = ROOT / "tests" / "fixtures" / "bubble-vps-platform"
 
 
 def _inputs(tmp_path: Path, *, os_user: str | None = None) -> tuple[Path, Path]:

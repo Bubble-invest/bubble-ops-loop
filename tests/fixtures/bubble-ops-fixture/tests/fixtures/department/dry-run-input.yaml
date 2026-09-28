@@ -1,0 +1,31 @@
+# End-to-end department dry-run input fixture.
+# Used by tests/run.sh department-level check (extended in Step 8 / round-trip test).
+# Represents a minimal "fresh day" trigger: a queue item lands in queues/research/,
+# Layer 2 should produce a gate, human decision lands in inbox/decisions/, Layer 3
+# logs the would-have-executed action, Layer 4 audits.
+dry_run:
+  date: "2026-05-20"
+  initial_queue_items:
+    - id: fixture-dryrun-001
+      kind: echo_task
+      source_layer: 1
+      target_layer: 2
+      priority: medium
+      created_at: "2026-05-20T08:00:00Z"
+      payload:
+        message: "dry-run department roundtrip"
+  expected_outputs:
+    - "outputs/2026-05-20/1/summary.md"
+    - "outputs/2026-05-20/2/summary.md"
+    - "queues/gates/fixture-dryrun-001.yaml"
+  human_decision_simulated:
+    gate_id: fixture-dryrun-001
+    user_choice: approve
+    written_to: "inbox/decisions/fixture-dryrun-001.yaml"
+  expected_layer_3_log:
+    file: "outputs/2026-05-20/3/exec-log.jsonl"
+    contains: "fixture_mode:true"
+  expected_layer_4_outputs:
+    - "outputs/2026-05-20/4/risk-brief.md"
+    - "outputs/2026-05-20/4/risk-kpis.yaml"
+    - "outputs/2026-05-20/management-export.yaml"

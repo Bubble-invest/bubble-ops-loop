@@ -4,7 +4,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLATFORM_RENDERER = ROOT.parent / "bubble-vps-platform" / "lib" / "agent_unit_renderer.py"
+PLATFORM_RENDERER = (
+    ROOT / "tests" / "fixtures" / "bubble-vps-platform" / "lib" / "agent_unit_renderer.py"
+)
 
 
 def test_deploy_reads_workdir_from_the_rendered_canonical_dropin():
