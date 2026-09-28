@@ -67,6 +67,10 @@ TMP_BASE="${CODEX_WORKER_TMPDIR:-${TMPDIR:-/tmp}}"
 [[ -w "$TMP_BASE" ]] || { echo "ERROR: scratch base is not writable" >&2; exit 2; }
 TMP_BASE="$(cd "$TMP_BASE" && pwd -P)"
 
+# Refuse managed/shared checkout storage before the first filesystem write.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+python3 "$SCRIPT_DIR/worker-checkout-guard.py" --scratch-base "$TMP_BASE"
+
 WORK_ROOT="$(mktemp -d "${TMP_BASE%/}/codex-worker.XXXXXX")"
 chmod 700 "$WORK_ROOT"
 OWNER_MARKER="$WORK_ROOT/.bubble-codex-worker-owned"
@@ -108,6 +112,7 @@ chmod 700 "$REPO_DIR"
 
 (
   cd "$REPO_DIR"
+  python3 "$SCRIPT_DIR/worker-checkout-guard.py" "$PWD"
   CODEX_WORK_ROOT="$WORK_ROOT" \
   CODEX_WORK_REPO="$REPO_DIR" \
   CODEX_WORKER_TASK_FILE="$TASK_FILE" \
