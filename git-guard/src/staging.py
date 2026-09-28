@@ -9,10 +9,40 @@ through on push.
 
 Two git commands cover the picture:
   (a) `git diff --cached --name-only` — staged in the index, not yet committed
-  (b) `git diff <remote>/<destination>..<source> --name-only` — committed, not yet pushed
-      (if the destination is not known locally, fall back to `git log <source> --name-only`
-      collecting every changed path on the current branch — fail-LOUD-and-CLOSED
-      rather than missing a path).
+  (b) `git diff <verified-remote-base>..<source> --name-only` — committed, not yet pushed
+
+SECURITY (card #1413, PR #543 independent-review finding, critical): (b) MUST
+NOT be computed from the local `refs/remotes/<remote>/<destination>` ref.
+That ref lives in the SAME working tree the guarded actor controls — it can
+be forged with a single `git update-ref refs/remotes/<remote>/<destination>
+<anything>` (no push, no network, no broker call), making the destination
+look arbitrarily "ahead" so `staged_paths_for_push()` returns an empty or
+truncated set while a forbidden path still rides along in the real push.
+`README.md` used to advertise this in plain text: "The guard does not fetch;
+remote-tracking refs must be maintained by the caller" — i.e. the security
+boundary was resting on a value the attacker supplies.
+
+Fix: ask the REAL remote, over the network, every time:
+  1. `git ls-remote <remote> refs/heads/<destination>` — the authoritative
+     answer for "what SHA does the destination branch point to on the
+     remote right now". Any transport/auth error here is fail-closed (the
+     caller sees a `CalledProcessError`, no path check, no push).
+  2. If the remote ref exists: fetch that exact SHA into a guard-private
+     ref (`refs/git-guard/base`, never `refs/remotes/*`) and re-verify the
+     object that landed matches the SHA `ls-remote` reported, THEN diff
+     `refs/git-guard/base..<source>`. `git diff A..B` compares trees, not
+     ancestry, so this is correct even across a force-push / rewritten
+     history.
+  3. If the remote ref does NOT exist (genuinely new branch): fall back to
+     the conservative inclusive-history sweep — `git log --name-only
+     <source>` — treating every path ever touched on the pushed branch as
+     "about to change". This can only be MORE restrictive than reality,
+     never less; the old "destination unknown locally" fallback already had
+     this shape, it is now reached only once the remote has been asked and
+     genuinely has no matching ref (not merely "no local tracking ref").
+
+`refs/remotes/*` and `BUBBLE_GUARD_DIFF_BASE` are never read for this
+decision — see `_unpushed_commit_paths()` below.
 
 Notion v4 §"GitHub access model" line 725: paths are enforced LOCALLY.
 This module is half of that enforcement.
@@ -22,7 +52,16 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+
+# Guard-private ref used to hold the verified REAL-remote base commit for a
+# diff. Deliberately OUTSIDE the `refs/remotes/*` namespace: nothing else in
+# this repo (git itself, a caller, an attacker with a shell in the same
+# working tree) writes here except `_fetch_verified_base()` below, and it is
+# always force-overwritten from a value re-verified against `ls-remote` on
+# every call — never read as-is from a prior run.
+GUARD_BASE_REF = "refs/git-guard/base"
 
 
 def _run_git(repo_dir: Path, *args: str) -> "subprocess.CompletedProcess[str]":
@@ -103,12 +142,85 @@ def currently_staged(repo_dir: Path) -> List[str]:
     return [p for p in proc.stdout.split("\x00") if p]
 
 
-def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
-    """Diff the actual push source against its destination, never origin/HEAD.
+def _ls_remote_sha(repo_dir: Path, remote: str, destination: str) -> Optional[str]:
+    """Ask the REAL remote for the current SHA of `refs/heads/<destination>`.
 
-    Keep the inclusive history fallback for a new/unfetched destination.
-    Neither the checkout's upstream nor BUBBLE_GUARD_DIFF_BASE describes
-    an explicit push reliably (and an override of HEAD could hide changes).
+    Returns the 40-hex SHA if the branch exists on the remote right now, or
+    `None` only when the remote positively confirms no such ref exists
+    (`git ls-remote --exit-code` reports that as exit 2 — distinct from
+    every other failure). ANY other non-zero exit (auth failure, unknown
+    remote, network error, host down, ...) is a hard failure: callers must
+    propagate it and fail closed rather than fall back to a local,
+    attacker-controlled `refs/remotes/*` value.
+    """
+    target_ref = f"refs/heads/{destination}"
+    proc = _run_git(repo_dir, "ls-remote", "--exit-code", remote, target_ref)
+    if proc.returncode == 2:
+        return None
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            ["git", "ls-remote", remote, target_ref],
+            proc.stdout,
+            proc.stderr or (
+                "ls-remote against the real remote failed; refusing to fall "
+                "back to a local refs/remotes/* value for the push-base decision"
+            ),
+        )
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    sha = lines[0].split("\t", 1)[0].strip()
+    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha.lower()):
+        raise subprocess.CalledProcessError(
+            1, ["git", "ls-remote", remote, target_ref], proc.stdout,
+            f"ls-remote returned a malformed sha for {target_ref!r}: {sha!r}",
+        )
+    return sha
+
+
+def _fetch_verified_base(repo_dir: Path, remote: str, destination: str, sha: str) -> str:
+    """Fetch `sha` from `remote` into `GUARD_BASE_REF` and verify it landed.
+
+    Tries fetching the exact object first (works whenever the host allows
+    fetching a reachable SHA directly, e.g. GitHub). Falls back to fetching
+    the branch tip by NAME for hosts that reject fetch-by-SHA — but either
+    way, the object under `GUARD_BASE_REF` is re-verified to match `sha`
+    (the value `_ls_remote_sha()` already got straight from the remote)
+    before this function ever returns it. Nothing here is trusted just
+    because a fetch subprocess exited 0.
+    """
+    target_ref = f"refs/heads/{destination}"
+    by_sha = _run_git(repo_dir, "fetch", "--no-tags", "--force", remote, f"{sha}:{GUARD_BASE_REF}")
+    if by_sha.returncode != 0:
+        by_name = _run_git(repo_dir, "fetch", "--no-tags", "--force", remote, f"{target_ref}:{GUARD_BASE_REF}")
+        if by_name.returncode != 0:
+            raise subprocess.CalledProcessError(
+                by_name.returncode,
+                ["git", "fetch", remote, f"{target_ref}:{GUARD_BASE_REF}"],
+                by_name.stdout,
+                by_name.stderr or "could not fetch the real remote base ref (tried by-sha and by-name)",
+            )
+    verify = _run_git(repo_dir, "rev-parse", "--verify", "--end-of-options", f"{GUARD_BASE_REF}^{{commit}}")
+    fetched_sha = verify.stdout.strip()
+    if verify.returncode != 0 or fetched_sha != sha:
+        raise subprocess.CalledProcessError(
+            1, ["git", "fetch", remote, f"{target_ref}:{GUARD_BASE_REF}"], "",
+            f"fetched object under {GUARD_BASE_REF} ({fetched_sha or 'MISSING'}) does not "
+            f"match the sha ls-remote reported for {target_ref!r} ({sha}); refusing to trust it",
+        )
+    return GUARD_BASE_REF
+
+
+def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
+    """Diff the actual push source against its destination on the REAL remote.
+
+    SECURITY (card #1413 / PR #543 independent-review finding, critical):
+    the destination's current state is NEVER read from a local
+    `refs/remotes/*` ref (see module docstring for the forgery this closes).
+    It is asked from the remote directly via `_ls_remote_sha()` and only
+    trusted after `_fetch_verified_base()` re-confirms the fetched object
+    matches — on every single call, not cached across invocations.
     """
     source, separator, destination = ref.partition(":")
     if not separator:
@@ -119,13 +231,15 @@ def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
                 1, ["git", "push", remote, ref], stderr="push source must name a branch or specify a destination"
             )
     destination = destination.removeprefix("refs/heads/")
-    base = f"refs/remotes/{remote}/{destination}"
     # Only single branch pushes are supported; fail closed on malformed,
     # deletion, wildcard, or non-branch destinations before minting a token.
+    # Validated against `refs/heads/<destination>` directly (a plain branch-
+    # name-shape check) — this no longer depends on any local remote-tracking
+    # ref existing.
     if (not source or source.startswith(("-", "+"))
             or remote.startswith("-") or destination == "HEAD"
             or destination.startswith("refs/")
-            or _run_git(repo_dir, "check-ref-format", base).returncode != 0):
+            or _run_git(repo_dir, "check-ref-format", f"refs/heads/{destination}").returncode != 0):
         raise subprocess.CalledProcessError(
             1, ["git", "push", remote, ref], stderr="unsupported push refspec or remote"
         )
@@ -133,15 +247,22 @@ def _unpushed_commit_paths(repo_dir: Path, remote: str, ref: str) -> List[str]:
     if tip.returncode != 0:
         raise subprocess.CalledProcessError(tip.returncode, ["git", "rev-parse"], tip.stdout, tip.stderr)
     source_commit = tip.stdout.strip()
-    exists = _run_git(repo_dir, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
-    if exists.returncode == 0:
+
+    remote_sha = _ls_remote_sha(repo_dir, remote, destination)
+    if remote_sha is not None:
+        base = _fetch_verified_base(repo_dir, remote, destination, remote_sha)
+        # `git diff A..B` compares TREES, not ancestry — this is correct even
+        # when `source_commit` doesn't descend from `base` (force-push /
+        # rewritten history), so no special-casing is needed for that case.
         proc = _run_git(repo_dir, "diff", f"{base}..{source_commit}", "--name-only", "-z")
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, ["git", "diff"], proc.stdout, proc.stderr)
         return [p for p in proc.stdout.split("\x00") if p]
 
-    # Unknown destination: inspect the entire source history, not an unrelated
-    # upstream/default branch that could silently omit structural changes.
+    # Genuinely new branch: the REAL remote (not a stale/forgeable local ref)
+    # just confirmed no such ref exists. Conservative fallback — every path
+    # ever touched on the pushed branch counts as "about to change". This
+    # can only over-count (deny more), never under-count.
     proc = _run_git(repo_dir, "log", "--name-only", "--pretty=format:", source_commit)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(

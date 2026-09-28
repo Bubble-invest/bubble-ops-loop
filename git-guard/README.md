@@ -75,20 +75,41 @@ bubble-git-guard push --dept tony --action open_priority_pr \
     --ref tony/directive/buy-aapl
 ```
 
-## Push changeset (#1413)
+## Push changeset (#1413, hardened by #543)
 
-The guard checks staged paths plus the diff from the selected remote-tracking
-branch to the push source. For example, `--remote origin --ref HEAD:main`
-checks `refs/remotes/origin/main..HEAD`; the default `--ref HEAD` uses the
-current local branch name as the destination. A branch name or a single
-`source:destination` branch refspec is supported. Unsupported refspecs fail
-before token minting.
+The guard checks staged paths plus the diff from the push destination's
+**real remote state** to the push source. For example, `--remote origin
+--ref HEAD:main` checks the destination `main` branch on `origin`; the
+default `--ref HEAD` uses the current local branch name as the destination.
+A branch name or a single `source:destination` branch refspec is supported.
+Unsupported refspecs fail before token minting.
 
-The checkout's upstream, `origin/HEAD`, and `BUBBLE_GUARD_DIFF_BASE` do not
-select this base. This also works when the sandbox makes `.git/config`
-read-only: no upstream configuration change is required. If the destination
-is absent locally, the existing inclusive source-history fallback applies.
-The guard does not fetch; remote-tracking refs must be maintained by the caller.
+**The destination's state is asked from the remote over the network on every
+call — never read from a local ref.** Concretely: `git ls-remote <remote>
+refs/heads/<destination>` gets the authoritative current SHA, then `git
+fetch` pulls that exact object into a guard-private ref (`refs/git-guard/base`,
+never `refs/remotes/*`) and re-verifies the fetched object matches before
+it is diffed against. `git diff A..B` compares trees, not ancestry, so this
+is correct across a force-push too. If `ls-remote` positively confirms the
+destination doesn't exist on the remote (a genuinely new branch), the
+existing conservative inclusive-source-history fallback applies (treats
+every path ever touched on the pushed branch as changing — can only
+over-count). Any `ls-remote`/`fetch` transport or auth error is fail-closed:
+no path check, no broker call, no push.
+
+The checkout's upstream, `origin/HEAD`, `BUBBLE_GUARD_DIFF_BASE`, and any
+local `refs/remotes/<remote>/<destination>` value **do not** select this
+base and are never read for this decision. This closes a critical bypass
+(card #1413, PR #543 independent review): the guarded actor controls its
+own checkout, so a forged `git update-ref refs/remotes/<remote>/<destination>
+<anything>` — no push, no network, no broker call required — used to be
+able to make `staged_paths_for_push()` return `[]` (or omit a path) while a
+forbidden path still rode along in the real `git push`. See
+`tests/test_1413_push_target.py::test_forged_local_remote_tracking_ref_is_ignored`
+for the regression test that proves this specific attack is now blocked.
+This also still works when the sandbox makes `.git/config` read-only: no
+upstream configuration change is required, and the guard's own fetch writes
+only to `refs/git-guard/base`, never to `.git/config`.
 
 ## Path policy (canonical, from Notion v4 line 620 + 700)
 
@@ -139,6 +160,7 @@ never `runtime_write_own`.
 | Threat | Mitigation |
 |--------|-----------|
 | **Path exfiltration** — stage 9 allowed + 1 structural file | Atomicity: any single deny fails the whole batch. No partial push. |
+| **Forged `refs/remotes/<remote>/<destination>`** — the guarded actor's own checkout makes the destination look falsely "ahead" so a forbidden path is omitted from the checked set (card #1413/#543) | The diff base is never read from `refs/remotes/*`. It is fetched from the real remote (`ls-remote` + verified `fetch` into `refs/git-guard/base`) on every call. `ls-remote`/`fetch` failure is fail-closed. |
 | **Token leak via audit** | `FORBIDDEN_FIELDS` drops `token`/`access_token`/`pem`/`private_key`/`jwt`/`secret`. Any value starting with `ghs_` raises `ValueError` before write. |
 | **Token leak via stderr** | Token captured into LOCAL var, never `print()`ed. `git push` stderr is redacted (token replaced with `<TOKEN-REDACTED>`) before being surfaced. |
 | **Fallback to PAT / env GITHUB_TOKEN** | `GITHUB_TOKEN` is stripped from the env passed to `git push`. No code path reads it. |
@@ -162,6 +184,8 @@ never `runtime_write_own`.
 | Broker exits non-zero | exit 1, no push |
 | Broker stdout doesn't start with `ghs_` | exit 1, no push |
 | `git push` exits non-zero | exit 1, audit:push_failed |
+| `ls-remote`/`fetch` against the real remote errors (auth/network/host) | exit 1, no path check, no broker call, no push |
+| Fetched object doesn't match the SHA `ls-remote` reported | exit 1, no path check, no broker call, no push |
 
 ## Atomicity
 
@@ -229,7 +253,7 @@ git-guard/
 │   ├── cli.py                         # argparse, push subcommand
 │   ├── guard.py                       # Guard class: check_paths + push pipeline
 │   ├── policy_loader.py               # imports token-broker's Policy via spec_from_file_location
-│   └── staging.py                     # git diff --cached + git diff <remote>/<destination>..<source>
+│   └── staging.py                     # git diff --cached + ls-remote/fetch-verified diff vs the REAL remote destination
 ├── tests/                             # 13 files, 67 tests, 90% coverage
 └── deploy/
     ├── bubble-git-guard.template.sh   # wrapper installed to /opt/bubble-git-guard/bin/
