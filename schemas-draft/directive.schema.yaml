@@ -23,6 +23,7 @@ required:
   - expected_layer
   - expected_output
 additionalProperties: false
+# The #1595 Mac inbox uses audience (rnd|tonio); add it if this schema is ever wired in.
 properties:
   id:
     type: string

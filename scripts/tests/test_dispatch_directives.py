@@ -402,3 +402,15 @@ def test_remote_dry_run_does_not_clone_or_change_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(dd, "_clone_remote_repo", lambda *_a: pytest.fail("dry-run cloned"))
     assert dd.dispatch(root, "tony", True, remote_delivery=True) == 0
     assert yaml.safe_load(directive.read_text())["status"] == "approved"
+
+
+def test_1595_tonio_audience_uses_existing_rnd_transport(world):
+    root, tony, _, pushes = world
+    rnd = _make_repo(root, 'rnd')
+    _drop(tony, 'tonio-1595', target_dept='rnd', audience=['tonio'])
+    assert dd.dispatch(root, 'tony', dry_run=False) == 0
+    delivered = yaml.safe_load((rnd / dd._INBOX_REL / 'directive-tonio-1595.yaml').read_text())
+    assert delivered['audience'] == ['tonio']
+    assert delivered['target_dept'] == 'rnd'
+    assert yaml.safe_load((tony / dd._OUTBOUND_REL / 'directive-tonio-1595.yaml').read_text())['status'] == 'dispatched'
+    assert any(repo == 'bubble-ops-rnd' for repo, _ in pushes)
