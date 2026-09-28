@@ -163,10 +163,49 @@ skill file.** (Mirrors `memory_hygiene_notify`: detect → nudge, never delete.)
   (`memory_hygiene_notify.py`) — VPS depts inject locally, Mac agents via the
   outbox. Only nudge when you filed something actionable for that agent.
 
-## Reporting rule (stay cheap + quiet)
+## Reporting rule (stay cheap + quiet — best-effort notification QUEUE, mirrors cloud-wiki-compile's STEP 10)
 Post ONE Telegram line at the end **only if** you authored/proposed a skill OR
-flagged a prune (i.e. real output). On a quiet week, be silent. Format:
-`🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q`.
+flagged a prune (i.e. real output). On a quiet week, be silent.
+
+**You do not have the credential to send it, and that is by design** — the
+bot token lives in `/run/claude-agent/env`, which this headless session's
+sandbox deliberately denies you (same boundary cloud-wiki-compile's STEP 10
+documents; board #1482). Do not try to read that file, source it, `awk` it, or
+reach for a Telegram MCP tool (that would also risk booting a poller on the
+claude-user token — Morty's bot token, #1425/#1406). **Never conclude "no
+token exists" — you cannot see whether it exists; that is not your check to
+make.** Your only job is to **queue the message text as a plain file**; the
+launcher (`cloud-wiki-compile.sh skillsmith`) already holds this mode's
+pre-filtered token outside your sandbox — the SAME `filter-headless-env.py`
+ExecStartPre every `cloud-wiki-compile@` mode gets, into
+`/run/bubble-headless-cloud-wiki-skillsmith/env` — and sends your queued
+message with a single HTTP POST right after it verifies your completion
+marker below (board #1572: this launcher-side send previously did not exist
+for skillsmith at all, which is why "no fleet-wiki bot token" used to be the
+only honest thing you could say — do not say that again; queue the file
+instead and trust the launcher to send it):
+
+```bash
+REPORT_DIR=/home/claude/monitoring/skillsmith
+REPORT_FILE="$REPORT_DIR/telegram-report.txt"
+mkdir -p "$REPORT_DIR"
+# Quiet week / nothing to report: make sure no stale message lingers.
+rm -f "$REPORT_FILE"
+# Otherwise, atomically queue the composed message text (plain UTF-8 — the
+# launcher passes it through --data-urlencode, not shell interpolation):
+TMP_REPORT="$(mktemp "${REPORT_FILE}.XXXXXX")"
+printf '%s' "🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q" > "$TMP_REPORT"
+mv -f "$TMP_REPORT" "$REPORT_FILE"
+```
+
+Format: `🛠️ skill-authoring <week>: authored N (proposed M PRs, K needs:human), pruned-flagged P, discarded-by-eval Q`.
+
+If the queue write itself fails (disk full, permission oddity — all
+unexpected), do NOT retry it as a blocker and do NOT surface it in your final
+response; note it at most in your own reasoning, then continue to the
+completion marker exactly as if this step had succeeded — a send-side hiccup
+is the launcher's problem (it WARNs and leaves the file queued for next week),
+never a reason to withhold `SKILLSMITH_DONE`.
 
 ## Completion marker (required — the launcher fails loudly without it, #1493)
 The launcher (`cloud-wiki-compile.sh skillsmith`) validates this run the same

@@ -494,17 +494,35 @@ def test_skill_step11_forbids_any_caveat_in_the_final_turn():
 
 
 def test_launcher_report_send_happens_only_after_commit_succeeds():
-    """Board #1482: the launcher's telegram-send block must live in the
+    """Board #1482: the launcher's telegram-send must fire only in the
     success branch of the two-phase watermark check (only after accept-result
     AND commit both succeed), never unconditionally and never before the
-    receipt is verified."""
+    receipt is verified.
+
+    Board #1572 extracted the actual send logic (curl, token resolution,
+    queue-file cleanup) out of that inline block into a shared
+    send_queued_telegram_report() function, reused by skillsmith mode's own
+    success path too. This test now checks the SAME property against the new
+    shape in two parts: (1) the COMPILE-mode CALL SITE still lands strictly
+    inside the commit-success (else) branch — never unconditionally, never
+    before the receipt commit — and (2) the shared function's body still
+    reads the already-filtered, non-secret per-mode headless env (never the
+    raw /run/claude-agent/env the model itself is denied) and only clears the
+    queue file on a successful send."""
     script = (REPO / "skills/cloud-wiki-compile/scripts/cloud-wiki-compile.sh").read_text()
     commit_idx = script.index('python3 "$DELTA_SCRIPT" commit --plan "$DELTA_PLAN" --marker "$DELTA_MARKER"')
-    send_idx = script.index("REPORT_FILE=/home/claude/monitoring/wiki-compile-delta/telegram-report.txt")
-    else_idx = script.rindex("else", commit_idx, send_idx)
-    assert commit_idx < else_idx < send_idx, "report send must be in the commit success (else) branch"
-    # Must read the already-filtered, non-secret headless env — never the raw
-    # /run/claude-agent/env the model itself is denied.
-    tail = script[send_idx:]
-    assert '/run/bubble-headless-cloud-wiki-${MODE}/env' in tail
-    assert 'rm -f "$REPORT_FILE"' in tail
+    send_call_idx = script.index(
+        "send_queued_telegram_report /home/claude/monitoring/wiki-compile-delta/telegram-report.txt"
+    )
+    else_idx = script.rindex("else", commit_idx, send_call_idx)
+    assert commit_idx < else_idx < send_call_idx, "report send call must be in the commit success (else) branch"
+
+    # The shared function must be fully defined (and thus callable) before
+    # any call site reaches it.
+    func_start = script.index("send_queued_telegram_report() {")
+    func_end = script.index("\n}", func_start)
+    assert func_end < send_call_idx, "shared send function must be defined before the compile-mode call site"
+
+    func_body = script[func_start:func_end]
+    assert '/run/bubble-headless-cloud-wiki-${MODE}/env' in func_body
+    assert 'rm -f "$report_file"' in func_body
