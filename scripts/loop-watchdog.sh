@@ -72,10 +72,12 @@ MSG=$(printf 'WARN bubble-agent@fixture watchdog: heartbeat stale.\nAge: %ss (th
   "$AGE" "$STALE_THRESHOLD_SEC" "$LAST_HUMAN")
 
 # Best-effort POST; do not fail the unit if Telegram is down.
-HTTP_CODE=$(curl -s -o /tmp/_wd_resp -w '%{http_code}' \
-  "https://api.telegram.org/bot${TOKEN_VAL}/sendMessage" \
+# Token goes into a curl -K config read from stdin, never into argv
+# (ps/proc/cmdline visibility on the multi-uid VPS — board #1573).
+HTTP_CODE=$(curl -s -o /tmp/_wd_resp -w '%{http_code}' -K - \
   --data-urlencode "chat_id=${CHAT_ID}" \
-  --data-urlencode "text=${MSG}" || echo "000")
+  --data-urlencode "text=${MSG}" \
+  <<<"url = \"https://api.telegram.org/bot${TOKEN_VAL}/sendMessage\"" || echo "000")
 
 if [ "$HTTP_CODE" = "200" ]; then
   echo "alert sent: heartbeat age=${AGE}s, telegram=200"

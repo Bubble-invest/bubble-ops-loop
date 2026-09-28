@@ -159,10 +159,12 @@ Action: rotate exposed credentials immediately."
 
     TOKEN=$(awk -F= '/^TELEGRAM_BOT_TOKEN=/{print $2; exit}' "${ENV_FILE}" 2>/dev/null)
     if [[ -n "${TOKEN:-}" ]]; then
-        curl -s --max-time 15 \
-            "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        # Token goes into a curl -K config read from stdin, never into argv
+        # (ps/proc/cmdline visibility on the multi-uid VPS — board #1573).
+        curl -s --max-time 15 -K - \
             --data-urlencode "chat_id=${OPERATOR_TG_USER_ID}" \
             --data-urlencode "text=${ALERT_MSG}" \
+            <<<"url = \"https://api.telegram.org/bot${TOKEN}/sendMessage\"" \
             > /dev/null 2>&1
         unset TOKEN
         log "Telegram alert sent to chat_id=${OPERATOR_TG_USER_ID}"
