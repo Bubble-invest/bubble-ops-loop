@@ -16,9 +16,17 @@
 #   e.g.  vendor-dept-libs.sh /srv/agents/ben
 #
 # Idempotent, fail-OPEN (a copy problem must NEVER block the loop from starting):
-# errors log a warning, emit a deduplicated incident, and exit 0. Copies when the framework file
-# differs (cheap) and preserves the dept's own files for anything not in the set.
+# Root invocation is rejected with exit 1. Ordinary copy errors log a warning,
+# emit a deduplicated incident, and exit 0. Copies when the framework file differs
+# (cheap) and preserves the dept's own files for anything not in the set.
 set -uo pipefail
+
+# bubble-agent-prepare invokes this through runuser as BUBBLE_AGENT_OS_USER.
+# Reject accidental privileged invocation before any writes or alert hooks.
+if [[ "$(id -u)" == 0 ]]; then
+  echo "[vendor-dept-libs] ERROR: refusing to run as root; run as the department OS user" >&2
+  exit 1
+fi
 
 DEPT="${1:-}"
 
@@ -30,9 +38,9 @@ DEPT="${1:-}"
 #      bubble-vps-platform's tasks/access/framework_checkout.py, cloned
 #      directly from GitHub via a dedicated read-only deploy key,
 #      independent of the claude-writable checkout below). This script is
-#      invoked from ExecStartPre=+ (i.e. it runs AS ROOT) — reading the
-#      framework source from a directory `claude` cannot write to closes
-#      the "root executes claude-controlled code" gap for THIS script.
+#      invoked by bubble-agent-prepare via runuser -u "$BUBBLE_AGENT_OS_USER"
+#      with the department HOME, so it runs as the agent UID. Reading the
+#      root-owned framework keeps the shared source outside dept control.
 #      Checked ahead of the legacy candidates below so a box that HAS
 #      completed the #1115 cutover automatically prefers it, with zero
 #      further changes needed once /opt/bubble-ops-loop exists.
@@ -209,13 +217,9 @@ for pair in "${MAP[@]}"; do
   # only copy if the dest dir exists (don't create new surfaces a dept doesn't use)
   dst_dir="$(dirname "$dst")"
   [[ -d "$dst_dir" ]] || { log "skip $2 — dept has no $dst_dir/"; continue; }
-  # board #1115: refuse a symlink DEST outright rather than writing through
-  # it. Plain `cp` (without --remove-destination) opens+truncates whatever
-  # an existing dest symlink points to — this script runs as ROOT
-  # (ExecStartPre=+), so a dept dir with a dst path replaced by a symlink
-  # (e.g. by a compromised claude session with write access to the dept
-  # tree) could otherwise redirect a root-run write to an arbitrary
-  # root-writable path on the NEXT service restart.
+  # board #1115: refuse a symlink DEST rather than writing through it.
+  # This runs as the agent UID via bubble-agent-prepare's runuser invocation;
+  # a replaced destination must not redirect writes to other agent-owned files.
   if [[ -L "$dst" ]]; then
     log "WARN: refusing $2 — dest is a symlink, not a regular file (fail-open, not copied)"
     continue

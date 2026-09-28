@@ -128,7 +128,8 @@ SKIPPED=0
 STALE_TOTAL=0
 
 for dir in "${AGENTS_ROOT}"/*; do
-  [[ -d "$dir" ]] || continue   # no match → glob stays literal; -d guards it
+  # Only department repositories, including worktrees (.git is a file).
+  [[ -d "$dir" && -e "$dir/.git" && -f "$dir/dept.yaml" ]] || continue
   slug="$(basename "$dir")"; slug="${slug#bubble-ops-}"
   TOTAL=$((TOTAL + 1))
 
@@ -176,8 +177,8 @@ for dir in "${AGENTS_ROOT}"/*; do
   # Real sweep: delegate to vendor-dept-libs.sh — same script the boot-time
   # self-heal uses, so behaviour (copy set, skip-worktree, fail-open, chown)
   # is identical whether triggered by a restart or by this proactive sweep.
-  # vendor-dept-libs.sh is itself fail-open (always exits 0) — a missing dest
-  # dir (e.g. no scripts/lib) is a per-file no-op there, not a sweep failure.
+  # vendor-dept-libs.sh is fail-open for copy errors; root invocation is rejected.
+  # A missing dest dir (e.g. no scripts/lib) is a per-file no-op, not a sweep failure.
   if [[ "$(id -u)" == 0 ]]; then
     # Never run a cross-user writer as root. The isolated account must exist;
     # a missing account is a deployment error, not permission to use root.

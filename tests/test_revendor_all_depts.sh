@@ -63,6 +63,7 @@ make_framework() {
 make_dept() {  # make_dept <dir> [host]
   local dir="$1" host="${2:-}"
   mkdir -p "$dir/scripts/lib" "$dir/tools"
+  printf 'slug: %s\n' "$(basename "$dir")" > "$dir/dept.yaml"
   git -C "$dir" init -q 2>/dev/null
   git -C "$dir" config user.email "fixture@test"
   git -C "$dir" config user.name "fixture"

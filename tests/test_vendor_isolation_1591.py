@@ -28,6 +28,7 @@ class VendorIsolation(unittest.TestCase):
             self.git(repo, 'config', 'user.name', 'fixture')
         self.write(self.fw / REL, 'old canonical\n')
         self.commit(self.fw)
+        self.write(self.dept / 'dept.yaml', 'slug: alpha\n')
         self.write(self.dept / REL, 'old canonical\n')
         self.write(self.fw / REL, 'new canonical\n')
         self.commit(self.fw)
@@ -46,6 +47,26 @@ class VendorIsolation(unittest.TestCase):
     def vendor(self):
         return subprocess.run(['bash', str(ROOT / 'scripts/vendor-dept-libs.sh'), str(self.dept)],
                               env=self.env, capture_output=True, text=True, check=True)
+
+    def test_root_invocation_refused_before_any_writes(self):
+        bins = self.root / 'bin'
+        self.write(bins / 'id', '#!/bin/bash\necho 0\n')
+        (bins / 'id').chmod(0o755)
+        self.env['PATH'] = str(bins) + ':' + self.env['PATH']
+        self.env['ALERT_LOG'] = str(self.root / 'alert')
+        self.write(self.fw / 'tools/kanban/emit_kanban_item.sh',
+                   '#!/bin/bash\necho called > "$ALERT_LOG"\n')
+        before = {str(p.relative_to(self.dept)): p.read_bytes()
+                  for p in self.dept.rglob('*') if p.is_file()}
+        result = subprocess.run(
+            ['bash', str(ROOT / 'scripts/vendor-dept-libs.sh'), str(self.dept)],
+            env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('refusing to run as root', result.stderr)
+        after = {str(p.relative_to(self.dept)): p.read_bytes()
+                 for p in self.dept.rglob('*') if p.is_file()}
+        self.assertEqual(before, after)
+        self.assertFalse((self.root / 'alert').exists())
 
     def test_past_canonical_bootstraps_and_replaces_readonly_inode(self):
         dst = self.dept / REL
@@ -117,8 +138,15 @@ class VendorIsolation(unittest.TestCase):
                         VENDOR_LOG=str(self.root / 'vendor-log'),
                         RUNUSER_LOG=str(self.root / 'runuser-log'))
         self.write(self.dept.parent / 'mac/onboarding/STATE.yaml', 'host: local\n')
+        self.write(self.dept.parent / 'mac/dept.yaml', 'slug: mac\n')
+        (self.dept.parent / 'mac/.git').mkdir()
+        # Non-dept entries must not be counted, probed, or account-switched.
+        (self.dept.parent / 'cache').mkdir()
+        (self.dept.parent / 'repo-only/.git').mkdir(parents=True)
+        self.write(self.dept.parent / 'yaml-only/dept.yaml', 'slug: yaml-only\n')
         cmd = ['bash', str(scripts / 'revendor-all-depts.sh'), '--agents-root', str(self.dept.parent)]
-        subprocess.run(cmd + ['--dry-run'], env=self.env, capture_output=True, check=True)
+        dry = subprocess.run(cmd + ['--dry-run'], env=self.env, capture_output=True, text=True, check=True)
+        self.assertIn('depts_total=2 checked=1 skipped=1', dry.stdout)
         self.assertFalse((self.root / 'runuser-log').exists())
         subprocess.run(cmd, env=self.env, capture_output=True, check=True)
         self.assertEqual((self.root / 'vendor-log').read_text().strip(), str(self.dept))
@@ -128,6 +156,8 @@ class VendorIsolation(unittest.TestCase):
         # A failed account switch must alert, never fall back to root, and
         # must not prevent a later department from receiving its refresh.
         (self.dept.parent / 'beta').mkdir()
+        self.write(self.dept.parent / 'beta/.git', 'gitdir: /unused-worktree-fixture\n')
+        self.write(self.dept.parent / 'beta/dept.yaml', 'slug: beta\n')
         (self.root / 'vendor-log').unlink()
         self.write(bins / 'runuser', '#!/bin/bash\n[[ "$2" == agent-alpha ]] && exit 1\nshift 3\nexec "$@"\n')
         self.env['ALERT_LOG'] = str(self.root / 'alert')
