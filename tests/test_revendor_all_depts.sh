@@ -10,8 +10,8 @@
 # depts (VPS holds a read-only mirror only) are skipped.
 #
 # Runs entirely against THROWAWAY FIXTURES under a mktemp dir. NEVER touches
-# real dept repos or /home/claude/. Every invocation passes explicit
-# --framework / --agents-root pointing at the fixture tree.
+# real dept repos. Every invocation uses a fixture agents root and framework;
+# the installed-default test substitutes the production path in a script copy.
 #
 # Assertions:
 #   T1  sweep refreshes a stale vendored lib in BOTH fixture depts.
@@ -175,6 +175,67 @@ case "$AGENTS1" in
   /home/claude/agents) echo "  FAIL: fixture pointed at LIVE agents root!"; FAIL=$((FAIL+1));;
   *) echo "  PASS: T6 agents-root is a throwaway fixture ($AGENTS1)"; PASS=$((PASS+1));;
 esac
+
+# =============================================================================
+# T7: installed default is the canonical /opt checkout, not /usr/local.
+# Substitute only the production default in a copy so no live tree is accessed.
+# =============================================================================
+echo "== T7: installed framework default and overrides =="
+FW7="$FIX/t7/framework"; make_framework "$FW7"
+BIN7="$FIX/t7/usr/local/bin"; mkdir -p "$BIN7"
+chk_contains "T7 production default is /opt/bubble-ops-loop" 'FRAMEWORK="/opt/bubble-ops-loop"' "$(cat "$SCRIPT_UNDER_TEST")"
+sed "s|/opt/bubble-ops-loop|$FW7|g" "$SCRIPT_UNDER_TEST" > "$BIN7/revendor-all-depts.sh"
+cp "$VENDOR_SCRIPT" "$BIN7/vendor-dept-libs.sh"
+out7="$(env -u BUBBLE_FRAMEWORK_ROOT bash "$BIN7/revendor-all-depts.sh" --agents-root "$AGENTS2" --dry-run 2>&1)"
+chk "T7 installed default exits 0" 0 "$?"
+chk_contains "T7 installed default selects canonical framework" "START framework=$FW7 " "$out7"
+chk_contains "T7 installed default detects stale files" "would re-vendor" "$out7"
+out7env="$(BUBBLE_FRAMEWORK_ROOT="$FW2" bash "$BIN7/revendor-all-depts.sh" --agents-root "$AGENTS2" --dry-run 2>&1)"
+chk "T7 env override exits 0" 0 "$?"
+chk_contains "T7 env override wins over default" "START framework=$FW2 " "$out7env"
+out7cli="$(BUBBLE_FRAMEWORK_ROOT="$FIX/missing" bash "$BIN7/revendor-all-depts.sh" --framework "$FW2" --agents-root "$AGENTS2" --dry-run 2>&1)"
+chk "T7 CLI override exits 0" 0 "$?"
+chk_contains "T7 CLI override wins over env" "START framework=$FW2 " "$out7cli"
+
+# =============================================================================
+# T8: missing framework or scripts/lib fails loudly in real and dry-run modes.
+# =============================================================================
+echo "== T8: invalid framework fails loudly =="
+mkdir -p "$FIX/t8/empty"
+for invalid_fw in "$FIX/t8/missing" "$FIX/t8/empty"; do
+  for mode in real dry; do
+    args=(--framework "$invalid_fw" --agents-root "$AGENTS2")
+    [[ "$mode" == dry ]] && args+=(--dry-run)
+    out8="$("$SCRIPT_UNDER_TEST" "${args[@]}" 2>&1)"
+    chk "T8 $invalid_fw $mode exits 1" 1 "$?"
+    chk_contains "T8 $mode names missing scripts/lib" "ERR:.*$invalid_fw/scripts/lib" "$out8"
+  done
+done
+chk_eq "T8 invalid framework leaves dept unchanged" "$PRE2" "$(cat "$AGENTS2/bubble-ops-gamma/scripts/lib/dispatch_helpers.py")"
+
+# =============================================================================
+# T9: real and dry-run sweeps count each physical checkout once, including local.
+# =============================================================================
+echo "== T9: legacy aliases are swept once =="
+FW9="$FIX/t9/framework"; make_framework "$FW9"
+AGENTS9="$FIX/t9/agents"
+make_dept "$AGENTS9/alpha"
+make_dept "$AGENTS9/zeta"
+make_dept "$AGENTS9/local" local
+for name in alpha zeta local; do
+  ln -s "$name" "$AGENTS9/bubble-ops-$name"
+done
+out9dry="$("$SCRIPT_UNDER_TEST" --framework "$FW9" --agents-root "$AGENTS9" --dry-run 2>&1)"
+chk "T9 dry-run exits 0" 0 "$?"
+chk_contains "T9 dry-run counts physical depts" "depts_total=3 checked=2 skipped=1" "$out9dry"
+chk_eq "T9 dry-run reports stale dispatch once per VPS dept" 2 "$(echo "$out9dry" | grep -c 'would re-vendor scripts/lib/dispatch_helpers.py')"
+out9="$("$SCRIPT_UNDER_TEST" --framework "$FW9" --agents-root "$AGENTS9" 2>&1)"
+chk "T9 real sweep exits 0" 0 "$?"
+chk_contains "T9 real sweep counts physical depts" "depts_total=3 swept=2 skipped=1" "$out9"
+chk_eq "T9 vendor invoked once per VPS dept" 2 "$(echo "$out9" | grep -c 'file(s) refreshed')"
+chk_eq "T9 alpha refreshed" "# canonical dispatch_helpers" "$(cat "$AGENTS9/alpha/scripts/lib/dispatch_helpers.py")"
+chk_eq "T9 zeta refreshed" "# canonical dispatch_helpers" "$(cat "$AGENTS9/zeta/scripts/lib/dispatch_helpers.py")"
+chk_eq "T9 local remains unchanged" "# stale dispatch_helpers" "$(cat "$AGENTS9/local/scripts/lib/dispatch_helpers.py")"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
