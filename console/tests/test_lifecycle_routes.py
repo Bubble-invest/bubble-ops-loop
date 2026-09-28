@@ -5,7 +5,7 @@ Console additions for cancel-eclosion + retire-dept:
   - GET  /agents                                 — 'Anciens collègues' section
                                                    lists Cancelled + Retired
   - POST /agents/<slug>/cancel-eclosion          — invokes cancel_eclosion()
-  - POST /agents/<slug>/retire                   — invokes retire_dept()
+  - POST /agents/<slug>/retire                   — previews retire_dept(dry_run=True)
   - GET  /agents/<slug>/onboarding               — Cancelled banner instead
                                                    of 7-step timeline
   - GET  /dept/<slug>                            — Retired/Cancelled banner
@@ -224,7 +224,7 @@ def test_cancel_fragment_includes_botfather_instructions(client, fixture_root,
 def test_retire_fragment_includes_final_telegram_preview(client, fixture_root,
                                                           monkeypatch):
     """The HTMX retirement response includes the farewell Telegram message
-    preview (so {{OPERATOR}} sees what got sent)."""
+    preview (no message has been sent)."""
     _make_live_dept(fixture_root)
     _patch_lifecycle_subprocess(monkeypatch)
 
@@ -300,3 +300,54 @@ def _patch_lifecycle_subprocess(monkeypatch):
 
     monkeypatch.setattr(cancel_eclosion.subprocess, "run", _fake)
     monkeypatch.setattr(retire_dept.subprocess, "run", _fake)
+
+
+def test_retire_preview_has_no_effects_or_credentials_required(
+    client, fixture_root, monkeypatch,
+):
+    """Production cockpit previews even with no dept credentials; no I/O."""
+    import retire_dept
+
+    repo = _make_live_dept(fixture_root)
+    before = {p.relative_to(repo): p.read_bytes()
+              for p in repo.rglob("*") if p.is_file()}
+    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_STATE_DIR", "TELEGRAM_CHAT_ID",
+                "BUBBLE_BOT_TOKEN_LIVE_ONE"):
+        monkeypatch.delenv(key, raising=False)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Preview attempted a retirement side effect")
+
+    for helper in ("_send_final_telegram", "_disable_morty_unit_graceful",
+                   "_quarantine_secrets", "_flip_dept_yaml_status",
+                   "_commit_dept_status_retired", "_mark_state_retired"):
+        monkeypatch.setattr(retire_dept, helper, unexpected)
+
+    r = client.post("/agents/live-one/retire")
+    assert r.status_code == 200, r.text
+    assert "reste dans l'équipe active" in r.text
+    assert "Aucun message n'a été envoyé" in r.text
+    assert "Message d'au revoir envoyé" not in r.text
+    assert "TELEGRAM_STATE_DIR" in r.text
+    assert "TELEGRAM_CHAT_ID" in r.text
+    assert "--dry-run" in r.text
+    after = {p.relative_to(repo): p.read_bytes()
+             for p in repo.rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_retire_preview_operator_command_quotes_reason(client, fixture_root):
+    import html
+    import re
+    import shlex
+
+    repo = _make_live_dept(fixture_root)
+    reason = "Mission done; $(touch /tmp/never-run) 'quoted' <script>bad</script>"
+    r = client.post("/agents/live-one/retire", data={"reason": reason})
+    assert r.status_code == 200, r.text
+    assert "<script>bad</script>" not in r.text
+    command = html.unescape(re.search(r"<pre><code>(.*?)</code></pre>", r.text).group(1))
+    assert shlex.split(command) == [
+        "./scripts/retire-dept.sh", "--slug=live-one",
+        f"--repo-dir={repo}", f"--reason={reason}",
+    ]

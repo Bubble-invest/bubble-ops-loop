@@ -147,3 +147,20 @@ python3 -m pytest console/tests/ -v
 - IBM Plex Mono + Inter (Google Fonts CDN)
 
 No JavaScript framework. Single binary. ~700 LOC of Python + ~500 LOC of templates.
+
+### Retirement preview (#1585)
+
+`POST /agents/<slug>/retire` is a preview only (`retire_dept(..., dry_run=True)`).
+The cockpit renders the farewell and a shell-quoted operator command; it does
+not send Telegram messages, disable services, quarantine secrets or change
+retirement state. The UI explicitly says the department is still active.
+
+The `bubble-console` service loads shared console secrets, not a selected
+per-department Telegram environment, and runs with `NoNewPrivileges=true`.
+It therefore must not execute the real retirement with an ambient bot token
+or try to invoke privileged retirement helpers. Actual retirement remains an
+operator action using `scripts/retire-dept.sh` on the department host with the
+required permissions and the department's token/state directory and paired
+`TELEGRAM_CHAT_ID` (see `--help`). Tokens must not be passed in argv. The real
+flow blocks before disabling/quarantining if Telegram delivery is not confirmed.
+A dry run does not validate credentials or delivery.

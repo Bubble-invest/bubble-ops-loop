@@ -173,7 +173,7 @@ def test_checkout_staleness_cached_within_ttl(monkeypatch):
 
 def test_dept_detail_live_dept_has_retire_cta(client):
     """A Live dept must expose a 'retire' CTA on its detail page so the
-    operator has a non-curl way to decommission a colleague."""
+    operator can preview the departure and obtain the CLI instructions."""
     r = client.get("/dept/fixture")
     assert r.status_code == 200
     body = r.text.lower()
@@ -183,6 +183,8 @@ def test_dept_detail_live_dept_has_retire_cta(client):
         "à la retraite", "mettre à la retraite", "retirer",
         "retire ce collègue", "se retire",
     ])
+    assert "cet aperçu ne modifie rien" in body
+    assert "confirmer le départ" not in body
     has_form_target = '/agents/fixture/retire' in body
     assert has_label and has_form_target, (
         f"Expected a retire CTA (label) and a form/htmx target /agents/fixture/retire "
