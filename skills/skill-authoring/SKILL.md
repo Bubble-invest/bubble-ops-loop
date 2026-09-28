@@ -1,5 +1,11 @@
 ---
 name: skill-authoring
+allowed-tools:
+- Bash
+- Read
+- Write
+- Skill
+- Task
 description: >-
   Weekly, cheap, eval-gated, anti-bloat skill authoring + usage-based pruning
   agent (#1222). The KNOW-HOW half of the fleet's transcript-mining system:
@@ -41,7 +47,7 @@ then report. Be silent on a quiet week (nothing authored, nothing to prune).
 Bundled evidence collectors (call them; never re-implement their logic inline):
 - `scripts/lib/list_candidates.py` — locate + structure THIS week's 4.6 candidates + enumerate the skill registry (ARM A).
 - `scripts/lib/skill_usage_count.py` — count actual `Skill` invocations across the centralized transcript corpus + list zero-use registered skills (ARM B).
-- `scripts/lib/eval_harness.py` — run a draft skill WITH vs WITHOUT on agent-generated probes (ARM A gate).
+- `scripts/lib/eval_harness.py` — optional standalone WITH/WITHOUT runner for an independently authenticated CLI; headless ARM A uses native Task subagents below.
 
 The skill dir on the VPS is `/home/claude/.claude/skills/skill-authoring`; call
 the scripts by that absolute path (or relative to the skill dir).
@@ -86,18 +92,44 @@ bundled scripts only if they exist). Reuse the `skill-creator` meta-skill if it
 is registered; if not, author by hand to the spec.
 
 ### A4. Eval-first gate (the anti-bloat mechanism) — AUTHOR ONLY IF IT HELPS
-For each draft, generate 2–3 probe prompts from the candidate's own mined
-examples (the verbatim quotes in the 4.6 block are ideal seeds). Write them to a
-JSON file `[{"id":"p1","prompt":"..."}]`, then:
-```
-python3 /home/claude/.claude/skills/skill-authoring/scripts/lib/eval_harness.py \
-    --draft <staging>/SKILL.md --probes probes.json --model haiku --out <eval_out>
-```
-Read the paired `.with` / `.without` outputs. **Author the skill ONLY if the
-draft measurably improved the task on the majority of probes** (better recipe,
-fewer missteps, correct where the bare run was wrong). Tie or no improvement →
-**DISCARD the draft** and note it in the report. This is what stops registry
-bloat.
+For each draft, generate 2–3 self-contained probe prompts from the candidate's
+own mined examples. Include synthetic inputs and ask for the proposed procedure
+or output; probes must not require live credentials, network calls, or mutations.
+Write the prompts to `probes.json` as `[{"id":"p1","prompt":"..."}]`.
+
+**Headless mechanism (#1496): use the native Task tool**, as the wiki compiler
+already does. Spawn two fresh `general-purpose` Task subagents with `model=haiku`
+for each probe (4–6 calls per draft). Do not resume an earlier subagent or pass
+parent conversation/history. Use the same prompt and fixtures for both arms:
+
+- WITHOUT: send only the probe plus the instruction to answer from the supplied
+  inputs, without tools, reading skills, or making external changes.
+- WITH: send that identical message plus the complete staged SKILL.md body,
+  labelled as available know-how to use if relevant.
+
+Do not give either arm the other arm's response or the desired verdict. Save
+both returned responses to `<eval_out>/<id>.without.txt` and
+`<eval_out>/<id>.with.txt`, and record tool errors beside them. These are
+procedure/output probes, not proof that a live integration works.
+
+Do not launch nested `claude -p` processes from this headless session: the
+standalone `eval_harness.py` needs its own CLI authentication and can fail under
+the headless environment. Do not search for credentials or loosen the sandbox
+to make it work. The Task calls use the running session's native subagent path.
+
+Read the paired outputs. **Author the skill ONLY if the draft measurably
+improved the task on the majority of probes** (better recipe, fewer missteps,
+correct where the bare run was wrong). Tie or no improvement on completed
+probes → **DISCARD the draft** and note it in the report.
+
+If Task is unavailable, either arm errors, or a probe still requires missing
+inputs/auth, mark the candidate **eval inconclusive**, never passed or
+discarded-by-eval. Preserve the staged draft and evidence; a strong candidate
+may be filed as a **needs:human** draft with the blocker and pending eval stated
+explicitly. It cannot enter the agent:ready path until the paired eval passes.
+Continue ARM B and report the inconclusive count separately. This explicit
+blocked-eval disposition completes ARM A for the completion marker; an
+unhandled error does not.
 
 ### A5. Validation-gate (criticality) → route
 For each draft that PASSED the eval:
