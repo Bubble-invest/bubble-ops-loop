@@ -1632,7 +1632,10 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
         # exactly the host=local mechanism above — and let the dept's own
         # safe_pull bring it home. Do NOT attempt to write into runtime_root
         # directly: it would EACCES.
-        return _write_gate_decision_github(slug, gate_id, decision)
+        out = _write_gate_decision_github(slug, gate_id, decision)
+        if out is not None:
+            _write_local_hide_marker(slug, gate_id, decision)
+        return out
 
     # Not uid-isolated — write to the on-disk repo as before. Atomic: write
     # to a temp file in the same dir + os.replace, so a reader (the dept's
@@ -1666,7 +1669,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _write_local_hide_marker(slug: str, gate_id: str, decision: Dict[str, Any]
                              ) -> None:
-    """For a host=local dept whose repo is ALSO mirrored on the cockpit disk,
+    """For a remote-write dept whose repo is ALSO mirrored on the cockpit disk,
     drop the decision file into the local inbox/decisions/ as a hide-marker so
     list_pending_gates filters the card immediately (the authoritative copy still
     went to GitHub). Best-effort: silently no-op if the repo isn't on disk or the
@@ -2256,13 +2259,13 @@ def _normalize_whiteboard_notes(notes: Any) -> List[str]:
     return [str(notes)]
 
 
-def list_recent_decisions(slugs: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+def list_recent_decisions(slugs: List[str], limit: Optional[int] = 10) -> List[Dict[str, Any]]:
     """Return the most recent gate decisions across all listed dept slugs.
 
     Reads each dept's inbox/decisions/*.yaml (unprocessed) AND
     inbox/decisions/.processed/*.yaml (already drained by the agent), parses
     gate_id / action / decided_at / comment, sorts by decided_at descending,
-    returns up to `limit` entries. Malformed / missing fields are skipped
+    returns up to `limit` entries (None returns all). Malformed / missing fields are skipped
     safely (no crash).
 
     Each returned dict has at minimum:
@@ -2276,21 +2279,30 @@ def list_recent_decisions(slugs: List[str], limit: int = 10) -> List[Dict[str, A
     results: List[Dict[str, Any]] = []
 
     for slug in slugs:
-        root = repo_path(slug)
+        root = runtime_repo_path(slug) or repo_path(slug)
         if root is None:
             continue
         decisions_dir = root / "inbox" / "decisions"
-        if not decisions_dir.is_dir():
-            continue
+        mirror = repo_path(slug)
+        scan_dirs = [(False, decisions_dir), (True, decisions_dir / ".processed")]
+        # A successful remote write leaves a local marker until the runtime
+        # pulls it. Canonical decisions (including consumed ones) win over it.
+        runtime_ids = {p.stem for _, directory in scan_dirs
+                       for p in directory.glob("*.yaml")}
+        if mirror is not None and mirror != root:
+            scan_dirs.append((False, mirror / "inbox" / "decisions"))
 
         # Scan both the live inbox and the .processed/ sub-directory.
-        for processed, glob_dir in (
-            (False, decisions_dir),
-            (True, decisions_dir / ".processed"),
-        ):
+        for processed, glob_dir in scan_dirs:
             if not glob_dir.is_dir():
                 continue
             for dp in glob_dir.glob("*.yaml"):
+                if glob_dir not in (decisions_dir, decisions_dir / ".processed"):
+                    if dp.stem in runtime_ids:
+                        continue
+                    gate = load_gate_direct(slug, dp.stem)
+                    if not gate or gate.get("resolved") or gate.get("decided_by") or gate.get("approved_by"):
+                        continue
                 try:
                     raw = dp.read_text(encoding="utf-8")
                     ddoc = yaml.safe_load(raw)

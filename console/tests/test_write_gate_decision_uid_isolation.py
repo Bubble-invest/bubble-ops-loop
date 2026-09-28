@@ -15,7 +15,7 @@ own `safe_pull` then brings the decision into its live tree.
 
 These tests only exercise the dispatch logic in `write_gate_decision`:
   (a) a uid-isolated vps dept (runtime_repo_path != repo_path) routes to
-      `_write_gate_decision_github` and does NOT write to the disk mirror.
+      `_write_gate_decision_github`, then leaves a best-effort UX marker (#1597).
   (b) a non-isolated vps dept (runtime_repo_path == repo_path, or
       runtime_repo_path unresolved) still writes to disk, unchanged.
   (c) host=local behaviour is untouched by the new branch.
@@ -36,8 +36,7 @@ def _fake_dept(slug, host):
 
 def test_uid_isolated_vps_dept_routes_to_github(tmp_path, monkeypatch):
     """runtime_repo_path(slug) != repo_path(slug) (uid-isolated, e.g. Maya
-    post-#1120) → must call _write_gate_decision_github and must NOT write
-    the decision to the (orphaned) disk mirror."""
+    post-#1120) → deliver via GitHub and leave a local UX marker only."""
     legacy_mirror = tmp_path / "bubble-ops-maya"
     legacy_mirror.mkdir()
     live_tree = tmp_path / "srv-agents-maya"
@@ -60,8 +59,9 @@ def test_uid_isolated_vps_dept_routes_to_github(tmp_path, monkeypatch):
 
     assert out is not None
     assert called["args"] == ("maya", "gate-42", {"decision": "approve"})
-    # The legacy mirror must NOT receive the decision file.
-    assert not (legacy_mirror / "inbox" / "decisions" / "gate-42.yaml").exists()
+    # #1597: the mirror gets the existing best-effort UX marker only AFTER
+    # the authoritative GitHub commit succeeds.
+    assert (legacy_mirror / "inbox" / "decisions" / "gate-42.yaml").exists()
     # Nor must anything have been written into the live tree directly — the
     # console process has no write access there; delivery is via GitHub only.
     assert not (live_tree / "inbox" / "decisions" / "gate-42.yaml").exists()

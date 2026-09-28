@@ -347,6 +347,8 @@ def gate_decide(
         decision["selected_option"] = option
         decision["selected_option_label"] = option_label
     out_path = github_reader.write_gate_decision(slug, gate_id, decision)
+    if out_path is None:
+        raise HTTPException(502, "La décision n’a pas été enregistrée. Réessaie.")
     resp = request.app.state.templates.TemplateResponse(
         "partials/gate_decision_ok.html",
         {
@@ -365,7 +367,7 @@ def gate_decide(
     # "en révision" — so we keep the operator here to read the confirmation
     # instead of redirecting. `choose` IS terminal (the question is answered).
     if action in ("approve", "reject", "defer", "choose"):
-        resp.headers["HX-Redirect"] = f"/dept/{slug}"
+        resp.headers["HX-Redirect"] = f"/dept/{slug}?decision_recorded={action}"
     return resp
 
 

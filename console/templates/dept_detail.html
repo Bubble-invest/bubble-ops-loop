@@ -62,6 +62,13 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
 </script>
 {% endblock %}
 {% block content %}
+{% if decision_recorded %}
+<div class="reprendre-card" role="status">
+  <strong>Décision enregistrée — {{ decision_recorded }}</strong>
+  <p>{{ dept.display_name }} la traitera lors de son prochain cycle.</p>
+</div>
+{% endif %}
+
 
 {# Layer → human-name map (the 4 moments de la journée). #}
 {% set moment_names = {
@@ -289,6 +296,17 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
     <h2 id="dept-decisions-heading" class="section-title">Décisions qu'on attend de toi</h2>
   </div>
 
+  {% if pending_decisions %}
+  <div class="recent-decisions-list" aria-label="Décisions en attente de traitement">
+    {% for dec in pending_decisions %}
+    <div class="recent-decision-row">
+      <span>{{ dec.gate_id }}</span>
+      <strong>{{ dec.action }}</strong>
+      <span>Décision enregistrée · En attente de traitement par {{ dept.display_name }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if gate_groups %}
     {# Mirror the home page: group gates of the same kind into one card.
        Single-gate kinds keep the existing one-card-per-gate behaviour but
