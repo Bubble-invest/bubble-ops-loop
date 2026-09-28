@@ -253,11 +253,20 @@ properties:
             adds its own.
         output_queue:
           type: string
-          pattern: "^queues/.+/?$"
+          pattern: "^(queues/.+/?|outputs/?)$"
           description: |
             Filesystem path inside the dept repo where materialized queue
             items land. MUST start with "queues/" so they get picked up
-            by the standard Layer 2 scan.
+            by the standard Layer 2 scan — EXCEPT the literal "outputs/",
+            reserved for fleet-standard Layer-4 missions (e.g.
+            session_handoff, card #1441) that write their artifact
+            directly instead of materializing a Layer-2 queue item. These
+            are dept.yaml-embedded and never operator-authored, unlike
+            the standalone missions/*.yaml form (see
+            skill_lib/step_runners/missions.py::_ensure_fleet_standard_missions,
+            which intentionally skips per-mission schema validation for
+            this reason). See agents/ben/dept.yaml's session_handoff
+            entry for the live precedent.
         creates:
           type: array
           items: { type: string, minLength: 1 }
