@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -505,54 +504,25 @@ def test_bootstrap_dept_sh_dry_run_is_idempotent(tmp_path: Path):
 
 
 def test_bootstrap_dept_sh_dry_run_refuses_to_wipe_non_tmp_target(tmp_path: Path):
-    """Defensive: when the env var is UNSET and CLONE_PARENT computes to a
-    non-/tmp/ path, refuse the wipe. Protects against catastrophic misuse
-    if a future caller patches the default CLONE_PARENT to a real workspace.
+    """Refuse a non-/tmp default without writing outside pytest's sandbox.
 
-    Setup: we shim `/tmp` by routing it through a wrapper script that
-    redirects to a non-tmp dir, so we can observe the safety guard
-    without actually messing with /tmp. The realistic prod scenario is
-    "someone modified the default CLONE_PARENT in the script and forgot
-    the wipe-safety case" — this test catches that.
-
-    For simplicity: we use a custom bootstrap-dept.sh wrapper that
-    runs the real script with CLONE_PARENT pointed at the non-tmp dir
-    by editing the line in-place via a sed temp copy.
-
-    NOTE: the clone dir must genuinely NOT be under /tmp/ for the guard to
-    fire. `tmp_path` is under /var/folders on macOS but UNDER /tmp on Linux CI,
-    so we can't use it here — we create the clone dir under $HOME instead (never
-    /tmp on either platform) and clean it up ourselves.
+    A relative CLONE_PARENT exercises the real guard's non-/tmp branch on
+    both Linux and macOS. Resolve it from tmp_path so all filesystem writes
+    stay disposable, including if a regression incorrectly permits wiping.
     """
-    import tempfile as _tempfile
-    home_tmp = _tempfile.mkdtemp(prefix="bootstrap-wipe-test-", dir=str(Path.home()))
-    self_cleanup = home_tmp
-    try:
-        clone_dir = Path(home_tmp) / "not-under-tmp"   # guaranteed not /tmp/*
-        clone_dir.mkdir()
-        (clone_dir / "bubble-ops-canary").mkdir()
-        (clone_dir / "bubble-ops-canary" / "dummy.txt").write_text("hi", encoding="utf-8")
-        return _run_wipe_guard_assertions(tmp_path, clone_dir)
-    finally:
-        shutil.rmtree(self_cleanup, ignore_errors=True)
-
-
-def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
-    """Body of the wipe-refusal test, factored out so the clone dir (which must
-    live outside /tmp on both macOS and Linux) is cleaned up via try/finally."""
+    clone_dir = tmp_path / "not-under-tmp"
+    clone_dir.mkdir()
+    (clone_dir / "bubble-ops-canary").mkdir()
+    canary = clone_dir / "bubble-ops-canary" / "dummy.txt"
+    canary.write_text("hi", encoding="utf-8")
 
     # Make a patched copy of the script that defaults CLONE_PARENT to our
-    # non-tmp dir (and ignores the env var so we can hit the unsafe branch).
+    # non-tmp dir. Leave the wipe guard itself unchanged.
     patched_script = tmp_path / "bootstrap-dept-patched.sh"
     original = (SCRIPTS_DIR / "bootstrap-dept.sh").read_text(encoding="utf-8")
     patched = original.replace(
         'CLONE_PARENT="${BUBBLE_BOOTSTRAP_CLONE_DIR:-/tmp}"',
-        f'CLONE_PARENT="{clone_dir}"',
-    )
-    # Also strip the env-var fallback so the safety check fires.
-    patched = patched.replace(
-        'if [[ -n "${BUBBLE_BOOTSTRAP_CLONE_DIR:-}" ]]; then',
-        'if false; then',
+        f'CLONE_PARENT="{clone_dir.relative_to(tmp_path)}"',
     )
     patched_script.write_text(patched, encoding="utf-8")
     patched_script.chmod(0o755)
@@ -566,11 +536,13 @@ def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
     fake_gh.chmod(0o755)
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
 
-    # Try the dry-run twice. The second run should fail with the safety
-    # message because the target dir is non-tmp + env var is unset.
+    # The pre-existing canary must trigger refusal: the default is not
+    # an absolute /tmp path and the caller has not opted into wiping.
     args = ["bash", str(patched_script),
             "--slug=canary", "--display-name=Canary", "--owner=operator", "--dry-run"]
-    res2 = subprocess.run(args, env=env, capture_output=True, text=True)
+    res2 = subprocess.run(
+        args, cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
 
     assert res2.returncode != 0, (
         "expected exit != 0 (refuse to wipe non-/tmp/ target without env var), "
@@ -581,7 +553,7 @@ def _run_wipe_guard_assertions(tmp_path: Path, clone_dir: Path):
     )
 
     # The original dummy.txt must STILL exist (we refused to wipe)
-    assert (clone_dir / "bubble-ops-canary" / "dummy.txt").exists(), (
+    assert canary.read_text(encoding="utf-8") == "hi", (
         "defensive wipe-refusal failed — content was deleted anyway"
     )
 

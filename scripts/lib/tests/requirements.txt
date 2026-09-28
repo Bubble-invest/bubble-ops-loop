@@ -1,0 +1,7 @@
+# Python 3.12 test environment for scripts/lib/tests and scripts/tests.
+# Install: python -m pip install -r scripts/lib/tests/requirements.txt
+-r ../../requirements.txt
+pytest==9.1.1
+# scaffold imports the onboarding template renderer during collection.
+# Match console/requirements.txt, which uses the same renderer dependency.
+Jinja2==3.1.6
