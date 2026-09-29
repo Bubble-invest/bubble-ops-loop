@@ -7,6 +7,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PLATFORM_ROOT = ROOT / "tests" / "fixtures" / "bubble-vps-platform"
 
 
 def test_legacy_unit_generator_is_removed():
@@ -63,7 +64,7 @@ def test_transport_dry_run_renders_and_verifies_without_contacting_host(tmp_path
     result = subprocess.run([
         "bash", str(ROOT / "scripts/deploy-to-morty.sh"),
         "--slug=maya", f"--tenant-yaml={tenant}", f"--dept-yaml={dept}",
-        f"--platform-root={ROOT.parent / 'bubble-vps-platform'}", "--dry-run",
+        f"--platform-root={PLATFORM_ROOT}", "--dry-run",
     ], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "scp " in result.stdout

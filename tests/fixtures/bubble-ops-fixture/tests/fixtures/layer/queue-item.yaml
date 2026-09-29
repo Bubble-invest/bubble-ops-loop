@@ -1,0 +1,11 @@
+# Valid queue-item fixture per Notion v4 §"Contrats minimaux" + operator-side
+# schemas-draft/queue-item.schema.yaml. Used by tests/run.sh layer-level check.
+id: fixture-echo-001
+kind: echo_task
+source_layer: 1
+target_layer: 2
+priority: high
+created_at: "2026-05-20T17:30:00Z"
+payload:
+  message: "hello fixture queue item"
+  reason: "Layer 1 materialized echo_heartbeat recurring mission"
