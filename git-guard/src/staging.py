@@ -31,6 +31,10 @@ from typing import Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 GIT_BINARY = "/usr/bin/git"
 SOURCE_REF = "refs/git-guard/source"
 BASE_REF = "refs/git-guard/base"
+# Branch a NEW push target is compared against (it forks from it). Without this,
+# a push that creates a branch diffed against nothing and every file in the repo
+# counted as changed (Ben, settings_pr, 2026-09-29).
+DEFAULT_BASE_BRANCH = "main"
 
 DIFF_SAFETY_ARGS: Tuple[str, ...] = (
     "--no-renames",
@@ -411,8 +415,21 @@ class GuardRepository:
                 ),
             )
 
-    def changed_paths(self, remote_sha: Optional[str]) -> List[str]:
-        if remote_sha is None:
+    def changed_paths(
+        self, remote_sha: Optional[str], *, new_branch_base: bool = False
+    ) -> List[str]:
+        if remote_sha is None and new_branch_base:
+            # New branch: final-tree diff against the CURRENT default-branch tip
+            # (two-dot, same as an existing target). Everything that differs
+            # from what is live on main is checked, including merge-only paths
+            # and reverts hidden behind an older fork point.
+            proc = self.run(
+                "diff", *DIFF_SAFETY_ARGS,
+                f"{BASE_REF}..{SOURCE_REF}",
+                "--name-only", "-z",
+            )
+            command = [GIT_BINARY, "diff"]
+        elif remote_sha is None:
             proc = self.run("ls-tree", "-r", "--name-only", "-z", SOURCE_REF)
             command = [GIT_BINARY, "ls-tree"]
         else:
@@ -451,6 +468,7 @@ def prepare_push(
     ref: str = "HEAD",
     read_token: Optional[str] = None,
     read_token_provider: Optional[Callable[[], str]] = None,
+    diff_new_branch_against_default: bool = False,
 ) -> Iterator[PushPlan]:
     """Yield one immutable push plan backed by a temporary bare repository."""
     guard_repo = GuardRepository.create()
@@ -460,12 +478,30 @@ def prepare_push(
         )
         guard_repo.import_source(actor_repo, source_sha)
         token = read_token
+
+        def lookup(tok: Optional[str]) -> "tuple[Optional[str], bool]":
+            sha = guard_repo.remote_sha(destination_url, destination, token=tok)
+            if sha is not None:
+                guard_repo.fetch_remote_base(destination_url, destination, sha, token=tok)
+                return sha, False
+            # Default: a missing destination keeps the conservative full-tree
+            # sweep (security review round 3). Only callers that explicitly opt
+            # in (settings_pr: always a NEW branch, always a human-reviewed PR)
+            # diff against the current default-branch tip instead.
+            if not diff_new_branch_against_default or destination == DEFAULT_BASE_BRANCH:
+                return None, False
+            base_sha = guard_repo.remote_sha(
+                destination_url, DEFAULT_BASE_BRANCH, token=tok
+            )
+            if base_sha is None:
+                return None, False
+            guard_repo.fetch_remote_base(
+                destination_url, DEFAULT_BASE_BRANCH, base_sha, token=tok
+            )
+            return None, True
+
         try:
-            remote_sha = guard_repo.remote_sha(destination_url, destination, token=token)
-            if remote_sha is not None:
-                guard_repo.fetch_remote_base(
-                    destination_url, destination, remote_sha, token=token
-                )
+            remote_sha, new_branch_base = lookup(token)
         except subprocess.CalledProcessError as exc:
             if token is not None or read_token_provider is None or not is_authentication_error(exc):
                 raise
@@ -473,14 +509,8 @@ def prepare_push(
             # authoritative lookup and fetch in this same isolated repo, then
             # discard it before policy evaluation and write-token minting.
             token = read_token_provider()
-            remote_sha = guard_repo.remote_sha(
-                destination_url, destination, token=token
-            )
-            if remote_sha is not None:
-                guard_repo.fetch_remote_base(
-                    destination_url, destination, remote_sha, token=token
-                )
-        paths = guard_repo.changed_paths(remote_sha)
+            remote_sha, new_branch_base = lookup(token)
+        paths = guard_repo.changed_paths(remote_sha, new_branch_base=new_branch_base)
         token = None
         yield PushPlan(
             paths=paths,
@@ -500,7 +530,11 @@ def staged_paths_for_push(
     *,
     destination_url: str,
     ref: str = "HEAD",
+    diff_new_branch_against_default: bool = False,
 ) -> List[str]:
     """Compatibility helper returning committed paths from the isolated plan."""
-    with prepare_push(repo_dir, destination_url=destination_url, ref=ref) as plan:
+    with prepare_push(
+        repo_dir, destination_url=destination_url, ref=ref,
+        diff_new_branch_against_default=diff_new_branch_against_default,
+    ) as plan:
         return plan.paths

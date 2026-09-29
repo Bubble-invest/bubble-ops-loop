@@ -251,6 +251,7 @@ class Guard:
             with prepare_push(
                 Path(repo_dir), destination_url=destination_url, ref=ref,
                 read_token_provider=mint_read_token,
+                diff_new_branch_against_default=(action == "settings_pr"),
             ) as plan:
                 return self._execute_plan(
                     plan, ts=ts, actor=actor, dept=dept, action=action,

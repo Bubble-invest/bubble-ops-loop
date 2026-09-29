@@ -596,3 +596,31 @@ def test_ls_remote_and_fetch_never_read_local_remotes_ref(temp_git_repo):
         ) == real_sha
     finally:
         isolated.close()
+
+
+def test_settings_pr_new_branch_diffs_against_current_main(diverged_repo):
+    """settings_pr always creates a NEW branch (a human-reviewed PR). It must be
+    checked against what differs from the current main tip, not the whole tree
+    (Ben 2026-09-29: every repo file was listed and the push denied)."""
+    stage_files(diverged_repo, ["dept.yaml"], "structural change\n")
+    _git(diverged_repo, "commit", "-m", "settings change")
+    paths = staged_paths_for_push(
+        diverged_repo,
+        destination_url=str(diverged_repo.parent / "remote.git"),
+        ref="HEAD:settings/new-thing",
+        diff_new_branch_against_default=True,
+    )
+    assert "dept.yaml" in paths
+    assert ".gitkeep" not in paths            # unchanged vs main: not swept in
+    assert "requirements.txt" not in paths    # already on main
+
+
+def test_runtime_new_branch_keeps_conservative_full_tree_sweep(diverged_repo):
+    """Without the opt-in (runtime pushes), a missing destination still sweeps
+    the whole tree (security review round 3 design, unchanged)."""
+    paths = staged_paths_for_push(
+        diverged_repo,
+        destination_url=str(diverged_repo.parent / "remote.git"),
+        ref="HEAD:new-branch",
+    )
+    assert {".gitkeep", "requirements.txt", "outputs/heartbeat.log"} <= set(paths)
