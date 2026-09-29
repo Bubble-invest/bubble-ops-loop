@@ -228,15 +228,22 @@ class Guard:
             return 1
 
         try:
+            # The settings_pr path is driven through a sudo-able root wrapper
+            # pinned to settings_pr ONLY (bubble-broker-mint-settings-root.sh),
+            # which refuses runtime_read. Mint the pre-push read token with the
+            # push's own action there, so #543's base fetch works on both
+            # paths without widening that wrapper.
+            read_action = "settings_pr" if action == "settings_pr" else "runtime_read"
+
             def mint_read_token() -> str:
                 token = self._mint_token(
-                    ts=ts, actor=actor, dept=dept, action="runtime_read",
+                    ts=ts, actor=actor, dept=dept, action=read_action,
                     repo=repo, paths=[],
                 )
                 if token is None:
                     raise subprocess.CalledProcessError(
                         1,
-                        [self.broker_cmd[0], "mint", "--action", "runtime_read"],
+                        [self.broker_cmd[0], "mint", "--action", read_action],
                         stderr="read-token mint failed for private repository",
                     )
                 return token
