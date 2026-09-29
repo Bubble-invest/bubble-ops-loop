@@ -38,7 +38,7 @@ def _allowed_real_push(
 ) -> int:
     stage_files(temp_git_repo, ["outputs/hook-regression.txt"], "allowed\n")
     subprocess.run(
-        ["git", "commit", "-m", "allowed hook regression"],
+        ["git", "-c", "user.name=git-guard-test", "-c", "user.email=git-guard-test@example.invalid", "commit", "-m", "allowed hook regression"],
         cwd=temp_git_repo,
         check=True,
         capture_output=True,
@@ -117,7 +117,7 @@ def test_fetch_cannot_run_reference_transaction_hook(
     """Fetching the verified base must not execute another client-side hook."""
     stage_files(temp_git_repo, ["outputs/ref-hook.txt"], "allowed\n")
     subprocess.run(
-        ["git", "commit", "-m", "allowed reference hook regression"],
+        ["git", "-c", "user.name=git-guard-test", "-c", "user.email=git-guard-test@example.invalid", "commit", "-m", "allowed reference hook regression"],
         cwd=temp_git_repo,
         check=True,
         capture_output=True,
@@ -168,7 +168,7 @@ def test_final_push_also_bypasses_pre_push_explicitly(
 ):
     stage_files(temp_git_repo, ["outputs/no-verify.txt"], "allowed\n")
     subprocess.run(
-        ["git", "commit", "-m", "allowed no-verify regression"],
+        ["git", "-c", "user.name=git-guard-test", "-c", "user.email=git-guard-test@example.invalid", "commit", "-m", "allowed no-verify regression"],
         cwd=temp_git_repo, check=True, capture_output=True, text=True,
     )
     guard = Guard(
