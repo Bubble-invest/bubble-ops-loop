@@ -72,6 +72,10 @@ def test_commit_succeeds_with_no_identity_anywhere(tmp_path, monkeypatch):
     # `_push_repo` never relies on that guess either way: it sets identity
     # explicitly, so its commit always lands with the exact expected author.
 
+    # Token minting is outside this identity regression. Keep the real git
+    # commit, but never invoke the operator's sudo helper or push remotely.
+    monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir: None)
+
     # Exercise the actual delivery path: _push_repo's commit must
     # succeed anyway, because it sets identity explicitly per invocation.
     ok, detail = dd._push_repo(
@@ -81,14 +85,8 @@ def test_commit_succeeds_with_no_identity_anywhere(tmp_path, monkeypatch):
         dry_run=False,
         paths=["README.md"],
     )
-    # ok may still end up False downstream (no real GitHub credential
-    # helper/token available in a test env — _mint_token fails safe and
-    # _push_repo reports that as its own, separate failure) but the COMMIT
-    # itself — the thing #1551 broke — must have landed.
-    if not ok:
-        assert "could not mint token" in detail or "push rejected" in detail, (
-            f"_push_repo failed for an unexpected (non-token/push) reason: {detail!r}"
-        )
+    assert not ok
+    assert detail == "could not mint token for bubble-ops-accountant"
 
     log = _git(repo, "log", "-1", "--format=%an\t%ae\t%s")
     assert log.returncode == 0, log.stderr
