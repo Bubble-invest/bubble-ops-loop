@@ -90,7 +90,7 @@ def _run(env: dict[str, str], args: list[str], tmp_path: Path, *, curl_ok: bool 
     stub_path = bin_dir / "curl"
     marker_file = tmp_path / "curl_called"
     if curl_ok is None:
-        stub_body = f"#!/usr/bin/env bash\ntouch '{marker_file}'\nexit 99\n"  # never expected to run
+        stub_body = "#!/usr/bin/env bash\nexit 99\n"  # never expected to run
     elif curl_ok:
         stub_body = f"#!/usr/bin/env bash\ntouch '{marker_file}'\nexit 0\n"
     else:
@@ -102,9 +102,13 @@ def _run(env: dict[str, str], args: list[str], tmp_path: Path, *, curl_ok: bool 
     call = " ".join(f'"{a}"' if " " not in a else f"'{a}'" for a in args)
     script.write_text(HARNESS_PREFIX + SNIPPET + f'\nsend_queued_telegram_report {call}\necho DONE\n', encoding="utf-8")
 
-    # Credentials belong to each case, never to the developer or test runner.
-    base_env = {k: v for k, v in os.environ.items() if k not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_STATE_DIR"}}
-    full_env = {**base_env, **env, "LOG_FILE": str(log_file), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    full_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("TELEGRAM_") and key not in {"GH_TOKEN", "GITHUB_TOKEN"}
+    }
+    full_env.update(env)
+    full_env.update({"LOG_FILE": str(log_file), "PATH": f"{bin_dir}:{os.environ['PATH']}"})
     result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=full_env)
     result.log = log_file.read_text(encoding="utf-8")  # type: ignore[attr-defined]
     result.curl_called = marker_file.exists()  # type: ignore[attr-defined]
@@ -170,9 +174,12 @@ def test_report_stays_queued_when_send_fails(tmp_path: Path) -> None:
 #     skip" bar the card sets.
 # --------------------------------------------------------------------------
 def test_missing_token_is_a_loud_warn_not_a_silent_drop(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "SYNTHETIC-AMBIENT-TOKEN")
     report = tmp_path / "telegram-report.txt"
     report.write_text("hello joris", encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "ambient-token-must-not-leak")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "ambient-chat-must-not-leak")
+    monkeypatch.setenv("GH_TOKEN", "ambient-gh-token-must-not-leak")
+    monkeypatch.setenv("GITHUB_TOKEN", "ambient-github-token-must-not-leak")
     env = {"MODE": "skillsmith"}
     env.pop("TELEGRAM_BOT_TOKEN", None)
     result = _run(env, [str(report)], tmp_path, curl_ok=None)
