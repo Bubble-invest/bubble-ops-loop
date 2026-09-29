@@ -41,3 +41,43 @@ recreates the original leak-audit noise. Re-run the bounded task instead.
 This is a preventive control, not a scanner exception. Do not exclude Codex
 paths from `secrets-tmp-sweep.sh`, weaken its filename patterns, or broadly
 clean `/tmp`. The detector must continue to find real matching leftovers.
+
+## Isolated worker checkout standard (#1306)
+
+Every worker must have its own clone or worktree, even when workers edit
+unrelated files. Never branch, stage, commit, or build in the live framework
+checkouts `/home/claude/bubble-ops-loop` and `/opt/bubble-ops-loop`, anywhere
+under `/srv/agents`, or a shared `scratch_work/*` checkout. Start from
+`origin/main` unless the brief explicitly requires another base.
+
+Prefer the wrapper above with `--ref main`. It checks the scratch base before
+creating any files and checks the clone before launching Codex. A scratch
+base inside any existing Git checkout is refused, as are managed live paths
+and their symlink aliases. Keep scratch storage outside shared checkouts.
+Python 3 and Git must be available; a failed preflight stops dispatch.
+
+For a persistent worktree, use a separate development clone as the source
+and a unique path/branch for each worker (substitute the issue number):
+
+```bash
+cd /home/claude/worktrees/framework-source
+git fetch origin main
+python3 scripts/worker-checkout-guard.py /home/claude/worktrees/issue-1306 &&
+  git worktree add -b fix/1306 /home/claude/worktrees/issue-1306 origin/main
+cd /home/claude/worktrees/issue-1306
+python3 scripts/worker-checkout-guard.py "$PWD" || exit 2
+```
+
+Run this preflight before handing a checkout to any other worker launcher.
+If refused, leave the checkout, branch and staged changes intact and dispatch
+in a new isolated location. Do not reset, stash, clean or switch the live tree.
+The guard is a dispatch preflight, not an OS sandbox: other launchers must call
+it, and it does not intercept arbitrary shell commands or install Git hooks.
+No deployment or emergency operator workflow is changed.
+
+**FR :** Chaque worker utilise son propre clone ou worktree, créé depuis
+`origin/main`. Ne jamais coder dans les checkouts actifs ci-dessus ni dans un
+checkout partagé. Le lanceur vérifie le chemin avant toute écriture ; pour un
+autre lanceur, appeler le même garde avant de démarrer le worker. En cas de
+refus, préserver la branche et les fichiers existants et utiliser un nouvel
+emplacement isolé.

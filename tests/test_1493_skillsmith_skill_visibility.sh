@@ -53,6 +53,11 @@ SKILLSMITH_TARGET="$DEPLOY_HOME/.claude/skills/skill-authoring"
 grep -q 'SKILLSMITH_DONE' "$SKILLSMITH_LINK/SKILL.md" \
     || fail "installed skill-authoring SKILL.md is missing the #1493 completion-marker contract"
 
+# The #1440 authoring template must resolve from the installed headless skill.
+cmp "$REPO_ROOT/skills/skill-authoring/references/authoring-template.md" \
+    "$SKILLSMITH_LINK/references/authoring-template.md" \
+    || fail "installed authoring template is missing or differs from source"
+
 # --- the three modes that already worked must still work (no regression) ---
 for mode in compile synthesis pruning; do
     link="$CONFIG_ROOT/cloud-wiki-compile-$mode/skills/cloud-wiki-compile"

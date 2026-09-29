@@ -63,12 +63,16 @@ make_framework() {
 make_dept() {  # make_dept <dir> [host]
   local dir="$1" host="${2:-}"
   mkdir -p "$dir/scripts/lib" "$dir/tools"
+  printf 'slug: %s\n' "$(basename "$dir")" > "$dir/dept.yaml"
   git -C "$dir" init -q 2>/dev/null
   git -C "$dir" config user.email "fixture@test"
   git -C "$dir" config user.name "fixture"
   echo "# stale dispatch_helpers" > "$dir/scripts/lib/dispatch_helpers.py"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m "init dept"
+  # A stale managed file must have a trusted baseline; unknown forks defer.
+  mkdir -p "$dir/.git/vendor-dept-libs/scripts/lib"
+  cp "$dir/scripts/lib/dispatch_helpers.py" "$dir/.git/vendor-dept-libs/scripts/lib/dispatch_helpers.py"
   if [[ -n "$host" ]]; then
     mkdir -p "$dir/onboarding"
     printf 'slug: %s\nstatus: Live\nhost: %s\n' "$(basename "$dir")" "$host" > "$dir/onboarding/STATE.yaml"

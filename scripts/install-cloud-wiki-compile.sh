@@ -62,8 +62,9 @@ install -d -m 0755 "$(dirname "$SKILL_DST")"
 install -m 0644 "$SKILL_SRC/SKILL.md" "$SKILL_DST"
 
 echo "[7/11] skill-authoring SKILL (#1222) -> $SKILLSMITH_DST"
-install -d -m 0755 "$SKILLSMITH_DST/scripts/lib"
+install -d -m 0755 "$SKILLSMITH_DST/scripts/lib" "$SKILLSMITH_DST/references"
 install -m 0644 "$SKILLSMITH_SRC/SKILL.md" "$SKILLSMITH_DST/SKILL.md"
+install -m 0644 "$SKILLSMITH_SRC/references/"*.md "$SKILLSMITH_DST/references/"
 install -m 0755 "$SKILLSMITH_SRC/scripts/lib/"*.py "$SKILLSMITH_DST/scripts/lib/"
 
 # Board #1493: `--setting-sources user` resolves each headless run's skills

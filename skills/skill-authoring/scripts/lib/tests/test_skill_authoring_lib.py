@@ -12,7 +12,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import yaml
+
 LIB = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(LIB))
 
 import skill_usage_count as suc  # noqa: E402
@@ -131,6 +134,85 @@ class TestListCandidates(unittest.TestCase):
         self.assertIn("auth things", rep["registered_skills"][0]["description"])
 
 
+
+class TestWeeklyCounts(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.tmp = Path(self.tmpdir.name)
+        self.reg = self.tmp / "skills"
+        (self.reg / "rare-critical").mkdir(parents=True)
+        (self.reg / "rare-critical" / "SKILL.md").write_text("rare but needed")
+        self.history = self.tmp / "history"
+
+    def record(self, day, flags):
+        report = suc.build_report([], [str(self.reg)], 45,
+                                  now=datetime.fromisoformat(day).replace(tzinfo=timezone.utc))
+        return suc.record_weekly_counts(report, flags, str(self.history))
+
+    def test_first_quiet_week_counts_registry_not_usage(self):
+        counts = self.record("2026-09-20", 0)
+        self.assertEqual(counts["live_skill_count"], 1)
+        self.assertEqual(counts["flagged_count"], 0)  # zero usage is not a prune verdict
+        self.assertIsNone(counts["flagged_delta"])
+        self.assertIsNone(counts["live_skill_delta"])
+        self.assertEqual(json.loads((self.history / "2026-W38.json").read_text()), counts)
+
+    def test_weekly_deltas_and_same_week_retry(self):
+        self.record("2026-09-20", 1)
+        (self.reg / "new").mkdir()
+        (self.reg / "new" / "SKILL.md").write_text("new")
+        quiet = self.record("2026-09-27", 0)
+        self.assertEqual(quiet["live_skill_delta"], 1)
+        self.assertEqual(quiet["flagged_delta"], -1)
+        self.assertEqual(self.record("2026-09-27", 0), quiet)
+        self.assertEqual(len(list(self.history.iterdir())), 2)
+
+    def test_missing_week_is_not_compared_to_older_week(self):
+        self.record("2026-09-13", 1)
+        self.assertIsNone(self.record("2026-09-27", 0)["flagged_delta"])
+
+    def test_iso_year_boundary(self):
+        self.record("2020-12-27", 1)
+        self.record("2021-01-03", 1)
+        counts = self.record("2021-01-10", 0)
+        self.assertEqual(counts["week"], "2021-W01")
+        self.assertEqual(counts["previous_week"], "2020-W53")
+        self.assertEqual(counts["flagged_delta"], -1)
+
+    def test_corrupt_or_incompatible_baseline_is_unavailable(self):
+        self.history.mkdir()
+        path = self.history / "2026-W38.json"
+        for raw in ('bad json', '[]', '{"week": "2026-W38", "flagged_count": "1"}'):
+            path.write_text(raw)
+            self.assertIsNone(self.record("2026-09-27", 0)["flagged_delta"])
+        counts = self.record("2026-09-20", 1)
+        counts["window_days"] = 90
+        path.write_text(json.dumps(counts))
+        self.assertIsNone(self.record("2026-09-27", 0)["flagged_delta"])
+
+    def test_missing_registry_does_not_record_false_zero(self):
+        (self.reg / "rare-critical" / "SKILL.md").unlink()
+        (self.reg / "rare-critical").rmdir()
+        self.reg.rmdir()
+        with self.assertRaisesRegex(ValueError, "registry unavailable"):
+            self.record("2026-09-27", 0)
+        self.assertFalse(self.history.exists())
+
+    def test_cli_reports_quiet_week_without_live_corpus(self):
+        import contextlib
+        import io
+        corpus = self.tmp / "corpus"
+        corpus.mkdir()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = suc.main(["--registry", str(self.reg), "--corpus", str(corpus),
+                           "--flagged-count", "0", "--history-dir", str(self.history)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(output.getvalue())["weekly_counts"]["flagged_count"], 0)
+
+
 class TestEvalHarness(unittest.TestCase):
     def test_dry_run_plans_without_calling(self):
         import tempfile
@@ -144,6 +226,28 @@ class TestEvalHarness(unittest.TestCase):
         self.assertTrue(res["pairs"][0]["planned"])
         # dry-run must not create output files
         self.assertFalse((tmp / "out").exists())
+
+    def test_paired_outputs_preserve_a_synthetic_tie_for_agent_judgment(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            draft = tmp / "SKILL.md"
+            draft.write_text("Answer the question.")
+            with patch.object(eh, "run_one", return_value={"rc": 0, "stdout": "4", "stderr": ""}) as run:
+                result = eh.eval_draft(str(draft), [{"id": "sum", "prompt": "2 + 2?"}],
+                                       "haiku", str(tmp / "out"))
+            self.assertEqual(run.call_count, 2)
+            self.assertNotIn("--append-system-prompt", run.call_args_list[0].args[0])
+            self.assertIn("--append-system-prompt", run.call_args_list[1].args[0])
+            pair = result["pairs"][0]
+            self.assertEqual(pair["without_rc"], 0)
+            self.assertEqual(pair["with_rc"], 0)
+            self.assertEqual(Path(pair["with_out"]).read_text(), "4")
+            self.assertEqual(Path(pair["without_out"]).read_text(), "4")
+            self.assertIn("Do not author on a tie", result["judgment_note"])
+            # The harness provides evidence; it never invents a pass/fail verdict.
+            self.assertNotIn("passed", result)
 
     def test_load_probes(self):
         import tempfile
@@ -161,6 +265,18 @@ class TestEvalHarness(unittest.TestCase):
         self.assertNotIn("--append-system-prompt", without)
         self.assertIn("--append-system-prompt", withc)
         self.assertEqual(withc[-1], "P")
+
+
+class TestSkillFrontmatter(unittest.TestCase):
+    def test_allowed_tools_present_and_includes_required_set(self):
+        # Regression (card #1440): a prior fix silently dropped the
+        # allowed-tools frontmatter entirely. #538 requires it for the
+        # native headless eval Task subagents.
+        text = (REPO / "skills/skill-authoring/SKILL.md").read_text()
+        frontmatter = yaml.safe_load(text.split("---", 2)[1])
+        allowed = frontmatter.get("allowed-tools")
+        self.assertIsNotNone(allowed)
+        self.assertTrue({"Task", "Read", "Write", "Bash", "Skill"} <= set(allowed))
 
 
 if __name__ == "__main__":

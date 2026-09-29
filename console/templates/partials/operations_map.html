@@ -1,0 +1,51 @@
+{% macro mission_card(m) %}
+<div class="ops-mission ops-{{ m.status }}">
+  <a href="/dept/{{ m.dept }}">{{ m.dept }}</a> · <strong>{{ m.id }}</strong>
+  <div>{{ operations_map.status_labels[m.status] }}{% if m.missing %} · déclaration / miroir absent{% endif %}</div>
+  {% if m.mission_layer %}<small>Moment {{ m.mission_layer }} · {{ m.time }}</small>{% endif %}
+  {% if m.last_run %}<div><small>Dernière exécution : {{ m.last_run }}</small></div>{% endif %}
+  {% if m.note %}<div><small>{{ m.note }}</small></div>{% endif %}
+</div>
+{% endmacro %}
+<section id="operations-map" class="cabinet-section" aria-labelledby="operations-map-heading"
+         hx-get="/dept/tony/operations-fragment" hx-trigger="every 60s" hx-swap="outerHTML">
+  <h2 id="operations-map-heading" class="section-title">Comment tout se tient</h2>
+  <p class="section-sub">Missions par boucle métier · {{ operations_map.date }} (Paris) · lecture seule</p>
+  {% if not operations_map.available %}
+    <p>Cartographie des opérations indisponible.</p>
+  {% else %}
+    <p>État à {{ operations_map.as_of }} · actualisation toutes les 60 secondes.
+      Une absence de résultat ne prouve pas un échec : le registre ne consigne pas les échecs.</p>
+    <div class="ops-scroll">
+      <table class="ops-grid">
+        <thead><tr><th scope="col">Étape ↓ / Boucle →</th>{% for unit, info in operations_map.units.items() %}
+          <th scope="col">{{ info.label or unit }}{% if info.lead %}<div><small>{{ info.lead }}</small></div>{% endif %}</th>
+        {% endfor %}</tr></thead>
+        <tbody>{% for row in operations_map.rows %}<tr><th scope="row">{{ row.layer }}</th>
+          {% for cell in row.cells %}<td>
+            {% for m in cell.missions %}{{ mission_card(m) }}{% endfor %}
+            {% for gap in cell.gaps %}<div class="ops-gap">Lacune · {{ gap }}</div>{% endfor %}
+            {% if not cell.missions and not cell.gaps %}<span class="muted">—</span>{% endif %}
+          </td>{% endfor %}</tr>{% endfor %}</tbody>
+      </table>
+    </div>
+    {% if operations_map.drift %}<h3>Missions sans boucle — dérive à examiner</h3>
+      {% for m in operations_map.drift %}{{ mission_card(m) }}{% endfor %}
+    {% endif %}
+    <details><summary>Pouls des départements (distinct de l’exécution des missions)</summary>
+      {% for d in operations_map.departments %}<p>{{ d.slug }} ·
+        {% if d.pulse and d.pulse.heartbeat_iso %}{{ 'Actif' if d.pulse.alive else 'Signal ancien' }} · {{ d.pulse.heartbeat_iso }}
+        {% else %}Signal inconnu{% endif %}</p>{% endfor %}
+    </details>
+  {% endif %}
+<style>
+.ops-scroll { overflow-x: auto; }
+.ops-grid { width: 100%; border-collapse: collapse; }
+.ops-grid th, .ops-grid td { padding: .6rem; border: 1px solid var(--border, #ccc); vertical-align: top; min-width: 11rem; }
+.ops-mission, .ops-gap { padding: .5rem; margin-bottom: .5rem; border: 1px solid var(--border, #ccc); border-left: 4px solid #888; overflow-wrap: anywhere; }
+.ops-completed { border-left-color: #29965a; }
+.ops-due { border-left-color: #cf8b13; }
+.ops-unknown { border-left-color: #9b76b5; }
+.ops-gap { border: 1px dashed #888; }
+</style>
+</section>

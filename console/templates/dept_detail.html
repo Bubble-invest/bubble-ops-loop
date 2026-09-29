@@ -379,6 +379,8 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
   {% endif %}
 </section>
 
+{% if operations_map %}{% include "partials/operations_map.html" %}{% endif %}
+
 {# ═══ 02 — TABLEAU DE BORD (whiteboard) ════════════════════════════
    KPIs first — {{OPERATOR}} msg 1167 reordered so health leads. Two halves:
      • KPI tiles + graphs — from whiteboard.yaml / Layer-4 output history
@@ -1208,42 +1210,39 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
    Sprint Lifecycle (UI gap fixed 2026-05-24, {{OPERATOR}} msg 3030): backend
    route POST /agents/<slug>/retire. CTA only shown for Live depts; éclore
    depts use cancel-eclosion (different workflow), anciens are already retired.
-   #534: restyled lightly (m4 danger section) — the hx-confirm flow, the
-   POST target, the reason input are all preserved verbatim. #}
+   The cockpit previews only; an operator executes the CLI with dept credentials. #}
 {% if dept.is_live %}
 <section class="cabinet-section m4-section cabinet-section--danger"
          aria-labelledby="dept-retire-heading">
   <div class="section-head">
     <span class="section-num" style="color:#8a3a3a;">⚠</span>
-    <h2 id="dept-retire-heading" class="section-title" style="color:#8a3a3a;">Mettre à la retraite</h2>
+    <h2 id="dept-retire-heading" class="section-title" style="color:#8a3a3a;">Préparer la mise à la retraite</h2>
   </div>
   <p class="prose-block" style="font-size:13px;">
     Si {{ dept.display_name }} n'a plus sa place dans l'équipe, tu peux
-    la retirer en douceur. Son repo est archivé, son service systemd
-    s'arrête, et un dernier message Telegram lui est envoyé. Tout
-    reste consultable en lecture seule.
+    préparer son départ ici. Le cockpit affiche le message d'au revoir
+    et les instructions à exécuter par un opérateur. Cet aperçu ne modifie rien.
   </p>
 
   <details class="retire-confirm">
     <summary class="btn-ghost" style="cursor:pointer; display:inline-block;">
-      Retirer {{ dept.display_name }} →
+      Préparer le départ de {{ dept.display_name }} →
     </summary>
     <form id="retire-{{ dept.slug }}-form"
           hx-post="/agents/{{ dept.slug }}/retire"
           hx-target="#retire-{{ dept.slug }}-result"
           hx-swap="innerHTML"
-          hx-confirm="Tu confirmes que {{ dept.display_name }} ne fait plus partie de l'équipe ? Cette action est réversible côté GitHub mais le service systemd s'arrête."
           style="margin-top:16px; padding:16px; border:1px solid #d4a64a; border-radius:8px; background:#fdf6e8;">
       <label for="retire-{{ dept.slug }}-reason"
              style="display:block; margin-bottom:8px; font-weight:600;">
-        Raison du départ (visible dans le commit de retrait)
+        Raison du départ (enregistrée lors du départ effectif)
       </label>
       <input type="text" id="retire-{{ dept.slug }}-reason" name="reason"
              value="Decommissioned by operator"
              style="width:100%; padding:10px; border:1px solid #ccc; border-radius:6px; margin-bottom:14px;">
       <button type="submit" class="btn-ochre"
               style="background:#8a3a3a; border-color:#8a3a3a;">
-        Confirmer le départ
+        Afficher l’aperçu du départ
       </button>
     </form>
     <div id="retire-{{ dept.slug }}-result" style="margin-top:18px;"></div>

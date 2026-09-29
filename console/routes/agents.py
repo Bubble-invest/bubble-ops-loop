@@ -9,9 +9,9 @@ POST /agents/<slug>/cancel-eclosion   — Sprint Lifecycle Deliverable D: abando
                                         a pre-Live eclosure. Returns HTMX
                                         fragment with BotFather operator
                                         instructions.
-POST /agents/<slug>/retire            — Sprint Lifecycle Deliverable D: retire a
-                                        Live dept with dignity. Returns HTMX
-                                        fragment with farewell preview.
+POST /agents/<slug>/retire            — Preview retirement of a Live dept.
+                                        Returns HTMX farewell preview and
+                                        operator CLI instructions; no effects.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import os
 import queue
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -526,7 +527,11 @@ def cancel_eclosion_route(request: Request, slug: str):
 @router.post("/agents/{slug}/retire", response_class=HTMLResponse)
 def retire_route(request: Request, slug: str,
                  reason: str = Form("Decommissioned")):
-    """Retire a Live dept with dignity.
+    """Preview retirement; actual execution is an operator CLI action.
+
+    The bubble-console uid has no selected department Telegram credentials
+    and cannot perform the privileged disable/quarantine under
+    NoNewPrivileges. Never use its ambient bot token for a dept farewell.
 
     Returns:
       200  HTMX fragment with the farewell preview
@@ -547,7 +552,9 @@ def retire_route(request: Request, slug: str,
     import retire_dept as _rd  # type: ignore
 
     try:
-        result = _rd.retire_dept(slug=slug, repo_dir=repo, reason=reason)
+        result = _rd.retire_dept(
+            slug=slug, repo_dir=repo, reason=reason, dry_run=True,
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"retire_dept raised: {exc}")
 
@@ -564,5 +571,9 @@ def retire_route(request: Request, slug: str,
             "slug": slug,
             "display_name": dept.display_name,
             "final_telegram_msg": result["final_telegram_msg"],
+            "retire_command": shlex.join([
+                "./scripts/retire-dept.sh", f"--slug={slug}",
+                f"--repo-dir={repo}", f"--reason={reason}",
+            ]),
         },
     )

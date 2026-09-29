@@ -22,6 +22,14 @@ from typing import List, Dict, Any
 import pytest
 import yaml
 
+
+@pytest.fixture(autouse=True)
+def isolate_credentials(monkeypatch):
+    """Never read operator credentials or Telegram state during tests (#1598)."""
+    for name in ("TELEGRAM_STATE_DIR", "TELEGRAM_BOT_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TEST_BEARER = "test-token-xyz"
 

@@ -54,7 +54,7 @@ chk_eq() { # chk_eq <desc> <expected> <actual>
   fi
 }
 chk_contains() { # chk_contains <desc> <needle> <haystack>
-  if echo "$3" | grep -q "$2"; then
+  if grep -q "$2" <<< "$3"; then
     echo "  PASS: $1"; PASS=$((PASS+1))
   else
     echo "  FAIL: $1 (pattern '$2' not found in output)"; FAIL=$((FAIL+1))

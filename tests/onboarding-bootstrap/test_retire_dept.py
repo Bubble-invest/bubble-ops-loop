@@ -13,12 +13,14 @@ Flow:
      commit + push)
   5. Update STATE.yaml: status -> "Retired" + retired_at + retired_reason
 
-We mock subprocess.run (covers Telegram curl, ssh, git, gh) and never
-hit any real service.
+We mock urllib and subprocess.run (ssh, git, gh) and never hit any real service.
 """
 from __future__ import annotations
 
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -95,6 +97,19 @@ def _make_live_dept_repo(tmp_path: Path, slug: str, display_name: str,
         encoding="utf-8",
     )
     return repo
+
+
+@pytest.fixture(autouse=True)
+def telegram_transport(monkeypatch):
+    """Synthetic credentials and a recording HTTP mock; never contact Telegram."""
+    monkeypatch.delenv("TELEGRAM_STATE_DIR", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:synthetic-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "456")
+    monkeypatch.delenv("BUBBLE_BOT_TOKEN_MIRANDA", raising=False)
+    opener = MagicMock()
+    opener.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'
+    monkeypatch.setattr(urllib.request, "urlopen", opener)
+    return opener
 
 
 @pytest.fixture
@@ -244,7 +259,7 @@ def test_default_reason_is_decommissioned(tmp_path, patched_subprocess):
     assert state["retired_reason"] == "Decommissioned", state
 
 
-def test_dry_run_does_not_mutate(tmp_path, patched_subprocess):
+def test_dry_run_does_not_mutate(tmp_path, patched_subprocess, telegram_transport):
     """--dry-run composes the plan + Telegram message but mutates nothing."""
     from retire_dept import retire_dept as retire
 
@@ -261,6 +276,7 @@ def test_dry_run_does_not_mutate(tmp_path, patched_subprocess):
     assert before_state == after_state, "dry-run mutated STATE.yaml"
     assert before_dept == after_dept, "dry-run mutated dept.yaml"
     assert patched_subprocess == [], "dry-run made subprocess calls"
+    telegram_transport.assert_not_called()
 
 
 def test_secrets_quarantined_on_retire(tmp_path, patched_subprocess):
@@ -302,3 +318,100 @@ def test_quarantine_failure_does_not_block_retirement(tmp_path, monkeypatch):
     repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
     result = retire_dept.retire_dept(slug="miranda", repo_dir=repo)
     assert result["status"] == "retired"  # not blocked
+
+
+@pytest.mark.parametrize("source", ["scoped_env", "env", "secret_file"])
+def test_farewell_uses_resolved_token_and_chat_id(
+    source, tmp_path, monkeypatch, telegram_transport, patched_subprocess,
+):
+    import retire_dept
+
+    token = "123:synthetic-token"
+    if source == "scoped_env":
+        token = "789:scoped-token"
+        monkeypatch.setenv("BUBBLE_BOT_TOKEN_MIRANDA", token)
+    elif source == "secret_file":
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN")
+        monkeypatch.setenv("TELEGRAM_STATE_DIR", str(tmp_path))
+        (tmp_path / ".env").write_text(f"TELEGRAM_BOT_TOKEN={token}\n")
+    message = "Merci Miranda. À très bientôt."
+    result = retire_dept._send_final_telegram("miranda", message)
+    assert result.returncode == 0
+    request = telegram_transport.call_args.args[0]
+    assert request.full_url == f"https://api.telegram.org/bot{token}/sendMessage"
+    assert request.get_method() == "POST"
+    assert json.loads(request.data) == {"chat_id": "456", "text": message}
+    assert telegram_transport.call_args.kwargs["timeout"] > 0
+    assert patched_subprocess == []
+    assert token not in repr(result)
+
+
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"])
+def test_missing_telegram_config_blocks_before_retirement(
+    missing, tmp_path, monkeypatch, telegram_transport, patched_subprocess,
+):
+    import retire_dept
+
+    monkeypatch.delenv(missing)
+    repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
+    before = (repo / "onboarding" / "STATE.yaml").read_text()
+    result = retire_dept.retire_dept("miranda", repo)
+    assert result["status"] == "blocked"
+    assert missing in " ".join(result["reasons"])
+    assert (repo / "onboarding" / "STATE.yaml").read_text() == before
+    assert yaml.safe_load((repo / "dept.yaml").read_text())["department"]["status"] == "live"
+    telegram_transport.assert_not_called()
+    assert patched_subprocess == []
+
+
+@pytest.mark.parametrize("failure", ["http", "network", "rejected", "invalid_json", "missing_ok"])
+def test_telegram_failure_is_visible_and_redacted(
+    failure, tmp_path, telegram_transport, patched_subprocess,
+):
+    import retire_dept
+
+    url = "https://api.telegram.org/bot123:synthetic-token/sendMessage"
+    if failure == "http":
+        telegram_transport.side_effect = urllib.error.HTTPError(url, 401, url, {}, None)
+    elif failure == "network":
+        telegram_transport.side_effect = urllib.error.URLError(url)
+    else:
+        bodies = {
+            "rejected": json.dumps({"ok": False, "description": url}).encode(),
+            "invalid_json": b"not-json",
+            "missing_ok": b"{}",
+        }
+        telegram_transport.return_value.__enter__.return_value.read.return_value = bodies[failure]
+    repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
+    result = retire_dept.retire_dept("miranda", repo)
+    assert result["status"] == "blocked"
+    assert "Telegram" in " ".join(result["reasons"])
+    assert "123:synthetic-token" not in repr(result)
+    assert patched_subprocess == []
+
+
+def test_scoped_token_normalizes_hyphenated_slug(monkeypatch, telegram_transport):
+    import retire_dept
+
+    monkeypatch.setenv("BUBBLE_BOT_TOKEN_TEST_DEPT", "789:scoped-token")
+    result = retire_dept._send_final_telegram("test-dept", "Merci")
+    assert result.returncode == 0
+    assert "/bot789:scoped-token/" in telegram_transport.call_args.args[0].full_url
+
+
+def test_cli_reports_missing_token_as_nonzero(
+    tmp_path, monkeypatch, capsys, telegram_transport, patched_subprocess,
+):
+    import retire_dept
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN")
+    # A missing secret file must also fail clearly without a request.
+    monkeypatch.setenv("TELEGRAM_STATE_DIR", str(tmp_path / "missing"))
+    repo = _make_live_dept_repo(tmp_path, "miranda", "Miranda")
+    assert retire_dept.main(["--slug=miranda", f"--repo-dir={repo}"]) == 2
+    output = capsys.readouterr().out
+    assert "BLOCKED" in output
+    assert "Telegram token missing" in output
+    assert "sent to" not in output
+    telegram_transport.assert_not_called()
+    assert patched_subprocess == []
