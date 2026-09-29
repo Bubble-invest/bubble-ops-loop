@@ -29,6 +29,7 @@ check should not rely on that as its only guard).
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -96,6 +97,50 @@ def _scan_latest_graph_data_day(root: Path, max_days: int) -> Optional[str]:
         if (root / "outputs" / day / "graph-data.json").exists():
             return day
     return None
+
+
+def _fund_exposure_snapshot_days(root: Path) -> tuple[Dict[str, Optional[str]], Optional[str]]:
+    """Read the two dates behind the exposure freshness invariant.
+
+    Ben's Portfolio Review builds its weights from the latest ``positions``
+    snapshot while its NAV denominator comes from the latest
+    ``kpi_snapshots`` row. A recurring failure left ``positions`` stale while
+    fresh KPI rows kept arriving, so the artifact could be regenerated and
+    stamped today while still showing an old book.
+
+    Open the fund database explicitly read-only and return date-only values.
+    No holdings, symbols, valuations, or other fund data leave this helper.
+    """
+    db_path = root / "db" / "fund.sqlite"
+    if not db_path.is_file():
+        return {}, "read-only fund database is unavailable"
+
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=3,
+        )
+    except sqlite3.Error as exc:
+        return {}, f"read-only fund database open failed: {exc}"
+
+    try:
+        values = {}
+        for key, table in (
+            ("latest_nav_snapshot_date", "kpi_snapshots"),
+            ("exposure_as_of", "positions"),
+        ):
+            raw = con.execute(
+                f"SELECT MAX(snapshot_at) FROM {table}"
+            ).fetchone()[0]
+            day = raw[:10] if isinstance(raw, str) else None
+            try:
+                values[key] = date.fromisoformat(day).isoformat() if day else None
+            except ValueError:
+                values[key] = None
+        return values, None
+    except sqlite3.Error as exc:
+        return {}, f"read-only fund snapshot query failed: {exc}"
+    finally:
+        con.close()
 
 
 def _newest_mtime(root: Path, patterns: List[str]) -> Optional[float]:
@@ -278,10 +323,14 @@ def check_nav_freshness(client, ctx: Ctx,
     generalize a one-off fix into shared scaffolding rather than hardcode it).
 
     `canonical_nav()` (console/services/canonical_nav.py, board #1209) is
-    already the fleet's ONE audited NAV resolver — this check does NOT
-    re-derive NAV, it independently re-scans outputs/<date>/graph-data.json
-    over a WIDER window than canonical_nav's own 7-day lookback, and
-    cross-checks the rendered dept + portfolio pages actually render."""
+    already the fleet's ONE audited NAV resolver. Independently, this check
+    re-scans outputs/<date>/graph-data.json over a WIDER window than
+    canonical_nav's own 7-day lookback and reads only the two MAX(snapshot_at)
+    dates needed from fund.sqlite. The latter enforces the #1614 invariant:
+    the positions snapshot behind the exposure view must be from the same day
+    as the latest NAV snapshot. That catches a freshly-rendered page built
+    from stale positions, which an artifact filename/mtime check cannot see.
+    It also cross-checks that the rendered dept + portfolio pages render."""
     try:
         from console.services.dept_registry import live_departments, runtime_repo_path
         from console.services.canonical_nav import canonical_nav
@@ -304,6 +353,7 @@ def check_nav_freshness(client, ctx: Ctx,
         today = ctx.today_iso()
         hard = False
         reasons: List[str] = []
+        snapshot_days, snapshot_error = _fund_exposure_snapshot_days(root)
 
         if canonical.get("nav") is None and widest_day is not None:
             hard = True
@@ -322,6 +372,27 @@ def check_nav_freshness(client, ctx: Ctx,
                     f"old (> {stale_days_threshold}d threshold)"
                 )
 
+        if snapshot_error:
+            hard = True
+            reasons.append(
+                f"exposure freshness invariant unavailable: {snapshot_error}"
+            )
+        else:
+            exposure_day = snapshot_days.get("exposure_as_of")
+            nav_day = snapshot_days.get("latest_nav_snapshot_date")
+            if not exposure_day or not nav_day:
+                hard = True
+                reasons.append(
+                    "exposure freshness invariant unavailable: positions or "
+                    "NAV snapshot date is missing"
+                )
+            elif exposure_day != nav_day:
+                hard = True
+                reasons.append(
+                    f"exposure as-of {exposure_day} does not match latest NAV "
+                    f"snapshot {nav_day}"
+                )
+
         if client is not None:
             for path, label in ((f"/dept/{slug}", "dept_page"),
                                  (f"/dept/{slug}/portfolio", "portfolio_page")):
@@ -336,13 +407,18 @@ def check_nav_freshness(client, ctx: Ctx,
 
         out.append({
             "id": f"nav_freshness_{slug}", "page": page_id,
-            "description": f"{slug}: canonical NAV freshness vs a wide on-disk scan + rendered pages",
-            "observed": {"canonical_nav": canonical},
+            "description": f"{slug}: canonical NAV freshness + exposure/NAV snapshot consistency",
+            "observed": {"canonical_nav": canonical,
+                         "exposure_as_of": snapshot_days.get("exposure_as_of")},
             "source": {"latest_graph_data_day_on_disk": widest_day,
+                       "latest_nav_snapshot_date": snapshot_days.get("latest_nav_snapshot_date"),
                        "scan_window_days": wide_scan_days},
             "consistent": not hard,
             "hard_inconsistency": hard,
-            "reason": "; ".join(reasons) or "canonical NAV looks fresh and pages render",
+            "reason": "; ".join(reasons) or (
+                "canonical NAV looks fresh, exposure matches its NAV snapshot, "
+                "and pages render"
+            ),
             "error": None,
         })
     return out
