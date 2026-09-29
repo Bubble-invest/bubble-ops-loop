@@ -8,6 +8,7 @@ teardown so tests never leak state into each other.
 from __future__ import annotations
 
 import subprocess
+import sqlite3
 import sys
 import types
 from datetime import date, datetime, timedelta, timezone
@@ -243,6 +244,25 @@ class FakeDept:
         self.slug = slug
 
 
+def _write_fund_snapshot_dates(root: Path, nav_day: str, exposure_day: str) -> None:
+    """Minimal synthetic fund DB: dates only, never real holdings data."""
+    db_dir = root / "db"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db_dir / "fund.sqlite")
+    try:
+        con.executescript(
+            """
+            CREATE TABLE kpi_snapshots (snapshot_at TEXT NOT NULL);
+            CREATE TABLE positions (snapshot_at TEXT NOT NULL);
+            """
+        )
+        con.execute("INSERT INTO kpi_snapshots VALUES (?)", (nav_day + "T06:00:00Z",))
+        con.execute("INSERT INTO positions VALUES (?)", (exposure_day + "T06:01:00Z",))
+        con.commit()
+    finally:
+        con.close()
+
+
 def test_nav_freshness_hard_when_stale_beyond_threshold(stub_module, tmp_path):
     root = tmp_path / "ben"
     root.mkdir()
@@ -322,6 +342,7 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     today = date.today().isoformat()
     (root / "outputs" / today).mkdir(parents=True)
     (root / "outputs" / today / "graph-data.json").write_text("{}")
+    _write_fund_snapshot_dates(root, nav_day=today, exposure_day=today)
     stub_module(
         "console.services.dept_registry",
         live_departments=lambda: [FakeDept("ben")],
@@ -342,6 +363,41 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     assert len(results) == 1
     assert results[0]["hard_inconsistency"] is False
     assert results[0]["consistent"] is True
+
+
+def test_nav_freshness_hard_when_exposure_predates_latest_nav(stub_module, tmp_path):
+    """#1614: a page rebuilt today from yesterday's positions is visibly hard."""
+    root = tmp_path / "ben"
+    root.mkdir()
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    (root / "outputs" / today).mkdir(parents=True)
+    (root / "outputs" / today / "graph-data.json").write_text("{}")
+    _write_fund_snapshot_dates(root, nav_day=today, exposure_day=yesterday)
+
+    stub_module(
+        "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("ben")],
+        runtime_repo_path=lambda slug: root,
+    )
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: {
+            "nav": 200000.0, "since_rebase_pct": 2.0, "as_of": today,
+            "is_stale": False, "source": "graph-data.json",
+        },
+    )
+    client = FakeClient({
+        "/dept/ben": FakeResponse(200),
+        "/dept/ben/portfolio": FakeResponse(200),
+    })
+
+    result = checks.check_nav_freshness(client, checks.Ctx())[0]
+    assert result["hard_inconsistency"] is True
+    assert result["consistent"] is False
+    assert result["observed"]["exposure_as_of"] == yesterday
+    assert result["source"]["latest_nav_snapshot_date"] == today
+    assert "does not match latest NAV snapshot" in result["reason"]
 
 
 # ─────────────────────────────────────────────────────────────────────────
