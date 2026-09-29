@@ -27,8 +27,7 @@
 #   revendor-all-depts.sh [--framework <dir>] [--agents-root <dir>] [--dry-run]
 #
 #   --framework    canonical bubble-ops-loop root. Defaults to
-#                  $BUBBLE_FRAMEWORK_ROOT, else the resolved location of this
-#                  script's own repo (dirname/..). Passed through to
+#                  $BUBBLE_FRAMEWORK_ROOT, else /opt/bubble-ops-loop. Passed through to
 #                  vendor-dept-libs.sh via BUBBLE_FRAMEWORK_ROOT so its own
 #                  host-aware resolution logic (env > sibling > VPS default)
 #                  stays the single source of truth for "what is canonical".
@@ -43,9 +42,8 @@
 # never aborts the sweep — one broken dept must not block the other five from
 # getting the fix.
 #
-# Exit codes: always 0 (sweep summary + fail-open dept errors are logged, not
-# fatal — this mirrors vendor-dept-libs.sh's own fail-open contract so the
-# sweep is safe to run from a cron/hook without flapping it).
+# Exit codes: 1 for a missing framework scripts/lib; 2 for invalid arguments.
+# Per-dept errors remain fail-open (logged in the sweep summary).
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,11 +66,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Default framework to this script's own repo root (sibling of scripts/) when
-# nothing else was given — the common case of running the sweep from a
-# checked-out framework working tree.
+# Installed copies live in /usr/local/bin, outside the framework checkout.
 if [[ -z "$FRAMEWORK" ]]; then
-  FRAMEWORK="$(cd "$SELF_DIR/.." && pwd)"
+  FRAMEWORK="/opt/bubble-ops-loop"
 fi
 
 VENDOR_SCRIPT="$SELF_DIR/vendor-dept-libs.sh"
@@ -80,12 +76,13 @@ VENDOR_SCRIPT="$SELF_DIR/vendor-dept-libs.sh"
 TS()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "[$(TS)] [revendor-all-depts] $*"; }
 
+[[ -d "$FRAMEWORK/scripts/lib" ]] || {
+  log "ERR: framework scripts/lib missing at $FRAMEWORK/scripts/lib" >&2
+  exit 1
+}
+
 [[ -x "$VENDOR_SCRIPT" || -f "$VENDOR_SCRIPT" ]] || {
   log "WARN: vendor-dept-libs.sh not found at $VENDOR_SCRIPT — nothing to run"
-  exit 0
-}
-[[ -d "$FRAMEWORK" ]] || {
-  log "WARN: framework '$FRAMEWORK' missing — skip (fail-open)"
   exit 0
 }
 
@@ -126,10 +123,19 @@ TOTAL=0
 SWEPT=0
 SKIPPED=0
 STALE_TOTAL=0
+SEEN_DIRS=()
 
 for dir in "${AGENTS_ROOT}"/*; do
   # Only department repositories, including worktrees (.git is a file).
   [[ -d "$dir" && -e "$dir/.git" && -f "$dir/dept.yaml" ]] || continue
+  # Legacy bubble-ops-<slug> symlinks can point to the same checkout.
+  real_dir="$(cd "$dir" && pwd -P)" || continue
+  duplicate=0
+  for seen_dir in "${SEEN_DIRS[@]:-}"; do
+    [[ "$seen_dir" == "$real_dir" ]] && duplicate=1 && break
+  done
+  [[ "$duplicate" == 1 ]] && continue
+  SEEN_DIRS+=("$real_dir")
   slug="$(basename "$dir")"; slug="${slug#bubble-ops-}"
   TOTAL=$((TOTAL + 1))
 
