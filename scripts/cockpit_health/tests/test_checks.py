@@ -153,6 +153,37 @@ def test_recent_transcript_facts_counts_direct_homes_and_mac_mirrors(tmp_path):
     assert "maya" not in facts["agents"]
 
 
+def test_recent_transcript_facts_uses_vps_mirror_when_agent_home_unreadable(
+        tmp_path, monkeypatch):
+    now = 2_000_000.0
+    homes = tmp_path / "home"
+    projects = homes / "agent-ben" / ".claude" / "projects"
+    projects.mkdir(parents=True)
+    mirrors = tmp_path / "projects"
+    mirrored = mirrors / "_vps-ben" / "session.jsonl"
+    mirrored.parent.mkdir(parents=True)
+    mirrored.write_text("{}\n")
+    os.utime(mirrored, (now - 60, now - 60))
+
+    real_rglob = Path.rglob
+
+    def unreadable_rglob(path, pattern):
+        if path == projects:
+            raise PermissionError("agent home is not listable")
+        return real_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", unreadable_rglob)
+
+    facts = checks._recent_transcript_facts(
+        now, agent_home_root=homes, mirror_root=mirrors)
+
+    assert facts["agents"]["ben"]["sources"] == ["vps_mirror"]
+    assert facts["unreadable_agent_homes"] == [{
+        "slug": "ben",
+        "path": str(projects),
+    }]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Fakes for client + console.* modules
 # ─────────────────────────────────────────────────────────────────────────
@@ -418,6 +449,61 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     assert len(results) == 1
     assert results[0]["hard_inconsistency"] is False
     assert results[0]["consistent"] is True
+
+
+def test_nav_freshness_reads_wal_via_private_copy(stub_module, tmp_path, monkeypatch):
+    root = tmp_path / "ben"
+    db_dir = root / "db"
+    db_dir.mkdir(parents=True)
+    today = date.today().isoformat()
+    (root / "outputs" / today).mkdir(parents=True)
+    (root / "outputs" / today / "graph-data.json").write_text("{}")
+
+    db_path = db_dir / "fund.sqlite"
+    writer = sqlite3.connect(db_path)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.executescript(
+        """
+        CREATE TABLE kpi_snapshots (snapshot_at TEXT NOT NULL);
+        CREATE TABLE positions (snapshot_at TEXT NOT NULL);
+        """
+    )
+    writer.execute("INSERT INTO kpi_snapshots VALUES (?)", (today + "T06:00:00Z",))
+    writer.execute("INSERT INTO positions VALUES (?)", (today + "T06:01:00Z",))
+    writer.commit()
+    assert Path(str(db_path) + "-wal").is_file()
+
+    stub_module(
+        "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("ben")],
+        runtime_repo_path=lambda slug: root,
+    )
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: {
+            "nav": 200000.0, "since_rebase_pct": 2.0, "as_of": today,
+            "is_stale": False, "source": "graph-data.json",
+        },
+    )
+
+    real_connect = sqlite3.connect
+
+    def reject_live_database(database, *args, **kwargs):
+        if str(database).startswith(f"file:{db_path}"):
+            raise sqlite3.OperationalError("unable to open database file")
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(checks.sqlite3, "connect", reject_live_database)
+    try:
+        result = checks.check_nav_freshness(None, checks.Ctx())[0]
+    finally:
+        writer.close()
+
+    assert result["hard_inconsistency"] is False
+    assert result["observed"]["exposure_as_of"] == today
+    assert result["source"]["latest_nav_snapshot_date"] == today
+    assert result["source"]["fund_db_read_method"] == "private_temp_copy_with_wal"
 
 
 def test_nav_freshness_resolves_live_ben_via_canonical_runtime_path(stub_module, tmp_path):

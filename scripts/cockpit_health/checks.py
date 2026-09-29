@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -104,7 +106,9 @@ def _scan_latest_graph_data_day(root: Path, max_days: int) -> Optional[str]:
     return None
 
 
-def _fund_exposure_snapshot_days(root: Path) -> tuple[Dict[str, Optional[str]], Optional[str]]:
+def _fund_exposure_snapshot_days(
+    root: Path,
+) -> tuple[Dict[str, Optional[str]], Optional[str], str]:
     """Read the two dates behind the exposure freshness invariant.
 
     Ben's Portfolio Review builds its weights from the latest ``positions``
@@ -113,39 +117,54 @@ def _fund_exposure_snapshot_days(root: Path) -> tuple[Dict[str, Optional[str]], 
     fresh KPI rows kept arriving, so the artifact could be regenerated and
     stamped today while still showing an old book.
 
-    Open the fund database explicitly read-only and return date-only values.
-    No holdings, symbols, valuations, or other fund data leave this helper.
+    Copy the database and its WAL, when present, to a private temporary
+    directory before opening it read-only. SQLite can then create the shared
+    memory file beside the copy without requiring writes in the live database
+    directory. No holdings, symbols, valuations, or other fund data leave
+    this helper.
     """
     db_path = root / "db" / "fund.sqlite"
+    read_method = "private_temp_copy"
     if not db_path.is_file():
-        return {}, "read-only fund database is unavailable"
+        return {}, "read-only fund database is unavailable", read_method
 
     try:
-        con = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True, timeout=3,
-        )
-    except sqlite3.Error as exc:
-        return {}, f"read-only fund database open failed: {exc}"
+        with tempfile.TemporaryDirectory(prefix="cockpit-fund-") as temp_dir:
+            copied_db = Path(temp_dir) / db_path.name
+            shutil.copy2(db_path, copied_db)
+            wal_path = db_path.with_name(db_path.name + "-wal")
+            if wal_path.is_file():
+                shutil.copy2(wal_path, Path(temp_dir) / wal_path.name)
+                read_method = "private_temp_copy_with_wal"
 
-    try:
-        values = {}
-        for key, table in (
-            ("latest_nav_snapshot_date", "kpi_snapshots"),
-            ("exposure_as_of", "positions"),
-        ):
-            raw = con.execute(
-                f"SELECT MAX(snapshot_at) FROM {table}"
-            ).fetchone()[0]
-            day = raw[:10] if isinstance(raw, str) else None
             try:
-                values[key] = date.fromisoformat(day).isoformat() if day else None
-            except ValueError:
-                values[key] = None
-        return values, None
-    except sqlite3.Error as exc:
-        return {}, f"read-only fund snapshot query failed: {exc}"
-    finally:
-        con.close()
+                con = sqlite3.connect(
+                    f"file:{copied_db}?mode=ro", uri=True, timeout=3,
+                )
+            except sqlite3.Error as exc:
+                return {}, f"read-only fund database open failed: {exc}", read_method
+
+            try:
+                values = {}
+                for key, table in (
+                    ("latest_nav_snapshot_date", "kpi_snapshots"),
+                    ("exposure_as_of", "positions"),
+                ):
+                    raw = con.execute(
+                        f"SELECT MAX(snapshot_at) FROM {table}"
+                    ).fetchone()[0]
+                    day = raw[:10] if isinstance(raw, str) else None
+                    try:
+                        values[key] = date.fromisoformat(day).isoformat() if day else None
+                    except ValueError:
+                        values[key] = None
+                return values, None, read_method
+            except sqlite3.Error as exc:
+                return {}, f"read-only fund snapshot query failed: {exc}", read_method
+            finally:
+                con.close()
+    except (PermissionError, OSError) as exc:
+        return {}, f"read-only fund database copy failed: {exc}", read_method
 
 
 def _newest_mtime(root: Path, patterns: List[str]) -> Optional[float]:
@@ -254,18 +273,28 @@ def _recent_transcript_facts(now_epoch: float,
 
     Direct post-isolation homes are preferred. The root-synced ``_vps-*``
     cache is a live-safe fallback for the isolated service uid; Mac mirrors
-    are always additive. Only mtimes are read, so this source stays independent
-    from cost_tracker's JSON parsing, cache, attribution, and pricing code.
+    are always additive. Unlistable direct homes are recorded as facts and do
+    not suppress that fallback. Only mtimes are read, so this source stays
+    independent from cost_tracker's JSON parsing, cache, attribution, and
+    pricing code.
     """
     per_agent: Dict[str, Dict[str, Any]] = {}
     direct_slugs: set[str] = set()
+    unreadable_agent_homes: List[Dict[str, str]] = []
 
-    def scan(slug: Optional[str], root: Path, source: str) -> None:
-        if not slug or not root.is_dir():
-            return
+    def scan(slug: Optional[str], root: Path, source: str) -> bool:
+        if not slug:
+            return False
         newest: Optional[float] = None
         recent = 0
         try:
+            if not root.is_dir():
+                return False
+            # ``stat``/``is_dir`` can succeed even when directory enumeration
+            # is forbidden. Probe the directory itself before trusting a
+            # direct home enough to suppress the mirror fallback.
+            with os.scandir(root):
+                pass
             files = root.rglob("*.jsonl")
             for path in files:
                 try:
@@ -277,9 +306,9 @@ def _recent_transcript_facts(now_epoch: float,
                     recent += 1
                     newest = mtime if newest is None else max(newest, mtime)
         except OSError:
-            return
+            return False
         if recent == 0:
-            return
+            return True
         row = per_agent.setdefault(slug, {
             "recent_transcript_count": 0,
             "newest_mtime": None,
@@ -290,6 +319,7 @@ def _recent_transcript_facts(now_epoch: float,
             row["newest_mtime"], newest)
         if source not in row["sources"]:
             row["sources"].append(source)
+        return True
 
     try:
         homes = list(Path(agent_home_root).glob("agent-*"))
@@ -298,9 +328,22 @@ def _recent_transcript_facts(now_epoch: float,
     for home in homes:
         slug = home.name[len("agent-"):]
         projects = home / ".claude" / "projects"
-        if projects.is_dir() and os.access(projects, os.R_OK | os.X_OK):
+        try:
+            projects_is_dir = projects.is_dir()
+            projects_exists = projects.exists()
+            projects_accessible = (
+                projects_is_dir and os.access(projects, os.R_OK | os.X_OK)
+            )
+        except OSError:
+            projects_exists = True
+            projects_accessible = False
+        if projects_accessible and scan(slug, projects, "agent_home"):
             direct_slugs.add(slug)
-            scan(slug, projects, "agent_home")
+        elif projects_exists:
+            unreadable_agent_homes.append({
+                "slug": slug,
+                "path": str(projects),
+            })
 
     mirror_root = Path(mirror_root)
     try:
@@ -338,6 +381,8 @@ def _recent_transcript_facts(now_epoch: float,
         "window_hours": round(window_seconds / 3600.0, 2),
         "total_recent_transcripts": total,
         "agents": dict(sorted(per_agent.items())),
+        "unreadable_agent_homes": sorted(
+            unreadable_agent_homes, key=lambda row: (row["slug"], row["path"])),
     }
 
 
@@ -583,7 +628,9 @@ def check_nav_freshness(client, ctx: Ctx,
         today = ctx.today_iso()
         hard = False
         reasons: List[str] = []
-        snapshot_days, snapshot_error = _fund_exposure_snapshot_days(root)
+        snapshot_days, snapshot_error, snapshot_read_method = (
+            _fund_exposure_snapshot_days(root)
+        )
 
         if canonical.get("nav") is None and widest_day is not None:
             hard = True
@@ -646,6 +693,7 @@ def check_nav_freshness(client, ctx: Ctx,
             "source": {"latest_graph_data_day_on_disk": widest_day,
                        "runtime_repo_path": str(root),
                        "latest_nav_snapshot_date": snapshot_days.get("latest_nav_snapshot_date"),
+                       "fund_db_read_method": snapshot_read_method,
                        "scan_window_days": wide_scan_days},
             "consistent": not hard,
             "hard_inconsistency": hard,
