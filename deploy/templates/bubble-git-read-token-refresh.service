@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh per-dept repository-scoped read-only GitHub tokens
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bubble-git-read-token-refresh.sh
