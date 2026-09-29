@@ -30,7 +30,7 @@ from __future__ import annotations
 from src import guard as guard_module
 from src.guard import Guard, resolve_broker_binary
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 # --------------------------------------------------------------------------
@@ -106,6 +106,7 @@ def test_guard_reports_clear_error_not_traceback_on_permission_denied_broker(
     it, print a legible PATH-naming error to stderr, audit `mint_failed`,
     and return 1 (never let the exception escape)."""
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
     locked_dir = tmp_path / "locked-broker-dir"
     locked_dir.mkdir()
     broker_path = locked_dir / "bubble-token-broker"
@@ -154,6 +155,7 @@ def test_cli_default_broker_resolves_via_resolve_broker_binary(
     from src import cli as cli_module
 
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
 
     calls = {"broker_arg": "unset"}
 

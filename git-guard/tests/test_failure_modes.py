@@ -10,7 +10,7 @@ import pytest
 from src.cli import main as cli_main
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_policy_file_missing(temp_git_repo, tmp_path, capsys):
@@ -37,6 +37,7 @@ def test_broker_not_in_path(
 ):
     """If the broker binary cannot be found, fail-closed with a clear error."""
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(
         policy=policy,
@@ -69,6 +70,7 @@ def test_network_error_during_push(
 ):
     """Simulated git push failure (network error) → exit 1, audit records it."""
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
     mock_git_push.state["returncode"] = 128
     mock_git_push.state["stderr"] = "fatal: unable to access 'https://github.com/...': could not resolve host"
     audit = tmp_path / "audit.jsonl"
@@ -112,6 +114,7 @@ def test_unknown_action_fails_closed(
     """An action class not in {runtime_read, runtime_write_own, open_priority_pr, settings_pr}
     must be rejected before any broker call."""
     stage_files(temp_git_repo, ["outputs/x.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(
         policy=policy, broker_cmd=[str(mock_broker_binary)], audit_log_path=tmp_path / "a.jsonl"

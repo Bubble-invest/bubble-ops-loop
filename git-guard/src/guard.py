@@ -8,15 +8,18 @@ Notion v4 line 725 (verbatim):
 This module IS the "wrapper local / git guard sur Morty". Flow:
 
   1. Caller invokes Guard.push(repo_dir, dept, action, repo).
-  2. Guard computes staged_paths_for_push() — staged + unpushed-commit files.
+  2. Guard resolves the source SHA once, imports it into a guard-owned temporary
+     bare repo, and derives paths against the literal policy destination there.
   3. Guard runs policy.enforce() for each path.
      - If ANY denied → audit `status:denied`, return 1, NO broker call.
   4. If dry_run → audit `status:would_allow`, print plan, return 0.
   5. Else → subprocess-invoke the broker to mint a token.
      - If broker exits non-zero → audit `status:mint_failed`, return 1, NO push.
-  6. Invoke `git push` with the token injected via `http.extraheader` ONLY for
-     this single command, set via env (GIT_CONFIG_* triad — #923), never
-     argv. Token never echoed, never logged, never persisted.
+  6. Push exactly the checked SHA under a force-with-lease bound to the
+     authoritative destination SHA, with the token injected via
+     `http.extraheader` ONLY for this single command, set via env
+     (GIT_CONFIG_* triad — #923), never argv. Token never echoed, never
+     logged, never persisted.
   7. Audit `status:pushed` or `status:push_failed`. Return 0 or 1 accordingly.
 
 Design invariants (enforced by tests):
@@ -24,12 +27,14 @@ Design invariants (enforced by tests):
   - Token NEVER reaches stdout/stderr (we capture broker stdout into a local
     variable and never `print()` it).
   - NO fallback to env GITHUB_TOKEN, PAT, or other token source.
+  - Actor Git config/hooks/env never participate in remote reads or push.
   - Atomicity: if ONE path denied, ALL denied (no partial push).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -38,7 +43,12 @@ from typing import Any, List, Optional, Tuple
 
 from .audit import GuardAudit
 from .policy_loader import KNOWN_ACTIONS
-from .staging import staged_paths_for_push
+from .staging import (
+    PushPlan,
+    authenticated_git_env,
+    hardened_git_command,
+    prepare_push,
+)
 
 
 # Hard cap (matches broker MAX_TTL_MINUTES — Notion v4 audit example line 612).
@@ -51,6 +61,19 @@ DEFAULT_TOKEN_TTL_MINUTES = 60
 # resolvable on PATH at all — see `resolve_broker_binary()`.
 DEFAULT_BROKER_NAME = "bubble-token-broker"
 DEFAULT_BROKER_ABS_PATH = "/opt/bubble-token-broker/bin/bubble-token-broker"
+
+# The broker installation and repository policy are for this GitHub
+# organization. This constant is guard-owned; no actor config or CLI URL is
+# consulted when building a destination.
+GITHUB_ORG = "Bubble-invest"
+_REPO_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def github_repo_url(repo: str) -> str:
+    """Return the sole network destination the guard may use for ``repo``."""
+    if not _REPO_NAME_RE.fullmatch(repo) or repo in {".", ".."}:
+        raise ValueError(f"invalid policy repository name: {repo!r}")
+    return f"https://github.com/{GITHUB_ORG}/{repo}.git"
 
 
 def resolve_broker_binary(broker: Optional[str] = None) -> str:
@@ -187,21 +210,71 @@ class Guard:
         actor = f"ops-loop-{dept}"
         remote = remote or self.default_remote
         ref = ref or self.default_branch
-
-        # Step 1: compute staged paths
-        try:
-            paths = staged_paths_for_push(Path(repo_dir))
-        except subprocess.CalledProcessError as exc:
+        if remote != "origin":
             self._safe_audit(
                 ts=ts, actor=actor, dept=dept, repo=repo, action=action,
-                status="denied", paths_count=0,
-                denied_paths=[], reasons=[f"git error reading staged paths: {exc.stderr.strip()}"],
+                status="denied", paths_count=0, denied_paths=[],
+                reasons=["named Git remotes are not trusted; only the policy-derived URL is supported"],
             )
-            print(f"DENIED: git error: {exc.stderr.strip()}", flush=True, file=__import__("sys").stderr)
+            print(
+                "DENIED: --remote is no longer a routing input; use the policy-derived destination",
+                file=__import__("sys").stderr,
+            )
+            return 1
+        try:
+            destination_url = github_repo_url(repo)
+        except ValueError as exc:
+            print(f"DENIED: {exc}", file=__import__("sys").stderr)
             return 1
 
-        # Step 2: path check
-        all_ok, ok_paths, denied_reasons = self.check_paths(paths, action=action, repo=repo)
+        try:
+            def mint_read_token() -> str:
+                token = self._mint_token(
+                    ts=ts, actor=actor, dept=dept, action="runtime_read",
+                    repo=repo, paths=[],
+                )
+                if token is None:
+                    raise subprocess.CalledProcessError(
+                        1,
+                        [self.broker_cmd[0], "mint", "--action", "runtime_read"],
+                        stderr="read-token mint failed for private repository",
+                    )
+                return token
+
+            with prepare_push(
+                Path(repo_dir), destination_url=destination_url, ref=ref,
+                read_token_provider=mint_read_token,
+            ) as plan:
+                return self._execute_plan(
+                    plan, ts=ts, actor=actor, dept=dept, action=action,
+                    repo=repo, dry_run=dry_run,
+                )
+        except subprocess.CalledProcessError as exc:
+            error = (exc.stderr or "git operation failed").strip()
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="denied", paths_count=0, denied_paths=[],
+                reasons=[f"isolated git preparation failed: {error}"],
+            )
+            print(f"DENIED: git error: {error}", flush=True, file=__import__("sys").stderr)
+            return 1
+
+    def _execute_plan(
+        self,
+        plan: PushPlan,
+        *,
+        ts: str,
+        actor: str,
+        dept: str,
+        action: str,
+        repo: str,
+        dry_run: bool,
+    ) -> int:
+        """Authorize and execute a plan while its isolated repo still exists."""
+        paths = plan.paths
+        all_ok, _ok_paths, denied_reasons = self.check_paths(
+            paths, action=action, repo=repo
+        )
         if not all_ok:
             denied_paths = _extract_offending_paths(denied_reasons, paths)
             self._safe_audit(
@@ -210,15 +283,11 @@ class Guard:
                 denied_paths=denied_paths, reasons=denied_reasons,
             )
             import sys
-            print(
-                f"DENIED ({len(denied_paths)} path(s) failed policy):",
-                file=sys.stderr,
-            )
-            for r in denied_reasons:
-                print(f"  - {r}", file=sys.stderr)
+            print(f"DENIED ({len(denied_paths)} path(s) failed policy):", file=sys.stderr)
+            for reason in denied_reasons:
+                print(f"  - {reason}", file=sys.stderr)
             return 1
 
-        # Step 3: dry-run short-circuit
         if dry_run:
             self._safe_audit(
                 ts=ts, actor=actor, dept=dept, repo=repo, action=action,
@@ -231,102 +300,17 @@ class Guard:
                 f"push {len(paths)} path(s):",
                 file=sys.stderr,
             )
-            for p in paths:
-                print(f"  + {p}", file=sys.stderr)
+            for path in paths:
+                print(f"  + {path}", file=sys.stderr)
             return 0
 
-        # Step 4: invoke broker to mint a token
-        try:
-            broker_result = subprocess.run(
-                [
-                    *self.broker_cmd, "mint",
-                    "--dept", dept,
-                    "--action", action,
-                    "--repo", repo,
-                    *_paths_arg(paths),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            self._safe_audit(
-                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
-                status="mint_failed", paths_count=len(paths),
-                error=f"broker not found: {self.broker_cmd[0]}",
-            )
-            import sys
-            print(f"ERROR: broker binary not found: {self.broker_cmd[0]} ({exc})", file=sys.stderr)
-            return 1
-        except PermissionError as exc:
-            # Board #1552: a bare-name exec (e.g. "bubble-token-broker") whose
-            # PATH search hits an UNTRAVERSABLE directory before ever finding
-            # the binary surfaces as PermissionError, not FileNotFoundError —
-            # execvp reports the directory-traversal EACCES as the terminal
-            # error rather than ENOENT (POSIX semantics), which reads exactly
-            # like "found it, but denied" even though the broker was never in
-            # that directory at all. Name the PATH problem explicitly so this
-            # doesn't look like a bare, unexplained traceback.
-            self._safe_audit(
-                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
-                status="mint_failed", paths_count=len(paths),
-                error=f"broker exec permission denied: {self.broker_cmd[0]}",
-            )
-            import sys
-            print(
-                f"ERROR: permission denied executing broker binary "
-                f"{self.broker_cmd[0]!r} ({exc}). This usually means a "
-                f"directory earlier in PATH is untraversable by this user "
-                f"(e.g. a shared home dir locked down for other users) — "
-                f"execvp reports that as \"permission denied\" instead of "
-                f"\"not found\", even when the broker isn't actually in that "
-                f"directory. Current PATH={os.environ.get('PATH', '')!r}. "
-                f"Pass --broker with an absolute path to bypass PATH search "
-                f"entirely.",
-                file=sys.stderr,
-            )
-            return 1
-
-        if broker_result.returncode != 0:
-            # NEVER log broker stdout (might contain partial token). Only stderr,
-            # which by contract is policy-denial reason or error text.
-            self._safe_audit(
-                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
-                status="mint_failed", paths_count=len(paths),
-                error=f"broker exit {broker_result.returncode}: {broker_result.stderr.strip()[:200]}",
-            )
-            import sys
-            print(
-                f"ERROR: broker mint failed (exit {broker_result.returncode}): "
-                f"{broker_result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            return 1
-
-        # IMPORTANT: capture the token into a LOCAL variable. Never log it,
-        # never print it, never put it into self.audit.
-        _token = broker_result.stdout.strip()
-        if not _token.startswith("ghs_"):
-            # Defense-in-depth: broker contract says stdout = the token. If it
-            # doesn't look like one, treat as mint failure.
-            self._safe_audit(
-                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
-                status="mint_failed", paths_count=len(paths),
-                error="broker stdout did not contain a ghs_ token",
-            )
-            import sys
-            print("ERROR: broker did not return a valid token shape", file=sys.stderr)
-            return 1
-
-        # Step 5: run `git push` with the token injected via http.extraheader
-        # for THIS process only. We do NOT export GITHUB_TOKEN globally.
-        push_rc, push_stderr = self._run_git_push(
-            repo_dir=Path(repo_dir), remote=remote, ref=ref, token=_token
+        token = self._mint_token(
+            ts=ts, actor=actor, dept=dept, action=action, repo=repo, paths=paths
         )
-
-        # Drop our reference promptly (Python can't truly wipe but at least
-        # release the binding).
-        del _token
+        if token is None:
+            return 1
+        push_rc, push_stderr = self._run_git_push(plan=plan, token=token)
+        del token
 
         if push_rc != 0:
             self._safe_audit(
@@ -335,10 +319,9 @@ class Guard:
                 token_ttl_minutes=DEFAULT_TOKEN_TTL_MINUTES,
                 error=f"git push exit {push_rc}: {push_stderr.strip()[:200]}",
             )
-            import sys
             print(
                 f"ERROR: git push failed (exit {push_rc}): {push_stderr.strip()}",
-                file=sys.stderr,
+                file=__import__("sys").stderr,
             )
             return 1
 
@@ -348,6 +331,52 @@ class Guard:
             token_ttl_minutes=DEFAULT_TOKEN_TTL_MINUTES,
         )
         return 0
+
+    def _mint_token(
+        self, *, ts: str, actor: str, dept: str, action: str,
+        repo: str, paths: List[str],
+    ) -> Optional[str]:
+        """Mint one token, keeping its value out of logs and diagnostics."""
+        try:
+            result = subprocess.run(
+                [*self.broker_cmd, "mint", "--dept", dept, "--action", action,
+                 "--repo", repo, *_paths_arg(paths)],
+                capture_output=True, text=True, check=False,
+            )
+        except (FileNotFoundError, PermissionError) as exc:
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="mint_failed", paths_count=len(paths),
+                error=f"broker exec failed: {type(exc).__name__}",
+            )
+            print(
+                f"ERROR: permission denied or broker missing while executing "
+                f"{self.broker_cmd[0]!r}: {exc}. Check the configured binary and PATH "
+                f"({os.environ.get('PATH', '')!r}).",
+                file=__import__("sys").stderr,
+            )
+            return None
+        if result.returncode != 0:
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="mint_failed", paths_count=len(paths),
+                error=f"broker exit {result.returncode}: {result.stderr.strip()[:200]}",
+            )
+            print(
+                f"ERROR: broker mint failed (exit {result.returncode}): {result.stderr.strip()}",
+                file=__import__("sys").stderr,
+            )
+            return None
+        token = result.stdout.strip()
+        if not token.startswith("ghs_"):
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="mint_failed", paths_count=len(paths),
+                error="broker stdout did not contain a ghs_ token",
+            )
+            print("ERROR: broker did not return a valid token shape", file=__import__("sys").stderr)
+            return None
+        return token
 
     # ------------------------------------------------------------------ helpers
 
@@ -361,9 +390,11 @@ class Guard:
             print(f"WARNING: audit refused event: {exc}", file=sys.stderr)
 
     def _run_git_push(
-        self, repo_dir: Path, remote: str, ref: str, token: str
+        self,
+        plan: PushPlan,
+        token: str,
     ) -> Tuple[int, str]:
-        """Invoke `git push` with the token injected ONLY for this command.
+        """Push from the guard-owned bare repo to the policy-derived URL.
 
         We use the `http.extraheader` mechanism per GitHub App docs. The
         header VALUE travels via the process ENVIRONMENT — the
@@ -395,44 +426,31 @@ class Guard:
         401 by the git push endpoint (empirically verified 2026-05-20 on
         Morty, Step 7 deployment smoke).
         """
-        import base64
-        basic_b64 = base64.b64encode(
-            f"x-access-token:{token}".encode("ascii")
-        ).decode("ascii")
-        # credential.helper="" is NOT a secret — safe to keep on argv. It
-        # disables any ambient helper chain so the explicit extraHeader
-        # (set via env below, never argv) is what git actually uses.
-        cmd = [
-            "git",
-            "-c", "credential.helper=",
+        # Bind the authorization decision to exactly the object and remote
+        # state that were inspected before token minting. Never pass `HEAD`
+        # (or any other symbolic source) here: it may have moved meanwhile.
+        # An empty expected value means the destination was verified absent;
+        # force-with-lease then rejects creation if another actor won the race.
+        lease = (
+            f"--force-with-lease={plan.destination_ref}:"
+            f"{plan.expected_remote_sha or ''}"
+        )
+        refspec = f"{plan.source_commit}:{plan.destination_ref}"
+        cmd = hardened_git_command(
             "push",
-            remote,
-            ref,
-        ]
-        # Scrubbed env: keep PATH but DO NOT propagate any GITHUB_TOKEN
-        # the caller might have set (fail-closed against PAT fallback).
-        env = {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
-        # /bin/true exits 0 with empty stdout — guarantees git CANNOT obtain
-        # any credential via the askpass fallback. /dev/null cannot be exec'd
-        # on Linux (it's a char device), which would itself raise an error.
-        env["GIT_ASKPASS"] = env.get("GIT_ASKPASS", "/bin/true")
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        # #923: the auth header travels via the GIT_CONFIG_* env triad,
-        # NEVER via argv (see docstring). Append at the next free index
-        # rather than clobbering index 0, in case an ambient GIT_CONFIG_*
-        # entry is already present in the environment (defensive — no
-        # caller of this method currently sets one).
-        try:
-            gc_count = int(env.get("GIT_CONFIG_COUNT", "0"))
-        except ValueError:
-            gc_count = 0
-        env[f"GIT_CONFIG_KEY_{gc_count}"] = "http.extraheader"
-        env[f"GIT_CONFIG_VALUE_{gc_count}"] = f"Authorization: Basic {basic_b64}"
-        env["GIT_CONFIG_COUNT"] = str(gc_count + 1)
+            # Bypass pre-push explicitly; core.hooksPath=/dev/null in
+            # hardened_git_command() independently prevents every client-side
+            # hook (including reference-transaction) from being discovered.
+            "--no-verify",
+            lease,
+            plan.destination_url,
+            refspec,
+        )
+        env = authenticated_git_env(plan.git_env, token)
 
         proc = subprocess.run(
             cmd,
-            cwd=str(repo_dir),
+            cwd=str(plan.guard_repo),
             capture_output=True,
             text=True,
             env=env,
@@ -444,6 +462,10 @@ class Guard:
         # (e.g. verbose curl tracing) into its own error output.
         stderr_redacted = proc.stderr
         if token:
+            import base64
+            basic_b64 = base64.b64encode(
+                f"x-access-token:{token}".encode("ascii")
+            ).decode("ascii")
             stderr_redacted = stderr_redacted.replace(token, "<TOKEN-REDACTED>")
             stderr_redacted = stderr_redacted.replace(basic_b64, "<TOKEN-B64-REDACTED>")
         return proc.returncode, stderr_redacted

@@ -20,6 +20,7 @@ wrapper) and the Morty git guard (Step 3c, separate component).
 from __future__ import annotations
 
 import fnmatch
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -150,13 +151,28 @@ def _glob_match(path: str, pattern: str) -> bool:
     return True
 
 
+def _structural_glob_match(path: str, pattern: str) -> bool:
+    """Match structural paths case-insensitively after Unicode NFC folding.
+
+    Git path names are byte strings on disk, so case and canonical Unicode
+    variants can coexist on case-sensitive filesystems.  Governance names are
+    semantic identifiers, however: ``MANDATE.md``, ``mandate.md``, and a
+    canonically equivalent Unicode spelling must all remain PR-only.  Keep
+    ordinary allowed-path matching byte/case-sensitive; only structural
+    classification receives this conservative normalization.
+    """
+    normalized_path = unicodedata.normalize("NFC", path).casefold()
+    normalized_pattern = unicodedata.normalize("NFC", pattern).casefold()
+    return _glob_match(normalized_path, normalized_pattern)
+
+
 def _is_structural(path: str) -> bool:
     """True if the path is structural (settings_pr territory).
 
     Repo-agnostic: applies the dept-mission globs that are structural in EVERY
     repo. For framework-repo-only protection use is_structural_for_repo().
     """
-    return any(_glob_match(path, g) for g in STRUCTURAL_PATH_GLOBS)
+    return any(_structural_glob_match(path, g) for g in STRUCTURAL_PATH_GLOBS)
 
 
 def _is_settings_pr_eligible(path: str, repo_name: str | None = None) -> bool:
@@ -198,7 +214,10 @@ def is_structural_for_repo(path: str, repo_name: str | None = None) -> bool:
     if repo_name:
         bare = repo_name.rstrip("/").split("/")[-1]
         if bare == FRAMEWORK_REPO_NAME:
-            return any(_glob_match(path, g) for g in FRAMEWORK_STRUCTURAL_PATH_GLOBS)
+            return any(
+                _structural_glob_match(path, g)
+                for g in FRAMEWORK_STRUCTURAL_PATH_GLOBS
+            )
     return False
 
 

@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from src.cli import main as cli_main
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 
 def test_dry_run_prints_plan_no_side_effect(
@@ -27,6 +27,7 @@ def test_dry_run_prints_plan_no_side_effect(
         temp_git_repo,
         ["outputs/2026-05-20/1/summary.md", "queues/research/x.yaml"],
     )
+    commit_staged(temp_git_repo)
     audit = tmp_path / "audit.jsonl"
     # Point CLI at our mock broker via PATH
     monkeypatch.setenv("PATH", str(mock_broker_binary.parent) + ":" + monkeypatch.delenv("PATH", raising=False) if False else f"{mock_broker_binary.parent}:/usr/bin:/bin")
@@ -44,7 +45,7 @@ def test_dry_run_prints_plan_no_side_effect(
     )
     captured = capsys.readouterr()
     assert rc == 0, f"dry-run should exit 0; stderr={captured.err}"
-    # Plan should mention dry-run and the staged paths
+    # Plan should mention dry-run and the committed push paths
     full_output = captured.out + captured.err
     assert "dry-run" in full_output.lower() or "would" in full_output.lower()
     assert "outputs/2026-05-20/1/summary.md" in full_output
@@ -67,6 +68,7 @@ def test_dry_run_denial_exits_nonzero(
     capsys,
 ):
     stage_files(temp_git_repo, ["MANDATE.md"])
+    commit_staged(temp_git_repo)
     audit = tmp_path / "audit.jsonl"
     rc = cli_main(
         [

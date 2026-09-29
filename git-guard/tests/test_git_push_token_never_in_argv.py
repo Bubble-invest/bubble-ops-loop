@@ -31,7 +31,7 @@ import base64
 
 from src.guard import Guard
 from src.policy_loader import load_policy
-from tests.conftest import stage_files
+from tests.conftest import commit_staged, stage_files
 
 # A syntactically-plausible but fake installation token — never a real
 # credential. Chosen to be distinctive enough that an accidental argv leak
@@ -41,6 +41,7 @@ _FAKE_TOKEN_PREFIX = "ghs_MOCK"
 
 def _run_guard_push(fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push):
     stage_files(temp_git_repo, ["outputs/2026-05-20/1/summary.md"])
+    commit_staged(temp_git_repo)
     policy = load_policy(fixture_policy_yaml)
     g = Guard(policy=policy, broker_cmd=[str(mock_broker_binary)])
     rc = g.push(
@@ -123,21 +124,40 @@ def test_credential_helper_neutralized_via_argv_flag(
     assert cmd[idx - 1] == "-c"
 
 
-def test_remote_and_ref_still_passed_positionally(
+def test_remote_and_immutable_refspec_passed_positionally(
     fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
 ):
-    """Guard behavior unchanged: push still targets the right remote/ref.
-
-    `git push <remote> <ref>` — remote defaults to "origin" and ref is the
-    branch being pushed. This must be byte-identical to pre-#923 behavior;
-    only the credential transport changed.
-    """
+    """Push targets the right remote with an immutable-SHA refspec."""
     cmd, _env = _run_guard_push(
         fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
     )
-    assert cmd[0] == "git"
-    assert cmd[-2] == "origin", f"remote must still be positional argv, got: {cmd!r}"
-    assert cmd[-1], f"ref must still be positional argv, got: {cmd!r}"
+    assert cmd[0] == "/usr/bin/git"
+    assert cmd[-2] == str(temp_git_repo.parent / "remote.git")
+    source, destination = cmd[-1].split(":", 1)
+    assert len(source) == 40 and all(c in "0123456789abcdef" for c in source)
+    assert destination == "refs/heads/main"
+    assert "HEAD" not in cmd
+
+
+def test_push_disables_replace_objects_and_ambient_git_config(
+    fixture_policy_yaml,
+    temp_git_repo,
+    mock_broker_binary,
+    mock_git_push,
+    monkeypatch,
+):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.useReplaceRefs")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    cmd, env = _run_guard_push(
+        fixture_policy_yaml, temp_git_repo, mock_broker_binary, mock_git_push
+    )
+    assert "--no-replace-objects" in cmd
+    assert "core.useReplaceRefs=false" in cmd
+    assert "diff.renames=false" in cmd
+    assert env.get("GIT_NO_REPLACE_OBJECTS") == "1"
+    assert env.get("GIT_CONFIG_COUNT") == "1"
+    assert env.get("GIT_CONFIG_KEY_0") == "http.extraheader"
 
 
 def test_git_askpass_and_terminal_prompt_still_scrubbed(

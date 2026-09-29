@@ -78,3 +78,9 @@ def test_mission_files_are_structural(path):
 )
 def test_runtime_and_working_memory_are_writable(path):
     assert M._is_structural(path) is False, f"{path} must stay writable (non-structural)"
+
+
+def test_structural_glob_matching_normalizes_unicode_nfc_and_case():
+    decomposed_path = "MISSIONS/cafe\u0301.yaml"
+    composed_pattern = "missions/caf\u00e9.yaml"
+    assert M._structural_glob_match(decomposed_path, composed_pattern) is True
