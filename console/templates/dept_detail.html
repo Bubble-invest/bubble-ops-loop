@@ -297,15 +297,21 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
   </div>
 
   {% if pending_decisions %}
-  <div class="recent-decisions-list" aria-label="Décisions en attente de traitement">
-    {% for dec in pending_decisions %}
-    <div class="recent-decision-row">
-      <span>{{ dec.gate_id }}</span>
-      <strong>{{ dec.action }}</strong>
-      <span>Décision enregistrée · En attente de traitement par {{ dept.display_name }}</span>
+  {# #1597 keeps a confirmation that the operator's decisions were recorded,
+     but they are NOT waiting on the operator: one collapsed line, the list
+     only on click (Joris, Telegram 10125, 2026-09-29: "big useless block"). #}
+  <details class="recent-decisions-details">
+    <summary class="recent-decisions-summary">{{ pending_decisions|length }} décision{{ '' if pending_decisions|length == 1 else 's' }} enregistrée{{ '' if pending_decisions|length == 1 else 's' }} · en attente de traitement par {{ dept.display_name }}</summary>
+    <div class="recent-decisions-list" aria-label="Décisions en attente de traitement">
+      {% for dec in pending_decisions %}
+      <div class="recent-decision-row">
+        <span>{{ dec.gate_id }}</span>
+        <strong>{{ dec.action }}</strong>
+        <span>Décision enregistrée · En attente de traitement par {{ dept.display_name }}</span>
+      </div>
+      {% endfor %}
     </div>
-    {% endfor %}
-  </div>
+  </details>
   {% endif %}
   {% if gate_groups %}
     {# Mirror the home page: group gates of the same kind into one card.
