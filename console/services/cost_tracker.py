@@ -33,7 +33,7 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -233,7 +233,20 @@ def _detect_job(first_user_text: str) -> str:
     return "other-p-cron"
 
 
-def parse_session(filepath: Path) -> Optional[dict]:
+def _note_unreadable(
+    filepath: Path, on_unreadable: Optional[Callable[[Path], None]]
+) -> None:
+    """Record an unreadable transcript path without making callers fail."""
+    if on_unreadable is not None:
+        on_unreadable(filepath)
+    else:
+        _log.warning("cost_tracker: unreadable transcript path skipped: %s", filepath)
+
+
+def parse_session(
+    filepath: Path,
+    on_unreadable: Optional[Callable[[Path], None]] = None,
+) -> Optional[dict]:
     """Return per-session per-model usage + the detected -p job (if any)."""
     model_usage: dict[str, dict] = {}
     first_user_text = ""
@@ -272,19 +285,29 @@ def parse_session(filepath: Path) -> Optional[dict]:
                             mu["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
                             mu["cache_create"] += u.get("cache_creation_input_tokens", 0) or 0
                             n_turns += 1
-    except FileNotFoundError:
+    except OSError:
+        _note_unreadable(filepath, on_unreadable)
         return None
     if not model_usage:
+        return None
+    try:
+        mtime = filepath.stat().st_mtime
+    except OSError:
+        _note_unreadable(filepath, on_unreadable)
         return None
     return {
         "model_usage": model_usage,
         "first_user_text": first_user_text,
         "n_turns": n_turns,
-        "mtime": filepath.stat().st_mtime,
+        "mtime": mtime,
     }
 
 
-def parse_session_for_day(filepath: Path, day: str) -> Optional[dict]:
+def parse_session_for_day(
+    filepath: Path,
+    day: str,
+    on_unreadable: Optional[Callable[[Path], None]] = None,
+) -> Optional[dict]:
     """Like parse_session, but bucket by the MESSAGE timestamp inside each
     JSONL entry (not file mtime) and only accumulate model_usage for entries
     whose timestamp falls on `day` (format "YYYY-MM-DD", UTC).
@@ -342,15 +365,21 @@ def parse_session_for_day(filepath: Path, day: str) -> Optional[dict]:
                         mu["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
                         mu["cache_create"] += u.get("cache_creation_input_tokens", 0) or 0
                         n_turns += 1
-    except FileNotFoundError:
+    except OSError:
+        _note_unreadable(filepath, on_unreadable)
         return None
     if not model_usage:
+        return None
+    try:
+        mtime = filepath.stat().st_mtime
+    except OSError:
+        _note_unreadable(filepath, on_unreadable)
         return None
     return {
         "model_usage": model_usage,
         "first_user_text": first_user_text,
         "n_turns": n_turns,
-        "mtime": filepath.stat().st_mtime,
+        "mtime": mtime,
     }
 
 
@@ -428,6 +457,25 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
     cache = {} if refresh else _load_cache()
     new_cache: dict = {}
 
+    # A partial permissions problem must not take down the whole /costs page.
+    # Keep paths deduplicated because day= scans readable candidates twice.
+    unreadable_paths: list[str] = []
+    unreadable_seen: set[str] = set()
+
+    def _record_unreadable(path: Path) -> None:
+        display = str(path)
+        if display in unreadable_seen:
+            return
+        unreadable_seen.add(display)
+        unreadable_paths.append(display)
+        _log.warning("cost_tracker: unreadable transcript path skipped: %s", display)
+
+    def _unreadable_fields() -> dict:
+        return {
+            "unreadable_transcripts": len(unreadable_paths),
+            "unreadable_transcript_paths": unreadable_paths[:3],
+        }
+
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     cutoff_7d = (now - timedelta(days=7)).timestamp()
@@ -447,47 +495,75 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
 
     agents: dict[str, dict] = {}
 
-    if not PROJECTS_DIR.is_dir():
+    try:
+        projects_dir_exists = PROJECTS_DIR.is_dir()
+    except OSError:
+        _record_unreadable(PROJECTS_DIR)
+        projects_dir_exists = False
+    if not projects_dir_exists:
         empty = {"scanned_at": now.isoformat(), "agents": {}, "totals": _blank(),
-                  "note": "no projects dir"}
+                 "note": "no readable projects dir", **_unreadable_fields()}
         if day is not None:
             empty["day_requested"] = day
         return empty
 
     # Build (label, jsonl-files) work units. Flat dirs map directly; nested Mac
     # caches and post-isolation VPS mirrors are descended one level.
-    work = []  # list of (label0, file_iterable)
-    for proj in PROJECTS_DIR.iterdir():
-        if not proj.is_dir():
+    work_files = []  # list of (label0, jsonl-files)
+    try:
+        projects = list(PROJECTS_DIR.iterdir())
+    except OSError:
+        _record_unreadable(PROJECTS_DIR)
+        projects = []
+
+    def _is_dir(path: Path) -> bool:
+        try:
+            return path.is_dir()
+        except OSError:
+            _record_unreadable(path)
+            return False
+
+    def _jsonl_files(path: Path) -> list[Path]:
+        try:
+            return list(path.glob("*.jsonl"))
+        except OSError:
+            _record_unreadable(path)
+            return []
+
+    for proj in projects:
+        if not _is_dir(proj):
             continue
         if proj.name.startswith(("_mac-", "_vps-")):
-            for sub in proj.iterdir():
-                if not sub.is_dir():
+            try:
+                subdirs = list(proj.iterdir())
+            except OSError:
+                _record_unreadable(proj)
+                continue
+            for sub in subdirs:
+                if not _is_dir(sub):
                     continue
                 label0 = classify(f"{proj.name}/{sub.name}")
                 if label0 is None:
                     continue
-                work.append((label0, sub.glob("*.jsonl")))
+                work_files.append((label0, _jsonl_files(sub)))
         else:
             label0 = classify(proj.name)
             if label0 is None:
                 continue
-            work.append((label0, proj.glob("*.jsonl")))
+            work_files.append((label0, _jsonl_files(proj)))
 
     # When day= is set we need every file whose CONTENT might touch that day,
     # regardless of file mtime (that's the whole point — mtime is exactly
     # what's unreliable for an exceptional-day audit). So the day pass below
-    # re-globs `work` separately rather than reusing the mtime-filtered files
-    # from the today/week pass. `work` holds generators (proj.glob(...)), which
-    # are single-use, so re-derive the file list once up front and reuse it for
-    # both passes instead of re-globbing the filesystem.
-    work_files = [(label0, list(files)) for label0, files in work]
+    # reuses the discovered file list rather than the mtime-filtered files from
+    # the today/week pass.
 
     for label0, files in work_files:
         for f in files:
             try:
                 mtime = f.stat().st_mtime
             except OSError:
+                _record_unreadable(f)
                 continue
             if mtime < cutoff_7d:
                 continue  # only last 7d matters for the today/week panel
@@ -496,7 +572,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
             if cached and cached.get("mtime") == mtime:
                 parsed = cached
             else:
-                parsed = parse_session(f)
+                parsed = parse_session(f, on_unreadable=_record_unreadable)
                 if parsed is None:
                     continue
             new_cache[key] = parsed
@@ -541,7 +617,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
     if day is not None:
         for label0, files in work_files:
             for f in files:
-                parsed = parse_session_for_day(f, day)
+                parsed = parse_session_for_day(f, day, on_unreadable=_record_unreadable)
                 if parsed is None:
                     continue
                 label = label0
@@ -593,6 +669,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
         "agents": agents_sorted,
         "totals": totals,
         "pricing_note": "Estimate from token counts × public list prices — for trend/relative cost, not billing.",
+        **_unreadable_fields(),
     }
     if day is not None:
         out["day_requested"] = day

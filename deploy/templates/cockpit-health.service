@@ -46,6 +46,9 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 Environment="PYTHONPATH=/opt/bubble-ops-loop"
 Environment="PYTHONDONTWRITEBYTECODE=1"
 Environment="READ_FROM_DISK=/home/claude/agents"
+# The collector renders /costs.json in-process as bubble-console, so point it
+# at the same shared transcript mirror as bubble-ops-console.service (#556).
+Environment="BUBBLE_COST_PROJECTS_DIR=/home/claude/.claude/projects"
 # Shadow mode ON by default (system-one-decisions/SKILL.md "Mandatory rollout
 # discipline": shadow -> gold set -> calibrate -> gate, never a hard cutover).
 # Rick's mission (bubble-rnd-workspace/missions/cockpit-health.md) owns the

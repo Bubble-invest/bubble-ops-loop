@@ -7,6 +7,7 @@ interactive dept loops). Estimate, not billing.
 """
 from __future__ import annotations
 
+import builtins
 import json
 import time
 from pathlib import Path
@@ -99,6 +100,64 @@ def test_reads_isolated_vps_transcript_mirror_fixture(fake_projects):
     assert rep["agents"]["ben"]["week"]["runs"] == 1
     assert rep["agents"]["ben"]["week"]["cost"] > 0
     assert rep["totals"]["week"]["runs"] == 1
+
+
+def test_unreadable_transcript_file_is_reported_and_scan_continues(
+    fake_projects, monkeypatch
+):
+    dept = fake_projects / "-home-claude-agents-bubble-ops-ben"
+    readable = dept / "readable.jsonl"
+    unreadable = dept / "unreadable.jsonl"
+    usage = [{"input_tokens": 100, "output_tokens": 50,
+              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}]
+    _session(readable, model="claude-sonnet-4-6", turns=usage)
+    _session(unreadable, model="claude-sonnet-4-6", turns=usage)
+
+    real_open = builtins.open
+
+    def guarded_open(path, *args, **kwargs):
+        if Path(path) == unreadable:
+            raise PermissionError("fixture is unreadable")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+
+    rep = cost_tracker.build_report(refresh=True)
+
+    assert rep["agents"]["ben"]["week"]["runs"] == 1
+    assert rep["unreadable_transcripts"] == 1
+    assert rep["unreadable_transcript_paths"] == [str(unreadable)]
+
+
+def test_unreadable_transcript_subdir_is_reported_and_scan_continues(
+    fake_projects, monkeypatch
+):
+    readable_source = fake_projects / "_vps-ben"
+    readable_dept = readable_source / "-srv-agents-ben"
+    unreadable_source = fake_projects / "_vps-maya"
+    readable_source.mkdir(parents=True)
+    unreadable_source.mkdir(parents=True)
+    _session(
+        readable_dept / "readable.jsonl",
+        model="claude-sonnet-4-6",
+        turns=[{"input_tokens": 100, "output_tokens": 50,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+    )
+
+    real_iterdir = Path.iterdir
+
+    def guarded_iterdir(path):
+        if path == unreadable_source:
+            raise PermissionError("fixture directory is unreadable")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+
+    rep = cost_tracker.build_report(refresh=True)
+
+    assert rep["agents"]["ben"]["week"]["runs"] == 1
+    assert rep["unreadable_transcripts"] == 1
+    assert rep["unreadable_transcript_paths"] == [str(unreadable_source)]
 
 
 def test_detects_p_cron_job_wiki_compile(fake_projects):
