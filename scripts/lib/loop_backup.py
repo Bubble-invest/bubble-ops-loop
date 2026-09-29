@@ -1070,5 +1070,9 @@ def append_external_heartbeat(
     if parent:
         os.makedirs(parent, exist_ok=True)
     with open(heartbeat_path, "a", encoding="utf-8") as fh:
+        # #1615: this is non-secret fleet evidence.  The #1120-isolated Tony
+        # reader has no shared group with child agents, so make it readable by
+        # mode and repair older owner-only logs whenever they are appended.
+        os.fchmod(fh.fileno(), 0o644)
         fh.write(line + "\n")
     return line
