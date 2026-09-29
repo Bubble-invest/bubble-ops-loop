@@ -10,6 +10,7 @@ output for that dummy substring.
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 import subprocess
@@ -113,21 +114,32 @@ def test_judge_stdout_never_contains_the_jev_key_even_on_failure(capsys, tmp_pat
     _assert_no_secret_leak(output)
 
 
-def test_gh_helper_never_passes_token_as_argv(monkeypatch):
-    """checks._gh_open_issue_count and judge.emit_or_update both shell out to
-    `gh` — `gh` reads its own token from the environment; neither function
-    may ever construct an argv element containing a token value. Capture
-    every subprocess.run call's argv and assert no dummy secret appears."""
+def test_github_helpers_keep_token_out_of_url_and_argv(monkeypatch, tmp_path):
+    """REST keeps the token header-only; judge keeps it out of gh argv."""
     from scripts.cockpit_health import checks as checks_mod
 
     captured_argvs = []
+    captured_urls = []
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def fake_urlopen(req, timeout):
+        captured_urls.append(req.full_url)
+        assert req.get_header("Authorization") == f"Bearer {DUMMY_GH_TOKEN}"
+        return FakeResponse(b"[]")
 
     def fake_run(cmd, capture_output=True, text=True, timeout=20, check=False):
         captured_argvs.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
 
-    monkeypatch.setattr(checks_mod.subprocess, "run", fake_run)
-    checks_mod._gh_open_issue_count("Bubble-invest/bubble-ops-board")
+    monkeypatch.setattr(checks_mod.urllib.request, "urlopen", fake_urlopen)
+    checks_mod._github_open_issue_count(
+        "Bubble-invest/bubble-ops-board", token_file=tmp_path / "missing")
 
     monkeypatch.setattr(judge.subprocess, "run", fake_run)
     judge.emit_or_update("costs", {"cause": "x", "jev": None}, "summary",
@@ -137,6 +149,8 @@ def test_gh_helper_never_passes_token_as_argv(monkeypatch):
         for arg in argv:
             for secret in ALL_DUMMY_SECRETS:
                 assert secret not in str(arg), f"secret leaked into argv: {argv!r}"
+    for url in captured_urls:
+        _assert_no_secret_leak(url)
 
 
 def test_no_source_file_contains_a_hardcoded_looking_secret():

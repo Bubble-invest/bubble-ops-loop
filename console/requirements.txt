@@ -20,3 +20,6 @@ jsonschema>=4.0.0
 # Same package token-broker/requirements.txt already pins (>=42); pinned
 # exact here to match console's own == convention.
 cryptography==50.0.0
+# cockpit-health judge reuses skills/system-one-decisions/scripts/jev.py,
+# whose remote call path imports requests lazily.
+requests>=2.31
