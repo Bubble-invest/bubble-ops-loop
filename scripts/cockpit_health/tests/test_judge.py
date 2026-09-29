@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -140,6 +141,24 @@ def test_build_jev_caller_degrades_when_jev_module_missing(monkeypatch):
     result = call({}, {})
     assert result["ok"] is False
     assert "unavailable" in result["error"]
+
+
+def test_build_jev_caller_degrades_when_lazy_requests_import_is_missing(monkeypatch):
+    fake = types.ModuleType("jev")
+    fake.auth_headers_for = lambda backend: {"Authorization": "redacted"}
+    fake.base_url_for = lambda backend: "https://example.invalid"
+
+    def missing_dependency(*args, **kwargs):
+        raise ImportError("No module named 'requests'")
+
+    fake.call_engine = missing_dependency
+    monkeypatch.setitem(sys.modules, "jev", fake)
+
+    result = judge.build_jev_caller("openrouter")({}, {})
+
+    assert result["ok"] is False
+    assert "dependency unavailable" in result["error"]
+    assert "requests" in result["error"]
 
 
 # ─────────────────────────────────────────────────────────────────────────

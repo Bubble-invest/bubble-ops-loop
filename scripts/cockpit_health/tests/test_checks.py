@@ -7,7 +7,9 @@ teardown so tests never leak state into each other.
 """
 from __future__ import annotations
 
-import subprocess
+import io
+import json
+import os
 import sys
 import types
 from datetime import date, datetime, timedelta, timezone
@@ -78,42 +80,76 @@ def test_newest_mtime_none_when_nothing_matches(tmp_path):
     assert checks._newest_mtime(tmp_path, ["outputs/*/heartbeat.log"]) is None
 
 
-def test_sum_today_cost_reads_totals_today():
-    report = {"totals": {"today": {"cost": 12.34}, "week": {"cost": 99.0}}}
-    assert checks._sum_today_cost(report) == 12.34
+class _FakeHTTPResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
-def test_sum_today_cost_degrades_on_bad_shape():
-    assert checks._sum_today_cost({}) == 0.0
-    assert checks._sum_today_cost(None) == 0.0
-    assert checks._sum_today_cost({"totals": {"today": {"cost": "not-a-number"}}}) == 0.0
+def test_github_open_issue_count_uses_token_file_and_rest(tmp_path, monkeypatch):
+    token_file = tmp_path / "board-token"
+    token_file.write_text("secret-value")
+    seen = {}
 
+    def fake_urlopen(req, timeout):
+        seen["authorization"] = req.get_header("Authorization")
+        seen["url"] = req.full_url
+        return _FakeHTTPResponse(json.dumps([
+            {"number": 1}, {"number": 2},
+            {"number": 3, "pull_request": {}},
+        ]).encode())
 
-def test_gh_open_issue_count_parses_json(monkeypatch):
-    def fake_run(cmd, capture_output, text, timeout, check):
-        return subprocess.CompletedProcess(cmd, 0, stdout='[{"number":1},{"number":2}]', stderr="")
-    monkeypatch.setattr(checks.subprocess, "run", fake_run)
-    count, err = checks._gh_open_issue_count("Bubble-invest/bubble-ops-board")
+    monkeypatch.setattr(checks.urllib.request, "urlopen", fake_urlopen)
+    count, err = checks._github_open_issue_count(
+        "Bubble-invest/bubble-ops-board", token_file=token_file)
     assert count == 2
     assert err is None
+    assert seen["authorization"] == "Bearer secret-value"
+    assert "state=open" in seen["url"]
 
 
-def test_gh_open_issue_count_degrades_on_failure(monkeypatch):
-    def fake_run(cmd, capture_output, text, timeout, check):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not authenticated")
-    monkeypatch.setattr(checks.subprocess, "run", fake_run)
-    count, err = checks._gh_open_issue_count("Bubble-invest/bubble-ops-board")
+def test_github_open_issue_count_degrades_without_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    count, err = checks._github_open_issue_count(
+        "Bubble-invest/bubble-ops-board", token_file=tmp_path / "missing")
     assert count is None
-    assert "not authenticated" in err
+    assert "token" in err
 
 
-def test_gh_open_issue_count_never_raises_on_exec_failure(monkeypatch):
-    def fake_run(*a, **k):
-        raise FileNotFoundError("gh: command not found")
-    monkeypatch.setattr(checks.subprocess, "run", fake_run)
-    count, err = checks._gh_open_issue_count("Bubble-invest/bubble-ops-board")
+def test_github_open_issue_count_never_raises_on_rest_failure(tmp_path, monkeypatch):
+    token_file = tmp_path / "board-token"
+    token_file.write_text("secret-value")
+    monkeypatch.setattr(checks.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("timed out")))
+    count, err = checks._github_open_issue_count(
+        "Bubble-invest/bubble-ops-board", token_file=token_file)
     assert count is None
-    assert "gh" in err
+    assert "timed out" in err
+
+
+def test_recent_transcript_facts_counts_direct_homes_and_mac_mirrors(tmp_path):
+    now = 2_000_000.0
+    homes = tmp_path / "home"
+    mirrors = tmp_path / "projects"
+    direct = homes / "agent-ben" / ".claude" / "projects" / "-srv-agents-ben" / "a.jsonl"
+    mac = mirrors / "_mac-jade" / "-Users-jade-claude-workspaces-bubble-ops-content" / "b.jsonl"
+    old = homes / "agent-maya" / ".claude" / "projects" / "old.jsonl"
+    for path in (direct, mac, old):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+    os.utime(direct, (now - 60, now - 60))
+    os.utime(mac, (now - 120, now - 120))
+    os.utime(old, (now - 25 * 3600, now - 25 * 3600))
+
+    facts = checks._recent_transcript_facts(
+        now, agent_home_root=homes, mirror_root=mirrors)
+
+    assert facts["total_recent_transcripts"] == 2
+    assert facts["agents"]["ben"]["sources"] == ["agent_home"]
+    assert facts["agents"]["content"]["sources"] == ["mac_mirror"]
+    assert "maya" not in facts["agents"]
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -172,28 +208,47 @@ def stub_module(monkeypatch):
 # check_costs_freshness
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_costs_freshness_ok_when_served_matches_fresh(stub_module):
-    served = {"totals": {"today": {"cost": 10.0}}}
-    fresh = {"totals": {"today": {"cost": 10.0}}}
-    stub_module("console.services.cost_tracker", build_report=lambda refresh: fresh)
+def test_costs_freshness_ok_when_recent_transcript_has_served_session(monkeypatch):
+    served = {
+        "agents": {"ben": {
+            "today": {"runs": 1, "cost": 1.0},
+            "week": {"runs": 2, "cost": 10.0},
+        }},
+        "totals": {
+            "today": {"runs": 1, "cost": 1.0},
+            "week": {"runs": 2, "cost": 10.0},
+        },
+    }
+    monkeypatch.setattr(checks, "_recent_transcript_facts", lambda now: {
+        "window_hours": 24.0, "total_recent_transcripts": 1,
+        "agents": {"ben": {"recent_transcript_count": 1}},
+    })
     client = FakeClient({"/costs.json": FakeResponse(200, served)})
     result = checks.check_costs_freshness(client, checks.Ctx())
     assert result["hard_inconsistency"] is False
     assert result["consistent"] is True
 
 
-def test_costs_freshness_hard_when_served_zero_but_fresh_has_spend(stub_module):
-    served = {"totals": {"today": {"cost": 0.0}}}
-    fresh = {"totals": {"today": {"cost": 42.0}}}
-    stub_module("console.services.cost_tracker", build_report=lambda refresh: fresh)
+def test_costs_freshness_hard_when_recent_transcript_has_no_served_session(monkeypatch):
+    served = {"agents": {}, "totals": {
+        "today": {"runs": 0, "cost": 0.0},
+        "week": {"runs": 0, "cost": 0.0},
+    }}
+    monkeypatch.setattr(checks, "_recent_transcript_facts", lambda now: {
+        "window_hours": 24.0, "total_recent_transcripts": 3,
+        "agents": {"ben": {"recent_transcript_count": 3}},
+    })
     client = FakeClient({"/costs.json": FakeResponse(200, served)})
     result = checks.check_costs_freshness(client, checks.Ctx())
     assert result["hard_inconsistency"] is True
-    assert "$0" in result["reason"] or "0" in result["reason"]
+    assert "3 transcript" in result["reason"]
+    assert "0 sessions" in result["reason"]
 
 
-def test_costs_freshness_hard_on_non_200(stub_module):
-    stub_module("console.services.cost_tracker", build_report=lambda refresh: {})
+def test_costs_freshness_hard_on_non_200(monkeypatch):
+    monkeypatch.setattr(checks, "_recent_transcript_facts", lambda now: {
+        "window_hours": 24.0, "total_recent_transcripts": 0, "agents": {},
+    })
     client = FakeClient({"/costs.json": FakeResponse(500, {})})
     result = checks.check_costs_freshness(client, checks.Ctx())
     assert result["hard_inconsistency"] is True
@@ -211,7 +266,7 @@ def test_costs_freshness_skips_without_client():
 
 def test_kanban_open_count_consistent_within_tolerance(stub_module, monkeypatch):
     stub_module("console.routes.kanban", _fetch_issues=lambda: ([{}] * 10, None))
-    monkeypatch.setattr(checks, "_gh_open_issue_count", lambda repo: (10, None))
+    monkeypatch.setattr(checks, "_github_open_issue_count", lambda repo: (10, None))
     client = FakeClient({"/kanban": FakeResponse(200)})
     result = checks.check_kanban_open_count(client, checks.Ctx())
     assert result["hard_inconsistency"] is False
@@ -219,7 +274,7 @@ def test_kanban_open_count_consistent_within_tolerance(stub_module, monkeypatch)
 
 def test_kanban_open_count_hard_on_large_drift(stub_module, monkeypatch):
     stub_module("console.routes.kanban", _fetch_issues=lambda: ([{}] * 2, None))
-    monkeypatch.setattr(checks, "_gh_open_issue_count", lambda repo: (40, None))
+    monkeypatch.setattr(checks, "_github_open_issue_count", lambda repo: (40, None))
     client = FakeClient({"/kanban": FakeResponse(200)})
     result = checks.check_kanban_open_count(client, checks.Ctx())
     assert result["hard_inconsistency"] is True
@@ -227,7 +282,7 @@ def test_kanban_open_count_hard_on_large_drift(stub_module, monkeypatch):
 
 def test_kanban_open_count_hard_on_served_fetch_error(stub_module, monkeypatch):
     stub_module("console.routes.kanban", _fetch_issues=lambda: ([], "no board token"))
-    monkeypatch.setattr(checks, "_gh_open_issue_count", lambda repo: (5, None))
+    monkeypatch.setattr(checks, "_github_open_issue_count", lambda repo: (5, None))
     client = FakeClient({"/kanban": FakeResponse(200)})
     result = checks.check_kanban_open_count(client, checks.Ctx())
     assert result["hard_inconsistency"] is True
@@ -297,12 +352,11 @@ def test_nav_freshness_hard_when_empty_but_stale_data_exists(stub_module, tmp_pa
     assert "empty state" in results[0]["reason"]
 
 
-def test_nav_freshness_skips_non_fund_depts(stub_module, tmp_path):
-    root = tmp_path / "maya"
+def test_nav_freshness_reports_missing_canonical_data_for_configured_ben(stub_module, tmp_path):
+    root = tmp_path / "ben"
     root.mkdir()  # no outputs/ dir at all
     stub_module(
         "console.services.dept_registry",
-        live_departments=lambda: [FakeDept("maya")],
         runtime_repo_path=lambda slug: root,
     )
     stub_module(
@@ -313,7 +367,10 @@ def test_nav_freshness_skips_non_fund_depts(stub_module, tmp_path):
         },
     )
     results = checks.check_nav_freshness(None, checks.Ctx())
-    assert results == []
+    assert len(results) == 1
+    assert results[0]["page"] == "dept_ben_portfolio"
+    assert results[0]["hard_inconsistency"] is True
+    assert "unavailable" in results[0]["reason"]
 
 
 def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
@@ -342,6 +399,71 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     assert len(results) == 1
     assert results[0]["hard_inconsistency"] is False
     assert results[0]["consistent"] is True
+
+
+def test_nav_freshness_resolves_ben_directly_without_legacy_enumeration(stub_module, tmp_path):
+    root = tmp_path / "srv" / "agents" / "ben"
+    root.mkdir(parents=True)
+    today = date.today().isoformat()
+    (root / "outputs" / today).mkdir(parents=True)
+    (root / "outputs" / today / "graph-data.json").write_text("{}")
+    resolved = []
+    canonical_calls = []
+    stub_module(
+        "console.services.dept_registry",
+        runtime_repo_path=lambda slug: resolved.append(slug) or root,
+    )
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: canonical_calls.append(slug) or {
+            "nav": 200000.0, "since_rebase_pct": 2.0, "as_of": today,
+            "is_stale": False, "source": "graph-data.json",
+        },
+    )
+
+    result = checks.check_nav_freshness(None, checks.Ctx())[0]
+
+    assert resolved == ["ben"]
+    assert canonical_calls == ["ben"]
+    assert result["source"]["runtime_repo_path"] == str(root)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# check_exposure_nav_date
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_exposure_nav_date_hard_when_exposure_and_nav_dates_differ(stub_module):
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: {"as_of": "2026-09-28", "source": "graph-data.json"},
+    )
+    stub_module(
+        "console.services.thesis_book",
+        build_thesis_data=lambda slug: {"generated_at": "2026-09-27T06:00:00Z"},
+    )
+
+    result = checks.check_exposure_nav_date(None, checks.Ctx())[0]
+
+    assert result["page"] == "dept_ben_portfolio"
+    assert result["hard_inconsistency"] is True
+    assert result["observed"]["exposure_as_of"] == "2026-09-27"
+    assert result["source"]["latest_nav_snapshot_date"] == "2026-09-28"
+
+
+def test_exposure_nav_date_consistent_when_dates_match(stub_module):
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: {"as_of": "2026-09-28", "source": "graph-data.json"},
+    )
+    stub_module(
+        "console.services.thesis_book",
+        build_thesis_data=lambda slug: {"generated_at": "2026-09-28T06:00:00Z"},
+    )
+
+    result = checks.check_exposure_nav_date(None, checks.Ctx())[0]
+
+    assert result["hard_inconsistency"] is False
+    assert result["consistent"] is True
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -115,7 +115,14 @@ def build_jev_caller(backend: str = "openrouter") -> JevCaller:
         except SystemExit as exc:  # jev.py's own "missing API key" contract
             return {"ok": False, "error": str(exc)}
         base_url = jev_module.base_url_for(backend)
-        return jev_module.call_engine(backend, base_url, state, questions, headers=headers)
+        try:
+            return jev_module.call_engine(
+                backend, base_url, state, questions, headers=headers)
+        except ImportError as exc:
+            # jev.py imports requests lazily inside call_engine(). A partially
+            # provisioned runtime must lose only the optional Jev signal, not
+            # crash the entire shadow pass and discard collector findings.
+            return {"ok": False, "error": f"Jev dependency unavailable: {exc}"}
 
     return _call
 
