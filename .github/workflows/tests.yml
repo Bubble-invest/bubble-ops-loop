@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test deps
-        run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests
+        run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests jsonschema
       - name: Framework lib tests
         run: python3 -m pytest scripts/lib/tests/ -q --tb=short
       # Board #1505 cockpit-health origin (Joris tg 10023-10029): evidence
