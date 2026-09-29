@@ -101,6 +101,7 @@ def test_push_repo_no_mint_no_push(tmp_path, monkeypatch):
     this fix sits inside: if minting fails, _push_repo must fail closed
     (no push attempted) — unchanged behaviour."""
     monkeypatch.setattr(dd, "_mint_token", lambda repo_name, repo_dir=None: None)
+    monkeypatch.setattr(dd, "_sleep_before_transport_retry", lambda *_args: None)
 
     calls = []
 

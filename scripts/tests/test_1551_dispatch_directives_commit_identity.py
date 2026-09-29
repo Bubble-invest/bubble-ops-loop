@@ -57,6 +57,10 @@ def test_commit_succeeds_with_no_identity_anywhere(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # Token minting is expected to fail in this offline test; skip production
+    # backoff delays because this case only verifies the commit identity.
+    monkeypatch.setattr(dd, "_mint_token", lambda *_args: None)
+    monkeypatch.setattr(dd, "_sleep_before_transport_retry", lambda *_args: None)
 
     repo = _make_repo_no_identity(tmp_path, "bubble-ops-accountant")
 
