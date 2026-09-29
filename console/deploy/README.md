@@ -79,6 +79,15 @@ claude-uid emitters (`/run/bubble-board/token`) is unrelated to this uid and
 stays `root:claude`, as before #489 — it was briefly moved to
 `root:bubble-console` during the rollout and reverted.
 
+**Cost transcript source (board #1613).** Isolated agents write Claude
+sessions under `/home/agent-<slug>/.claude/projects`; the root
+`wiki-transcript-sync.timer` mirrors those into
+`/home/claude/.claude/projects/_vps-<slug>/`. The console unit sets
+`BUBBLE_COST_PROJECTS_DIR` to that mirror explicitly (its own `HOME` belongs
+to `bubble-console` and contains no sessions). The unit installer grants
+`bubble-console` read/traverse ACLs only on the mirror, plus traverse-only on
+its ancestors; it does not grant access to the isolated agent homes.
+
 ### Rick (`rnd`) read-mirror registration — post-merge only
 
 Rick runs on Joris's Mac M4. The VPS paths are read-only views, never a second

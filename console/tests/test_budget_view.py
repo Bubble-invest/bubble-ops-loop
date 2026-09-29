@@ -93,11 +93,15 @@ def test_spent_by_dept_maps_agent_keys_to_slugs():
     report = {"agents": {
         "ben": {"week": {"cost": 3.0}},
         "miranda (jade-mac)": {"week": {"cost": 2.0}},  # → content slug via alias+suffix strip
+        "rick": {"week": {"cost": 4.0}},                # → rnd slug
+        "eliot (mac-legacy)": {"week": {"cost": 5.0}},  # → security slug
         "wiki-compile": {"week": {"cost": 1.0}},         # -p cron, no dept
     }}
     m = cost_tracker.spent_by_dept(report, span="week")
     assert m["ben"] == 3.0
     assert m["content"] == 2.0
+    assert m["rnd"] == 4.0
+    assert m["security"] == 5.0
     assert m["wiki-compile"] == 1.0  # kept in map but simply won't match a dept
 
 
@@ -432,6 +436,28 @@ class _FakeDept:
     @property
     def is_live(self):
         return self._live
+
+
+def test_cost_report_health_uses_24h_heartbeat_invariant(monkeypatch):
+    """The route combines independent loop activity with scanner output, so a
+    broken transcript path is visible in both /costs and /costs.json."""
+    from types import SimpleNamespace
+    from console.routes import costs
+
+    monkeypatch.setattr(costs.cost_tracker, "build_report",
+                        lambda refresh: {"agents": {}})
+    monkeypatch.setattr(costs.dept_registry, "live_departments",
+                        lambda: [_FakeDept("ben", "Ben"), _FakeDept("maya", "Maya")])
+    monkeypatch.setattr(costs.morty_reader, "loop_pulse", lambda slugs: {
+        "ben": SimpleNamespace(age_sec=60),
+        "maya": SimpleNamespace(age_sec=25 * 60 * 60),
+    })
+
+    report = costs._report_with_health(refresh=False)
+
+    assert report["health"]["ok"] is False
+    assert report["health"]["recent_heartbeat_depts"] == ["ben"]
+    assert report["health"]["violations"] == ["ben"]
 
 
 def test_costs_dept_budgets_prefers_dept_yaml_over_settings(monkeypatch):

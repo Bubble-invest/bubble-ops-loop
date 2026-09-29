@@ -85,6 +85,22 @@ def test_attributes_vps_dept_by_dir(fake_projects):
     assert rep["agents"]["ben"]["week"]["runs"] == 1
 
 
+def test_reads_isolated_vps_transcript_mirror_fixture(fake_projects):
+    """#1613: root sync mirrors /home/agent-ben/.claude/projects into the
+    shared `_vps-ben/<mangled-workdir>/` source consumed by bubble-console."""
+    d = fake_projects / "_vps-ben" / "-srv-agents-ben"
+    _session(d / "isolated.jsonl", model="claude-sonnet-4-6",
+             turns=[{"input_tokens": 1_000_000, "output_tokens": 50,
+                     "cache_read_input_tokens": 0,
+                     "cache_creation_input_tokens": 0}])
+
+    rep = cost_tracker.build_report(refresh=True)
+
+    assert rep["agents"]["ben"]["week"]["runs"] == 1
+    assert rep["agents"]["ben"]["week"]["cost"] > 0
+    assert rep["totals"]["week"]["runs"] == 1
+
+
 def test_detects_p_cron_job_wiki_compile(fake_projects):
     d = fake_projects / "-home-claude"
     _session(d / "c1.jsonl", model="claude-haiku-4-5",
@@ -168,6 +184,11 @@ def test_classify_vps_ben_unchanged():
     assert cost_tracker.classify("-home-claude-agents-bubble-ops-ben") == "ben"
 
 
+def test_classify_post_isolation_vps_mirror():
+    assert cost_tracker.classify("_vps-ben/-srv-agents-ben") == "ben"
+    assert cost_tracker.classify("_vps-ben-hermes/default") == "ben"
+
+
 def test_classify_mac_unknown_workspace_still_none():
     # truly-unknown workspace must still be dropped (None)
     assert cost_tracker.classify(
@@ -236,6 +257,27 @@ def test_classify_mac_noise_dir_does_not_warn(caplog):
     with caplog.at_level("WARNING", logger="console.services.cost_tracker"):
         assert cost_tracker.classify("_mac-jade/some-random-noise-dir") is None
     assert not any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
+def test_session_health_flags_recent_heartbeat_without_sessions():
+    report = {"agents": {"ben": {"week": {"runs": 2}}}}
+    health = cost_tracker.session_health(report, ["ben", "maya"])
+
+    assert health["ok"] is False
+    assert health["violations"] == ["maya"]
+    assert health["sessions_by_dept"] == {"ben": 2, "maya": 0}
+
+
+def test_session_health_passes_when_recent_dept_has_session():
+    report = {"agents": {
+        "ben": {"week": {"runs": 1}},
+        "rick": {"week": {"runs": 3}},
+        "eliot (mac-legacy)": {"week": {"runs": 2}},
+    }}
+    health = cost_tracker.session_health(report, ["ben", "rnd", "security"])
+
+    assert health["ok"] is True
+    assert health["violations"] == []
 
 
 # ─── Report-level TTL cache (board #450) ───────────────────────────────
