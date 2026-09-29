@@ -229,3 +229,39 @@ def test_hardened_env_drops_all_actor_git_and_proxy_routing():
         "GIT_ATTR_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_ASKPASS",
     })
     assert "HTTPS_PROXY" not in env and "http_proxy" not in env
+
+
+def test_settings_pr_read_token_mint_uses_settings_pr_action(
+    temp_git_repo,
+    fixture_policy_yaml,
+    mock_broker_binary,
+    broker_call_log,
+    tmp_path,
+    monkeypatch,
+):
+    """#543 regression (Ben, 2026-09-29): the settings_pr path mints through a
+    root wrapper pinned to settings_pr only, which refuses runtime_read. The
+    pre-push read token must therefore be minted with settings_pr there."""
+    stage_files(temp_git_repo, ["dept.yaml"])
+    commit_staged(temp_git_repo)
+    original = staging.GuardRepository.remote_sha
+
+    def require_auth(self, destination_url, destination, *, token=None):
+        if token is None:
+            raise subprocess.CalledProcessError(
+                128, ["git", "ls-remote"], stderr="fatal: could not read Username"
+            )
+        return original(self, destination_url, destination, token=token)
+
+    monkeypatch.setattr(staging.GuardRepository, "remote_sha", require_auth)
+    guard = Guard(
+        load_policy(fixture_policy_yaml),
+        broker_cmd=[str(mock_broker_binary)],
+        audit_log_path=tmp_path / "audit.jsonl",
+    )
+    assert guard.push(
+        temp_git_repo, "fixture", "settings_pr", "bubble-ops-fixture"
+    ) == 0
+    broker_calls = broker_call_log.read_text()
+    assert "runtime_read" not in broker_calls
+    assert "settings_pr" in broker_calls
