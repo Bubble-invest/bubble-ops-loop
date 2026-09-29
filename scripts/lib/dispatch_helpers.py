@@ -81,14 +81,25 @@ _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # docstring.
 _LAYERS_WITH_OUTPUT_EVIDENCE = frozenset({1, 4})
 
+# #1615: daily run evidence is intentionally readable by the isolated CEO agent.
+# There is no shared child/CEO Unix group in the #1120 model, so group-read
+# alone would not let agent-tony inspect these non-secret completion records.
+_DAILY_EVIDENCE_MODE = 0o644
 
-def _atomic_write_text(path: Path, body: str) -> None:
-    """Replace ``path`` atomically with text written in the same directory."""
+
+def _atomic_write_text(path: Path, body: str, *, mode: int = 0o600) -> None:
+    """Replace ``path`` atomically with text written in the same directory.
+
+    Atomic temp files remain private unless a caller explicitly identifies the
+    destination as non-secret shared evidence.  Applying ``mode`` to the temp
+    inode before ``replace`` also repairs an older destination's permissions.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
             tmp.write(body)
             tmp.flush()
@@ -183,7 +194,11 @@ def write_last_run(layer_dir: Path, when: datetime | None = None) -> None:
         when = datetime.now(timezone.utc)
     if when.tzinfo is None:
         raise ValueError("write_last_run requires a tz-aware datetime")
-    _atomic_write_text(layer_dir / ".last-run", when.isoformat())
+    _atomic_write_text(
+        layer_dir / ".last-run",
+        when.isoformat(),
+        mode=_DAILY_EVIDENCE_MODE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -307,11 +322,12 @@ def _dispatch_ledger_lock(today_dir: Path) -> "Iterable[None]":
 
 
 def _write_dispatch_ledger(today_dir: Path, ledger: "dict[str, dict[str, Any]]") -> None:
-    """Atomically replace the one authoritative dispatch ledger."""
+    """Atomically replace the readable, non-secret dispatch ledger."""
     today_dir.mkdir(parents=True, exist_ok=True)
     target = today_dir / "dispatch.json"
     fd, tmp_name = tempfile.mkstemp(prefix=".dispatch-", suffix=".tmp", dir=today_dir)
     try:
+        os.fchmod(fd, _DAILY_EVIDENCE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
             json.dump(ledger, tmp, indent=2, sort_keys=True, ensure_ascii=False)
             tmp.write("\n")

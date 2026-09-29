@@ -13,8 +13,7 @@ mocking GitHub's review API + creating a real PR from a non-owner
 identity. That is a future ticket. This test pins the documented
 invariants:
 
-  1. `.github/CODEOWNERS` exists in the live local clone
-     /tmp/bubble-ops-fixture/.
+  1. `.github/CODEOWNERS` exists in the pinned reference fixture.
   2. It has at least one rule covering each of the structural-path
      categories named in Notion v4 line 700 (dept.yaml, missions/,
      tools/, policies/, layers/*/PROMPT.md, etc.).
@@ -45,7 +44,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent  # bubble-ops-loop/
 
-FIXTURE_CLONE = Path("/tmp/bubble-ops-fixture")
+FIXTURE_CLONE = PROJECT_ROOT / "tests" / "fixtures" / "bubble-ops-fixture-codeowners"
 CODEOWNERS_PATH = FIXTURE_CLONE / ".github" / "CODEOWNERS"
 
 ARCHITECTURE_DOC = PROJECT_ROOT / "docs" / "ARCHITECTURE.md"
@@ -99,15 +98,14 @@ def _parse_rules(text: str) -> list[tuple[str, list[str]]]:
 
 def test_codeowners_file_exists_in_live_clone() -> None:
     """Substitute for branch protection: .github/CODEOWNERS must be present
-    in the live fixture clone at /tmp/bubble-ops-fixture/.
+    in the pinned fixture snapshot.
 
     QA-FIXES-COMPLEMENT Fix A: "private repos require GitHub Pro —
     pivoted to `.github/CODEOWNERS` (now live, the load-bearing piece
     of the at-rest defense)."
     """
     assert FIXTURE_CLONE.exists(), (
-        f"Fixture clone missing at {FIXTURE_CLONE} — "
-        "`git clone https://github.com/vdk888/bubble-ops-fixture.git` first."
+        f"Vendored CODEOWNERS fixture missing at {FIXTURE_CLONE}."
     )
     assert CODEOWNERS_PATH.is_file(), (
         f"CODEOWNERS missing at {CODEOWNERS_PATH}. "

@@ -1,0 +1,20 @@
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor noise
+*.swp
+.idea/
+.vscode/
+
+# Python (we may add small scripts later)
+__pycache__/
+*.pyc
+.venv/
+
+# Local secrets — should NEVER land here per Notion v4 GitHub access doctrine
+*.env
+*.pem
+*.key
+.tokens.json
+secrets.sops.env.unencrypted

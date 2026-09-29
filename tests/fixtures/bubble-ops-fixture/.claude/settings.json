@@ -1,0 +1,29 @@
+{
+  "_doc": "Workspace-level permission policy for bubble-ops-fixture. Per Notion v4 §'GitHub access model' line 700: structural files require a PR, runtime state (outputs/queues/inbox) can be direct-committed by the loop. Path enforcement at workspace level is COARSE — fine path policy lives in subagent prompts + git pre-commit guard (Step 3c).",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(./**)",
+      "Write(./outputs/**)",
+      "Write(./queues/**)",
+      "Write(./inbox/**)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git status)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git push *)",
+      "Bash(git pull *)"
+    ],
+    "deny": [
+      "Write(./MANDATE.md)",
+      "Write(./dept.yaml)",
+      "Write(./layers/**/PROMPT.md)",
+      "Write(./subagents/**)",
+      "Write(./skills/**)",
+      "Write(./tools/**)",
+      "Write(./.claude/**)",
+      "Write(./CLAUDE.md)"
+    ]
+  }
+}

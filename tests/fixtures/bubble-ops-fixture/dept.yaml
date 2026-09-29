@@ -1,0 +1,148 @@
+# =============================================================================
+# bubble-ops-fixture / dept.yaml — MVP Step 1 canonical fixture
+# =============================================================================
+# schema_version:     dept.schema.yaml v3 (Draft-07)
+# source_of_truth:    ../dept.schema.yaml  (sibling in schemas-draft/)
+# last_aligned_to:    Notion v3 page "bubble-ops-loop — Architecture finale
+#                     simplifiée", LAST_EDIT 2026-05-20T15:04 UTC
+# notion_dump:        /tmp/notion_final.txt (654 lines)
+# replaces:           Step 0's minimum-viable example at the same path;
+#                     this Step-1 version is STRICTLY RICHER — every Step-0
+#                     field is preserved, plus a second gate_policy
+#                     (mandate_breach_escalation) and richer per-block
+#                     comments tying each block back to a Notion section.
+# downstream_target:  First commit of vdk888/bubble-ops-fixture (MVP-ROADMAP
+#                     v2 §3 Step 5 / §5 tree).
+# =============================================================================
+# DEVIATION NOTICE — `loop_engine:` block intentionally OMITTED.
+#   MVP-ROADMAP v2 §3 Step 1 mentions "loop_engine: (cadence_minutes=20,
+#   on_error=log_and_continue)" but Notion v3 (the source of truth) does
+#   NOT include any such field in the `dept.yaml` shape. Per the Step 1
+#   brief ("Notion v3 wins if there's any contradiction"), we omit
+#   loop_engine to keep the schema additionalProperties:false honest.
+#   The /loop cadence is owned by the systemd unit / autostart wrapper
+#   (MVP-ROADMAP §3 Step 7), not by dept.yaml. If {{OPERATOR}} later wants the
+#   cadence declarative in dept.yaml, extend the schema first, then
+#   uncomment a loop_engine block here.
+# =============================================================================
+
+# --- department: identity wrapper (Notion §"Ce qui se définit à la création
+# d'un département"). v3 mandates this wrapper; v1's flat `name:` is
+# rejected by the schema (see tests/negative/dept-missing-department-wrapper.yaml).
+department:
+  slug: fixture                           # kebab-case; matches repo bubble-ops-fixture
+  level: ops                              # ops|management|principal — leaf
+  mandate: "MVP fixture for bubble-ops-loop pattern validation. Trivial round-trip target, no real business domain."
+
+# --- layers: which OODA layers this dept subscribes to (Notion §"Les 4
+# layers — fractal OODA"). Cloud Routines auto-detect via this field
+# (Notion §"Auto-détection des nouveaux départements"). The fixture
+# exists to exercise the FULL 4-layer roundtrip — anything less would
+# defeat its purpose.
+layers:
+  subscribed: [1, 2, 3, 4]
+
+# --- recurring_missions: declarative replacement for the v1
+# crons-as-mini-apps (Notion §"Gates levables & missions récurrentes",
+# sub-section "Exemple Maya — remplacement concret des anciens crons" shows
+# real shape). The fixture ships ONE stub mission — echo_heartbeat — which
+# proves Layer 1 reads the missions list and materializes queue items.
+# Cadence `every_2h` is a sub-daily pattern that doesn't need a `time:` field.
+recurring_missions:
+  - id: echo_heartbeat
+    layer: 1                              # Layer 1 owns materialization (Notion §"Layer 1 — Data Update")
+    cadence: every_2h                     # matches schema pattern every_\d+h
+    active_hours: "08:00-22:00"           # Paris-local window; sub-daily cadence => active_hours allowed
+    description: "Stub recurring mission that proves Layer 1 reads missions and materializes them into queue items. Produces one echo_task per fire."
+    input_sources:
+      - filesystem                        # fixture has no external feeds; just reads its own state
+      - git_log
+    output_queue: queues/research/        # must start with `queues/` per schema
+    creates:
+      - echo_task                         # Layer 2's dispatch key
+    gate_policy_id: echo_action           # cross-ref to gate_policies.echo_action below
+
+# --- skills: per-layer skill slugs (Notion §"Skill vs tool"). The fixture
+# re-uses `echo-skill` across all 4 layers to keep MVP commit tiny while
+# still proving the 4-layer mapping is wired. Real depts (e.g. Maya at
+# examples/dept-ops-maya.yaml) declare distinct skills per layer.
+skills:
+  layer_1: [echo-skill]                   # data-curator persona consumes this
+  layer_2: [echo-skill]                   # task-orchestrator
+  layer_3: [echo-skill]                   # executor
+  layer_4: [echo-skill]                   # mandate-guardian
+
+# --- tools: flat list of deterministic tool slugs (Notion §"Skill vs tool"
+# — "Tool = fonction déterministe ... Ne raisonne pas"). The fixture ships
+# exactly one tool (echo-tool) — enough to prove the two-tier pattern
+# (tool vs skill) exists from day 1 per MVP-ROADMAP non-negotiable #2.
+tools:
+  - echo-tool
+
+# --- gate_policies: the 5-mode autonomy doctrine (Notion §"Doctrine
+# d'autonomie progressive"). The fixture declares TWO policies on purpose,
+# to exercise the full schema range:
+#
+#   1. echo_action — RAISABLE: starts manual_required in v1 but COULD be
+#      raised to auto_if_policy_passed once shadow autonomy proves it safe.
+#      Mirrors the Maya prospect_dm shape (Notion §"Ce qui se définit à la
+#      création d'un département").
+#
+#   2. mandate_breach_escalation — NEVER-AUTO: must stay manual_required
+#      forever because breaches of the dept's mandate are exactly the class
+#      of decision that must never go agentic. `eligible_future_modes: []`
+#      is the schema-legal way to express "this policy can never be raised".
+#      Proves the schema allows the never-auto end of the spectrum (Notion
+#      §"Doctrine d'autonomie progressive" — KPI degradation triggers
+#      automatic downgrade, but policies with empty future-modes simply
+#      can't move at all).
+gate_policies:
+  echo_action:
+    current_mode: manual_required                # v1 invariant (Notion §"Doctrine d'autonomie progressive")
+    eligible_future_modes:
+      - auto_if_policy_passed                    # future state when shadow autonomy + KPIs green
+    authorization_band: fixture_echo_band        # slug; band semantics live in skill docs
+    kpi_guardrail_set: fixture_echo_kpis
+
+  mandate_breach_escalation:
+    current_mode: manual_required                # must stay manual forever
+    eligible_future_modes: []                    # empty by design — never auto-approve
+    authorization_band: fixture_mandate_band     # only "no instances qualify" band
+    kpi_guardrail_set: fixture_mandate_kpis
+
+# --- hierarchy: position in the org tree (Notion §"Hiérarchie & visibilité
+# cross-dept"). MANDATORY for every dept, ops-leaf included, so Tony
+# migration (MVP-ROADMAP Phase 4) can copy the shape verbatim.
+# Fixture invariants:
+#   - level=ops (leaf in the 3-level ops/management/principal hierarchy)
+#   - parent=null (fixture is standalone; real ops depts will set "tony")
+#   - children=[] (ops depts have no children — only management depts do)
+#   - visibility.read_secrets=false (schema-hardcoded const)
+#   - visibility.read_raw_artifacts=false (Notion §"Hiérarchie..." callout
+#     "Règle de sécurité" — Tony NEVER reads raw artifacts; ops less)
+#   - directive_policy.can_open_priority_prs=false (Notion §"Hiérarchie..."
+#     callout "Règle de sécurité" — only management opens cross-dept PRs)
+hierarchy:
+  level: ops
+  parent: null
+  children: []
+  visibility:
+    read_outputs: []                       # fixture reads no other dept's outputs
+    read_risk_kpis: false
+    read_risk_briefs: false
+    read_raw_artifacts: false
+    read_secrets: false                    # schema const:false — cannot be true
+  directive_policy:
+    can_open_priority_prs: false           # ops depts cannot push directives
+    target_queue: queues/management/       # standard path even when unused (Notion §"PR prioritaire du CEO vers un département")
+    requires_human_gate_for: []
+
+# --- optional_domain_ledger: Notion callout "Doctrine storage corrigée"
+# (under §"L'architecture en 2 rails") + §"Non-goals explicites" callout
+# "Exception explicite au 'no DB'". The slot MUST be PRESENT from day 1
+# even when value is null (anti-footgun: future depts that need a ledger
+# like Ben/family-office SQLite will fail-loud if the key is missing
+# rather than mysteriously skipping ledger init).
+#
+# For the fixture: filesystem-only, no transactional truth → explicit null.
+optional_domain_ledger: null

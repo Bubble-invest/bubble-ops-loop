@@ -1,0 +1,13 @@
+# Pinned from vdk888/bubble-ops-fixture for hermetic CODEOWNERS contract tests.
+/MANDATE.md          @vdk888
+/dept.yaml           @vdk888
+/CLAUDE.md           @vdk888
+/layers/             @vdk888
+/subagents/          @vdk888
+/skills/             @vdk888
+/tools/              @vdk888
+/templates/          @vdk888
+/policies/           @vdk888
+/.claude/            @vdk888
+/missions/           @vdk888
+/.github/            @vdk888

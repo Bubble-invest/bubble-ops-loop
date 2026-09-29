@@ -31,8 +31,8 @@ def test_dr_doc_has_required_sections():
     body = DOC.read_text(encoding="utf-8")
     # The 5 sections from the brief — must all be present as headings.
     required_section_markers = [
-        # 1. Si Morty est mort
-        ("morty est mort", "section chronological recovery"),
+        # 1. Si le VPS est mort (hostname scrubbed from prose, #132)
+        ("si le vps est mort", "section chronological recovery"),
         # 2. Si seulement /etc/age/key.txt est corrompu
         ("age/key.txt", "section age-key-only corruption"),
         # 3. Si on perd la passphrase Restic
