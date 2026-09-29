@@ -226,9 +226,9 @@ def checkout_staleness(slug: str, branch: Optional[str] = None) -> Optional[Dict
     }
 
 
-def load_dept_yaml(slug: str) -> Optional[dict]:
+def load_dept_yaml(slug: str, *, root: Optional[Path] = None) -> Optional[dict]:
     """Return dept.yaml (live) or dept.yaml.draft (a-eclore) as a dict."""
-    root = repo_path(slug)
+    root = root if root is not None else repo_path(slug)
     if root is None:
         return None
     for fname in ("dept.yaml", "dept.yaml.draft"):
@@ -1432,7 +1432,7 @@ def list_missions(slug: str) -> List[Dict[str, str]]:
     return [out[k] for k in sorted(out)]
 
 
-def list_missions_full(slug: str) -> List[Dict[str, Any]]:
+def list_missions_full(slug: str, *, root: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Return the full mission docs (id, layer, cadence, time, day,
     active_hours, description, input_sources, output_queue, creates,
     gate_policy_id) for every recurring mission declared by the dept.
@@ -1450,7 +1450,7 @@ def list_missions_full(slug: str) -> List[Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
 
     # 1) Inline recurring_missions from dept.yaml
-    dept_yaml = load_dept_yaml(slug)
+    dept_yaml = load_dept_yaml(slug, root=root) if root is not None else load_dept_yaml(slug)
     if isinstance(dept_yaml, dict):
         inline = dept_yaml.get("recurring_missions") or []
         if isinstance(inline, list):
@@ -1462,7 +1462,7 @@ def list_missions_full(slug: str) -> List[Dict[str, Any]]:
                     out[mid]["_source"] = "inline"
 
     # 2) File-based missions/*.yaml — only fill IDs not already present
-    root = repo_path(slug)
+    root = root if root is not None else repo_path(slug)
     if root is not None:
         md = root / "missions"
         if md.exists():
