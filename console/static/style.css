@@ -4605,3 +4605,9 @@ body.m4 .decision-card--question .decision-card-cta { color: var(--sage); }
   border-color: var(--sage);
   transform: translateY(-1px);
 }
+
+/* Business-unit meeting rooms (partials/_bu_rooms.html) */
+body.m4 .bu-rooms { display: flex; flex-wrap: wrap; gap: 10px; }
+body.m4 .bu-room { display: grid; gap: 2px; padding: 10px 14px; border: 1px solid var(--line, #d6ddd6); border-radius: 10px; text-decoration: none; color: var(--ink); font-weight: 600; min-width: 200px; }
+body.m4 .bu-room small { font-weight: 400; font-size: 12px; color: var(--body-muted); }
+body.m4 .bu-room:hover, body.m4 .bu-room:focus-visible { border-color: var(--ink); }

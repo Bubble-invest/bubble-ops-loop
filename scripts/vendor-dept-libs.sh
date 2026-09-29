@@ -298,6 +298,7 @@ KANBAN_MAP=(
   # skill de cette nouvelle methode de reunion"): any dept can host or join.
   "skills/meeting-room/SKILL.md                                skills/meeting-room/SKILL.md"
   "skills/meeting-room/assets/room.html                        skills/meeting-room/assets/room.html"
+  "skills/meeting-room/rooms.yaml                              skills/meeting-room/rooms.yaml"
 )
 for pair in "${KANBAN_MAP[@]}"; do
   # shellcheck disable=SC2086
