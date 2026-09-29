@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 import urllib.error
 import urllib.request
@@ -90,16 +91,6 @@ def _days_between(as_of_iso: Optional[str], today_iso: str) -> Optional[int]:
         return None
 
 
-def _iso_day(value: Any) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = value.strip()[:10]
-    try:
-        return date.fromisoformat(candidate).isoformat()
-    except ValueError:
-        return None
-
-
 def _scan_latest_graph_data_day(root: Path, max_days: int) -> Optional[str]:
     """Independent filesystem scan for the newest outputs/<date>/graph-data.json
     on disk, over a WIDER window than canonical_nav()'s own 7-day lookback —
@@ -111,6 +102,50 @@ def _scan_latest_graph_data_day(root: Path, max_days: int) -> Optional[str]:
         if (root / "outputs" / day / "graph-data.json").exists():
             return day
     return None
+
+
+def _fund_exposure_snapshot_days(root: Path) -> tuple[Dict[str, Optional[str]], Optional[str]]:
+    """Read the two dates behind the exposure freshness invariant.
+
+    Ben's Portfolio Review builds its weights from the latest ``positions``
+    snapshot while its NAV denominator comes from the latest
+    ``kpi_snapshots`` row. A recurring failure left ``positions`` stale while
+    fresh KPI rows kept arriving, so the artifact could be regenerated and
+    stamped today while still showing an old book.
+
+    Open the fund database explicitly read-only and return date-only values.
+    No holdings, symbols, valuations, or other fund data leave this helper.
+    """
+    db_path = root / "db" / "fund.sqlite"
+    if not db_path.is_file():
+        return {}, "read-only fund database is unavailable"
+
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=3,
+        )
+    except sqlite3.Error as exc:
+        return {}, f"read-only fund database open failed: {exc}"
+
+    try:
+        values = {}
+        for key, table in (
+            ("latest_nav_snapshot_date", "kpi_snapshots"),
+            ("exposure_as_of", "positions"),
+        ):
+            raw = con.execute(
+                f"SELECT MAX(snapshot_at) FROM {table}"
+            ).fetchone()[0]
+            day = raw[:10] if isinstance(raw, str) else None
+            try:
+                values[key] = date.fromisoformat(day).isoformat() if day else None
+            except ValueError:
+                values[key] = None
+        return values, None
+    except sqlite3.Error as exc:
+        return {}, f"read-only fund snapshot query failed: {exc}"
+    finally:
+        con.close()
 
 
 def _newest_mtime(root: Path, patterns: List[str]) -> Optional[float]:
@@ -476,43 +511,81 @@ def check_kanban_open_count(client, ctx: Ctx) -> Dict[str, Any]:
 
 def check_nav_freshness(client, ctx: Ctx,
                          stale_days_threshold: int = _NAV_STALE_DAYS_THRESHOLD,
-                         wide_scan_days: int = _NAV_WIDE_SCAN_DAYS,
-                         portfolio_slugs: tuple[str, ...] = ("ben",)) -> List[Dict[str, Any]]:
-    """Check each configured fund page through the canonical runtime resolver.
+                         wide_scan_days: int = _NAV_WIDE_SCAN_DAYS) -> List[Dict[str, Any]]:
+    """Check every live department that has a fund/NAV-shaped repository.
 
     `canonical_nav()` (console/services/canonical_nav.py, board #1209) is
-    already the fleet's ONE audited NAV resolver — this check does NOT
-    re-derive NAV, it independently re-scans outputs/<date>/graph-data.json
-    over a WIDER window than canonical_nav's own 7-day lookback. The explicit
-    page slugs are important: enumerating the legacy management mirror made
-    the first live pass silently omit Ben even though canonical_nav correctly
-    resolves the cockpit read path under /srv/agents/ben.
+    already the fleet's ONE audited NAV resolver. Independently, this check
+    re-scans outputs/<date>/graph-data.json over a WIDER window than
+    canonical_nav's own 7-day lookback and reads only the two MAX(snapshot_at)
+    dates needed from fund.sqlite. The latter enforces the #1614 invariant:
+    the positions snapshot behind the exposure view must be from the same day
+    as the latest NAV snapshot. That catches a freshly-rendered page built
+    from stale positions, which an artifact filename/mtime check cannot see.
+    The registry's runtime resolver selects the cockpit's canonical
+    /srv/agents/<slug> path. Unreadable live repositories are emitted as
+    skipped facts instead of aborting collection. The check also cross-checks
+    that the rendered dept + portfolio pages render.
     """
     try:
-        from console.services.dept_registry import runtime_repo_path
+        from console.services.dept_registry import live_departments, runtime_repo_path
         from console.services.canonical_nav import canonical_nav
     except Exception as exc:  # noqa: BLE001
-        return [_error("nav_freshness_ben", "dept_ben_portfolio",
-                       f"console import failed: {exc}")]
+        return [_error("nav_freshness", "unknown", f"console import failed: {exc}")]
+
+    try:
+        departments = live_departments()
+    except Exception as exc:  # noqa: BLE001
+        return [_error("nav_freshness", "unknown",
+                       f"live department enumeration failed: {exc}")]
 
     out: List[Dict[str, Any]] = []
-    for slug in portfolio_slugs:
+    for department in departments:
+        slug = department.slug
         page_id = f"dept_{slug}_portfolio"
-        root = runtime_repo_path(slug)
-        canonical = canonical_nav(slug)
-        widest_day = (
-            _scan_latest_graph_data_day(root, wide_scan_days)
-            if root is not None and root.is_dir() else None
-        )
+        try:
+            root = runtime_repo_path(slug)
+            if root is None or not root.is_dir():
+                continue
+            if not os.access(root, os.R_OK | os.X_OK):
+                out.append(_skip(
+                    f"nav_freshness_{slug}", page_id,
+                    f"runtime repository is not readable: {root}",
+                ))
+                continue
+            widest_day = _scan_latest_graph_data_day(root, wide_scan_days)
+            has_fund_db = (root / "db" / "fund.sqlite").is_file()
+            canonical = canonical_nav(slug)
+        except OSError as exc:
+            out.append(_skip(
+                f"nav_freshness_{slug}", page_id,
+                f"runtime repository could not be inspected: {exc}",
+            ))
+            continue
+        except Exception as exc:  # noqa: BLE001
+            out.append(_error(
+                f"nav_freshness_{slug}", page_id,
+                f"canonical NAV resolver failed: {exc}",
+            ))
+            continue
+
+        if not isinstance(canonical, dict):
+            out.append(_error(
+                f"nav_freshness_{slug}", page_id,
+                "canonical NAV resolver returned a non-dict payload",
+            ))
+            continue
+        if (not has_fund_db and widest_day is None
+                and canonical.get("nav") is None
+                and canonical.get("as_of") is None):
+            continue  # not a fund-shaped dept — nothing to check
 
         today = ctx.today_iso()
         hard = False
         reasons: List[str] = []
+        snapshot_days, snapshot_error = _fund_exposure_snapshot_days(root)
 
-        if root is None or not root.is_dir():
-            hard = True
-            reasons.append("canonical runtime repository could not be resolved")
-        elif canonical.get("nav") is None and widest_day is not None:
+        if canonical.get("nav") is None and widest_day is not None:
             hard = True
             reasons.append(
                 f"canonical_nav() returns no data (7-day window) but "
@@ -532,6 +605,27 @@ def check_nav_freshness(client, ctx: Ctx,
                     f"old (> {stale_days_threshold}d threshold)"
                 )
 
+        if snapshot_error:
+            hard = True
+            reasons.append(
+                f"exposure freshness invariant unavailable: {snapshot_error}"
+            )
+        else:
+            exposure_day = snapshot_days.get("exposure_as_of")
+            nav_day = snapshot_days.get("latest_nav_snapshot_date")
+            if not exposure_day or not nav_day:
+                hard = True
+                reasons.append(
+                    "exposure freshness invariant unavailable: positions or "
+                    "NAV snapshot date is missing"
+                )
+            elif exposure_day != nav_day:
+                hard = True
+                reasons.append(
+                    f"exposure as-of {exposure_day} does not match latest NAV "
+                    f"snapshot {nav_day}"
+                )
+
         if client is not None:
             for path, label in ((f"/dept/{slug}", "dept_page"),
                                  (f"/dept/{slug}/portfolio", "portfolio_page")):
@@ -546,92 +640,26 @@ def check_nav_freshness(client, ctx: Ctx,
 
         out.append({
             "id": f"nav_freshness_{slug}", "page": page_id,
-            "description": f"{slug}: canonical NAV freshness vs a wide on-disk scan + rendered pages",
-            "observed": {"canonical_nav": canonical},
+            "description": f"{slug}: canonical NAV freshness + exposure/NAV snapshot consistency",
+            "observed": {"canonical_nav": canonical,
+                         "exposure_as_of": snapshot_days.get("exposure_as_of")},
             "source": {"latest_graph_data_day_on_disk": widest_day,
-                       "runtime_repo_path": str(root) if root is not None else None,
+                       "runtime_repo_path": str(root),
+                       "latest_nav_snapshot_date": snapshot_days.get("latest_nav_snapshot_date"),
                        "scan_window_days": wide_scan_days},
             "consistent": not hard,
             "hard_inconsistency": hard,
-            "reason": "; ".join(reasons) or "canonical NAV looks fresh and pages render",
+            "reason": "; ".join(reasons) or (
+                "canonical NAV looks fresh, exposure matches its NAV snapshot, "
+                "and pages render"
+            ),
             "error": None,
         })
     return out
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 4. Fund exposure — rendered exposure date vs canonical NAV snapshot date
-# ─────────────────────────────────────────────────────────────────────────
-
-def check_exposure_nav_date(client, ctx: Ctx,
-                            portfolio_slugs: tuple[str, ...] = ("ben",)) -> List[Dict[str, Any]]:
-    """Prove that the exposure payload and NAV snapshot describe one date.
-
-    ``build_thesis_data`` is the exact data object rendered by the portfolio
-    page; its ``generated_at`` stamps the exposure view. ``canonical_nav`` is
-    the cockpit's audited NAV resolver. No figures are recomputed here.
-    """
-    try:
-        from console.services.canonical_nav import canonical_nav
-        from console.services.thesis_book import build_thesis_data
-    except Exception as exc:  # noqa: BLE001
-        return [_error("exposure_nav_date_ben", "dept_ben_portfolio",
-                       f"console import failed: {exc}")]
-
-    out: List[Dict[str, Any]] = []
-    for slug in portfolio_slugs:
-        page_id = f"dept_{slug}_portfolio"
-        try:
-            canonical = canonical_nav(slug)
-            exposure = build_thesis_data(slug)
-        except Exception as exc:  # noqa: BLE001
-            out.append(_error(f"exposure_nav_date_{slug}", page_id,
-                              f"portfolio resolver failed: {exc}"))
-            continue
-
-        generated_at = exposure.get("generated_at") if isinstance(exposure, dict) else None
-        exposure_day = _iso_day(generated_at)
-        nav_day = _iso_day(canonical.get("as_of") if isinstance(canonical, dict) else None)
-        comparable = exposure_day is not None and nav_day is not None
-        matches = comparable and exposure_day == nav_day
-        hard = comparable and not matches
-        error = None
-        if not comparable:
-            missing = []
-            if exposure_day is None:
-                missing.append("exposure generated_at")
-            if nav_day is None:
-                missing.append("canonical NAV as_of")
-            reason = "cannot compare dates: missing " + " and ".join(missing)
-            error = reason
-            consistent: Optional[bool] = None
-        elif matches:
-            reason = f"exposure and canonical NAV are both dated {nav_day}"
-            consistent = True
-        else:
-            reason = (
-                f"exposure is dated {exposure_day} while latest canonical NAV "
-                f"snapshot is dated {nav_day}"
-            )
-            consistent = False
-
-        out.append({
-            "id": f"exposure_nav_date_{slug}", "page": page_id,
-            "description": f"{slug}: exposure as-of date vs latest canonical NAV snapshot date",
-            "observed": {"exposure_generated_at": generated_at,
-                         "exposure_as_of": exposure_day},
-            "source": {"latest_nav_snapshot_date": nav_day,
-                       "nav_source": canonical.get("source") if isinstance(canonical, dict) else None},
-            "consistent": consistent,
-            "hard_inconsistency": hard,
-            "reason": reason,
-            "error": error,
-        })
-    return out
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 5. Carnet de bord (/health) — raw on-disk write age vs the page's alive claim
+# 4. Carnet de bord (/health) — raw on-disk write age vs the page's alive claim
 # ─────────────────────────────────────────────────────────────────────────
 
 def check_dept_heartbeat_age(client, ctx: Ctx,
@@ -706,6 +734,5 @@ CHECKS = [
     check_costs_freshness,
     check_kanban_open_count,
     check_nav_freshness,
-    check_exposure_nav_date,
     check_dept_heartbeat_age,
 ]

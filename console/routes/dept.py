@@ -22,6 +22,7 @@ from console.services import (
     markdown_render,
     mission_pieces,
     nav_history,
+    operations_map,
     risk_clusters,
     value_chains,
     whiteboard_series,
@@ -100,6 +101,15 @@ def _kanban_snapshot(limit: int = 6) -> "dict | None":
     }
     _kanban_snapshot_cache[limit] = (result, time.monotonic())
     return result
+
+
+@router.get("/dept/tony/operations-fragment", response_class=HTMLResponse)
+def operations_fragment(request: Request):
+    """Refresh the read-only operations grid using the existing cockpit session."""
+    return request.app.state.templates.TemplateResponse(
+        "partials/operations_map.html",
+        {"request": request, "operations_map": operations_map.load_operations_map()},
+    )
 
 
 @router.get("/dept/{slug}", response_class=HTMLResponse)
@@ -348,6 +358,7 @@ def dept_detail(
             "request": request,
             "dept": d,
             "dept_yaml": dept_yaml,
+            "operations_map": operations_map.load_operations_map() if slug == "tony" else None,
             "agent_model_info": agent_model_info,
             "checkout_staleness": checkout_staleness,
             "gates": gates,

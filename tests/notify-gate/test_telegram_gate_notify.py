@@ -45,22 +45,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# Allow importing the impl module directly (set in conftest)
-try:
-    import notify  # noqa: F401
-    HAS_IMPL = True
-except ImportError:
-    HAS_IMPL = False
-
-
-# Skip everything cleanly if the impl module doesn't exist yet (RED state).
-# Once notify.py lands, all tests become live.
-pytestmark = pytest.mark.skipif(
-    not HAS_IMPL,
-    reason="tools/notify-gate/notify.py not implemented yet (RED phase)"
-)
-
-
 # --------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------
@@ -101,7 +85,7 @@ def fake_token_env(monkeypatch):
 
 
 @pytest.fixture
-def mock_telegram_ok():
+def mock_telegram_ok(notify):
     """Patch the HTTP POST so it succeeds without hitting the network."""
     with patch.object(notify, "_post_to_telegram") as mock_post:
         mock_post.return_value = (
@@ -113,7 +97,7 @@ def mock_telegram_ok():
 
 
 @pytest.fixture
-def mock_telegram_5xx():
+def mock_telegram_5xx(notify):
     with patch.object(notify, "_post_to_telegram") as mock_post:
         mock_post.return_value = (
             False,
@@ -128,6 +112,7 @@ def mock_telegram_5xx():
 # --------------------------------------------------------------------------
 
 def test_notify_gate_sends_telegram_with_required_fields(
+    notify,
     gate_file, fake_token_env, mock_telegram_ok
 ):
     """The Telegram message body must include gate_id, kind, risk_level,
@@ -178,7 +163,7 @@ def test_notify_gate_sends_telegram_with_required_fields(
     assert "abc123def456" in text or "queues/gates/gate-notif-test-002.yaml" in text
 
 
-def test_notify_gate_includes_4_actions(gate_file, fake_token_env, mock_telegram_ok):
+def test_notify_gate_includes_4_actions(notify, gate_file, fake_token_env, mock_telegram_ok):
     """Message must contain the 4 actions {{OPERATOR}} can copy-paste back:
     approve / reject / modify / defer."""
     repo_root, gate_path = gate_file
@@ -212,6 +197,7 @@ def test_notify_gate_includes_4_actions(gate_file, fake_token_env, mock_telegram
 
 
 def test_notify_gate_uses_fixture_bot_not_morty(
+    notify,
     gate_file, monkeypatch, mock_telegram_ok
 ):
     """Token must come from FIXTURE_TELEGRAM_BOT_TOKEN (preferred) or
@@ -247,6 +233,7 @@ def test_notify_gate_uses_fixture_bot_not_morty(
 
 
 def test_notify_gate_falls_back_to_telegram_bot_token(
+    notify,
     gate_file, monkeypatch, mock_telegram_ok
 ):
     """When FIXTURE_TELEGRAM_BOT_TOKEN is unset, fall back to
@@ -275,6 +262,7 @@ def test_notify_gate_falls_back_to_telegram_bot_token(
 
 
 def test_notify_gate_handles_telegram_api_failure_gracefully(
+    notify,
     gate_file, fake_token_env, mock_telegram_5xx, capsys
 ):
     """If Bot API returns 5xx, return non-zero exit code (via return dict),
@@ -297,7 +285,7 @@ def test_notify_gate_handles_telegram_api_failure_gracefully(
     assert "error" in captured.err.lower() or "fail" in captured.err.lower()
 
 
-def test_notify_gate_redacts_token_in_logs(gate_file, monkeypatch, mock_telegram_5xx, capsys):
+def test_notify_gate_redacts_token_in_logs(notify, gate_file, monkeypatch, mock_telegram_5xx, capsys):
     """Even on failure, the actual token value MUST NOT appear in stderr
     or stdout — anywhere it would be written (logs, traceback, structured
     output). Use a recognisable sentinel so any leak is unambiguous."""
@@ -319,7 +307,7 @@ def test_notify_gate_redacts_token_in_logs(gate_file, monkeypatch, mock_telegram
     assert SECRET not in json.dumps(result), "TOKEN LEAKED in return dict!"
 
 
-def test_notify_gate_rejects_missing_file(tmp_path, fake_token_env):
+def test_notify_gate_rejects_missing_file(notify, tmp_path, fake_token_env):
     """If the gate file does not exist, return an input-error dict."""
     result = notify.notify_gate(
         gate_path="queues/gates/does-not-exist.yaml",
@@ -332,6 +320,7 @@ def test_notify_gate_rejects_missing_file(tmp_path, fake_token_env):
 
 
 def test_notify_gate_builds_correct_github_blob_url(
+    notify,
     gate_file, fake_token_env, mock_telegram_ok
 ):
     """With commit_sha: github.com/vdk888/<repo>/blob/<sha>/<path>.

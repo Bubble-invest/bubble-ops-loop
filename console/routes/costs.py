@@ -11,9 +11,37 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from console import settings
-from console.services import cost_tracker, dept_registry, github_reader
+from console.services import cost_tracker, dept_registry, github_reader, morty_reader
 
 router = APIRouter()
+
+_HEARTBEAT_HEALTH_WINDOW_SECONDS = 24 * 60 * 60
+
+
+def _report_with_health(*, refresh: bool) -> dict:
+    """Attach the independent heartbeat-to-session data-path invariant."""
+    report = cost_tracker.build_report(refresh=refresh)
+    try:
+        slugs = [d.slug for d in dept_registry.live_departments()]
+        pulse = morty_reader.loop_pulse(slugs)
+        recent = [
+            slug for slug, item in pulse.items()
+            if item.age_sec is not None
+            and item.age_sec <= _HEARTBEAT_HEALTH_WINDOW_SECONDS
+        ]
+        health = cost_tracker.session_health(report, recent)
+    except Exception:  # noqa: BLE001 — diagnostics must never take /costs down
+        health = {
+            "ok": None,
+            "invariant": "sessions>0 when a dept had a heartbeat in the last 24h",
+            "recent_heartbeat_depts": [],
+            "violations": [],
+            "sessions_by_dept": {},
+            "note": "heartbeat health check unavailable",
+        }
+    # build_report can return a shared TTL-cached object. Never mutate it with
+    # request-specific heartbeat state.
+    return {**report, "health": health}
 
 
 def _agent_budgets(report: dict) -> dict:
@@ -119,13 +147,13 @@ def _dept_budgets(report: dict) -> dict:
 @router.get("/costs.json")
 def costs_json(refresh: bool = False) -> JSONResponse:
     """Raw cost report (per-agent + totals, today/7d, per-model)."""
-    return JSONResponse(cost_tracker.build_report(refresh=refresh))
+    return JSONResponse(_report_with_health(refresh=refresh))
 
 
 @router.get("/costs", response_class=HTMLResponse)
 def costs_page(request: Request) -> HTMLResponse:
     """The cost panel page."""
-    report = cost_tracker.build_report(refresh=False)
+    report = _report_with_health(refresh=False)
     try:
         agent_budgets = _agent_budgets(report)
     except Exception:  # noqa: BLE001 — budget overlay must never 500 /costs

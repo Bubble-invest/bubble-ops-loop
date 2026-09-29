@@ -36,6 +36,11 @@ import pytest
 import yaml
 from jsonschema import Draft7Validator
 
+
+pytestmark = pytest.mark.live(
+    reason="validates gates emitted by the deployed bubble-ops-fixture loop"
+)
+
 # -----------------------------------------------------------------------------
 # Paths
 # -----------------------------------------------------------------------------

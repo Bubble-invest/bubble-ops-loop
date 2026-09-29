@@ -38,6 +38,8 @@ UNIT
 
 AGENTS_DIR="$WORK/home-claude-agents"
 mkdir -p "$AGENTS_DIR/ben"
+TRANSCRIPTS_DIR="$WORK/home-claude/.claude/projects"
+mkdir -p "$TRANSCRIPTS_DIR/_vps-ben/-srv-agents-ben"
 
 SETFACL_LOG="$WORK/setfacl.log"
 CALL_LOG="$WORK/calls.log"
@@ -98,6 +100,7 @@ run_script() {
   SERVICE="bubble-ops-console-test-1463-$$" \
   CONSOLE_WORKDIR="$WORKDIR" \
   CONSOLE_AGENTS_DIR="$AGENTS_DIR" \
+  CONSOLE_TRANSCRIPTS_DIR="$TRANSCRIPTS_DIR" \
   bash "$SCRIPT" "$@"
 }
 
@@ -110,6 +113,10 @@ grep -q -- "-R -m g:bubble-console:rwX $AGENTS_DIR" "$SETFACL_LOG" \
   || fail "case 1: recursive access-ACL setfacl call not logged (got: $(cat "$SETFACL_LOG"))"
 grep -q -- "-R -d -m g:bubble-console:rwX $AGENTS_DIR" "$SETFACL_LOG" \
   || fail "case 1: recursive DEFAULT-ACL setfacl call not logged (got: $(cat "$SETFACL_LOG"))"
+grep -q -- "-R -m g:bubble-console:rX $TRANSCRIPTS_DIR" "$SETFACL_LOG" \
+  || fail "case 1: read-only transcript ACL not logged (got: $(cat "$SETFACL_LOG"))"
+grep -q -- "-R -d -m g:bubble-console:rX $TRANSCRIPTS_DIR" "$SETFACL_LOG" \
+  || fail "case 1: default read-only transcript ACL not logged (got: $(cat "$SETFACL_LOG"))"
 
 # Ordering: the setfacl call(s) must appear before the restart in the call log.
 setfacl_line=$(grep -n "sudo setfacl" "$CALL_LOG" | head -1 | cut -d: -f1)
@@ -125,6 +132,8 @@ out2=$(run_script 2>&1) || fail "second (already-matches) run exited nonzero:\n$
 echo "$out2" | grep -q "already matches" || fail "case 2: expected the 'already matches — nothing to install' path:\n$out2"
 grep -q -- "-R -m g:bubble-console:rwX $AGENTS_DIR" "$SETFACL_LOG" \
   || fail "case 2: ACL not re-applied on an unchanged-unit rerun (got: $(cat "$SETFACL_LOG"))"
+grep -q -- "-R -m g:bubble-console:rX $TRANSCRIPTS_DIR" "$SETFACL_LOG" \
+  || fail "case 2: transcript ACL not re-applied on an unchanged-unit rerun (got: $(cat "$SETFACL_LOG"))"
 grep -q "systemctl restart" "$CALL_LOG" && fail "case 2: unexpected restart on an unchanged-unit rerun:\n$(cat "$CALL_LOG")"
 pass "case 2: unchanged-unit rerun still (idempotently) re-applies the ACL, without restarting"
 

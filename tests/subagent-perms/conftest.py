@@ -20,8 +20,9 @@ if str(_HERE) not in sys.path:
 
 from notion_v4_contract import NOTION_V4_SUBAGENT_CONTRACTS  # noqa: E402
 
-# Pinned absolute path to the fixture repo (mirrors Step-5 convention).
-FIXTURE_REPO = Path("/tmp/bubble-ops-fixture")
+# Pinned Step-5 reference snapshot. Keeping the implementation under test in
+# the repository makes these contract checks deterministic in a clean checkout.
+FIXTURE_REPO = _HERE.parent / "fixtures" / "bubble-ops-fixture"
 SUBAGENTS_DIR = FIXTURE_REPO / "subagents"
 
 SUBAGENT_NAMES = ("data-curator", "task-orchestrator", "executor", "mandate-guardian")
@@ -51,7 +52,7 @@ def parse_tools_field(value: Any) -> set[str]:
 
 
 def _load_subagent(name: str) -> dict[str, Any]:
-    """Read /tmp/bubble-ops-fixture/subagents/<name>.md and split FM+body.
+    """Read the vendored reference subagent and split frontmatter + body.
 
     Returns: {'frontmatter': dict, 'body': str, 'path': Path}
     """

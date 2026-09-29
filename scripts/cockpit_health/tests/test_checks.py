@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sqlite3
 import sys
 import types
 from datetime import date, datetime, timedelta, timezone
@@ -298,6 +299,25 @@ class FakeDept:
         self.slug = slug
 
 
+def _write_fund_snapshot_dates(root: Path, nav_day: str, exposure_day: str) -> None:
+    """Minimal synthetic fund DB: dates only, never real holdings data."""
+    db_dir = root / "db"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db_dir / "fund.sqlite")
+    try:
+        con.executescript(
+            """
+            CREATE TABLE kpi_snapshots (snapshot_at TEXT NOT NULL);
+            CREATE TABLE positions (snapshot_at TEXT NOT NULL);
+            """
+        )
+        con.execute("INSERT INTO kpi_snapshots VALUES (?)", (nav_day + "T06:00:00Z",))
+        con.execute("INSERT INTO positions VALUES (?)", (exposure_day + "T06:01:00Z",))
+        con.commit()
+    finally:
+        con.close()
+
+
 def test_nav_freshness_hard_when_stale_beyond_threshold(stub_module, tmp_path):
     root = tmp_path / "ben"
     root.mkdir()
@@ -352,11 +372,12 @@ def test_nav_freshness_hard_when_empty_but_stale_data_exists(stub_module, tmp_pa
     assert "empty state" in results[0]["reason"]
 
 
-def test_nav_freshness_reports_missing_canonical_data_for_configured_ben(stub_module, tmp_path):
-    root = tmp_path / "ben"
-    root.mkdir()  # no outputs/ dir at all
+def test_nav_freshness_skips_non_fund_depts(stub_module, tmp_path):
+    root = tmp_path / "maya"
+    root.mkdir()  # no NAV artifacts or fund database
     stub_module(
         "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("maya")],
         runtime_repo_path=lambda slug: root,
     )
     stub_module(
@@ -367,10 +388,7 @@ def test_nav_freshness_reports_missing_canonical_data_for_configured_ben(stub_mo
         },
     )
     results = checks.check_nav_freshness(None, checks.Ctx())
-    assert len(results) == 1
-    assert results[0]["page"] == "dept_ben_portfolio"
-    assert results[0]["hard_inconsistency"] is True
-    assert "unavailable" in results[0]["reason"]
+    assert results == []
 
 
 def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
@@ -379,6 +397,7 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     today = date.today().isoformat()
     (root / "outputs" / today).mkdir(parents=True)
     (root / "outputs" / today / "graph-data.json").write_text("{}")
+    _write_fund_snapshot_dates(root, nav_day=today, exposure_day=today)
     stub_module(
         "console.services.dept_registry",
         live_departments=lambda: [FakeDept("ben")],
@@ -401,16 +420,18 @@ def test_nav_freshness_fresh_is_consistent(stub_module, tmp_path):
     assert results[0]["consistent"] is True
 
 
-def test_nav_freshness_resolves_ben_directly_without_legacy_enumeration(stub_module, tmp_path):
+def test_nav_freshness_resolves_live_ben_via_canonical_runtime_path(stub_module, tmp_path):
     root = tmp_path / "srv" / "agents" / "ben"
     root.mkdir(parents=True)
     today = date.today().isoformat()
     (root / "outputs" / today).mkdir(parents=True)
     (root / "outputs" / today / "graph-data.json").write_text("{}")
+    _write_fund_snapshot_dates(root, nav_day=today, exposure_day=today)
     resolved = []
     canonical_calls = []
     stub_module(
         "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("ben")],
         runtime_repo_path=lambda slug: resolved.append(slug) or root,
     )
     stub_module(
@@ -428,42 +449,62 @@ def test_nav_freshness_resolves_ben_directly_without_legacy_enumeration(stub_mod
     assert result["source"]["runtime_repo_path"] == str(root)
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# check_exposure_nav_date
-# ─────────────────────────────────────────────────────────────────────────
-
-def test_exposure_nav_date_hard_when_exposure_and_nav_dates_differ(stub_module):
+def test_nav_freshness_records_unreadable_live_dept(stub_module, tmp_path, monkeypatch):
+    root = tmp_path / "srv" / "agents" / "claudette"
+    root.mkdir(parents=True)
+    stub_module(
+        "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("claudette")],
+        runtime_repo_path=lambda slug: root,
+    )
     stub_module(
         "console.services.canonical_nav",
-        canonical_nav=lambda slug: {"as_of": "2026-09-28", "source": "graph-data.json"},
+        canonical_nav=lambda slug: pytest.fail("unreadable repo must not reach NAV resolver"),
     )
-    stub_module(
-        "console.services.thesis_book",
-        build_thesis_data=lambda slug: {"generated_at": "2026-09-27T06:00:00Z"},
-    )
+    monkeypatch.setattr(checks.os, "access", lambda path, mode: False)
 
-    result = checks.check_exposure_nav_date(None, checks.Ctx())[0]
+    result = checks.check_nav_freshness(None, checks.Ctx())[0]
 
-    assert result["page"] == "dept_ben_portfolio"
-    assert result["hard_inconsistency"] is True
-    assert result["observed"]["exposure_as_of"] == "2026-09-27"
-    assert result["source"]["latest_nav_snapshot_date"] == "2026-09-28"
-
-
-def test_exposure_nav_date_consistent_when_dates_match(stub_module):
-    stub_module(
-        "console.services.canonical_nav",
-        canonical_nav=lambda slug: {"as_of": "2026-09-28", "source": "graph-data.json"},
-    )
-    stub_module(
-        "console.services.thesis_book",
-        build_thesis_data=lambda slug: {"generated_at": "2026-09-28T06:00:00Z"},
-    )
-
-    result = checks.check_exposure_nav_date(None, checks.Ctx())[0]
-
+    assert result["id"] == "nav_freshness_claudette"
+    assert result["consistent"] is None
     assert result["hard_inconsistency"] is False
-    assert result["consistent"] is True
+    assert "not readable" in result["reason"]
+
+
+def test_nav_freshness_hard_when_exposure_predates_latest_nav(stub_module, tmp_path):
+    """#1614: a page rebuilt today from yesterday's positions is visibly hard."""
+    root = tmp_path / "ben"
+    root.mkdir()
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    (root / "outputs" / today).mkdir(parents=True)
+    (root / "outputs" / today / "graph-data.json").write_text("{}")
+    _write_fund_snapshot_dates(root, nav_day=today, exposure_day=yesterday)
+
+    stub_module(
+        "console.services.dept_registry",
+        live_departments=lambda: [FakeDept("ben")],
+        runtime_repo_path=lambda slug: root,
+    )
+    stub_module(
+        "console.services.canonical_nav",
+        canonical_nav=lambda slug: {
+            "nav": 200000.0, "since_rebase_pct": 2.0, "as_of": today,
+            "is_stale": False, "source": "graph-data.json",
+        },
+    )
+    client = FakeClient({
+        "/dept/ben": FakeResponse(200),
+        "/dept/ben/portfolio": FakeResponse(200),
+    })
+
+    result = checks.check_nav_freshness(client, checks.Ctx())[0]
+
+    assert result["hard_inconsistency"] is True
+    assert result["consistent"] is False
+    assert result["observed"]["exposure_as_of"] == yesterday
+    assert result["source"]["latest_nav_snapshot_date"] == today
+    assert "does not match latest NAV snapshot" in result["reason"]
 
 
 # ─────────────────────────────────────────────────────────────────────────

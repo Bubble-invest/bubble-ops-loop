@@ -43,6 +43,9 @@
 #                                a root-installed unit file)
 #   CONSOLE_AGENTS_DIR           dir the board #1463 follow-up scoped ACL is applied
 #                                to (default: /home/claude/agents; test harness only)
+#   CONSOLE_TRANSCRIPTS_DIR      root-synced transcript mirror granted read-only
+#                                to bubble-console (default:
+#                                /home/claude/.claude/projects; test harness only)
 #
 # Requires:
 #   - SSH alias to the box, OR run on the box itself
@@ -134,6 +137,41 @@ sudo -n setfacl -R -d -m g:bubble-console:rwX '$target'
   echo "[deploy-console-unit] ✓ ACL applied (access + recursive default) on $target."
 }
 
+# Board #1613: the console reads cost usage from the root-synced transcript
+# mirror, not from its own empty $HOME and not directly from isolated agent
+# homes. Grant only traversal on the two ancestors and read/traverse on the
+# transcript tree. A default ACL keeps files created by later sync runs
+# readable without widening access to the rest of /home/claude/.claude.
+apply_console_transcripts_acl() {
+  local target="${CONSOLE_TRANSCRIPTS_DIR:-/home/claude/.claude/projects}"
+  if [[ "$DRY" == "1" ]]; then
+    echo "[deploy-console-unit] DRY RUN — would apply read-only bubble-console ACL on $target"
+    return 0
+  fi
+  echo "[deploy-console-unit] Applying read-only transcript ACL for bubble-console on $target …"
+  if ! run_remote "
+set -eu
+if [ ! -d '$target' ]; then
+  echo '[deploy-console-unit] $target does not exist yet — skipping transcript ACL' >&2
+  exit 0
+fi
+parent=\$(dirname '$target')
+home=\$(dirname \"\$parent\")
+sudo -n setfacl -m g:bubble-console:--x \"\$home\" \"\$parent\"
+sudo -n setfacl -R -m g:bubble-console:rX '$target'
+sudo -n setfacl -R -d -m g:bubble-console:rX '$target'
+"; then
+    echo "ERR: failed to apply the read-only bubble-console transcript ACL on $target." >&2
+    exit 5
+  fi
+  echo "[deploy-console-unit] ✓ read-only transcript ACL applied on $target."
+}
+
+apply_console_data_acls() {
+  apply_console_agents_acl
+  apply_console_transcripts_acl
+}
+
 TEMPLATE_ABS="$WORKDIR/$TEMPLATE_REL"
 if ! NEW_UNIT="$(run_remote "cat '$TEMPLATE_ABS'")"; then
   echo "ERR: could not read template at $TEMPLATE_ABS on the box." >&2
@@ -144,7 +182,7 @@ CURRENT_UNIT="$(run_remote "sudo -n cat '$UNIT_PATH' 2>/dev/null || true")"
 
 if [[ "$NEW_UNIT" == "$CURRENT_UNIT" ]]; then
   echo "[deploy-console-unit] $UNIT_PATH already matches the checked-in template — nothing to install."
-  apply_console_agents_acl
+  apply_console_data_acls
   exit 0
 fi
 
@@ -165,7 +203,7 @@ rm -f /tmp/${SERVICE}.service.new
 sudo -n systemctl daemon-reload"
 echo "[deploy-console-unit] Installed + daemon-reload done."
 
-apply_console_agents_acl
+apply_console_data_acls
 
 if [[ "$NO_RESTART" == "1" ]]; then
   echo "[deploy-console-unit] --no-restart passed — skipping enable/restart."
