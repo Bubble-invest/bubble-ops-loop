@@ -3,8 +3,8 @@ name: meeting-room
 description: >-
   Run or join a temporary live "meeting room" where Joris (the operator) talks to
   several fleet agents at once in one chat thread: a claude.ai artifact chat page
-  backed by the page database, with every invited agent polling it every 2 minutes
-  and answering under its own name when tagged. Use whenever Joris wants to
+  backed by the page database, with every invited agent polling it (chair every
+  2 minutes, others every 5) and answering under its own name when tagged. Use whenever Joris wants to
   "coordinate X, Y and Z in one place", "open a room / a meeting / a salle",
   "get everyone around the table on <project>", or when you receive a "MEETING
   POLL" / "meeting mode" / "join the room" instruction for a room link. Covers
