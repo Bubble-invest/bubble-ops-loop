@@ -1,0 +1,19 @@
+# Permanent business-unit meeting rooms (Joris, Telegram 10144, 2026-09-29).
+# One claude.ai artifact per BU, owned by Joris's account, published by Rick.
+# Keep in sync with console/templates/partials/_bu_rooms.html and Tony's Chantiers page.
+rooms:
+  - bu: fund
+    name: Bubble Portfolio BU
+    url: https://claude.ai/artifact/8GAdSPvpWounZtf1WFYVy2
+    chair: tony
+    members: [ben, miranda, tony, rick]
+  - bu: ai_methods
+    name: Méthodes IA BU
+    url: https://claude.ai/artifact/5YFqJNrdbcvwVPmkpdaUxY
+    chair: rick
+    members: [rick, miranda, tonio, tony]
+  - bu: pro_clients
+    name: Clients pros BU
+    url: https://claude.ai/artifact/W35o6mmBeskxZmNNgwkPRk
+    chair: tony
+    members: [maya, tonio, geraldine, tony]
