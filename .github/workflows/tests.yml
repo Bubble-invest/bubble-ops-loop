@@ -15,9 +15,15 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test deps
-        run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests
+        run: python3 -m pip install --quiet pytest pyyaml jinja2 cryptography requests jsonschema
       - name: Framework lib tests
         run: python3 -m pytest scripts/lib/tests/ -q --tb=short
+      # Board #1505 cockpit-health origin (Joris tg 10023-10029): evidence
+      # collector + Jev first-pass judge. Hermetic — every console/jev.py
+      # import is stubbed or degrades gracefully; no FastAPI/console deps
+      # needed here (console-tests below exercises the real console app).
+      - name: Cockpit health tests
+        run: python3 -m pytest scripts/cockpit_health/tests/ -q --tb=short
       - name: Cloud wiki delta and install contracts
         run: |
           python3 -m pytest tests/test_wiki_delta.py tests/test_wiki_intent_audit.py tests/test_cloud_wiki_compile_intents_fallback.py tests/test_readonly_intents_mirror.py tests/test_memory_hygiene_notify.py tests/test_1572_skillsmith_telegram_report.py -q --tb=short

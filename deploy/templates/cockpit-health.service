@@ -1,0 +1,92 @@
+# cockpit-health.service — hourly evidence collect + judge pass for the
+# cockpit/dashboards (board card origin: Joris tg 10023-10029, "is there a
+# mission to detect those bugs (cockpit /cost page broken, Ben exposure page
+# stale again)? how do we make it so you find and fix them on your own?").
+#
+# WHY User=bubble-console (REUSE, not a new uid — operator-intent "reuse
+# existing fleet access before asking"): scripts/cockpit_health/collect.py
+# builds the console app IN-PROCESS (console.main.create_app() via a
+# TestClient, the same internal-API path console/tests/conftest.py's `client`
+# fixture uses) and needs the SAME identity the console service already runs
+# as to read /home/claude/agents (board #1463's ACL grant) and the SAME
+# decrypted secrets (CONSOLE_BEARER_TOKEN, GH_TOKEN) bubble-ops-console.service
+# already resolves at its own start into /run/bubble-ops-console/env. This
+# unit reuses that env file rather than decrypting its own copy of the same
+# two secrets — one fewer place a credential can drift out of sync. See
+# console/deploy/bubble-ops-console.service.template for the uid-isolation
+# rationale (board #1463) this unit inherits unchanged.
+#
+# The ONE genuinely new credential here is JEV_OPENROUTER_API_KEY (hosted Jev
+# via OpenRouter, `typesafe/jev-1.13` — cleared for internal Bubble data per
+# Joris 2026-09-25, see skills/system-one-decisions/scripts/jev.py). It is
+# NOT provisioned by this template (needs:human — see deploy/cockpit-health/
+# README.md "Deploy steps"). Its absence degrades cleanly: judge.py's
+# build_jev_caller() reports "Jev call failed" per page and the collector's
+# own hard-inconsistency flags still drive every finding — this service is
+# useful from the very first deploy, before that key ever lands.
+#
+# ConditionPathExists gates this unit on bubble-ops-console.service having
+# already decrypted its env this boot (mirrors deploy/templates/
+# fleet-drift-report.service's ConditionPathExists=/run/claude-agent/env
+# pattern) — no ordering dependency needed beyond "that file exists".
+[Unit]
+Description=Cockpit health — hourly evidence collect + Jev first-pass judge (board #1505 origin)
+Documentation=https://github.com/Bubble-invest/bubble-ops-loop/tree/main/scripts/cockpit_health
+After=network-online.target bubble-ops-console.service
+Wants=network-online.target
+ConditionPathExists=/run/bubble-ops-console/env
+
+[Service]
+Type=oneshot
+User=bubble-console
+Group=bubble-console
+WorkingDirectory=/opt/bubble-ops-loop
+
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/bubble-ops-loop"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+Environment="READ_FROM_DISK=/home/claude/agents"
+# Shadow mode ON by default (system-one-decisions/SKILL.md "Mandatory rollout
+# discipline": shadow -> gold set -> calibrate -> gate, never a hard cutover).
+# Rick's mission (bubble-rnd-workspace/missions/cockpit-health.md) owns the
+# exact bar for flipping this — via a systemd drop-in at deploy time, never a
+# hand-edit of this checked-in template. See deploy/cockpit-health/README.md.
+Environment="COCKPIT_HEALTH_SHADOW=1"
+
+# bubble-ops-console's own already-decrypted secrets (CONSOLE_BEARER_TOKEN,
+# GH_TOKEN) — see the [Unit] comment above for why this is a reuse, not a
+# new decrypt.
+EnvironmentFile=-/run/bubble-ops-console/env
+# The one new secret this unit needs (JEV_OPENROUTER_API_KEY) — provisioned
+# separately, see deploy/cockpit-health/README.md. Absent-safe: `-` prefix
+# means a missing file is not a startup failure, and judge.py itself degrades
+# cleanly when the key inside it is also missing.
+EnvironmentFile=-/run/cockpit-health/env
+
+ExecStart=/opt/bubble-ops-loop/venv/bin/python /opt/bubble-ops-loop/scripts/cockpit_health/collect.py --out-dir /var/lib/cockpit-health/evidence --keep-last 48
+ExecStart=/opt/bubble-ops-loop/venv/bin/python /opt/bubble-ops-loop/scripts/cockpit_health/judge.py --evidence-dir /var/lib/cockpit-health/evidence --shadow-log /var/lib/cockpit-health/shadow-log.jsonl
+
+# Persistent state (evidence history + shadow log) survives restarts/redeploys
+# (mirrors bubble-ops-console.service's StateDirectory, board #1074).
+StateDirectory=cockpit-health
+StateDirectoryMode=0750
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cockpit-health
+
+# Hardening — same posture as bubble-ops-console.service.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/cockpit-health
+
+# A collect/judge pass must not trip its own timer into `failed` over a
+# down page or an unreachable Jev — both scripts exit 0 on a completed pass
+# by contract (see their own module docstrings); a non-zero exit here means
+# a STRUCTURAL failure (bad args, no evidence dir writable) worth alerting on.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

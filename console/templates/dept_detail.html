@@ -379,6 +379,8 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
   {% endif %}
 </section>
 
+{% if operations_map %}{% include "partials/operations_map.html" %}{% endif %}
+
 {# ═══ 02 — TABLEAU DE BORD (whiteboard) ════════════════════════════
    KPIs first — {{OPERATOR}} msg 1167 reordered so health leads. Two halves:
      • KPI tiles + graphs — from whiteboard.yaml / Layer-4 output history

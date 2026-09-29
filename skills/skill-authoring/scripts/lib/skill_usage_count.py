@@ -50,6 +50,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -221,6 +222,7 @@ def build_report(
         "generated_utc": (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
         "corpus_roots": [str(r) for r in corpus_roots],
         "registry_dirs": registry_dirs,
+        "live_skill_count": len(registered),
         "skills": skills_out,
         "note": (
             "count == 0 means never invoked in the window (prune CANDIDATE). "
@@ -231,12 +233,65 @@ def build_report(
     }
 
 
+def record_weekly_counts(report: dict, flagged_count: int, history_dir: str) -> dict:
+    """Record agent-supplied flags, never infer pruning judgments from usage.
+
+    Compare exact ISO weeks so a missed week is not disguised as a weekly delta.
+    Replacing the current week makes retries idempotent.
+    """
+    if flagged_count < 0:
+        raise ValueError("flagged_count must be non-negative")
+    if not all(Path(d).is_dir() for d in report["registry_dirs"]):
+        raise ValueError("registry unavailable; cannot record a live skill count")
+    now = datetime.fromisoformat(report["generated_utc"])
+    week = now.strftime("%G-W%V")
+    previous_week = (now - timedelta(days=7)).strftime("%G-W%V")
+    history = Path(history_dir)
+    previous = None
+    try:
+        previous = json.loads((history / f"{previous_week}.json").read_text())
+        if (not isinstance(previous, dict) or previous.get("week") != previous_week
+                or any(type(previous.get(k)) is not int or previous[k] < 0
+                       for k in ("live_skill_count", "flagged_count"))
+                or previous.get("registry_dirs") != report["registry_dirs"]
+                or previous.get("window_days") != report["window_days"]):
+            previous = None
+    except (OSError, ValueError):
+        pass
+    counts = {
+        "week": week,
+        "previous_week": previous_week,
+        "registry_dirs": report["registry_dirs"],
+        "window_days": report["window_days"],
+        "live_skill_count": report["live_skill_count"],
+        "flagged_count": flagged_count,
+        "live_skill_delta": report["live_skill_count"] - previous["live_skill_count"] if previous else None,
+        "flagged_delta": flagged_count - previous["flagged_count"] if previous else None,
+    }
+    history.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=history, delete=False) as fh:
+        tmp = Path(fh.name)
+        try:
+            json.dump(counts, fh, indent=2)
+            fh.flush()
+            os.replace(tmp, history / f"{week}.json")
+        finally:
+            tmp.unlink(missing_ok=True)
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Count skill usage across the transcript corpus (ARM B evidence).")
     ap.add_argument("--corpus", action="append", default=[], help="Corpus dir or glob (repeatable). Default: VPS project dirs / $CORPUS.")
     ap.add_argument("--registry", action="append", default=[], help="Registered-skills root (repeatable). Default: ~/.claude/skills equivalent on VPS.")
     ap.add_argument("--window-days", type=int, default=45, help="Rolling window in days (default 45).")
+    ap.add_argument("--flagged-count", type=int, help="Distinct skills judged dead by ARM B this run (including existing cards).")
+    ap.add_argument("--history-dir", help="Weekly count snapshots; required with --flagged-count.")
     args = ap.parse_args(argv)
+    if (args.flagged_count is None) != (args.history_dir is None):
+        ap.error("--flagged-count and --history-dir must be supplied together")
+    if args.flagged_count is not None and args.flagged_count < 0:
+        ap.error("--flagged-count must be non-negative")
 
     corpus_roots = resolve_corpus_roots(args.corpus)
     registry_dirs = args.registry or DEFAULT_REGISTRY_DIRS
@@ -245,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         # Still emit a valid (empty-usage) report so the agent step degrades
         # gracefully rather than crashing the weekly pass.
     report = build_report(corpus_roots, registry_dirs, args.window_days)
+    if args.history_dir is not None:
+        report["weekly_counts"] = record_weekly_counts(report, args.flagged_count, args.history_dir)
     print(json.dumps(report, indent=2))
     return 0
 

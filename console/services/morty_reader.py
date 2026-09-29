@@ -132,6 +132,7 @@ def per_dept_layer_heartbeats(
 def loop_pulse(
     depts: List[str],
     now_epoch: Optional[float] = None,
+    *, roots: Optional[dict] = None,
 ) -> Dict[str, LoopPulse]:
     """Dept-level loop liveness — {slug: LoopPulse}.
 
@@ -148,7 +149,7 @@ def loop_pulse(
     now = now_epoch if now_epoch is not None else time.time()
     out: Dict[str, LoopPulse] = {}
     for dept in depts:
-        root = repo_path(dept)
+        root = roots.get(dept) if roots is not None else repo_path(dept)
         outputs = str(root / "outputs") if root is not None else ""
         hb = latest_heartbeat_epoch(outputs) if outputs else None
         # newest dispatch-tick signal across all layers

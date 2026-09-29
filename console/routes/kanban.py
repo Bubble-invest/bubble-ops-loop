@@ -37,6 +37,8 @@ from console.services.github_reader import (
 )
 from console.services.cockpit_comment_author import annotate_comment_authors
 
+from console.services.mission_alignment import alignment_summary
+
 from console import settings
 
 # GitHub repo holding the board issues
@@ -1285,6 +1287,7 @@ def kanban_board(request: Request):
         "request": request,
         # Legacy: keep 'columns' for any other callers
         "columns": columns,
+        "alignment": alignment_summary(),
         # Three grouping views
         "by_status":     by_status_labelled,
         "by_department": by_department,
