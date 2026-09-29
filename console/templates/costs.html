@@ -43,6 +43,20 @@
   </p>
 </section>
 
+{% if report.unreadable_transcripts %}
+<section class="cabinet-section" role="alert" aria-labelledby="cost-unreadable-heading"
+         style="border-left:4px solid var(--ochre);padding-left:1rem">
+  <h2 id="cost-unreadable-heading" class="section-heading">Transcripts illisibles</h2>
+  <p>
+    {{ report.unreadable_transcripts }} fichier(s) ou dossier(s) de transcripts
+    n'ont pas pu être lus et ont été ignorés. Les montants affichés peuvent être incomplets.
+    {% if report.unreadable_transcript_paths %}
+    Exemple(s)&nbsp;: <code>{{ report.unreadable_transcript_paths | join(', ') }}</code>.
+    {% endif %}
+  </p>
+</section>
+{% endif %}
+
 {% if report.health and report.health.violations %}
 <section class="cabinet-section" role="alert" aria-labelledby="cost-data-health-heading"
          style="border-left:4px solid var(--ochre);padding-left:1rem">
