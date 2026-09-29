@@ -29,6 +29,11 @@ import subprocess
 import pytest
 
 
+pytestmark = pytest.mark.live(
+    reason="requires SSH access to the deployed Morty VPS and its system journal"
+)
+
+
 SSH_HOST = "hetzner"
 SYSLOG_ID = "bubble-token-broker"
 

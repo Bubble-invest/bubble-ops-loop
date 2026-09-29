@@ -1,0 +1,19 @@
+# Skill invocation context fixture for echo-skill.
+# Minimal context a skill-level test would feed the skill (mandate, layer, tool replies).
+skill: echo-skill
+invoked_by: layer-1-prompt
+date: "2026-05-20"
+mandate_excerpt: "MVP fixture for bubble-ops-loop pattern validation."
+queue_item:
+  id: fixture-echo-001
+  kind: echo_task
+  payload:
+    message: "hello from skill context"
+mocked_tool_replies:
+  - tool: echo-tool
+    input: {message: "hello from skill context"}
+    output:
+      echoed: "hello from skill context"
+      ts: "2026-05-20T17:30:00+00:00"
+      input_keys: ["message"]
+expected_output_path: "outputs/2026-05-20/1/summary.md"

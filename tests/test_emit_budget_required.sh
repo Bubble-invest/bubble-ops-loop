@@ -184,11 +184,21 @@ cat > "$STUBBIN_E/curl" <<EOF
 #!/usr/bin/env bash
 # No-op curl stub: if this is a Telegram sendMessage call, record that the alert
 # was attempted, then succeed quietly. Never touches the network.
+# #1573 moved the authenticated URL from argv to curl's -K stdin config.
+# Reject the old transport and require the actual config-input invocation.
+case " \$* " in
+  *" -K - "*) ;;
+  *) exit 90 ;;
+esac
 for a in "\$@"; do
   case "\$a" in
-    *api.telegram.org*sendMessage*) touch "$TG_MARKER" ;;
+    *stub-bot-token*) exit 91 ;;
   esac
 done
+config=\$(cat)
+case "\$config" in
+  *api.telegram.org/botstub-bot-token/sendMessage*) touch "$TG_MARKER" ;;
+esac
 exit 0
 EOF
 chmod +x "$STUBBIN_E/curl"

@@ -1,9 +1,9 @@
 """
 test_skeleton_completeness.py — Step 5 RED/GREEN validator.
 
-Asserts the bubble-ops-fixture repo (cloned at /tmp/bubble-ops-fixture/) carries
-the full Notion-v4-aligned skeleton per MVP-ROADMAP v2 §5 + the per-file content
-rules from Step 5's brief.
+Asserts the pinned Step-5 bubble-ops-fixture snapshot carries the full
+Notion-v4-aligned skeleton per MVP-ROADMAP v2 §5 + the per-file content rules
+from Step 5's brief. The snapshot is vendored so the test is hermetic.
 
 Run:
     python3 -m pytest tests/test_skeleton_completeness.py -v
@@ -30,7 +30,7 @@ import yaml
 # Constants — pinned absolute paths per the spec.
 # ----------------------------------------------------------------------------
 
-FIXTURE_REPO = Path("/tmp/bubble-ops-fixture")
+FIXTURE_REPO = Path(__file__).resolve().parent / "fixtures" / "bubble-ops-fixture"
 # schemas-draft/ lives at the repo root (this file is at <repo>/tests/).
 SCHEMAS_DRAFT = Path(__file__).resolve().parents[1] / "schemas-draft"
 DEPT_YAML_CANONICAL = SCHEMAS_DRAFT / "examples" / "dept-ops-leaf-fixture.yaml"

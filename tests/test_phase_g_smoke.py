@@ -68,7 +68,8 @@ def test_smoke_1_claude_md_has_autodriving_instructions(smoke_dept: Path):
     assert "department-onboarding-guide" in text
     assert "@bubbleopssmoketest_bot" in text
     assert "autonom" in text.lower()
-    assert "français" in text.lower()
+    # #132/be157d7b: new depts are born in English (FR->EN scaffold i18n).
+    assert "english" in text.lower()
 
 
 def test_smoke_2_systemd_renderer_handoff_is_well_formed(smoke_dept: Path):

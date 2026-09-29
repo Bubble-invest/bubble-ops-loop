@@ -51,6 +51,11 @@ import pytest
 import yaml
 from jsonschema import Draft7Validator
 
+
+pytestmark = pytest.mark.live(
+    reason="checks date-sensitive outputs in the deployed bubble-ops-fixture repository"
+)
+
 # ---------------------------------------------------------------------------
 # Configuration (env-overridable for CI / replay)
 # ---------------------------------------------------------------------------

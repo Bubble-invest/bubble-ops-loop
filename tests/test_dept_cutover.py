@@ -65,8 +65,8 @@ def test_dry_run_seeds_claude_json_with_correct_shape():
 def test_dry_run_registers_marketplace_and_installs_telegram_plugin():
     combined, code = _dry_run("--slug=maya")
     assert code == 0
-    assert "runuser -l agent-maya -c 'claude plugin marketplace add anthropics/claude-plugins-official'" in combined
-    assert "runuser -l agent-maya -c 'claude plugin install telegram@claude-plugins-official --scope user -y'" in combined
+    assert "runuser -u agent-maya -- claude plugin marketplace add anthropics/claude-plugins-official" in combined
+    assert "runuser -u agent-maya -- claude plugin install telegram@claude-plugins-official --scope user -y" in combined
 
 
 def test_dry_run_strips_settings_env_step_present():
