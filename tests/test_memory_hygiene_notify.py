@@ -206,3 +206,92 @@ def test_deliver_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert "DRY-RUN" in detail
     assert not inject.exists()
     assert not outbox.exists()
+
+
+# ── #1665: obsolete shared-UID routes fail closed before stamp state ────────
+OBSOLETE_ROUTES = [
+    ("ben", "/home/claude/.claude/channels/telegram-ben/inject"),
+    ("maya", "/home/claude/.claude/channels/telegram-maya/inject"),
+    ("main-strategist", "/home/claude/.claude/channels/telegram-tony/inject"),
+]
+
+
+def _run_cluttered_working(tmp_path, agent: str, dry_run: bool) -> str:
+    wm = _write(
+        tmp_path / agent / "WORKING_MEMORY.md",
+        size_bytes=mhn.WM_SIZE_BUDGET_BYTES + 1024,
+    )
+    report: list[str] = []
+    mhn._run_pass(
+        "working", {agent: wm}, mhn.analyze_working,
+        mhn.build_working_nudge, dry_run, report,
+    )
+    return "\n".join(report)
+
+
+@pytest.mark.parametrize("stamp_ts", [time.time(), 1])
+@pytest.mark.parametrize(("agent", "target"), OBSOLETE_ROUTES)
+def test_obsolete_routes_ignore_recent_and_expired_legacy_stamps(
+    tmp_path, monkeypatch, agent, target, stamp_ts
+):
+    stamp_dir = tmp_path / "stamps"
+    stamp_dir.mkdir()
+    stamp = stamp_dir / f"{agent}.working.json"
+    original_stamp = f'{{"ts": {stamp_ts}, "size": 1}}'
+    stamp.write_text(original_stamp, encoding="utf-8")
+    monkeypatch.setattr(mhn, "STAMP_DIR", stamp_dir)
+    monkeypatch.setattr(mhn, "ROUTING", {agent: ("local", target)})
+    monkeypatch.setattr(
+        mhn, "deliver",
+        lambda *args, **kwargs: pytest.fail("obsolete route must not reach deliver()"),
+    )
+
+    text = _run_cluttered_working(tmp_path, agent, dry_run=False)
+
+    assert "UNDELIVERED: obsolete shared-user inject route" in text
+    assert "nudged <" not in text
+    assert "[escalated]" not in text
+    assert stamp.read_text(encoding="utf-8") == original_stamp
+
+
+def test_deliver_obsolete_route_never_opens_dead_inject(monkeypatch):
+    agent, target = OBSOLETE_ROUTES[0]
+    monkeypatch.setattr(mhn, "ROUTING", {agent: ("local", target)})
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda *args, **kwargs: pytest.fail("dead inject must not be opened"),
+    )
+
+    ok, detail = mhn.deliver(agent, "test message", dry_run=False)
+
+    assert ok is False
+    assert detail.startswith("UNDELIVERED: obsolete shared-user inject route")
+
+
+def test_changed_local_route_keeps_existing_write_and_stamp_behavior(tmp_path, monkeypatch):
+    agent = "ben"
+    inject = tmp_path / "active" / "inject"
+    inject.parent.mkdir()
+    stamp_dir = tmp_path / "stamps"
+    monkeypatch.setattr(mhn, "STAMP_DIR", stamp_dir)
+    monkeypatch.setattr(mhn, "ROUTING", {agent: ("local", str(inject))})
+
+    text = _run_cluttered_working(tmp_path, agent, dry_run=False)
+
+    assert "Working-memory hygiene nudge" in inject.read_text(encoding="utf-8")
+    assert (stamp_dir / f"{agent}.working.json").exists()
+    assert "session receipt unavailable" in text
+    assert "UNDELIVERED" not in text
+
+
+def test_obsolete_route_dry_run_output_is_unchanged(tmp_path, monkeypatch):
+    agent, target = OBSOLETE_ROUTES[0]
+    stamp_dir = tmp_path / "stamps"
+    monkeypatch.setattr(mhn, "STAMP_DIR", stamp_dir)
+    monkeypatch.setattr(mhn, "ROUTING", {agent: ("local", target)})
+
+    text = _run_cluttered_working(tmp_path, agent, dry_run=True)
+
+    assert f"DRY-RUN -> local inject {target}" in text
+    assert "UNDELIVERED" not in text
+    assert not stamp_dir.exists()
