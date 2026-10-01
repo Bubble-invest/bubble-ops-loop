@@ -241,6 +241,43 @@ def test_cadence_not_yet_due_excluded():
     assert len(due) == 0, "mission not yet due (time not reached) must be excluded"
 
 
+@pytest.mark.parametrize(
+    ("mission", "before_effective_gate", "at_effective_gate", "ctx_overrides"),
+    [
+        (
+            _mk_daily("research", layer=2, time="11:00"),
+            datetime(2026, 6, 23, 9, 59, tzinfo=timezone.utc),   # 11:59 Paris
+            datetime(2026, 6, 23, 10, 0, tzinfo=timezone.utc),   # 12:00 Paris
+            {"has_research_items": True},
+        ),
+        (
+            _mk_daily("risk_control", layer=4, time="21:00"),
+            datetime(2026, 6, 23, 18, 59, tzinfo=timezone.utc),  # 20:59 Paris
+            datetime(2026, 6, 23, 19, 0, tzinfo=timezone.utc),   # 21:00 Paris
+            {},
+        ),
+    ],
+)
+def test_effective_daily_gate_is_later_of_layer_floor_and_mission_time(
+    mission: dict,
+    before_effective_gate: datetime,
+    at_effective_gate: datetime,
+    ctx_overrides: dict,
+):
+    """Layer eligibility and mission cadence are independent Paris-local gates.
+
+    The normal selector requires both. Therefore an L2 mission at 11:00 waits
+    for the 12:00 L2 floor, while an L4 mission at 21:00 waits for its own time
+    even though the L4 floor opened at 19:00.
+    """
+    assert select_due_missions(
+        _bare_ctx(before_effective_gate, **ctx_overrides), [mission]
+    ) == []
+    assert [m["id"] for m in select_due_missions(
+        _bare_ctx(at_effective_gate, **ctx_overrides), [mission]
+    )] == [mission["id"]]
+
+
 def test_daily_already_fired_today_excluded(tmp_path: Path):
     """A daily mission already fired today (per-mission .last-run stamped today) is excluded.
 
