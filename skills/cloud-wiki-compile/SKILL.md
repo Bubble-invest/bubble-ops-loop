@@ -1653,18 +1653,24 @@ What it does (no judgment needed from you — it only collects evidence + nudges
   same frozen-mirror trap as #874). Triggers: over soft budget (~64KB) OR stale
   (untouched ≥45d while non-trivial). The nudge asks the agent to move completed/
   stale sections into a `WORKING_MEMORY.archive.md` (move, never delete).
-- Delivery per agent: VPS-native depts (ben/maya/tony/accountant) → inject the
-  nudge into their live session; Mac-resident agents (content/rnd/claudette/
-  security) → queue in that Mac's outbox; the Mac's own sync run injects locally
-  (trust arrow is laptop→cloud only, so the VPS can't inject into a laptop).
-- A per-(agent,store) 6-day cooldown stamp prevents weekly re-nudging before the
-  agent has groomed; each stamp records the size, so a later nudge on a file that
-  hasn't shrunk since the last one is ESCALATED (closed-loop feedback). Healthy
-  memories are silently skipped.
+- **#1665 delivery limitation:** the exact Ben/Maya/Tony routes still point to
+  old, sometimes writable `/home/claude/.../inject` files that their UID-isolated
+  sessions no longer consume. The notifier reports `UNDELIVERED` before any
+  legacy cooldown/escalation check and does not write those files. Do not switch
+  paths to `/home/agent-*` or widen permissions: the pruning UID cannot inject
+  there. Accountant's other local route and Mac-resident content/rnd/claudette/
+  security outboxes retain their legacy append/queue attempts; the laptop→cloud
+  trust arrow remains unchanged. Neither append nor outbox acceptance proves
+  session receipt, and an outbox file may be lost before consumption.
+- For **non-obsolete** routes only, the legacy per-(agent,store) 6-day stamp
+  still suppresses repeats and can escalate an unchanged size. That stamp records
+  an append/queue attempt, **not delivered session content or completed grooming**;
+  do not use it as proof of memory hygiene. Healthy memories are skipped.
 
-Note: an agent home with a `750` mode (e.g. claudette) is not traversable by the
-`claude` user this runs as, so its WORKING_MEMORY.md is skipped — grant group-read
-on that home, or run the WM pass as root, to close that gap.
+Note: an agent home with a `750` mode is not traversable by the `claude` user
+this runs as, so its WORKING_MEMORY.md may be skipped. Report the coverage gap
+for a separate scoped operator decision; do not grant access or run this pass as
+root merely to make this notifier succeed.
 
 Just run it and note its one-line-per-agent output in your final report. Do not
 edit any agent's private memory yourself.

@@ -34,20 +34,22 @@ Two private stores are watched fleet-wide, each against its LIVE file:
 DELIVERY (the hard part — same-machine constraint)
 --------------------------------------------------
 A nudge must land in the AGENT'S SESSION, not in a human's chat. The configured
-shared-user injects for isolated Ben/Maya/Tony are obsolete and cannot be
-written by the pruning UID; those exact routes now fail closed as UNDELIVERED.
-Other local inject and Mac outbox writes remain enqueue/append attempts only:
-their consumers publish no session-side receipt, so this script must not call
-them confirmed delivery. Receipt-backed cooldowns require a separately approved
-target-UID/consumer acknowledgement design and are outside this diagnostic fix.
+shared-user injects for isolated Ben/Maya/Tony may still be writable by the
+pruning UID, but no live isolated session consumes them; those exact routes
+now fail closed as UNDELIVERED. The active /home/agent-* injects are not
+writable across UIDs. Other local inject and Mac outbox writes remain only
+append/queue attempts: neither consumer publishes a session-side receipt.
+Receipt-backed cooldowns require a separately approved target-UID/consumer
+acknowledgement design and are outside this diagnostic fix.
 
 This runs on the VPS inside the weekly cloud-wiki-compile@pruning cron.
 
-Idempotency + closed loop: a per-(agent,kind) stamp suppresses re-nudging within
-`NUDGE_COOLDOWN_DAYS`, and records the size at nudge time. On a later eligible
-run, if the file is STILL cluttered and has NOT shrunk since the last nudge, the
-new nudge is ESCALATED ("nudged Nd ago, hasn't shrunk") — the feedback signal the
-job previously lacked.
+Legacy attempt state: for routes other than the three exact obsolete tuples, a
+per-(agent,kind) stamp still suppresses re-nudging for `NUDGE_COOLDOWN_DAYS`.
+It records size at append/queue time and can trigger a later no-shrink escalation,
+but does NOT prove session receipt or memory grooming. Obsolete-route stamps are
+ignored and left untouched; replacing legacy attempt stamps with receipt-backed
+delivery state is a separate change.
 """
 from __future__ import annotations
 
@@ -431,9 +433,10 @@ def _run_pass(kind: str, files: dict[str, Path], analyze, build_nudge,
         if not info["cluttered"]:
             report.append(f"  {agent:16} ok ({info['size']//1024}KB)")
             continue
-        # Route validity must outrank legacy cooldown/escalation state. Otherwise
-        # an old stamp can hide a known dead route or manufacture an escalation
-        # for a nudge that never reached the isolated agent.
+        # These three exact obsolete tuples outrank legacy cooldown/escalation
+        # state. This does not validate other routes or their receipt state.
+        # Otherwise an old stamp could hide a known dead route or invent an
+        # escalation for a nudge that never reached the isolated agent.
         blocker = "" if dry_run else _delivery_blocker(agent)
         if blocker:
             report.append(
