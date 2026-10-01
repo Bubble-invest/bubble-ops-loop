@@ -1,0 +1,13 @@
+# Read-only core vendoring manifest for board #1666.
+# Format: source path<TAB>department destination path.
+#
+# This first increment is declarative parity data only. Production vendoring,
+# dry-run, and drift scripts retain their existing shell arrays and semantics.
+scripts/lib/dispatch_helpers.py	scripts/lib/dispatch_helpers.py
+scripts/lib/notify.py	scripts/lib/notify.py
+scripts/lib/loop_notify.py	scripts/lib/loop_notify.py
+scripts/lib/notion_logbook.py	scripts/lib/notion_logbook.py
+scripts/lib/budget.py	scripts/lib/budget.py
+scripts/lib/codex_write.sh	scripts/lib/codex_write.sh
+scripts/lib/directive_constants.py	scripts/lib/directive_constants.py
+tools/notify_layer.py	tools/notify_layer.py
