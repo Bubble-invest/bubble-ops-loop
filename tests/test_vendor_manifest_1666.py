@@ -81,9 +81,28 @@ def load_manifest(
             )
 
         source_path = repository_root / source
-        if source_path.is_symlink():
-            raise ManifestError(f"line {line_number}: source is a symlink: {source}")
-        if not source_path.is_file():
+        source_component = repository_root
+        for component in PurePosixPath(source).parts:
+            source_component /= component
+            if source_component.is_symlink():
+                if source_component == source_path:
+                    raise ManifestError(
+                        f"line {line_number}: source is a symlink: {source}"
+                    )
+                raise ManifestError(
+                    f"line {line_number}: source path contains a symlink: {source}"
+                )
+
+        resolved_root = repository_root.resolve()
+        resolved_source = source_path.resolve()
+        try:
+            resolved_source.relative_to(resolved_root)
+        except ValueError as error:
+            raise ManifestError(
+                f"line {line_number}: source resolves outside repository: {source}"
+            ) from error
+
+        if not resolved_source.is_file():
             raise ManifestError(
                 f"line {line_number}: source is missing or not a regular file: {source}"
             )
@@ -243,6 +262,24 @@ class VendorManifestValidationTests(unittest.TestCase):
         source_path.symlink_to(target_path)
 
         with self.assertRaisesRegex(ManifestError, "source is a symlink"):
+            load_manifest(self.root, self.manifest)
+
+    def test_source_with_symlinked_parent_outside_repository_is_rejected(
+        self,
+    ) -> None:
+        outside_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_directory.cleanup)
+        outside_root = Path(outside_directory.name)
+        (outside_root / "escaped.py").write_text(
+            "# escaped source\n", encoding="utf-8"
+        )
+        (self.root / "alias").symlink_to(outside_root, target_is_directory=True)
+
+        escaped_entries = list(self.entries)
+        escaped_entries[0] = ("alias/escaped.py", escaped_entries[0][1])
+        self._write_manifest(escaped_entries)
+
+        with self.assertRaisesRegex(ManifestError, "source path contains a symlink"):
             load_manifest(self.root, self.manifest)
 
 
