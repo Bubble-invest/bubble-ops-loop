@@ -3943,6 +3943,9 @@ def build_dispatch_plan(
     ``phase`` therefore follows the selected missions, or is ``heartbeat`` when
     none are due.  ``legacy_phase`` preserves ``decide_dispatch``'s historical
     phase signal so consumers can migrate without an atomic fleet cutover.
+    ``ad_hoc_l3_defer_phase`` is the explicit terminal-commit input for
+    ``maybe_defer_ad_hoc_l3``; callers must not pass mission-centric ``phase``
+    there because an L3 structural defer can coincide with L2 fallthrough work.
     """
     selected = select_due_missions(ctx, missions)
     phase = "heartbeat"
@@ -3950,10 +3953,12 @@ def build_dispatch_plan(
         layer = int(selected[0].get("layer", 0))
         if layer in _LAYER_PRIORITY:
             phase = f"layer_{layer}"
+    legacy_phase = decide_dispatch(ctx)
     return {
         "phase": phase,
         "missions": selected,
-        "legacy_phase": decide_dispatch(ctx),
+        "legacy_phase": legacy_phase,
+        "ad_hoc_l3_defer_phase": legacy_phase,
     }
 
 

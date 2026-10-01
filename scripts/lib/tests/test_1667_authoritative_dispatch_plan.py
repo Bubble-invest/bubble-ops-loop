@@ -12,6 +12,9 @@ from pathlib import Path
 from scripts.lib.dispatch_helpers import (
     _mission_handled_marker,
     build_dispatch_plan,
+    maybe_defer_ad_hoc_l3,
+    read_dispatch_ledger,
+    read_round_counter,
     write_last_materialized,
     write_last_run,
 )
@@ -79,6 +82,33 @@ def test_plan_phase_follows_fallthrough_missions_not_legacy_phase():
     assert [mission["id"] for mission in plan["missions"]] == ["research"]
 
 
+def test_plan_preserves_terminal_l3_defer_during_l2_fallthrough(tmp_path: Path):
+    """Mission dispatch follows L2 while the legacy L3 signal still commits
+    the required structural human defer through the real terminal helper."""
+    today_dir = tmp_path / "outputs" / "2026-10-01"
+    ctx = _ctx(
+        today_dir=str(today_dir),
+        has_inbox_decisions=True,
+        layer_1_last_run_today=_AFTER_L2,
+    )
+    missions = [_daily("research", 2, "12:00")]
+
+    plan = build_dispatch_plan(ctx, missions)
+
+    assert plan["phase"] == "layer_2"
+    assert [mission["id"] for mission in plan["missions"]] == ["research"]
+    assert plan["legacy_phase"] == "layer_3"
+    assert maybe_defer_ad_hoc_l3(
+        ctx,
+        missions,
+        phase=plan["ad_hoc_l3_defer_phase"],
+    )
+    assert read_dispatch_ledger(today_dir)["__ad_hoc_l3_human_defer__"][
+        "completed_at"
+    ] == _AFTER_L2.isoformat()
+    assert read_round_counter(today_dir)["3"] == 1
+
+
 def test_plan_reports_heartbeat_when_legacy_phase_has_no_due_mission():
     plan = build_dispatch_plan(_ctx(), [])
 
@@ -86,6 +116,7 @@ def test_plan_reports_heartbeat_when_legacy_phase_has_no_due_mission():
         "phase": "heartbeat",
         "missions": [],
         "legacy_phase": "layer_2",
+        "ad_hoc_l3_defer_phase": "layer_2",
     }
 
 
