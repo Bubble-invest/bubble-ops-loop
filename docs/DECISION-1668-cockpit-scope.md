@@ -29,7 +29,7 @@ No current route should be deleted from the approved scope alone. The next imple
 - **Keep, but assign to a business-domain owner rather than the generic cockpit core:** `/dept/<slug>/portfolio`.
 - **Keep as an explicit operator feature:** Tony's company operations map from board #1602, including missions by business unit and layer, live state, gaps, and drift. #1602 also requests an explicit failed mission state and a load row showing missions per agent plus open `needs:human` items per person; the current implementation exposes neither. It is not decorative and has no demonstrated feature-parity replacement.
 - **Keep as an authentication operation:** one-time `/login/link` enrollment with its single-use claim, 15-minute default TTL, and access/app-log token redaction.
-- **Propose folding only after parity:** standalone `/settings/<slug>`, standalone `/dept/<slug>/management-view`, duplicate home-page panels, and onboarding polling after activation. Concierge/detail and transcript routes require workflow confirmation; transcript exposure is also a separate current security defect, not a usage-based deletion decision.
+- **Propose folding only after parity:** standalone `/settings/<slug>`, standalone `/dept/<slug>/management-view`, duplicate home-page panels, and onboarding polling after activation. Concierge detail still requires workflow confirmation. Joris separately decided in #1673 to remove full-text session rendering, **not** the historical transcript-route URLs or their archives; PR #571 implements that target but is not merged or deployed.
 
 Approvals, board comments, gate decisions, structural-PR reviews, attachments, output files, mission files, and provenance timestamps are explicitly excluded from retirement.
 
@@ -70,7 +70,7 @@ The permission-filtered request counts in the first draft were not complete serv
 | `/`, `/dept/<slug>`, `/gate/...`, `/kanban...`, `/pr/...`, `/agents...`, `/dept/<slug>/portfolio` | Each appeared in the permission-filtered subset; writes were also observed on gate, kanban-comment, and PR-approval paths. Counts are lower bounds, and polling requests are not intentional visits. | Preserve operations and evidence. Do not rank or delete these surfaces from the partial counts. |
 | `/health`, `/costs` | The independent reviewer aggregate explicitly included both routes. | They are used routes as well as approved core capabilities; remove the earlier zero-use claim. |
 | `/settings/<slug>`, `/concierge/<name>`, `/dept/<slug>/management-view` | No reliable conclusion from the supplied aggregates. | Any fold/retire proposal must rest on semantic parity and operator confirmation, not apparent absence. |
-| `/dept/<slug>/session`, `/concierge/<name>/session` | Polling can inflate counts; code inspection establishes that the routes expose recent transcript content. | Treat workflow usage as unknown and handle the security defect separately; do not infer either popularity or dispensability from request volume. |
+| `/dept/<slug>/session`, `/concierge/<name>/session` | Polling can inflate counts. At the observed `e2877d1` deployed/main baseline, these routes expose recent transcript content. | #1673 approves metadata/evidence-only rendering while retaining the URLs and archives; PR #571 is open and undeployed. Do not infer route popularity or dispensability from request volume. |
 
 A separate private-board audit found cockpit approval and rejection marker comments attributed to Joris. Issues #288 and #381 each contain duplicate marker comments, so volatile comment counts are not treated as unique-decision counts. The audit found no Jade-attributed board decision marker, but that does not contradict Jade's gate usage: board decisions and department gates are separate paths.
 
@@ -112,18 +112,18 @@ A separate private-board audit found cockpit approval and rejection marker comme
 | `/login/link` | SQLite login-token row bound to a username | A valid token is atomically claimed once, defaults to a 900-second TTL, creates an attributed session, and is then unusable. Query-token values are redacted from access and app/root logs; a preview/prefetch can still consume the GET before the human. | **Keep.** Preserve single-use consumption, the 15-minute default TTL, and log redaction. It is an enrollment/authentication operation, not a removable convenience page. |
 | `/agents/<slug>/onboarding` and fragments | `STATE.yaml`, dept draft/config, repo artifacts, chat log, latest git commit | Timeline and heartbeat poll every five seconds; STATE is read fresh. | **Keep only while status is not Live.** After activation, propose redirecting to `/dept/<slug>` and removing routine polling; retain historical artifacts through allowlisted evidence links. |
 | `/settings/<slug>` | `dept.yaml` gate policies and config | Read-only; no unique write path; same source already loaded by `/dept/<slug>`. | **Propose fold into a collapsed “configuration source” section on `/dept/<slug>` and retire the standalone route.** Preserve exact source link and raw/allowlisted mission-file access. |
-| `/concierge/<name>` | Explicit concierge registry; systemd status; project `STATUS.md`; newest session JSONL | Service status cached 30 seconds; session fragment polls live transcript. | Workflow use is unknown. **Keep pending Joris/Jade confirmation.** A later fold of status + latest project/result into `/agents` is eligible only if the dedicated page has no unique workflow and transcript security is handled separately. |
-| `/concierge/<name>/session` and `/dept/<slug>/session` | Newest mirrored session JSONL | Both render recent user/assistant message text. Dept tool details pass through a limited secret-shape scrubber; concierge tool details are rendered from raw tool input without that scrubber. Neither path redacts arbitrary sensitive prose in message text. | **Current security defect; no usage conclusion.** Do not remove the UI blindly in this scope decision. Track and remediate exposure separately with explicit authorization/redaction requirements, while preserving any confirmed operator workflow and the transcript audit/storage lifecycle. |
+| `/concierge/<name>` | Explicit concierge registry; systemd status; project `STATUS.md`; newest session JSONL | At the observed deployed/main baseline, service status is cached 30 seconds and the session fragment polls live transcript text. | Workflow use is unknown. **Keep pending Joris/Jade confirmation.** PR #571 changes the session fragment to metadata/evidence, not the dedicated page or archives. A later fold of the page into `/agents` still requires proof of workflow parity. |
+| `/concierge/<name>/session` and `/dept/<slug>/session` | Newest mirrored session JSONL | At the observed `e2877d1` deployed/main baseline, both render recent user/assistant text; concierge tool details can include raw input. PR #571 retains both URLs but replaces content reads with per-person status, activity timestamp, deliverables, and evidence links. | **Security defect in the deployed baseline; no usage conclusion.** Joris approved removing full-text rendering in #1673. PR #571 is open and undeployed; preserve archives and audit/storage lifecycle, then verify the privacy outcome on a canary. |
 
-### Current transcript-exposure security defect
+### Transcript-exposure defect and approved target (#1673)
 
-This defect exists independently of whether the panels are popular:
+At the observed `e2877d1` deployed/main baseline, this defect exists independently of whether the panels are popular:
 
 - `agent_session.read_session_turns()` renders user and assistant text blocks verbatim. Its tool-detail scrubber covers a finite set of secret shapes and truncates output, but it does not sanitize arbitrary sensitive message text.
 - `concierge_reader.read_recent_session()` also renders message text verbatim, and its `_tool_detail()` returns raw command/URL/query-like values without the dept reader's secret scrubber.
 - Global cockpit authentication limits the audience but is not content-level least privilege. Route counts cannot prove that every authenticated viewer should see every department or concierge transcript.
 
-The correction is a separate security change: define the authorized audience and a fail-closed rendering/redaction contract, add tests for sensitive prose and tool inputs, and decide with the operator whether full live text is still required. A scope-reduction PR must not silently substitute route deletion for that security decision.
+**Operator decision (2026-10-01, #1673):** full session text is **not** required in the cockpit. Show activity timestamps, per-person status, deliverables, and evidence links instead; retain session archives for authorized retrieval and preserve approval/audit evidence. PR #571 (`b26c961`) implements that target in the two historical session routes using synthetic sensitive-prose/tool-argument tests. Its checks passed when this note was updated, but it remains **open and undeployed**: this document does not claim that the deployed defect is fixed. Do not delete the routes or archives as a shortcut, or infer that #571 satisfies #1602's separate fleet-level load row of missions per agent and open `needs:human` items per person.
 
 ## Live source-freshness snapshot
 
@@ -156,7 +156,7 @@ The correct response is not to copy this data into a new database. The response 
 - `/dept/tony/operations-fragment`, preserving the #1602 mission/business-unit/layer/live-state/gap/drift semantics and completing or explicitly deciding the requested connection, bottleneck, counter, failed-state, and load-row semantics; the load row means missions per agent plus open `needs:human` items per person.
 - `/agents...` lifecycle operations, including activation/cancel/retire safety boundaries.
 - `/dept/<slug>/portfolio` as a separately owned investment-domain surface.
-- Current concierge and transcript routes until their workflows are confirmed and the transcript-exposure defect is resolved by a separate security decision.
+- Current concierge detail and the historical session-route URLs. The full-text rendering of those routes is **not** retained: Joris chose metadata/evidence instead in #1673, implemented but not deployed by PR #571. Preserve archives and approval/audit workflows; decide any later concierge-page fold separately.
 
 ### Fold, then retire the standalone route or panel
 
@@ -171,7 +171,7 @@ The correct response is not to copy this data into a new database. The response 
 1. Five-second background polling for dept inbox/session and onboarding fragments where no active lifecycle operation requires it. Keep manual refresh or a slower visibility-aware refresh; do not add a new state or event store.
 2. A standalone route already named in the fold list, but only after its retained destination has full semantic parity, its users approve, tests cover the replacement, and redirects preserve deep links.
 
-The health graph/dataflow routes, Tony operations map, and transcript routes are **not** retirement candidates in this decision. The first two are explicit operator-requested semantics with no parity replacement. The transcript routes require a separate security/workflow decision before scope can be changed safely.
+The health graph/dataflow routes, Tony operations map, and historical session-route URLs are **not** retirement candidates in this decision. The first two are explicit operator-requested semantics with no parity replacement. The separate #1673 decision authorizes replacing full-text rendering with metadata/evidence while retaining URLs and archives; it does not authorize deleting concierge detail or any other view.
 
 ## Preconditions for any retirement PR
 
@@ -189,7 +189,7 @@ A future implementation PR must satisfy all of the following for each named rout
 
 ## Recommended implementation order
 
-1. Open and resolve the transcript-exposure security defect separately: define audience and redaction/fail-closed rendering, test sensitive prose and tool inputs, and get an operator decision on required live detail. Do not bundle route deletion into that fix.
+1. Review/merge PR #571 only through the normal operator gate, then canary the metadata/evidence-only rendering approved in #1673, preserving session-route URLs, archives, per-person status, and approval/audit behavior. No full-text UI or route deletion. This does not complete #1602's fleet-level mission/load requirements.
 2. Fix provenance/authority labels, especially `/health`, the health graph/dataflow, the operations map, and management exports.
 3. Preserve and complete the operator-requested health and #1602 semantics; do not replace either with a table-only approximation.
 4. Fold `/settings/<slug>` into dept detail only after its source/provenance presentation has parity.
