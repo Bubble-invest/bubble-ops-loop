@@ -52,8 +52,8 @@
 
 {# ─── Projets en cours ({{OPERATOR}} msg 1193) ───────────────────────────
    Read from <workspace>/workspace/projects/*/STATUS.md. #}
-<section style="margin-bottom:32px;">
-  <h2 class="section-title" style="margin:0 0 10px;">Projets en cours</h2>
+<section style="margin-bottom:32px;" aria-labelledby="concierge-projects-heading">
+  <h2 id="concierge-projects-heading" class="section-title" style="margin:0 0 10px;">Projets en cours</h2>
   {% if projects %}
     <div class="concierge-projects">
       {% for p in projects %}
@@ -75,23 +75,21 @@
   {% endif %}
 </section>
 
-{# ─── Live session view ───────────────────────────────────────────
-   The raw terminal is discarded (script → /dev/null), so we tail the
-   session transcript instead — and render it cleanly: messages as prose,
-   tool actions as compact chips. HTMX re-fetches every 5s. #}
+{# ─── Privacy-safe activity view (#1673) ──────────────────────────
+   The transcript archive is retained but never rendered. HTMX refreshes only
+   service status, archive mtime, deliverables and evidence links. #}
 <section>
   <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
-    <h2 class="section-title" style="margin:0;">Session en direct</h2>
+    <h2 class="section-title" style="margin:0;">Activité et livrables</h2>
     <span style="display:inline-flex; align-items:center; gap:5px;
                  font-size:11px; color:#2e7d32;">
       <span style="width:6px;height:6px;border-radius:50%;background:#2e7d32;
                    animation: pulse 1.6s infinite;"></span>
-      live · rafraîchi toutes les 5 s
+      statut · rafraîchi toutes les 5 s
     </span>
   </div>
   <p class="muted-italic" style="font-size:13px; margin:0 0 12px;">
-    Ce que {{ concierge.name|capitalize }} fait en ce moment — ses messages
-    et ses actions, dans l'ordre.
+    Horodatage d’activité, statut de service et liens de preuve — sans texte de session.
   </p>
 
   <div id="concierge-session"

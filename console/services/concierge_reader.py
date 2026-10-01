@@ -3,18 +3,18 @@
 Concierges are NOT ops-loop departments: they run as `claude-agent-<name>`
 (tenant bubble-internal), use UNPREFIXED workspace dirs (agents/<name>),
 and have no dept.yaml / layers / queues / gates / heartbeat. They are
-reactive assistants. So their cockpit page is a simpler "status + live
-session activity" view, distinct from the dept gate/mission view.
+reactive assistants. So their cockpit page is a simpler status, activity,
+and deliverables view, distinct from the dept gate/mission view.
 
-This module is the read layer:
+This module is the concierge read layer:
   - list_concierges()                  -> [ConciergeSummary]
   - get_concierge(name)                -> ConciergeSummary | None
-  - read_recent_session(name, n=20)    -> [SessionTurn]  (the live view)
+  - read_recent_session(name, n=20)    -> [SessionTurn]  (archive/audit only)
 
-The "live session view" reads the most recent session transcript JSONL
-(continuously appended by the running agent) and returns the last N
-human-readable turns. The raw PTY is discarded to /dev/null, so the JSONL
-IS the real-time activity stream.
+Board #1673 removed transcript prose and tool arguments from cockpit responses.
+UI routes use status, activity timestamps, projects/deliverables and evidence
+links.  The parser remains available only to separately authorized archive or
+audit workflows; it must not be wired into a cockpit template/API/export.
 """
 from __future__ import annotations
 
@@ -308,7 +308,7 @@ def _classify(content: Any) -> list:
 def read_recent_session(
     name: str, n: int = 20, agents_root: str = "/home/claude/agents"
 ) -> List[SessionTurn]:
-    """Return the last ``n`` human-readable turns from the newest session.
+    """Return archived turns; never pass this result to a cockpit response.
 
     Empty list if the concierge is unknown or has no session yet. Skips
     turns that render to empty text (pure tool-result noise)."""

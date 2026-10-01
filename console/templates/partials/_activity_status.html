@@ -1,0 +1,33 @@
+{# Privacy-safe replacement for live transcript feeds (board #1673).
+   Inputs: person_name, status_label, last_activity_iso, deliverables[],
+   evidence_url, evidence_label. No transcript content is accepted. #}
+<div class="activity-status" style="font-size:13px; line-height:1.5;">
+  <dl style="display:grid; grid-template-columns:max-content 1fr; gap:5px 10px; margin:0 0 12px;">
+    <dt style="color:var(--body-soft);">Personne</dt>
+    <dd style="margin:0; font-weight:600; color:var(--ink);">{{ person_name }}</dd>
+    <dt style="color:var(--body-soft);">Statut</dt>
+    <dd style="margin:0; font-weight:600; color:var(--ink);">{{ status_label or 'Inconnu' }}</dd>
+    <dt style="color:var(--body-soft);">Dernière activité</dt>
+    <dd style="margin:0; font-family:var(--font-mono); color:var(--ink);">{{ last_activity_iso or 'Aucune trace disponible' }}</dd>
+  </dl>
+
+  <div style="margin-bottom:10px;">
+    <strong style="display:block; margin-bottom:4px;">Livrables récents</strong>
+    {% if deliverables %}
+      <ul style="margin:0; padding-left:18px;">
+        {% for item in deliverables %}
+          <li><a href="{{ item.url }}"{% if item.url.startswith('http') %} target="_blank" rel="noopener"{% endif %}>{{ item.label }}</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="desk-empty">Aucun livrable récent indexé.</p>
+    {% endif %}
+  </div>
+
+  <p class="muted-italic" style="font-size:12px; margin:8px 0;">
+    Le texte des sessions n’est pas affiché dans le cockpit. Les archives restent conservées pour les procédures autorisées d’audit et de récupération.
+  </p>
+  {% if evidence_url %}
+    <a class="discreet-link" href="{{ evidence_url }}">{{ evidence_label or 'Voir les preuves' }} →</a>
+  {% endif %}
+</div>

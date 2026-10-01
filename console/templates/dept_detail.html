@@ -6,24 +6,7 @@
    monospace numbers, secondary detail collapsed. #}
 {% block body_class %}m4{% endblock %}
 {% block head_extra %}
-<!-- #286/#300: markdown render for the live-session feed (prettier than raw) -->
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
-        integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
-        crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
-        integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
-        crossorigin="anonymous"></script>
 <style>
-/* prettify the session feed messages (markdown) */
-.feed-md.md-render { white-space: normal; }
-.feed-md.md-render p { margin: 4px 0; }
-.feed-md.md-render strong { color: var(--ink); font-weight: 600; }
-.feed-md.md-render code { font-family: var(--font-mono, monospace); font-size: 12px;
-  background: var(--paper-soft); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
-.feed-md.md-render ul, .feed-md.md-render ol { margin: 4px 0 4px 18px; padding: 0; }
-.feed-md.md-render table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
-.feed-md.md-render th, .feed-md.md-render td { border: 1px solid var(--line); padding: 3px 7px; }
-.feed-md.md-render a { color: #b06a2c; }
 /* #1209 — canonical NAV headline + as-of / stale banner (reuses the Thesis
    Book pf-stale / pf-asof visual pattern from thesis_book.html). */
 .nav-headline { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
@@ -38,28 +21,6 @@
   margin:6px 0 2px; }
 .nav-live-tick { font-size:11px; color:var(--muted, #8a8a8a); font-style:italic; }
 </style>
-<script>
-// Shared: markdown-render every .md-render[data-md] (used by the session feed).
-// Fail-open: missing lib / parse error → leave the raw text (pre-wrap) untouched.
-window.bubbleRenderMarkdown = function (root) {
-  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') return;
-  (root || document).querySelectorAll('.md-render[data-md]').forEach(function (el) {
-    var raw = el.textContent;
-    var html;
-    try { html = marked.parse(raw, { gfm: true, breaks: true }); }
-    catch (e) { return; }
-    el.innerHTML = DOMPurify.sanitize(html);
-    el.removeAttribute('data-md');
-  });
-};
-// initial + after every htmx swap (the session feed refreshes every 5s)
-document.addEventListener('DOMContentLoaded', function () { window.bubbleRenderMarkdown(document); });
-// Single afterSwap listener — a duplicate on `document` used to run the
-// DOMPurify markdown pass TWICE on every 5s poll (needless CPU/heat).
-document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
-  window.bubbleRenderMarkdown(e.target);
-});
-</script>
 {% endblock %}
 {% block content %}
 {% if decision_recorded %}
@@ -164,8 +125,9 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
   </div>
 </section>
 
-{# ─── BUREAU (desk view, #286) — at-a-glance 3-zone desk: 📥 à traiter →
-   🔄 session en direct (center) → 📤 terminé. This is the LIVE at-a-glance;
+{# ─── BUREAU (desk view, #286/#1673) — at-a-glance 3-zone desk:
+   📥 à traiter → activité/preuves (center) → 📤 terminé. Transcript text is
+   intentionally absent; the historical fragment URL now returns metadata.
    the numbered widgets below are the drill-down. Live depts only.
    #524: the "👀 À valider" sub-pile was REMOVED — it merely re-listed the
    same gate_groups that section 01 ("Décisions qu'on attend de toi") shows
@@ -194,10 +156,10 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
       </div>
     </div>
 
-    {# 🔄 CENTER — session en direct (the agent at their desk, live) #}
+    {# CENTER — privacy-safe activity metadata + deliverable/evidence links. #}
     <div class="desk-pile desk-pile--active">
       <div class="desk-pile-head">
-        <span class="desk-live-dot"></span> En cours · session en direct
+        <span class="desk-live-dot"></span> Activité et preuves
       </div>
       {# pixel agent at his desk — animates "working" while the session is live (#286) #}
       <div class="desk-agent-stage">
@@ -245,7 +207,7 @@ document.body && document.body.addEventListener('htmx:afterSwap', function (e) {
            hx-get="/dept/{{ dept.slug }}/session"
            hx-trigger="load, every 5s"
            hx-swap="innerHTML">
-        <p class="desk-empty">Chargement&hellip;</p>
+        <p class="desk-empty">Chargement du statut, des horodatages et des preuves&hellip;</p>
       </div>
     </div>
 
