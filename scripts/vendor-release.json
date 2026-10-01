@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "framework_commit": "e56d39a77bcd272ac28a6e18df17ec144437a5a2",
+  "stack_dependency": {
+    "repository": "Bubble-invest/bubble-ops-loop",
+    "pull_request": 572,
+    "commit": "e56d39a77bcd272ac28a6e18df17ec144437a5a2"
+  },
+  "manifest": {
+    "path": "scripts/vendor-manifest.tsv",
+    "sha256": "169f46b1496228d161d4f3b7dc7b61e931b054b844026bc9ebbdb7d6075cc2c4",
+    "entries": [
+      {
+        "source": "scripts/lib/dispatch_helpers.py",
+        "destination": "scripts/lib/dispatch_helpers.py",
+        "sha256": "bdfd25341129c1ca7ee34d3920cad7ad8498256013280e10e3c72c7a8c2e2a16"
+      },
+      {
+        "source": "scripts/lib/notify.py",
+        "destination": "scripts/lib/notify.py",
+        "sha256": "2cb8cfa897d4c02580f96968634b7266ad6b892a01ca18a33de828e8556a05e9"
+      },
+      {
+        "source": "scripts/lib/loop_notify.py",
+        "destination": "scripts/lib/loop_notify.py",
+        "sha256": "e6dab66e63293482c1a28f5b0eac0dafaf13ffdd1f3541f1dd5ab98455241341"
+      },
+      {
+        "source": "scripts/lib/notion_logbook.py",
+        "destination": "scripts/lib/notion_logbook.py",
+        "sha256": "9f4e96474a860864226fdadcd45b784ff77ad7e777f4d6a6cfc798cc73f0d2a8"
+      },
+      {
+        "source": "scripts/lib/budget.py",
+        "destination": "scripts/lib/budget.py",
+        "sha256": "c56d662ca4b5d69a295e0cccc749b3b6a74258bb7cbc827ecd96deb9b79136a7"
+      },
+      {
+        "source": "scripts/lib/codex_write.sh",
+        "destination": "scripts/lib/codex_write.sh",
+        "sha256": "cc609ce06edc275cc446b0cea878bd24ba35353a8aa7f37a9e7dcd5e71e45037"
+      },
+      {
+        "source": "scripts/lib/directive_constants.py",
+        "destination": "scripts/lib/directive_constants.py",
+        "sha256": "6086a08e8764777aa6a1b5de29979343dcf90b49df59cd1803247242822bcd8e"
+      },
+      {
+        "source": "tools/notify_layer.py",
+        "destination": "tools/notify_layer.py",
+        "sha256": "00ab775b8500890318d59a929a5ac3046ffac8ce72f9e1517faa11556d4cc3f7"
+      }
+    ]
+  },
+  "compatibility_contracts": [
+    {
+      "caller": "tools/notify_layer.py",
+      "callee": "scripts/lib/loop_notify.py",
+      "symbols": [
+        "_configured_brief_filename",
+        "log_notify_event",
+        "notify_layer_fired",
+        "notify_layers_batched"
+      ]
+    }
+  ]
+}
