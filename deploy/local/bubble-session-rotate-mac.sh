@@ -25,11 +25,25 @@
 # handoff must SKIP, not rotate into a context-thin session. Every SKIP now alerts
 # (see _alert_skip below) instead of failing silently.
 #
+# Optional: --ask-handoff [--inject-file F] [--ask-wait S] (see ASK-for-handoff below).
 # Runs AS the dept's Mac user (its launchd gui domain). Usage:
 #   bubble-session-rotate-mac.sh <slug> [--workdir DIR] [--force] [--dry-run]
 set -euo pipefail
 
 HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-12}"   # handoff must be newer than this (#1469: 20->12)
+
+# ── #1195 rollout: ASK-for-handoff (agents with no L4 session_handoff mission) ──
+# Concierge / manager-loop agents (Tonio, Ellie, Claudette) have no L4, so nothing
+# writes HANDOFF.md for them. With --ask-handoff (or ROTATE_ASK_HANDOFF=1) the rotation
+# itself asks the live agent to write it: wait for idle, append ONE honest line to the
+# agent's bubble-inject file (same-host local process, tagged source=bubble-inject),
+# then poll until HANDOFF.md is rewritten. Everything after that is the unchanged gate.
+# Also: the freshness gate now trusts the header stamp "(updated YYYY-MM-DD HH:MM UTC)"
+# over mtime when present (something on M5 touched a 3-day-old handoff's mtime).
+ASK_HANDOFF="${ROTATE_ASK_HANDOFF:-0}"
+ASK_WAIT_S="${ROTATE_ASK_WAIT_S:-600}"     # max wait for idle, and again for the file
+IDLE_S="${ROTATE_IDLE_S:-300}"             # transcript quiet this long = idle
+INJECT_FILE="${ROTATE_INJECT_FILE:-}"
 
 slug="${1:?usage: bubble-session-rotate-mac.sh <slug> [--workdir DIR] [--force] [--dry-run]}"; shift || true
 workdir=""; force=0; dry=0
@@ -38,6 +52,9 @@ while [[ $# -gt 0 ]]; do
     --workdir) workdir="$2"; shift 2 ;;
     --force)   force=1; shift ;;
     --dry-run) dry=1; shift ;;
+    --ask-handoff) ASK_HANDOFF=1; shift ;;
+    --inject-file) INJECT_FILE="$2"; shift 2 ;;
+    --ask-wait) ASK_WAIT_S="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -97,20 +114,69 @@ _alert_skip() {
 [[ -d "$workdir" ]] || { log "FATAL: $slug workdir $workdir missing"; exit 2; }
 [[ -f "$plist" ]]   || { log "FATAL: $slug plist $plist missing"; exit 2; }
 
+
+_mtime() { stat -f %m "$1"; }
+_stamp_epoch() { date -j -u -f '%Y-%m-%d %H:%M' "$1" +%s 2>/dev/null; }
+_newest_jsonl_mtime() { ls -t "$proj"/*.jsonl >/dev/null 2>&1 && stat -f %m "$(ls -t "$proj"/*.jsonl | head -1)" || true; }
+
+# _handoff_age_h FILE — age in whole hours; the OLDER of mtime and the header stamp.
+_handoff_age_h() {
+  local f="$1" now mt st se age_m age_s
+  now="$(date +%s)"; mt="$(_mtime "$f")"; age_m=$(( (now - mt) / 3600 )); age_s=$age_m
+  st="$(grep -o -m1 'updated [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\} UTC' "$f" 2>/dev/null | head -1 | sed 's/^updated //; s/ UTC$//' || true)"
+  if [[ -n "$st" ]] && se="$(_stamp_epoch "$st")" && [[ -n "$se" ]]; then age_s=$(( (now - se) / 3600 )); fi
+  (( age_s > age_m )) && echo "$age_s" || echo "$age_m"
+}
+
+# _newest_jsonl_age_s — seconds since the live transcript last changed (idle probe).
+_newest_jsonl_age_s() {
+  local newest now; now="$(date +%s)"
+  newest="$(_newest_jsonl_mtime)"; [[ -n "$newest" ]] || { echo 999999; return; }
+  echo $(( now - newest ))
+}
+
+# _ask_handoff — idle-wait, inject the request, wait for HANDOFF.md to be rewritten.
+# Returns 0 only if a fresh handoff now exists. Never kills anything.
+_ask_handoff() {
+  local t0 deadline
+  [[ -n "$INJECT_FILE" && -e "$INJECT_FILE" ]] || { log "$slug: ask-handoff: inject file '${INJECT_FILE}' missing"; return 1; }
+  deadline=$(( $(date +%s) + ASK_WAIT_S ))
+  while (( $(_newest_jsonl_age_s) < IDLE_S )); do
+    (( $(date +%s) < deadline )) || { log "$slug: ask-handoff: session busy (transcript changed < ${IDLE_S}s ago) for ${ASK_WAIT_S}s"; return 2; }
+    sleep 15
+  done
+  t0="$(date +%s)"
+  log "$slug: idle — asking the agent for a handoff via ${INJECT_FILE}"
+  printf '%s\n' "[session-rotate, automated maintenance - not a human message] A daily fresh-session rotation runs in a few minutes. Write ./HANDOFF.md NOW in your workdir (overwrite, <= 2 KB): first line '# ${slug} - session handoff (updated $(date -u +%Y-%m-%d) HH:MM UTC)' with the real UTC time, then sections: Current goals, In-flight work (resume these), Recent key decisions (+why), Next steps, Blockers. Write for a successor who has your durable memory but NOT this transcript. Do not message anyone on Telegram; just write the file." >> "$INJECT_FILE"
+  deadline=$(( $(date +%s) + ASK_WAIT_S ))
+  while (( $(date +%s) < deadline )); do
+    if [[ -f "$handoff" ]] && (( $(_mtime "$handoff") >= t0 )) && (( $(_handoff_age_h "$handoff") <= HANDOFF_MAX_AGE_H )); then
+      sleep 20   # let the agent finish its turn so the transcript flush is quiet
+      log "$slug: ask-handoff: HANDOFF.md rewritten"; return 0
+    fi
+    sleep 10
+  done
+  log "$slug: ask-handoff: no fresh HANDOFF.md within ${ASK_WAIT_S}s"; return 1
+}
+
 # FAIL-SAFE handoff gate.
 if (( ! force )); then
-  if [[ ! -f "$handoff" ]]; then
-    log "SKIP $slug: no HANDOFF.md — refusing to rotate into a context-blind session"
-    _alert_skip "no HANDOFF.md at ${handoff} — refusing to rotate into a context-blind session."
+  stale_reason=""
+  if [[ ! -f "$handoff" ]]; then stale_reason="no HANDOFF.md at ${handoff}"
+  else
+    age_h="$(_handoff_age_h "$handoff")"
+    (( age_h > HANDOFF_MAX_AGE_H )) && stale_reason="HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h threshold) at ${handoff}"
+  fi
+  if [[ -n "$stale_reason" && "$ASK_HANDOFF" == "1" ]]; then
+    if (( dry )); then log "DRY-RUN $slug: would ask the agent for a handoff via ${INJECT_FILE:-<unset>} (${stale_reason})"
+    elif _ask_handoff; then stale_reason=""; fi
+  fi
+  if [[ -n "$stale_reason" ]]; then
+    log "SKIP $slug: ${stale_reason} — refusing to rotate into a context-thin session"
+    _alert_skip "${stale_reason} — refusing to rotate into a context-thin session."
     exit 0
   fi
-  age_h=$(( ( $(date +%s) - $(stat -f %m "$handoff") ) / 3600 ))
-  if (( age_h > HANDOFF_MAX_AGE_H )); then
-    log "SKIP $slug: HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h) — refusing to rotate"
-    _alert_skip "HANDOFF.md is ${age_h}h stale (> ${HANDOFF_MAX_AGE_H}h threshold) at ${handoff} — refusing to rotate into a context-thin session."
-    exit 0
-  fi
-  log "$slug: HANDOFF.md present + fresh (${age_h}h) — proceeding"
+  log "$slug: HANDOFF.md present + fresh — proceeding"
 fi
 
 count_jsonl() { ls "$proj"/*.jsonl >/dev/null 2>&1 && ls "$proj"/*.jsonl | wc -l | tr -d ' ' || echo 0; }
