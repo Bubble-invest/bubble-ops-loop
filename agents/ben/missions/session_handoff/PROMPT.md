@@ -45,8 +45,28 @@ day's outputs, open gates/cards). Be specific and honest — write it for a capa
 successor who has your durable memory but NOT your session transcript. If nothing
 is in-flight (a genuinely quiet day), say so; do not invent work.
 
+## Compact WORKING_MEMORY.md (board #1665 - in-dept, no new transport)
+`./WORKING_MEMORY.md` is read at the start of every run; when it grows past the cap
+(default 24 KB, override with `working_memory_cap_bytes` in dept.yaml) it burns tokens
+on every tick. You compact YOUR OWN file here (you own it; it is in your writable
+paths). Archive-only, never delete:
+1. `wc -c WORKING_MEMORY.md`. If already under the cap, skip to the heartbeat note.
+2. Curate first (judgment is yours, the helper has none): in `## Active topics`, tag
+   with `[pin]` every entry that is still a standing rule/directive (keep its
+   citation), an open action, a pending decision, or current state. Anything
+   durable enough to be mission spec: flag it to the operators, as the file header says.
+3. Dry run: `python3 scripts/lib/memory_compact.py WORKING_MEMORY.md --dept-yaml dept.yaml --dry-run`
+   and read `moved_preview`. Pin anything that must stay, re-run until it is right.
+4. Real run (same command without `--dry-run`). It moves non-pinned, older dated
+   entries VERBATIM to `memory/archive/WORKING_MEMORY-YYYY-MM.md` (append-only) and
+   leaves a pointer under `## Archive`. Exit 0 = ok, 2 = refused (file untouched:
+   do not hand-edit around it; report it), 3 = still over cap because pinned entries
+   alone exceed it (un-pin what is no longer live and re-run).
+5. Verify with `wc -c` and put `working_memory: <before> -> <after> bytes (archived N)`
+   in your Layer-4 heartbeat/output marker.
+
 ## Hard rules
-- Write ONLY `./HANDOFF.md` (+ the standard Layer-4 output marker). Touch no other
+- Write ONLY `./HANDOFF.md`, your own `./WORKING_MEMORY.md` + `memory/archive/` (compaction step above) and the standard Layer-4 output marker. Touch no other
   file, no secrets, no git push of structural paths.
 - Overwrite, don't append (it's a snapshot, not a log — keep it small).
 - Never block: if you can't determine the state, write a minimal honest handoff
