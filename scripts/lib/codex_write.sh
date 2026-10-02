@@ -4,7 +4,7 @@
 # Established 2026-09-04 (Joris). Docs: skills/codex-write/SKILL.md + shared-wiki miranda_socials/codex-cli-model-and-usage.md
 #
 # Usage:
-#   scripts/lib/codex_write.sh --brief BRIEF.txt --out OUT.txt [--model gpt-6.1-sol] [--effort high]
+#   scripts/lib/codex_write.sh --brief BRIEF.txt --out OUT.txt [--model gpt-5.6-sol] [--effort high]
 #   (BRIEF.txt = the assembled writing brief: topic + selected pool item + imposed voice-file reading + hard rules)
 #
 # SUCCESS TEST (fixed 2026-09-14, card #1301): the Codex process exit code (rc=0) PLUS a
@@ -46,7 +46,7 @@ set -uo pipefail
 # Explicit flags override environment defaults; empty env values use the defaults.
 # CLAUDE_CONFIG_DIR (else $HOME/.claude) supplies fallback credentials only;
 # the fallback always runs with a fresh, isolated configuration directory.
-MODEL="${CODEX_MODEL:-gpt-6.1-sol}"; EFFORT="${CODEX_REASONING_EFFORT:-high}"; BRIEF=""; OUT=""
+MODEL="${CODEX_MODEL:-gpt-5.6-sol}"; EFFORT="${CODEX_REASONING_EFFORT:-high}"; BRIEF=""; OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --brief|--out|--model|--effort)
@@ -76,7 +76,7 @@ rm -f "$OUT" || {
 }
 if command -v codex >/dev/null 2>&1; then
   # Read-only sandbox: Codex reads voice/brand files, no writes/network.
-  ERR="$(codex exec -m "$MODEL" -c model_reasoning_effort="$EFFORT" -s read-only --skip-git-repo-check \
+  ERR="$(env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_STATE_DIR -u GH_TOKEN -u GITHUB_TOKEN codex exec -m "$MODEL" -c model_reasoning_effort="$EFFORT" -s read-only --skip-git-repo-check \
           -C "$REPO" -o "$OUT" - < "$BRIEF" 2>&1)"
   RC=$?
 else
@@ -123,6 +123,7 @@ fi
 # When Codex is unavailable (e.g. the ChatGPT account is on the free tier so paid
 # models 400 -> CLASS=model; or an auth/runtime gap), draft via Claude Sonnet so
 # writing never halts. This must be BOTH channel-clean AND authed:
+#   * secret-scrubbed: TELEGRAM_*/GH_TOKEN/GITHUB_TOKEN are unset for codex and claude (#1598).
 #   * channel-clean: run in an ISOLATED CLAUDE_CONFIG_DIR with no plugins installed,
 #     so NO telegram poller boots -> can never collide with Morty's bot token (#1406).
 #     --strict-mcp-config also prevents project MCP servers from starting.
@@ -146,7 +147,7 @@ if command -v claude >/dev/null 2>&1; then
     fi
     rm -f "$OUT"   # never mistake a stale/partial Codex $OUT for the Sonnet draft
     # Open the brief before cd so relative paths still refer to the caller's cwd.
-    FBOUT="$( { cd "$REPO" && CLAUDE_CONFIG_DIR="$FBCFG" claude -p \
+    FBOUT="$( { cd "$REPO" && CLAUDE_CONFIG_DIR="$FBCFG" env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_STATE_DIR -u GH_TOKEN -u GITHUB_TOKEN claude -p \
         "Draft text strictly per the following brief. Output ONLY the finished draft text — no preamble, no commentary." \
         --model sonnet --strict-mcp-config --dangerously-skip-permissions; } < "$BRIEF" 2>/dev/null )"
     FBRC=$?

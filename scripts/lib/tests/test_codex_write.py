@@ -22,7 +22,9 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 brief = sys.stdin.read()
-Path(os.environ["CODEX_LOG"]).write_text(json.dumps({"args": args, "brief": brief}))
+SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_STATE_DIR", "GH_TOKEN", "GITHUB_TOKEN")
+Path(os.environ["CODEX_LOG"]).write_text(json.dumps({"args": args, "brief": brief,
+    "leaked": [k for k in SECRETS if k in os.environ]}))
 out = Path(args[args.index("-o") + 1])
 assert not out.exists(), "stale output reached Codex"
 if os.environ.get("CODEX_DRAFT", ""):
@@ -45,6 +47,7 @@ Path(os.environ["CLAUDE_LOG"]).write_text(json.dumps({
     "config": str(cfg), "onboarding": json.loads((cfg / ".claude.json").read_text()),
     "credentials": credentials.read_text() if credentials.exists() else None,
     "token": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+    "leaked": [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_STATE_DIR", "GH_TOKEN", "GITHUB_TOKEN") if k in os.environ],
 }))
 print(os.environ.get("CLAUDE_DRAFT", "Sonnet draft"), end="")
 sys.exit(int(os.environ.get("CLAUDE_RC", "0")))
@@ -61,7 +64,7 @@ def runner(tmp_path):
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
     # Do not append the real PATH: even absent-CLI cases must stay isolated.
-    for name in ("dirname", "rm", "grep", "tail", "mktemp", "cp"):
+    for name in ("dirname", "rm", "grep", "tail", "mktemp", "cp", "env"):
         executable = shutil.which(name)
         assert executable, f"required shell utility {name} missing"
         (mock_bin / name).symlink_to(executable)
@@ -113,7 +116,7 @@ def test_codex_write_success_and_default_model(runner):
     assert runner.out.read_text() == "Codex draft"
     args = runner.log("codex")["args"]
     assert args == [
-        "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high",
+        "exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high",
         "-s", "read-only", "--skip-git-repo-check", "-C", str(REPO_ROOT),
         "-o", str(runner.out), "-",
     ]
@@ -236,7 +239,7 @@ def test_codex_write_relative_paths_from_outside_repo(runner, fallback):
 @pytest.mark.parametrize("flags,env_model,env_effort,model,effort", [
     ([], "custom-model", "medium", "custom-model", "medium"),
     (["--model", "flag-model", "--effort", "low"], "custom-model", "medium", "flag-model", "low"),
-    ([], "", "", "gpt-6.1-sol", "high"),
+    ([], "", "", "gpt-5.6-sol", "high"),
 ])
 def test_codex_write_model_effort_env_and_flag_compatibility(runner, flags, env_model, env_effort, model, effort):
     runner.env.update(CODEX_MODEL=env_model, CODEX_REASONING_EFFORT=env_effort)
@@ -261,3 +264,17 @@ def test_codex_write_usage_errors_keep_exit_two(runner, args):
 def test_codex_write_bash_syntax():
     result = subprocess.run(["/bin/bash", "-n", str(SCRIPT)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_worker_env_scrubs_fleet_secrets(runner):
+    """#1598: inherited bot/GitHub tokens must never reach codex or the Sonnet fallback."""
+    runner.env.update(
+        TELEGRAM_BOT_TOKEN="synthetic-bot", TELEGRAM_STATE_DIR="/nonexistent/state",
+        GH_TOKEN="synthetic-gh", GITHUB_TOKEN="synthetic-gh2",
+        CODEX_RC="1", CODEX_CONSOLE="unsupported model", CODEX_DRAFT="partial draft",
+        CLAUDE_CODE_OAUTH_TOKEN="synthetic-token",
+    )
+    result = runner.run()
+    assert result.returncode == 0, result.stderr
+    assert runner.log("codex")["leaked"] == []
+    assert runner.log("claude")["leaked"] == []
