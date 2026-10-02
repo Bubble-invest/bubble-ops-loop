@@ -173,6 +173,7 @@ def due_mission_plan(
     now_utc: _dt.datetime,
     skipped: Optional[List[dict]] = None,
     stale: Optional[List[dict]] = None,
+    explanations: Optional[List[dict]] = None,
 ) -> Optional[List[dict]]:
     """Validate and return the scoped missions due in the current period.
 
@@ -193,6 +194,10 @@ def due_mission_plan(
     appended as ``{"id", "status"}`` so the caller can emit one visible notice —
     "we have scheduled work that isn't live yet" must stay loud, and a live
     mission with a mistyped/missing status surfaces here rather than vanishing.
+
+    ``explanations`` optionally collects one {id, due, reason} decision per
+    scoped mission, including completion and lease exclusions. It changes no
+    selection or state and is used by the CLI's JSON plan diagnostics.
 
     Stale-claim detector (#1316): a LIVE mission's own unexpired pending lease
     that has been held for more than ``_STALE_CLAIM_FRACTION`` of its own
@@ -253,6 +258,8 @@ def due_mission_plan(
         if status != _MISSION_LIVE_STATUS:
             if skipped is not None:
                 skipped.append({"id": mission_id, "status": status})
+            if explanations is not None:
+                explanations.append({"id": mission_id, "due": False, "reason": "not_live"})
             continue
         cadence = mission.get("cadence")
         if cadence not in _DUE_CADENCES:
@@ -295,6 +302,8 @@ def due_mission_plan(
         if last_period is not None and not isinstance(last_period, str):
             raise DueMissionConfigError(f"{mission_id}: last_success_period must be a string")
         if cadence != "continuous" and last_period == period:
+            if explanations is not None:
+                explanations.append({"id": mission_id, "due": False, "reason": "already_completed_this_period"})
             continue
         if cadence != "continuous":
             pending = prior.get("pending")
@@ -308,6 +317,8 @@ def due_mission_plan(
                         or not isinstance(expires_at, int):
                     raise DueMissionConfigError(f"{mission_id}: pending lease has an invalid shape")
                 if pending_period == period and expires_at > int(now_utc.timestamp()):
+                    if explanations is not None:
+                        explanations.append({"id": mission_id, "due": False, "reason": "pending_lease"})
                     if stale is not None:
                         fraction = _claim_age_fraction(pending, now_utc)
                         if fraction is not None and fraction >= _STALE_CLAIM_FRACTION:
@@ -319,6 +330,8 @@ def due_mission_plan(
                                 "age_fraction": round(fraction, 3),
                             })
                     continue
+        if explanations is not None:
+            explanations.append({"id": mission_id, "due": True, "reason": "due"})
         result.append(
             {
                 "id": mission_id,
