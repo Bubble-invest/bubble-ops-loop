@@ -35,14 +35,17 @@ def _remote_main(repo):
 def _advance_remote(tmp_path, name="other.txt"):
     """Land a commit on the remote's main from a second clone."""
     other = tmp_path / f"other-{name}"
-    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(other)], check=True)
+    # -b main: the bare remote's HEAD follows the runner's init.defaultBranch
+    # (master on CI), so a plain clone lands on an unborn branch and
+    # `push origin main` fails with "src refspec main does not match any".
+    subprocess.run(["git", "clone", "-q", "-b", "main", str(tmp_path / "remote.git"), str(other)], check=True)
     _git(other, "config", "user.email", "o@example.com")
     _git(other, "config", "user.name", "o")
     (other / "outputs").mkdir(exist_ok=True)
     (other / "outputs" / name).write_text("merged PR\n")
     _git(other, "add", "-A")
     _git(other, "commit", "-m", "merged PR on remote")
-    _git(other, "push", "origin", "main")
+    _git(other, "push", "origin", "HEAD:refs/heads/main")
     return _git(other, "rev-parse", "HEAD").stdout.strip()
 
 
