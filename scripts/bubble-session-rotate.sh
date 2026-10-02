@@ -175,8 +175,12 @@ if (( ! force )); then
     elif _ask_handoff; then stale_reason=""; fi
   fi
   if [[ -n "$stale_reason" ]]; then
-    log "SKIP $slug: ${stale_reason} — refusing to rotate into a context-thin session"
-    _alert_skip "${stale_reason} — refusing to rotate into a context-thin session."
+    if (( dry )); then
+      log "DRY-RUN $slug: would skip rotation and alert: ${stale_reason} — refusing to rotate into a context-thin session"
+    else
+      log "SKIP $slug: ${stale_reason} — refusing to rotate into a context-thin session"
+      _alert_skip "${stale_reason} — refusing to rotate into a context-thin session."
+    fi
     exit 0
   fi
   log "$slug: HANDOFF.md present + fresh — proceeding"
