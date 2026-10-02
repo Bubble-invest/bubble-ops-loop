@@ -33,24 +33,23 @@ Two private stores are watched fleet-wide, each against its LIVE file:
 
 DELIVERY (the hard part — same-machine constraint)
 --------------------------------------------------
-A nudge must land in the AGENT'S SESSION, not in a human's chat. A Telegram bot
-`sendMessage` reaches the human, NOT the agent (Telegram protocol — see the
-`telegram-message-A2A` skill). The only path that reaches a running --channels
-session is **bubble-inject**: write the agent's inject file on the machine it
-runs on. So we route per agent:
-  - VPS depts (tony/ben/maya/accountant)  -> write inject on the VPS.
-  - Mac-resident agents (rnd/claudette/security/content) -> per-Mac outbox that
-    the Mac's own sync run drains and injects locally (trust arrow = laptop->cloud).
-An agent with no live inject target (no running session) is skipped with a note;
-its clutter will be caught on a later run once it's up.
+A nudge must land in the AGENT'S SESSION, not in a human's chat. The configured
+shared-user injects for isolated Ben/Maya/Tony may still be writable by the
+pruning UID, but no live isolated session consumes them; those exact routes
+now fail closed as UNDELIVERED. The active /home/agent-* injects are not
+writable across UIDs. Other local inject and Mac outbox writes remain only
+append/queue attempts: neither consumer publishes a session-side receipt.
+Receipt-backed cooldowns require a separately approved target-UID/consumer
+acknowledgement design and are outside this diagnostic fix.
 
 This runs on the VPS inside the weekly cloud-wiki-compile@pruning cron.
 
-Idempotency + closed loop: a per-(agent,kind) stamp suppresses re-nudging within
-`NUDGE_COOLDOWN_DAYS`, and records the size at nudge time. On a later eligible
-run, if the file is STILL cluttered and has NOT shrunk since the last nudge, the
-new nudge is ESCALATED ("nudged Nd ago, hasn't shrunk") — the feedback signal the
-job previously lacked.
+Legacy attempt state: for routes other than the three exact obsolete tuples, a
+per-(agent,kind) stamp still suppresses re-nudging for `NUDGE_COOLDOWN_DAYS`.
+It records size at append/queue time and can trigger a later no-shrink escalation,
+but does NOT prove session receipt or memory grooming. Obsolete-route stamps are
+ignored and left untouched; replacing legacy attempt stamps with receipt-backed
+delivery state is a separate change.
 """
 from __future__ import annotations
 
@@ -150,6 +149,25 @@ ROUTING = {
     "claudette":       ("joris-mac", "telegram-claudette"),
     "security":        ("joris-mac", "telegram-security"),
 }
+
+# Post-UID-isolation, these exact shared-user paths are not the live isolated
+# agents' injects. Match the complete configured route, not merely the agent,
+# so a future approved route replacement is not accidentally blocked.
+OBSOLETE_SHARED_USER_INJECTS = {
+    "ben": "/home/claude/.claude/channels/telegram-ben/inject",
+    "maya": "/home/claude/.claude/channels/telegram-maya/inject",
+    "main-strategist": "/home/claude/.claude/channels/telegram-tony/inject",
+}
+
+
+def _delivery_blocker(agent: str) -> str:
+    target = OBSOLETE_SHARED_USER_INJECTS.get(agent)
+    if target and ROUTING.get(agent) == ("local", target):
+        return (
+            "obsolete shared-user inject route (UID-isolated live agent is not "
+            "reachable from the pruning user; no session receipt)"
+        )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +313,10 @@ def deliver(agent: str, msg: str, dry_run: bool) -> tuple[bool, str]:
     if not route:
         return False, "no routing entry (unknown live session)"
     host, target = route
+    if not dry_run:
+        blocker = _delivery_blocker(agent)
+        if blocker:
+            return False, f"UNDELIVERED: {blocker}"
     one_line = msg.replace("\n", " ⏎ ")  # one inbound turn = one line
 
     if dry_run:
@@ -302,11 +324,11 @@ def deliver(agent: str, msg: str, dry_run: bool) -> tuple[bool, str]:
         return True, f"DRY-RUN -> {where}"
 
     if host == "local":
-        # VPS-native dept: inject straight into its live session.
+        # File append only: the consumer provides no session-side receipt.
         try:
             with open(target, "a", encoding="utf-8") as fh:
                 fh.write(one_line + "\n")
-            return True, f"injected (local {target})"
+            return True, f"appended to local inject {target}; session receipt unavailable"
         except Exception as e:
             return False, f"local inject failed: {e}"
 
@@ -319,7 +341,7 @@ def deliver(agent: str, msg: str, dry_run: bool) -> tuple[bool, str]:
         outbox.mkdir(parents=True, exist_ok=True)
         fn = outbox / f"{agent}-{int(time.time())}.json"
         fn.write_text(json.dumps({"channel": target, "line": one_line}), encoding="utf-8")
-        return True, f"queued in {mac} outbox ({target}); Mac sync will inject"
+        return True, f"queued in {mac} outbox ({target}); session receipt unavailable"
     except Exception as e:
         return False, f"outbox write failed: {e}"
 
@@ -410,6 +432,17 @@ def _run_pass(kind: str, files: dict[str, Path], analyze, build_nudge,
         info = analyze(path)
         if not info["cluttered"]:
             report.append(f"  {agent:16} ok ({info['size']//1024}KB)")
+            continue
+        # These three exact obsolete tuples outrank legacy cooldown/escalation
+        # state. This does not validate other routes or their receipt state.
+        # Otherwise an old stamp could hide a known dead route or invent an
+        # escalation for a nudge that never reached the isolated agent.
+        blocker = "" if dry_run else _delivery_blocker(agent)
+        if blocker:
+            report.append(
+                f"  {agent:16} CLUTTERED ({info['size']//1024}KB) -> "
+                f"UNDELIVERED: {blocker}"
+            )
             continue
         stamp_key = agent if kind == "index" else f"{agent}.working"
         if recently_nudged(stamp_key) and not dry_run:
