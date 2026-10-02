@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from src import guard as guard_module
 from src.guard import Guard, resolve_broker_binary
 from src.policy_loader import load_policy
@@ -46,10 +48,57 @@ def test_agent_user_shim_beats_a_broker_on_path(monkeypatch, tmp_path):
     assert resolve_broker_binary() == shim
 
 
-def test_explicit_broker_still_wins_for_agent(monkeypatch, tmp_path):
+@pytest.mark.parametrize("broker", [
+    guard_module.DEFAULT_BROKER_ABS_PATH,
+    guard_module.DEFAULT_BROKER_NAME,
+    "/tmp/other/bin/bubble-token-broker",
+])
+def test_agent_explicit_in_process_broker_uses_shim(
+    monkeypatch, tmp_path, capsys, broker
+):
+    shim = _shim(monkeypatch, tmp_path)
+    _as_user(monkeypatch, "agent-tony")
+    assert resolve_broker_binary(broker) == shim
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"NOTE: --broker {broker} ignored for agent user; "
+        "minting via the sudo shim (#1619)\n"
+    )
+
+
+def test_agent_explicit_shim_stays_verbatim(monkeypatch, tmp_path, capsys):
+    shim = _shim(monkeypatch, tmp_path)
+    _as_user(monkeypatch, "agent-tony")
+    assert resolve_broker_binary(shim) == shim
+    assert capsys.readouterr().err == ""
+
+
+def test_agent_explicit_other_stub_stays_verbatim(monkeypatch, tmp_path, capsys):
     _shim(monkeypatch, tmp_path)
     _as_user(monkeypatch, "agent-maya")
-    assert resolve_broker_binary("/x/explicit") == "/x/explicit"
+    assert resolve_broker_binary("/tmp/x/fake-broker") == "/tmp/x/fake-broker"
+    assert capsys.readouterr().err == ""
+
+
+def test_non_agent_explicit_default_broker_stays_verbatim(
+    monkeypatch, tmp_path, capsys
+):
+    _shim(monkeypatch, tmp_path)
+    _as_user(monkeypatch, "claude")
+    broker = guard_module.DEFAULT_BROKER_ABS_PATH
+    assert resolve_broker_binary(broker) == broker
+    assert capsys.readouterr().err == ""
+
+
+def test_agent_explicit_default_broker_without_shim_stays_verbatim(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(guard_module, "DEFAULT_AGENT_MINT_SHIM", str(tmp_path / "missing"))
+    _as_user(monkeypatch, "agent-tony")
+    broker = guard_module.DEFAULT_BROKER_ABS_PATH
+    assert resolve_broker_binary(broker) == broker
+    assert capsys.readouterr().err == ""
 
 
 def test_non_agent_users_keep_the_old_resolution(monkeypatch, tmp_path):

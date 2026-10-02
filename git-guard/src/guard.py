@@ -42,6 +42,7 @@ import pwd
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -126,8 +127,10 @@ def resolve_broker_binary(broker: Optional[str] = None) -> str:
     being correct.
 
     Resolution order:
-      1. An EXPLICIT `broker` (e.g. `--broker /some/path`) is never
-         second-guessed — used verbatim.
+      1. An EXPLICIT `broker` (e.g. `--broker /some/path`) is used verbatim,
+         except when its basename is DEFAULT_BROKER_NAME and an agent user's
+         sudo mint shim is installed: use the shim and emit a stderr note
+         (#1692 / #1619 step 2).
       1b. (#1619 step 2) Running as an `agent-<slug>` OS user with the sudo
          mint shim installed: the SHIM, never the in-process broker with an
          agent-readable App key.
@@ -143,9 +146,16 @@ def resolve_broker_binary(broker: Optional[str] = None) -> str:
          FileNotFoundError/PermissionError handling takes it from there with
          a legible error instead of a bare traceback.
     """
-    if broker:
-        return broker
     shim = _agent_mint_shim()
+    if broker:
+        if shim and os.path.basename(broker) == DEFAULT_BROKER_NAME:
+            print(
+                f"NOTE: --broker {broker} ignored for agent user; "
+                "minting via the sudo shim (#1619)",
+                file=sys.stderr,
+            )
+            return shim
+        return broker
     if shim:
         return shim
     found = shutil.which(DEFAULT_BROKER_NAME)
