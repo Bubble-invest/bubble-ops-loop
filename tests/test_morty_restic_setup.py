@@ -69,6 +69,11 @@ def test_backup_service_has_required_backup_paths():
         "/home/claude/.claude/agent-memory",
         "/home/claude/.claude/projects",
         "/home/claude/agents",
+        # #1685: live dept clones + isolated-agent transcripts since #1120
+        "/srv/agents",
+        "/home/agent-ben/.claude/projects",
+        "/home/agent-maya/.claude/projects",
+        "/home/agent-tony/.claude/projects",
     ]
     for p in required_paths:
         assert p in body, f"backup service missing required path: {p}"
@@ -83,6 +88,8 @@ def test_backup_service_has_required_excludes():
         "*.pyc",
         "__pycache__",
         ".git/objects",
+        ".venv",
+        "node_modules",
     ]
     for ex in required_excludes:
         assert ex in body, f"backup service missing required exclude: {ex}"

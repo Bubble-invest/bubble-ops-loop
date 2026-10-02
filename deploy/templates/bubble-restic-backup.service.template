@@ -26,7 +26,9 @@ Environment=RESTIC_CACHE_DIR=/var/cache/restic
 #   /srv/bubble-secrets                   -- github-app-bubble-ops-bot.private-key.sops.pem
 #   /home/claude/.claude/agent-memory     -- mémoire persistante des agents
 #   /home/claude/.claude/projects         -- transcripts JSONL des sessions
-#   /home/claude/agents                   -- working clones par dept (état runtime du jour)
+#   /home/claude/agents                   -- working clones par dept (pré-#1120, conservé)
+#   /srv/agents                           -- clones LIVE des depts depuis l'isolation UID #1120 (#1685)
+#   /home/agent-*/.claude/projects        -- transcripts des agents isolés (#1685)
 #
 # Exclusions (déjà ailleurs ou inutiles) :
 #   .cache/        -- cache, régénérable
@@ -40,6 +42,9 @@ ExecStart=/usr/bin/restic backup \
     --exclude='*.pyc' \
     --exclude='__pycache__' \
     --exclude='.git/objects' \
+    --exclude='.venv' \
+    --exclude='venv' \
+    --exclude='node_modules' \
     --exclude-caches \
     --one-file-system \
     /etc/age \
@@ -47,7 +52,13 @@ ExecStart=/usr/bin/restic backup \
     /srv/bubble-secrets \
     /home/claude/.claude/agent-memory \
     /home/claude/.claude/projects \
-    /home/claude/agents
+    /home/claude/agents \
+    /srv/agents \
+    /home/agent-ben/.claude/projects \
+    /home/agent-claudette/.claude/projects \
+    /home/agent-maya/.claude/projects \
+    /home/agent-morty/.claude/projects \
+    /home/agent-tony/.claude/projects
 
 # Limite la pression mémoire/CPU pendant les heures de prod.
 Nice=10
