@@ -177,4 +177,4 @@ def test_cas_abort_when_wm_changes_mid_run_then_retry_no_dupes(tmp_path, monkeyp
     # appended at EOF (under ## Archive) -> moved verbatim to the archive, never lost
     assert "concurrent append" in wm.read_text(encoding="utf-8") + archive_text(tmp_path)
     assert archive_text(tmp_path).count("## Compacted") <= 2
-    assert archive_text(tmp_path).count("old 0 ") == 1             # no duplicated entry
+    assert archive_text(tmp_path).count("**old 0**") == 1             # no duplicated entry
