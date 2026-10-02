@@ -24,12 +24,43 @@
 # SECURITY MODEL (this script is sudo-able by `claude` — treat every arg hostile)
 # -----------------------------------------------------------------------------
 #  * It is NOT a general token-minting oracle. It accepts ONLY:
-#       mint --dept <slug> --action settings_pr --repo <repo> [--paths ...]
-#    Any other subcommand, any --action other than settings_pr, an unknown
-#    --dept, or an unknown flag => HARD REFUSE (exit 2). settings_pr only ever
-#    mints a token scoped to the dept's OWN repo (policy.enforce same_own), and
-#    the git-guard re-checks the policy locally before this is even reached;
-#    this wrapper is the third gate.
+#       mint --dept <slug> --action settings_pr|runtime_write_own
+#            --repo <repo> [--paths ...]
+#    Any other subcommand, any --action outside that pair, an unknown
+#    --dept, or an unknown flag => HARD REFUSE (exit 2). Both actions only ever
+#    mint a token scoped to the dept's OWN repo, and the git-guard re-checks the
+#    policy locally before this is even reached; this wrapper is the third gate.
+#  * runtime_write_own (#1619 step 1; see the Chesterton note below) is the
+#    broker-served replacement for the direct contents:write the credential
+#    helper mints. It is stricter than settings_pr because it is the
+#    direct-commit path:
+#       - the dept is DERIVED from the calling uid (SUDO_USER=agent-<slug>,
+#         set by sudo itself) and must equal --dept; never trusted from argv;
+#         a non-agent caller (claude/Rick) or a non-root EUID (not run via
+#         sudo, so SUDO_USER is attacker-controlled) is REFUSED;
+#       - >=1 --paths is mandatory and the broker is forced to run
+#         policy.enforce against THIS wrapper's root-owned
+#         <POLICY_DIR>/<dept>-policy.yaml (path allow-list, structural paths
+#         denied, '..' rejected); BUBBLE_TOKEN_BROKER_POLICY from the caller is
+#         ignored/unset;
+#       - the minted permission set is the broker's runtime_write_own class
+#         (contents:write + metadata:read) on that single repo.
+#    runtime_read (contents:read + metadata:read, own repo, same gates minus
+#    --paths) is accepted only because the git-guard mints its pre-push base-fetch
+#    token with it; without it a private-repo fetch behind this wrapper fails.
+#
+# CHESTERTON NOTE (why this was settings_pr-only until now)
+# ---------------------------------------------------------
+# 2ab2bd4 (WS5, 2026-06-02) built this wrapper ONLY for the sandboxed
+# settings-PR path, which has no dept-unit env to mint with. The comment then was
+# "runtime pushes go via the cred-helper / dept-unit env path; they must NEVER
+# come through here": least privilege at the time - runtime pushes already had a
+# working chokepoint (bubble-gh-credential-helper.sh), so a second sudo-able
+# write-mint path was pure added surface. That reason is what #1619 inverts: the
+# helper mints repo-wide contents:write with only a best-effort delta check, so
+# the plan is to make it read-only for agent-* and serve runtime pushes from the
+# broker, which enforces the path policy in code. Step 1 (this change) adds the
+# broker path with NO reduction of the helper; step 2 removes the helper's write.
 #  * The non-secret constants (APP_ID + per-dept INSTALLATION_ID) are baked in
 #    here, same as the cred-helper hardcodes APP_ID=3782718 / the INST_ID switch.
 #  * Secret hygiene mirrors bubble-gh-credential-helper.sh EXACTLY:
@@ -119,9 +150,39 @@ done
 [[ -n "$ACTION" ]] || die "--action is required."
 [[ -n "$REPO" ]]   || die "--repo is required."
 
-# Hard pin: this sudo-able wrapper mints ONLY settings_pr. (runtime pushes go via
-# the cred-helper / dept-unit env path; they must NEVER come through here.)
-[[ "$ACTION" == "settings_pr" ]] || die "--action must be 'settings_pr' (got '$ACTION'); this wrapper is settings_pr-only."
+# Hard pin: this sudo-able wrapper mints ONLY settings_pr, runtime_write_own and
+# (#1619) runtime_read. runtime_read is the git-guard's pre-push base-fetch token
+# for runtime_write_own (guard.py mint_read_token): it is the same own-dept gate,
+# contents:read only. open_priority_pr stays refused.
+[[ "$ACTION" == "settings_pr" || "$ACTION" == "runtime_write_own" || "$ACTION" == "runtime_read" ]] \
+  || die "--action must be 'settings_pr', 'runtime_write_own' or 'runtime_read' (got '$ACTION')."
+
+# Caller identity comes from sudo, never from argv. An agent-<slug> caller may
+# only act for ITS OWN dept (applies to both actions: closes cross-dept mints).
+CALLER_DEPT=""
+if [[ "${SUDO_USER:-}" =~ ^agent-([a-z0-9][a-z0-9_-]*)$ ]]; then
+  CALLER_DEPT="${BASH_REMATCH[1]}"
+  [[ "$DEPT" == "$CALLER_DEPT" ]] \
+    || die "caller '${SUDO_USER}' may only mint for its own dept '${CALLER_DEPT}' (got --dept '$DEPT')."
+fi
+if [[ "$ACTION" == "runtime_write_own" || "$ACTION" == "runtime_read" ]]; then
+  # SUDO_USER is only trustworthy when sudo set it, i.e. we are root.
+  # (BUBBLE_MINT_TEST_NONROOT=1 exists for the unit tests only; a non-root run
+  # cannot decrypt the age key anyway, so it grants nothing.)
+  if [[ "$(id -u)" != "0" && "${BUBBLE_MINT_TEST_NONROOT:-0}" != "1" ]]; then
+    die "$ACTION must be invoked through sudo (EUID != 0)."
+  fi
+  [[ -n "$CALLER_DEPT" ]] || die "$ACTION requires an agent-<slug> caller (SUDO_USER='${SUDO_USER:-}')."
+  if [[ "$ACTION" == "runtime_write_own" ]]; then
+    [[ ${#PATHS[@]} -ge 1 ]] || die "runtime_write_own requires --paths (policy path allow-list)."
+  fi
+  POLICY_DIR="${POLICY_DIR:-/opt/bubble-token-broker/deploy/policies}"
+  POLICY_FILE="${POLICY_DIR}/${DEPT}-policy.yaml"
+  [[ -f "$POLICY_FILE" ]] || die "no policy file for dept '${DEPT}' (${POLICY_FILE})."
+  # Force the broker to enforce THIS root-owned policy; drop any caller override.
+  unset BUBBLE_TOKEN_BROKER_POLICY
+  PASS_ARGS+=(--policy "$POLICY_FILE")
+fi
 
 # Dept must be a known slug with a baked-in installation id.
 [[ "$DEPT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "dept slug '$DEPT' has illegal characters."
