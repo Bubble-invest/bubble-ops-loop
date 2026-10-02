@@ -594,7 +594,7 @@ def build_thesis_data(slug: str) -> dict:
     # current portfolio_overview (nav, return, date, sharpe, brokers…), so prefer
     # it for the header; fall back to the DB overview only when the pushed one
     # lacks a real (> 0) NAV, and NEVER let a zero/missing DB NAV override a good
-    # pushed one. (Loaded once here + reused for the macro fallback below.)
+    # pushed one. (Loaded once here + reused for sectors and macro below.)
     db_path = root / "db" / "fund.sqlite"
     po_db = _build_portfolio_overview(db_path, root)
     pushed = _load_latest_graph_data(root)
@@ -616,6 +616,14 @@ def build_thesis_data(slug: str) -> dict:
             base["nav"] = po["nav"]
         if po.get("since_rebase_pct") is not None:
             base["since_rebase_pct"] = po["since_rebase_pct"]
+
+    # #1329: live sector weights use the same unpushed/stale DB as the header.
+    # Prefer the pushed portfolio/benchmark comparison, retaining live data
+    # when the artifact lacks a populated list/mapping.
+    for key, kind in (("sectors", list), ("acwi_sector_weights", dict)):
+        value = pushed.get(key)
+        if isinstance(value, kind) and value:
+            base[key] = value
 
     # Macro/global_macro: fall back to latest on-disk graph-data (reuse the
     # `pushed` copy already loaded above for the #1207 header source).
