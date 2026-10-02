@@ -1,5 +1,7 @@
 # Python
 venv/
+.venv/
+.v/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -27,9 +29,10 @@ __pycache__/
 
 # Local lock/state
 *.lock
+# Versioned dependency constraints are source, not runtime state.
+!requirements/*.lock
 # loop-backup runtime event log (cockpit reads it; per-box, not versioned)
 state/
-.venv/
 
 # cockpit_health local/dev evidence + shadow log (VPS deploy uses
 # /var/lib/cockpit-health/ instead, per deploy/cockpit-health/README.md —

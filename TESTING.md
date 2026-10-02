@@ -1,10 +1,31 @@
 # Testing
 
-Create a Python 3.12 virtual environment and install the test dependencies:
+Create a Python 3.12 virtual environment and install the exact, hashed test
+closure. Invoke pip through the environment's interpreter so a copied or stale
+`pip` shebang cannot select another venv:
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/pip install -r scripts/requirements.txt -r console/requirements.txt pytest
+.venv/bin/python -m pip install \
+  --require-hashes \
+  -r requirements/test-py312.lock
+.venv/bin/python -m pip check
+```
+
+`--require-hashes` is the integrity check: an unpinned dependency or artifact
+whose digest is absent from the lock fails before tests run. The lock is
+generated from `requirements/test-py312.in`, which includes the source
+requirements plus pytest. Refresh it only from a fresh isolated Python 3.12
+environment with `pip-tools==7.6.1`, then repeat the hashed install, `pip
+check`, and full non-live suite before committing it:
+
+```bash
+python3.12 -m piptools compile \
+  --generate-hashes \
+  --resolver=backtracking \
+  --strip-extras \
+  --output-file requirements/test-py312.lock \
+  requirements/test-py312.in
 ```
 
 The default suite is hermetic. It excludes tests marked `live`, so a clean
