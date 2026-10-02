@@ -153,6 +153,7 @@ def _atomic_write(path: Path, data: str, mode: int | None = None) -> None:
 def compact(wm: Path, cap: int, today: dt.date, dry_run: bool = False,
             archive_dir: Path | None = None) -> tuple[int, dict]:
     try:
+        st0 = wm.stat()
         raw = wm.read_bytes()
         text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as e:
@@ -201,7 +202,14 @@ def compact(wm: Path, cap: int, today: dt.date, dry_run: bool = False,
             _atomic_write(afile, (existing + ("\n" if existing else "") + add))
         if body not in afile.read_text(encoding="utf-8"):
             return 2, {"status": "refused", "reason": "archive verification failed; WORKING_MEMORY untouched"}
-        _atomic_write(wm, new, mode=wm.stat().st_mode & 0o7777)
+        # compare-and-swap: abort if anything touched WORKING_MEMORY.md since we read it.
+        # (The archive append is idempotent via its sha marker, so a retry adds no dupes.)
+        st1 = wm.stat()
+        if (st1.st_size, st1.st_mtime_ns) != (st0.st_size, st0.st_mtime_ns) \
+                or wm.read_bytes() != raw:
+            return 2, {"status": "refused",
+                       "reason": "WORKING_MEMORY.md changed during compaction; untouched, retry"}
+        _atomic_write(wm, new, mode=st1.st_mode & 0o7777)
     except OSError as e:
         return 2, {"status": "refused", "reason": "io error: %s" % e}
     res["after"] = wm.stat().st_size

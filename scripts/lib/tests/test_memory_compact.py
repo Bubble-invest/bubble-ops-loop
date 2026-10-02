@@ -155,3 +155,26 @@ def test_cli_cap_from_dept_yaml(tmp_path, capsys):
     rc = mc.main([str(wm), "--dept-yaml", str(y), "--today", "2026-10-02"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["cap"] == 5000 and out["after"] <= 5000
+
+
+def test_cas_abort_when_wm_changes_mid_run_then_retry_no_dupes(tmp_path, monkeypatch):
+    wm = tmp_path / "WORKING_MEMORY.md"
+    orig = make()
+    wm.write_text(orig, encoding="utf-8")
+    real = mc._atomic_write
+
+    def racing(path, data, mode=None):
+        real(path, data, mode)
+        if path.name != "WORKING_MEMORY.md":      # after the archive write, someone appends
+            with open(wm, "a", encoding="utf-8") as f:
+                f.write("- [2026-10-02] concurrent append\n")
+    monkeypatch.setattr(mc, "_atomic_write", racing)
+    rc, res = mc.compact(wm, 4000, TODAY)
+    assert rc == 2 and "changed during" in res["reason"]
+    assert wm.read_text(encoding="utf-8") == orig + "- [2026-10-02] concurrent append\n"
+    monkeypatch.setattr(mc, "_atomic_write", real)
+    mc.compact(wm, 4000, TODAY)
+    # appended at EOF (under ## Archive) -> moved verbatim to the archive, never lost
+    assert "concurrent append" in wm.read_text(encoding="utf-8") + archive_text(tmp_path)
+    assert archive_text(tmp_path).count("## Compacted") <= 2
+    assert archive_text(tmp_path).count("old 0 ") == 1             # no duplicated entry
