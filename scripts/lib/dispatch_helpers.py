@@ -3933,6 +3933,35 @@ def select_due_missions(
     return _due_missions_for_layer(ctx, missions, catchup_layer, now_utc=now_utc)
 
 
+def build_dispatch_plan(
+    ctx: "dict[str, Any]",
+    missions: "list[dict]",
+) -> "dict[str, Any]":
+    """Return one read-only, mission-centric plan for a dispatch tick.
+
+    ``select_due_missions`` is authoritative for executable work.  The derived
+    ``phase`` therefore follows the selected missions, or is ``heartbeat`` when
+    none are due.  ``legacy_phase`` preserves ``decide_dispatch``'s historical
+    phase signal so consumers can migrate without an atomic fleet cutover.
+    ``ad_hoc_l3_defer_phase`` is the explicit terminal-commit input for
+    ``maybe_defer_ad_hoc_l3``; callers must not pass mission-centric ``phase``
+    there because an L3 structural defer can coincide with L2 fallthrough work.
+    """
+    selected = select_due_missions(ctx, missions)
+    phase = "heartbeat"
+    if selected:
+        layer = int(selected[0].get("layer", 0))
+        if layer in _LAYER_PRIORITY:
+            phase = f"layer_{layer}"
+    legacy_phase = decide_dispatch(ctx)
+    return {
+        "phase": phase,
+        "missions": selected,
+        "legacy_phase": legacy_phase,
+        "ad_hoc_l3_defer_phase": legacy_phase,
+    }
+
+
 def select_due_missions_for_forced_layer(
     repo_dir: "Path | str",
     layer: int,
