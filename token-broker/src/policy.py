@@ -135,6 +135,30 @@ KNOWN_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+def _malformed_path_reason(path: object) -> str | None:
+    """Return a reason if `path` is not a clean repo-relative path, else None.
+
+    #1686: _glob_match is a plain prefix match, so `outputs/../MANDATE.md`
+    passed `outputs/**`. Reject anything that is not already in canonical
+    form (no `.`/`..`/empty segments, no leading `/`, no backslash, no NUL)
+    before any glob matching or structural classification.
+    """
+    if not isinstance(path, str) or not path:
+        return "empty or non-string path"
+    if "\x00" in path:
+        return "NUL byte in path"
+    if "\\" in path:
+        return "backslash in path"
+    if path.startswith("/"):
+        return "absolute path"
+    for seg in path.split("/"):
+        if seg == "":
+            return "empty path segment"
+        if seg in (".", ".."):
+            return f"{seg!r} path segment"
+    return None
+
+
 def _glob_match(path: str, pattern: str) -> bool:
     """Match a path against a glob pattern with `**` semantics.
 
@@ -288,6 +312,12 @@ class Policy:
 
         if action not in KNOWN_ACTIONS:
             return False, [f"unknown action class: {action!r}"]
+
+        # #1686: reject non-canonical paths before any glob matching.
+        for p in paths:
+            bad = _malformed_path_reason(p)
+            if bad:
+                return False, [f"path {p!r} rejected: {bad}"]
 
         if actor != self.actor:
             reasons.append(
