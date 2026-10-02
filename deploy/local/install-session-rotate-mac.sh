@@ -4,18 +4,23 @@
 # bubble-session-rotate-mac.sh at 07:30 local, and (with --activate) loads it.
 # Idempotent. Mac twin of scripts/install-session-rotate.sh (VPS).
 #
-# Usage: install-session-rotate-mac.sh <slug> [--workdir DIR] [--hour H] [--minute M] [--activate]
+# Usage: install-session-rotate-mac.sh <slug> [--workdir DIR] [--hour H] [--minute M]
+#          [--ask-handoff [--inject-file F]] [--activate]
+# --ask-handoff: for agents with no L4 session_handoff mission (Tonio/Ellie): the rotation
+# asks the live agent to write HANDOFF.md first (see bubble-session-rotate-mac.sh).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 ROTATE_SRC="${here}/bubble-session-rotate-mac.sh"
 
 slug="${1:?usage: install-session-rotate-mac.sh <slug> [--workdir DIR] [--hour H] [--minute M] [--activate]}"; shift || true
-workdir=""; hour=7; minute=30; activate=0
+workdir=""; hour=7; minute=30; activate=0; ask=0; injectf=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workdir) workdir="$2"; shift 2 ;;
     --hour)    hour="$2"; shift 2 ;;
     --minute)  minute="$2"; shift 2 ;;
+    --ask-handoff) ask=1; shift ;;
+    --inject-file) injectf="$2"; shift 2 ;;
     --activate) activate=1; shift ;;
     *) shift ;;
   esac
@@ -29,6 +34,14 @@ mkdir -p "$SUPPORT"
 install -m 0755 "$ROTATE_SRC" "$SUPPORT/bubble-session-rotate-mac.sh"
 ROTATE="$SUPPORT/bubble-session-rotate-mac.sh"
 
+EXTRA_ARGS=""
+if (( ask )); then
+  [[ -n "$injectf" ]] || injectf="$HOME/.claude/channels/telegram${slug:+-$slug}/inject"
+  EXTRA_ARGS="        <string>--ask-handoff</string>
+        <string>--inject-file</string>
+        <string>${injectf}</string>
+"
+fi
 label="com.bubble.session-rotate-${slug}"
 plist="$HOME/Library/LaunchAgents/${label}.plist"
 logdir="$HOME/Library/Logs/bubble-ops-loop"; mkdir -p "$logdir"
@@ -46,7 +59,7 @@ cat > "$plist" <<PLIST
         <string>${slug}</string>
         <string>--workdir</string>
         <string>${workdir}</string>
-    </array>
+${EXTRA_ARGS}    </array>
     <!-- Daily fresh-session rotation (board #1195). NOT KeepAlive — a one-shot
          per-day job. StartCalendarInterval fires at ${hour}:$(printf '%02d' "$minute") local;
          if the Mac was asleep, launchd runs it on the next wake. -->
