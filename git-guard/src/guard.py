@@ -12,11 +12,15 @@ This module IS the "wrapper local / git guard sur Morty". Flow:
      bare repo, and derives paths against the literal policy destination there.
   3. Guard runs policy.enforce() for each path.
      - If ANY denied → audit `status:denied`, return 1, NO broker call.
+     - Existing destination ref: REFUSE unless the authoritative destination
+       SHA is an ancestor of the checked SHA (fast-forward only), audit
+       `status:denied` reason `non_fast_forward`, return 1, NO broker call.
   4. If dry_run → audit `status:would_allow`, print plan, return 0.
   5. Else → subprocess-invoke the broker to mint a token.
      - If broker exits non-zero → audit `status:mint_failed`, return 1, NO push.
   6. Push exactly the checked SHA under a force-with-lease bound to the
-     authoritative destination SHA, with the token injected via
+     authoritative destination SHA (the lease only closes the check/push
+     race; it never authorizes an overwrite, fast-forward is enforced in 3), with the token injected via
      `http.extraheader` ONLY for this single command, set via env
      (GIT_CONFIG_* triad — #923), never argv. Token never echoed, never
      logged, never persisted.
@@ -296,6 +300,25 @@ class Guard:
                 print(f"  - {reason}", file=sys.stderr)
             return 1
 
+        if not self._is_fast_forward(plan):
+            reason = (
+                "non_fast_forward: the remote branch has commits the pushed "
+                "source does not contain; a force-with-lease bound to the "
+                "current remote SHA would silently overwrite them"
+            )
+            self._safe_audit(
+                ts=ts, actor=actor, dept=dept, repo=repo, action=action,
+                status="denied", paths_count=len(paths),
+                denied_paths=[], reasons=[reason],
+            )
+            import sys
+            print(
+                f"DENIED: {reason}. Pull/rebase onto the remote first "
+                "(safe_pull), then retry. Your local commits are untouched.",
+                file=sys.stderr,
+            )
+            return 1
+
         if dry_run:
             self._safe_audit(
                 ts=ts, actor=actor, dept=dept, repo=repo, action=action,
@@ -339,6 +362,25 @@ class Guard:
             token_ttl_minutes=DEFAULT_TOKEN_TTL_MINUTES,
         )
         return 0
+
+    @staticmethod
+    def _is_fast_forward(plan: PushPlan) -> bool:
+        """True for a new ref, or when the destination SHA is an ancestor of
+        the checked SHA. Any git error fails closed (not a fast-forward)."""
+        if not plan.expected_remote_sha:
+            return True
+        proc = subprocess.run(
+            hardened_git_command(
+                "merge-base", "--is-ancestor",
+                plan.expected_remote_sha, plan.source_commit,
+            ),
+            cwd=str(plan.guard_repo),
+            capture_output=True,
+            text=True,
+            env=dict(plan.git_env),
+            check=False,
+        )
+        return proc.returncode == 0
 
     def _mint_token(
         self, *, ts: str, actor: str, dept: str, action: str,
