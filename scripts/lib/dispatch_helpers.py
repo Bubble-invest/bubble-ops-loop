@@ -3710,6 +3710,8 @@ def _layer_fired_today_marker(ctx: "dict[str, Any]", layer: int) -> "datetime | 
 def _due_scheduled_catchup_layer(
     ctx: "dict[str, Any]",
     missions: "list[dict]",
+    *,
+    include_weekly_shims: bool = False,
 ) -> "int | None":
     """Catch-up safeguard (#428, Fix 2) — anti "Mac asleep at the scheduled slot".
 
@@ -3728,11 +3730,14 @@ def _due_scheduled_catchup_layer(
     Deliberately narrow / safe:
       • ONLY producer missions (no `input_queue`) — consumers are correctly gated
         by their input queue being non-empty.
-      • ONLY dedicated-prompt missions (`missions/<id>/PROMPT.md`) — these author
+      • Dedicated-prompt missions (`missions/<id>/PROMPT.md`) — these author
         their own per-mission marker at STEP 0, so the marker is an honest "ran"
         signal and the catch-up self-terminates once the real run stamps it. (This
-        also means it never triggers for the legacy layer-shim primaries, whose
-        behaviour is left exactly as before.)
+        also means daily legacy layer-shim primaries remain unchanged.)
+        With include_weekly_shims, weekly producers also qualify (#1696): an
+        earlier mission on that layer must not close their later weekly slot.
+        Their own per-mission marker/ledger still prevents duplicate selection;
+        last week's materialization is outside today's marker scope.
       • ONLY daily/weekly cadences with an explicit `time:` — `is_mission_due`
         enforces "never before the scheduled time" and "once per day/week", so this
         cannot fire early or double-fire.
@@ -3757,7 +3762,9 @@ def _due_scheduled_catchup_layer(
                 continue
             if not m.get("time"):
                 continue
-            if not _mission_authors_own_marker(repo_dir, m):
+            if not _mission_authors_own_marker(repo_dir, m) and not (
+                include_weekly_shims and m.get("cadence") == "weekly"
+            ):
                 continue
             last_fired = _mission_last_fired(ctx, m)
             if is_mission_due(m, now=now_utc, last_fired=last_fired):
@@ -3928,9 +3935,68 @@ def select_due_missions(
     # Only a fallback — it can never out-rank a higher-priority layer that has
     # real work this tick (the loop above already tried every eligible layer).
     catchup_layer = _due_scheduled_catchup_layer(ctx, missions)
+    if catchup_layer is not None:
+        return _due_missions_for_layer(ctx, missions, catchup_layer, now_utc=now_utc)
+
+    # #1696: a weekly producer using a layer shim can have a later slot than
+    # its layer's morning run. Recover it after the normal/catch-up priority
+    # walk, even when that layer's cycle gate is closed. Restrict this new
+    # fallback to weekly producers so daily shims and consumers keep their
+    # existing gates; the mission's own marker/ledger still caps its cadence.
+    weekly = [m for m in missions if m.get("cadence") == "weekly" and not m.get("input_queue")]
+    catchup_layer = _due_scheduled_catchup_layer(ctx, weekly, include_weekly_shims=True)
     if catchup_layer is None:
         return []
-    return _due_missions_for_layer(ctx, missions, catchup_layer, now_utc=now_utc)
+    return _due_missions_for_layer(ctx, weekly, catchup_layer, now_utc=now_utc)
+
+
+def explain_due_missions(
+    ctx: "dict[str, Any]", missions: "list[dict]", selected: "list[dict]"
+) -> "list[dict]":
+    """Read-only reasons for the selector's result, one per configured mission.
+
+    Selection remains authoritative; the same cadence, input, event and
+    catch-up predicates explain exclusions without guessing a future fire time.
+    """
+    selected_ids = {m.get("id") for m in selected}
+    now = ctx["now_utc"]
+    local = _to_paris(now)
+    decisions = []
+    for mission in missions:
+        mid = mission["id"]
+        layer = int(mission["layer"])
+        cadence = mission.get("cadence")
+        last = _mission_last_fired(ctx, mission)
+        reason = "due"
+        if mid not in selected_ids:
+            if cadence == "weekly" and local.weekday() not in {
+                _WEEKDAY_NAMES[d] for d in _normalize_weekday_set(mission.get("day"))
+            }:
+                reason = "wrong_day"
+            elif cadence in ("daily", "weekly") and local.time() < _parse_hhmm(mission["time"]):
+                reason = "not_yet_time"
+            elif not _mission_cadence_due(mission, now=now, last_fired=last):
+                reason = "cadence_not_due"
+                if cadence in ("daily", "weekly"):
+                    today_dir = Path(ctx["today_dir"])
+                    completed = _ledger_completion(today_dir, mid) or read_last_run(today_dir / "missions" / mid)
+                    reason = "already_completed_this_period" if completed else "already_materialized_this_period"
+            elif not _within_active_hours(mission, now):
+                reason = "outside_active_hours"
+            elif not _mission_input_ready(ctx, mission):
+                reason = "input_not_ready"
+            elif not _due_missions_for_layer(ctx, [mission], layer, now_utc=now):
+                reason = "event_already_dispatched"
+            elif not _mission_layer_eligible(ctx, layer) and _due_scheduled_catchup_layer(
+                ctx, [mission], include_weekly_shims=True
+            ) is None:
+                reason = "layer_closed"
+            elif selected:
+                reason = "higher_priority_layer"
+            else:
+                reason = "not_selected"
+        decisions.append({"id": mid, "due": mid in selected_ids, "reason": reason})
+    return decisions
 
 
 def build_dispatch_plan(

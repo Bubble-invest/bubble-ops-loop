@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,204 @@ from scripts.lib.loop_backup import (
 
 
 NOW = dt.datetime(2026, 9, 13, 12, 0, tzinfo=dt.timezone.utc)
+
+
+@pytest.fixture
+def friday_weekly_dept(tmp_path: Path) -> Path:
+    """Synthetic #1696 shape: morning L1 done, weekly uses a layer shim.
+
+    Last Friday only materialized at 18:11:05 CEST; there is no weekly
+    completion. No client data or dependency on the copied evidence files.
+    """
+    import yaml
+
+    missions = [
+        {"id": "daily_ledger_cash_sync", "layer": 1, "cadence": "daily", "time": "07:00"},
+        {"id": "weekly_timesheet_collection", "layer": 1, "cadence": "weekly",
+         "day": "friday", "time": "18:00", "output_queue": "queues/research/",
+         "creates": ["timesheet_collection"]},
+    ]
+    (tmp_path / "dept.yaml").write_text(yaml.safe_dump({"recurring_missions": missions}))
+    prompt = tmp_path / "layers/1/PROMPT.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("synthetic layer prompt\n")
+    prior = dt.datetime(2026, 9, 25, 16, 11, 5, tzinfo=dt.timezone.utc)
+    marker = tmp_path / "outputs/2026-09-25/missions/weekly_timesheet_collection/.last-materialized"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(prior.isoformat())
+    os.utime(marker, (prior.timestamp(), prior.timestamp()))
+    today = tmp_path / "outputs/2026-10-02"
+    (today / "1").mkdir(parents=True)
+    (today / "1/summary.md").write_text("synthetic morning output\n")
+    (today / "dispatch.json").write_text(json.dumps({
+        "daily_ledger_cash_sync": {
+            "dispatched_at": "2026-10-02T07:16:02+00:00",
+            "completed_at": "2026-10-02T08:16:57+00:00",
+            "materialized_at": "2026-10-02T07:16:02+00:00",
+            "artifacts": ["outputs/2026-10-02/1/summary.md"],
+        },
+    }))
+    return tmp_path
+
+
+@pytest.mark.parametrize("instant,due,reason", [
+    ("2026-10-02T16:07:00+00:00", True, "due"),  # Friday 18:07 CEST
+    ("2026-10-01T16:07:00+00:00", False, "wrong_day"),
+    ("2026-10-02T15:59:00+00:00", False, "not_yet_time"),
+])
+def test_1696_weekly_plan_local_day_time_and_previous_materialization(
+    friday_weekly_dept: Path, capsys, instant, due, reason
+):
+    from scripts.due_missions import command_plan, parser
+
+    epoch = int(dt.datetime.fromisoformat(instant).timestamp())
+    args = parser().parse_args([
+        "plan", "--dept-dir", str(friday_weekly_dept), "--now-epoch", str(epoch),
+        "--format", "json",
+    ])
+    before = {p.relative_to(friday_weekly_dept): p.read_bytes()
+              for p in friday_weekly_dept.rglob("*") if p.is_file()}
+    assert command_plan(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    decisions = {m["id"]: m for m in output["missions"]}
+    assert set(decisions) == {"daily_ledger_cash_sync", "weekly_timesheet_collection"}
+    assert decisions["weekly_timesheet_collection"] == {
+        "id": "weekly_timesheet_collection", "due": due, "reason": reason,
+    }
+    assert ("weekly_timesheet_collection" in {m["id"] for m in output["due"]}) == due
+    assert before == {p.relative_to(friday_weekly_dept): p.read_bytes()
+                      for p in friday_weekly_dept.rglob("*") if p.is_file()}
+
+
+def test_1696_same_week_completion_suppresses_then_next_friday_is_due(
+    friday_weekly_dept: Path, capsys
+):
+    import yaml
+    from scripts.due_missions import command_plan, command_wake_prompt, parser, _wake_prompt_recurring
+    from scripts.lib.dispatch_helpers import commit_dispatch
+
+    data = yaml.safe_load((friday_weekly_dept / "dept.yaml").read_text())
+    weekly = data["recurring_missions"][1]
+    now = dt.datetime(2026, 10, 2, 16, 7, tzinfo=dt.timezone.utc)
+    args = parser().parse_args([
+        "wake-prompt", "--dept-dir", str(friday_weekly_dept), "--now-epoch", str(int(now.timestamp())),
+    ])
+    assert command_wake_prompt(args) == 0
+    # Pin the existing renderer: only the selected mission data changes.
+    assert capsys.readouterr().out.rstrip("\n") == _wake_prompt_recurring(
+        [weekly], friday_weekly_dept.resolve(), "the dept's"
+    )
+    artifact = friday_weekly_dept / "outputs/2026-10-02/1/summary.md"
+    assert commit_dispatch(friday_weekly_dept, weekly, dispatched_at=now,
+                           completed_at=now + dt.timedelta(minutes=1),
+                           artifacts=[artifact], materialize_outputs=False)
+    for later, due in [(now + dt.timedelta(minutes=3), False), (now + dt.timedelta(days=7), True)]:
+        args = parser().parse_args([
+            "plan", "--dept-dir", str(friday_weekly_dept), "--format", "json",
+            "--now-epoch", str(int(later.timestamp())),
+        ])
+        assert command_plan(args) == 0
+        decision = next(m for m in json.loads(capsys.readouterr().out)["missions"]
+                        if m["id"] == weekly["id"])
+        assert decision == {"id": weekly["id"], "due": due,
+                            "reason": "due" if due else "already_completed_this_period"}
+
+
+def test_1696_daily_shim_still_obeys_layer_cycle_gate(friday_weekly_dept: Path, capsys):
+    import yaml
+    from scripts.due_missions import command_plan, parser
+
+    path = friday_weekly_dept / "dept.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["recurring_missions"][1]["cadence"] = "daily"
+    path.write_text(yaml.safe_dump(data))
+    args = parser().parse_args([
+        "plan", "--dept-dir", str(friday_weekly_dept), "--format", "json",
+        "--now-epoch", str(int(dt.datetime(2026, 10, 2, 16, 7, tzinfo=dt.timezone.utc).timestamp())),
+    ])
+    assert command_plan(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["due"] == []
+    assert output["missions"][1]["reason"] == "layer_closed"
+
+
+def test_1696_weekly_catchup_does_not_admit_other_daily_shims(friday_weekly_dept: Path):
+    import yaml
+    from scripts.due_missions import _plan_for_wake_recurring
+
+    path = friday_weekly_dept / "dept.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["recurring_missions"].append({
+        "id": "late_daily", "layer": 1, "cadence": "daily", "time": "18:00",
+    })
+    path.write_text(yaml.safe_dump(data))
+    now = dt.datetime(2026, 10, 2, 16, 7, tzinfo=dt.timezone.utc)
+    assert [m["id"] for m in _plan_for_wake_recurring(
+        friday_weekly_dept, data, int(now.timestamp())
+    )] == ["weekly_timesheet_collection"]
+
+
+def test_1696_weekly_consumer_keeps_input_and_layer_gates(friday_weekly_dept: Path, capsys):
+    import yaml
+    from scripts.due_missions import command_plan, parser
+
+    path = friday_weekly_dept / "dept.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["recurring_missions"][1]["input_queue"] = "queues/research/"
+    path.write_text(yaml.safe_dump(data))
+    args = parser().parse_args([
+        "plan", "--dept-dir", str(friday_weekly_dept), "--format", "json",
+        "--now-epoch", str(int(dt.datetime(2026, 10, 2, 16, 7, tzinfo=dt.timezone.utc).timestamp())),
+    ])
+    assert command_plan(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["due"] == []
+    assert result["missions"][1]["reason"] == "input_not_ready"
+
+
+def test_plan_json_explains_due_dispatch_scope_completion_and_pending(tmp_path: Path, capsys):
+    import yaml
+    from scripts.due_missions import command_plan, parser
+
+    data = manifest(
+        mission("completed", "weekly", {"policy": "calendar_period", "timezone": "Europe/Paris"}),
+        mission("pending", "daily", {"policy": "calendar_period", "timezone": "Europe/Paris"}),
+        mission("board", "continuous", {"policy": "every_tick"}),
+        mission("planned", "weekly", None, status="planned"),
+        mission("old_pending", "weekly", {"policy": "calendar_period", "timezone": "Europe/Paris"}),
+    )
+    data["recurring_missions"].append(mission("unscoped", "monthly", None))
+    data["layers"] = {"subscribed": [1]}
+    (tmp_path / "dept.yaml").write_text(yaml.safe_dump(data))
+    for mid in ("completed", "pending", "board", "old_pending"):
+        path = tmp_path / f"missions/{mid}.md"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("synthetic mission\n")
+    path = tmp_path / "layers/1/PROMPT.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("synthetic layer\n")
+    state = tmp_path / data["loop"]["due_dispatch"]["watermark"]
+    state.parent.mkdir(parents=True)
+    pending = {"period": "2026-09-13", "claim_id": "synthetic", "expires_at_epoch": int(NOW.timestamp()) + 3600}
+    state.write_text(json.dumps({"version": 1, "missions": {
+        "completed": {"last_success_period": "2026-W37"},
+        "pending": {"pending": pending},
+        "old_pending": {"pending": {**pending, "period": "2026-W36"}},
+    }}))
+    args = parser().parse_args([
+        "plan", "--dept-dir", str(tmp_path), "--format", "json",
+        "--now-epoch", str(int(NOW.timestamp())),
+    ])
+    assert command_plan(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert {m["id"]: (m["due"], m["reason"]) for m in result["missions"]} == {
+        "completed": (False, "already_completed_this_period"),
+        "pending": (False, "pending_lease"),
+        "board": (True, "due"),
+        "planned": (False, "not_live"),
+        "old_pending": (True, "due"),
+        "unscoped": (False, "out_of_scope"),
+    }
 
 
 def manifest(*missions):

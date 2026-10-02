@@ -272,15 +272,28 @@ def command_plan(args: argparse.Namespace) -> int:
     dept_dir = Path(args.dept_dir).resolve()
     manifest = _load_manifest(dept_dir)
     loop = manifest.get("loop")
-    if isinstance(loop, dict) and "due_dispatch" not in loop:
-        return 0
-    if loop is None:
+    if not isinstance(loop, dict) or loop.get("due_dispatch") is None:
+        recurring = manifest.get("recurring_missions")
+        if not isinstance(recurring, list) or not recurring:
+            return 0
+        explanations: list[dict] = []
+        plan = _plan_for_wake_recurring(dept_dir, manifest, args.now_epoch, explanations)
+        if args.format == "json":
+            print(json.dumps({"configured": True, "due": plan, "missions": explanations}, sort_keys=True))
+        elif args.format == "runner":
+            raise DueMissionConfigError("plan --format runner requires loop.due_dispatch")
+        else:
+            print(_prompt_recurring(plan, dept_dir, _dept_label(manifest)))
         return 0
     watermark = due_watermark_path(str(dept_dir), manifest)
     state = read_due_watermarks(watermark)
     skipped: list[dict] = []
     stale: list[dict] = []
-    plan = due_mission_plan(manifest, state, _now(args.now_epoch), skipped=skipped, stale=stale)
+    explanations = []
+    plan = due_mission_plan(
+        manifest, state, _now(args.now_epoch), skipped=skipped, stale=stale,
+        explanations=explanations,
+    )
     if plan is None:
         return 0
     _emit_skip_notice(skipped)
@@ -288,7 +301,12 @@ def command_plan(args: argparse.Namespace) -> int:
     _validate_scoped_files(dept_dir, manifest)
     dept_label = _dept_label(manifest)
     if args.format == "json":
-        print(json.dumps({"configured": True, "due": plan}, sort_keys=True))
+        by_id = {item["id"]: item for item in explanations}
+        decisions = [
+            by_id.get(mission["id"], {"id": mission["id"], "due": False, "reason": "out_of_scope"})
+            for mission in manifest["recurring_missions"]
+        ]
+        print(json.dumps({"configured": True, "due": plan, "missions": decisions}, sort_keys=True))
     elif args.format == "runner":
         print(_runner_output(plan, {}, dept_dir, dept_label))
     else:
@@ -762,7 +780,8 @@ def _validate_recurring_missions(
 
 
 def _plan_for_wake_recurring(
-    dept_dir: Path, manifest: dict, now_epoch: "int | None"
+    dept_dir: Path, manifest: dict, now_epoch: "int | None",
+    explanations: "list[dict] | None" = None,
 ) -> list[dict]:
     """Compute the due-mission list for a `recurring_missions` manifest.
 
@@ -789,12 +808,15 @@ def _plan_for_wake_recurring(
     missions = manifest.get("recurring_missions")
     if not isinstance(missions, list) or not missions:
         return []
-    from scripts.lib.dispatch_helpers import build_dispatch_ctx, select_due_missions
+    from scripts.lib.dispatch_helpers import build_dispatch_ctx, explain_due_missions, select_due_missions
 
     now = _now(now_epoch)
     validated = _validate_recurring_missions(dept_dir, manifest, now)
     ctx = build_dispatch_ctx(dept_dir, now_utc=now, materialize=False)
-    return select_due_missions(ctx, validated) or []
+    plan = select_due_missions(ctx, validated) or []
+    if explanations is not None:
+        explanations.extend(explain_due_missions(ctx, validated, plan))
+    return plan
 
 
 def _prompt_recurring(plan: list[dict], dept_dir: Path, dept_label: str = "the dept's") -> str:
@@ -973,7 +995,10 @@ def parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan")
     plan.add_argument("--dept-dir", required=True)
     plan.add_argument("--now-epoch", type=int)
-    plan.add_argument("--format", choices=("prompt", "json", "runner"), default="prompt")
+    plan.add_argument(
+        "--format", choices=("prompt", "json", "runner"), default="prompt",
+        help="json includes each configured mission's due flag and reason; runner requires due_dispatch",
+    )
     plan.set_defaults(func=command_plan)
     claim = sub.add_parser("claim")
     claim.add_argument("--dept-dir", required=True)
