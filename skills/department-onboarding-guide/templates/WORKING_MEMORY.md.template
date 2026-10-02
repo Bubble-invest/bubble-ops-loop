@@ -22,7 +22,12 @@
 <!-- One bullet per active topic. Keep each dated and with a clear owner-ask.
      Format:
        - [YYYY-MM-DD] <topic> — <what to do> — <expires / review-by, if known>
-     Move finished items to "Archive" below; don't delete (audit trail). -->
+     Move finished items to "Archive" below; don't delete (audit trail).
+     Tag `[pin]` on any entry that must survive compaction (standing rule,
+     open action, pending decision). The daily session_handoff mission runs
+     scripts/lib/memory_compact.py (#1665): when this file passes the cap
+     (24 KB default) older unpinned entries move VERBATIM to
+     memory/archive/WORKING_MEMORY-YYYY-MM.md. -->
 
 _(none yet)_
 

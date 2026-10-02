@@ -21,7 +21,7 @@
 #      structural changes use direct settings_pr against own_repo, not
 #      cross-dept PRs.
 #   2. `allowed_paths` MUST be `outputs/**, queues/**, inbox/**,
-#      WORKING_MEMORY.md, whiteboard.{yaml,md}, tests/**` only (tests/**
+#      WORKING_MEMORY.md, memory/archive/** (#1665), whiteboard.{yaml,md}, tests/**` only (tests/**
 #      added #913, 2026-08-12 — low-risk regression-coverage content, no
 #      runtime execution path in prod). Adding STRUCTURAL paths here will be
 #      REJECTED by the broker's _is_structural() check at mint time.
@@ -44,6 +44,7 @@ github_access:
         - queues/**           # research/, gates/, improvements/, management/
         - inbox/**            # decisions/, notifications/
         - WORKING_MEMORY.md   # transient topics / current focus (Part A, 2026-06-01).
+        - memory/archive/**   # #1665: append-only WORKING_MEMORY compaction archive (scripts/lib/memory_compact.py); runtime data, NOT structural.
         - whiteboard.yaml     # L4 cockpit KPI cards — runtime data written every L4 debrief (Tony 2026-06-09).
                               # THE place the agent records ad-hoc, time-bound items
                               # (e.g. "watch SpaceX IPO") instead of editing its

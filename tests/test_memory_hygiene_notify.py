@@ -248,7 +248,7 @@ def test_obsolete_routes_ignore_recent_and_expired_legacy_stamps(
 
     text = _run_cluttered_working(tmp_path, agent, dry_run=False)
 
-    assert "UNDELIVERED: obsolete shared-user inject route" in text
+    assert "retired: dept self-compacts in session_handoff (#1665)" in text
     assert "nudged <" not in text
     assert "[escalated]" not in text
     assert stamp.read_text(encoding="utf-8") == original_stamp

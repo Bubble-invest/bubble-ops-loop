@@ -31,6 +31,11 @@ Two private stores are watched fleet-wide, each against its LIVE file:
                          nothing scanned WORKING_MEMORY.md, so agents' working
                          memory grew unbounded and had to be cleaned by hand.
 
+RETIRED for WORKING_MEMORY on UID-isolated depts (#1665): ben/maya/tony compact
+their own file inside their daily session_handoff L4 mission
+(scripts/lib/memory_compact.py); the working pass only reports them. MEMORY.md
+index nudges are unchanged.
+
 DELIVERY (the hard part — same-machine constraint)
 --------------------------------------------------
 A nudge must land in the AGENT'S SESSION, not in a human's chat. The configured
@@ -438,6 +443,15 @@ def _run_pass(kind: str, files: dict[str, Path], analyze, build_nudge,
         # Otherwise an old stamp could hide a known dead route or invent an
         # escalation for a nudge that never reached the isolated agent.
         blocker = "" if dry_run else _delivery_blocker(agent)
+        if blocker and kind == "working":
+            # #1665: RETIRED for UID-isolated depts. They compact their own
+            # WORKING_MEMORY.md in the daily session_handoff L4 mission
+            # (scripts/lib/memory_compact.py) - no cross-UID nudge needed.
+            report.append(
+                f"  {agent:16} CLUTTERED ({info['size']//1024}KB) -> "
+                "retired: dept self-compacts in session_handoff (#1665); no nudge sent"
+            )
+            continue
         if blocker:
             report.append(
                 f"  {agent:16} CLUTTERED ({info['size']//1024}KB) -> "
