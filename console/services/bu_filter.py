@@ -29,7 +29,11 @@ def dept_units() -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for dept in dept_registry.list_departments():
         try:
-            missions = github_reader.list_missions_full(dept.slug)
+            # Read the LIVE checkout (/srv/agents/<slug> post-#1120), like
+            # operations_map does — the READ_FROM_DISK mirror is stale for VPS
+            # depts and carries no business_unit tags (#1603 prod canary: 0 cards).
+            missions = github_reader.list_missions_full(
+                dept.slug, root=dept_registry.runtime_repo_path(dept.slug))
         except (OSError, ValueError, yaml.YAMLError):
             continue
         units: set[str] = set()

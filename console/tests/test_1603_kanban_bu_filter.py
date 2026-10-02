@@ -56,3 +56,23 @@ def test_unknown_bu_ignored(client, fixture_root, monkeypatch):
     r = client.get("/kanban?bu=bogus")
     assert r.status_code == 200
     assert _titles(r.text) == {1, 2, 3, 4, 5}
+
+
+def test_dept_units_reads_live_runtime_root(monkeypatch, tmp_path):
+    """Prod canary 2026-10-02: every ?bu= view was empty because dept_units read
+    the stale READ_FROM_DISK mirror. It must pass the live runtime root."""
+    from types import SimpleNamespace
+    from console.services import bu_filter, dept_registry, github_reader
+
+    runtime = tmp_path / "srv" / "maya"
+    seen = {}
+
+    def fake_list(slug, *, root=None):
+        seen[slug] = root
+        return [{"id": "m1", "business_unit": "pro_clients"}] if root == runtime else [{"id": "m1"}]
+
+    monkeypatch.setattr(dept_registry, "list_departments", lambda: [SimpleNamespace(slug="maya")])
+    monkeypatch.setattr(dept_registry, "runtime_repo_path", lambda slug: runtime)
+    monkeypatch.setattr(github_reader, "list_missions_full", fake_list)
+    assert bu_filter.dept_units() == {"maya": {"pro_clients"}}
+    assert seen == {"maya": runtime}
