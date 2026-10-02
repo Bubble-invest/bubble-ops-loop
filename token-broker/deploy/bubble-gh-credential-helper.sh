@@ -29,6 +29,26 @@
 #   See ~/.claude/agent-memory/rnd/reference_mission_file_lock_gap.md.
 # ===================================================================
 #
+# ===================================================================
+# AGENT CALLERS ARE READ-ONLY (#1619 step 2, Joris tg 10208 "option A")
+#   When sudo'd by a dept OS user (SUDO_USER=agent-<slug>) this helper mints
+#   contents:READ (+ pull_requests:write, which `bubble-gh pr create` in
+#   propose-settings-pr needs) scoped to the ONE repo in git's path= line. A
+#   dept's runtime push goes through `bubble-git-guard push` -> the sudo broker
+#   shim -> bubble-broker-mint-settings-root.sh, which enforces the path
+#   policy IN CODE; a raw `git push` with this helper's token gets a 403.
+#   Chesterton: until now this helper was the SOLE write path and the only
+#   mission-file check was the best-effort delta check below (still applied to
+#   the exceptions). Exceptions (agent callers that KEEP contents:write):
+#     * agent-morty (Hermes; no broker policy, no installation-id mapping yet);
+#     * an agent's OWN vault repo bubble-<slug>-vault (research notes, no
+#       mission files; maya's policy declares no vault write rule) - the token
+#       is scoped to that single repo.
+#   claude / root callers are unchanged (cron + Rick flows; separate sudoers).
+#   A call with no path= (no repo to scope) gets read-only too, never a
+#   repo-wide write. Staged rollout: see /etc/bubble/cred-readonly-agents below.
+# ===================================================================
+#
 # Secret-leak hardening (2026-05-29 Eliot audit, Rick impl):
 #   - The GitHub App private key is decrypted to a tmpfs file (/run/lock or
 #     /dev/shm), NEVER to /tmp on the persistent disk. tmpfs = RAM-only.
@@ -78,6 +98,18 @@ while IFS='=' read -r key value; do
   fi
 done <<< "$STDIN_BUF"
 
+# --- Who is calling? sudo sets SUDO_USER (we are root); never trusted from argv.
+AGENT_SLUG=""
+if [[ "${SUDO_USER:-}" =~ ^agent-([a-z0-9][a-z0-9_-]*)$ ]]; then
+  AGENT_SLUG="${BASH_REMATCH[1]}"
+fi
+REPO_NAME=""
+while IFS='=' read -r key value; do
+  if [[ "$key" == "path" && "$value" =~ ^[A-Za-z0-9_.-]+/([A-Za-z0-9_.-]+)$ ]]; then
+    REPO_NAME="${BASH_REMATCH[1]%.git}"
+  fi
+done <<< "$STDIN_BUF"
+
 # --- MISSION-FILE LOCK: decide token permission class.
 # Default = today's behaviour (contents:write). Downgrade to read-only ONLY if
 # the un-pushed delta in $REPO_DIR positively touches a structural path.
@@ -92,13 +124,36 @@ if [[ -x "$STRUCTURAL_CHECK" ]] || [[ -f "$STRUCTURAL_CHECK" ]]; then
   fi
 fi
 
+# --- #1619 step 2: agent callers are read-only (see the header block).
+# Staged rollout switch (root-owned, outside agent reach): if
+# /etc/bubble/cred-readonly-agents exists, ONLY the slugs listed in it (one per
+# line) are switched; if it is absent EVERY agent-* (except morty) is. Rollout:
+# create it with "tony", add ben, maya, then delete it. Fail direction = stricter.
+READONLY_AGENTS_FILE=/etc/bubble/cred-readonly-agents
+AGENT_RO=0
+if [[ -n "$AGENT_SLUG" && "$AGENT_SLUG" != "morty" ]]; then
+  if [[ ! -f "$READONLY_AGENTS_FILE" ]] || grep -qxF -- "$AGENT_SLUG" "$READONLY_AGENTS_FILE" 2>/dev/null; then
+    AGENT_RO=1
+  fi
+fi
+REPO_SCOPE=""
+if [[ "$AGENT_RO" == 1 ]]; then
+  if [[ -n "$REPO_NAME" ]]; then
+    REPO_SCOPE=",\"repositories\":[\"$REPO_NAME\"]"
+  fi
+  if [[ "$REPO_NAME" != "bubble-${AGENT_SLUG}-vault" ]]; then
+    PERMS='{"contents":"read","metadata":"read","pull_requests":"write"}'
+    logger -t bubble-gh-cred "agent-readonly: caller=${SUDO_USER} repo=${REPO_NAME:-none} -> contents:read" 2>/dev/null || true
+  fi
+fi
+
 APP_ID=3782718
 NOW=$(date +%s)
 HEADER=$(echo -n '{"alg":"RS256","typ":"JWT"}' | openssl base64 -e -A | tr -- '+/' '-_' | tr -d '=')
 PAYLOAD=$(echo -n "{\"iat\":$((NOW-60)),\"exp\":$((NOW+540)),\"iss\":$APP_ID}" | openssl base64 -e -A | tr -- '+/' '-_' | tr -d '=')
 SIG=$(echo -n "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign "$PEM" | openssl base64 -e -A | tr -- '+/' '-_' | tr -d '=')
 JWT="$HEADER.$PAYLOAD.$SIG"
-TOKEN_JSON=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "{\"permissions\":$PERMS}" "https://api.github.com/app/installations/$INST_ID/access_tokens" 2>/dev/null)
+TOKEN_JSON=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "{\"permissions\":$PERMS$REPO_SCOPE}" "https://api.github.com/app/installations/$INST_ID/access_tokens" 2>/dev/null)
 TOKEN=$(echo "$TOKEN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
 
 if [[ -n "$TOKEN" && "$TOKEN" == ghs_* ]]; then

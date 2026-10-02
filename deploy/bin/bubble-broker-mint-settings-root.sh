@@ -59,8 +59,10 @@
 # write-mint path was pure added surface. That reason is what #1619 inverts: the
 # helper mints repo-wide contents:write with only a best-effort delta check, so
 # the plan is to make it read-only for agent-* and serve runtime pushes from the
-# broker, which enforces the path policy in code. Step 1 (this change) adds the
-# broker path with NO reduction of the helper; step 2 removes the helper's write.
+# broker, which enforces the path policy in code. Step 1 added the
+# broker path with NO reduction of the helper; step 2 (the guard's agent default,
+# the own-vault repo allowance below, and the helper's read-only mode for
+# agent-* callers) removes the helper's write for them.
 #  * The non-secret constants (APP_ID + per-dept INSTALLATION_ID) are baked in
 #    here, same as the cred-helper hardcodes APP_ID=3782718 / the INST_ID switch.
 #  * Secret hygiene mirrors bubble-gh-credential-helper.sh EXACTLY:
@@ -166,10 +168,10 @@ if [[ "${SUDO_USER:-}" =~ ^agent-([a-z0-9][a-z0-9_-]*)$ ]]; then
     || die "caller '${SUDO_USER}' may only mint for its own dept '${CALLER_DEPT}' (got --dept '$DEPT')."
 fi
 if [[ "$ACTION" == "runtime_write_own" || "$ACTION" == "runtime_read" ]]; then
-  # SUDO_USER is only trustworthy when sudo set it, i.e. we are root.
-  # (BUBBLE_MINT_TEST_NONROOT=1 exists for the unit tests only; a non-root run
-  # cannot decrypt the age key anyway, so it grants nothing.)
-  if [[ "$(id -u)" != "0" && "${BUBBLE_MINT_TEST_NONROOT:-0}" != "1" ]]; then
+  # SUDO_USER is only trustworthy when sudo set it, i.e. we are root. The
+  # tests exercise the non-root branches on a sed-patched COPY of this file
+  # (tests/bubble-broker-mint-settings/), never via a switch in production.
+  if [[ "$(id -u)" != "0" ]]; then
     die "$ACTION must be invoked through sudo (EUID != 0)."
   fi
   [[ -n "$CALLER_DEPT" ]] || die "$ACTION requires an agent-<slug> caller (SUDO_USER='${SUDO_USER:-}')."
@@ -191,7 +193,16 @@ INSTALL_ID="$(inst_id_for_dept "$DEPT")"
 
 # Repo must be the dept's own bubble-ops repo (defense-in-depth; the policy +
 # git-guard already enforce own-repo, this is the belt).
-[[ "$REPO" == "bubble-ops-${DEPT}" ]] || die "repo '$REPO' is not the dept's own repo (expected bubble-ops-${DEPT})."
+# #1619 step 2: the runtime actions (only) also accept the dept's own vault repo
+# bubble-<dept>-vault (ben/maya research vaults). The broker still requires the
+# policy to declare that repo (read list / write rules) and enforces its paths.
+if [[ "$REPO" != "bubble-ops-${DEPT}" ]]; then
+  if [[ ( "$ACTION" == "runtime_write_own" || "$ACTION" == "runtime_read" ) && "$REPO" == "bubble-${DEPT}-vault" ]]; then
+    :
+  else
+    die "repo '$REPO' is not the dept's own repo (expected bubble-ops-${DEPT})."
+  fi
+fi
 
 # --- decrypt the PEM to a tmpfs file (mirror cred-helper hygiene) -------------
 TMPFS_DIRS="${TMPFS_DIRS:-/run/lock /dev/shm}"

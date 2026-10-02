@@ -38,6 +38,7 @@ Design invariants (enforced by tests):
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -65,6 +66,28 @@ DEFAULT_TOKEN_TTL_MINUTES = 60
 # resolvable on PATH at all — see `resolve_broker_binary()`.
 DEFAULT_BROKER_NAME = "bubble-token-broker"
 DEFAULT_BROKER_ABS_PATH = "/opt/bubble-token-broker/bin/bubble-token-broker"
+
+# #1619 step 2: an `agent-<slug>` OS user must NOT mint with an App key of its
+# own. Its guard mints through the claude-side shim, which re-execs the
+# root-owned wrapper under `sudo -n` (own-dept only, policy-forced, per-repo
+# token). One default for the whole fleet: no per-dept config, no env flag.
+DEFAULT_AGENT_MINT_SHIM = "/usr/local/bin/bubble-broker-mint-settings.sh"
+AGENT_OS_USER_PREFIX = "agent-"
+
+
+def _agent_mint_shim() -> Optional[str]:
+    """The sudo mint shim when the current OS user is a dept ``agent-<slug>``
+    and the shim is installed; otherwise None (Macs, `claude`, CI, tests)."""
+    try:
+        user = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return None
+    if not user.startswith(AGENT_OS_USER_PREFIX):
+        return None
+    shim = DEFAULT_AGENT_MINT_SHIM
+    if os.path.isfile(shim) and os.access(shim, os.X_OK):
+        return shim
+    return None
 
 # The broker installation and repository policy are for this GitHub
 # organization. This constant is guard-owned; no actor config or CLI URL is
@@ -105,6 +128,9 @@ def resolve_broker_binary(broker: Optional[str] = None) -> str:
     Resolution order:
       1. An EXPLICIT `broker` (e.g. `--broker /some/path`) is never
          second-guessed — used verbatim.
+      1b. (#1619 step 2) Running as an `agent-<slug>` OS user with the sudo
+         mint shim installed: the SHIM, never the in-process broker with an
+         agent-readable App key.
       2. `shutil.which(DEFAULT_BROKER_NAME)` — a PATH search that (unlike the
          raw execvp path) simply treats an inaccessible directory as "not
          found there" per-entry (it uses `os.access(..., os.X_OK)`, which
@@ -119,6 +145,9 @@ def resolve_broker_binary(broker: Optional[str] = None) -> str:
     """
     if broker:
         return broker
+    shim = _agent_mint_shim()
+    if shim:
+        return shim
     found = shutil.which(DEFAULT_BROKER_NAME)
     if found:
         return found
@@ -232,11 +261,10 @@ class Guard:
             return 1
 
         try:
-            # The settings_pr path is driven through a sudo-able root wrapper
-            # pinned to settings_pr ONLY (bubble-broker-mint-settings-root.sh),
-            # which refuses runtime_read. Mint the pre-push read token with the
-            # push's own action there, so #543's base fetch works on both
-            # paths without widening that wrapper.
+            # The settings_pr push mints its pre-push read token with the
+            # push's own action (#543's base fetch). Runtime pushes use
+            # runtime_read, which the root wrapper (bubble-broker-mint-settings-
+            # root.sh) serves for the caller's own dept since #1619 step 1.
             read_action = "settings_pr" if action == "settings_pr" else "runtime_read"
 
             def mint_read_token() -> str:

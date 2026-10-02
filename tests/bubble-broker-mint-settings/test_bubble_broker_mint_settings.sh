@@ -10,6 +10,7 @@
 # Asserts the wrapper (the sudo-able root script):
 #   W1  REFUSES a non-`mint` subcommand.
 #   W2  REFUSES --action outside {settings_pr, runtime_write_own} (open_priority_pr).
+#   W20/W21 (#1619 step 2) no test hatch in prod; own-vault repo for runtime_*.
 #   W12-W18 (#1619) runtime_write_own: own-dept only (SUDO_USER), policy-forced.
 #   W3  REFUSES an unknown --dept (no installation id mapped).
 #   W4  REFUSES a repo that isn't the dept's own bubble-ops-<dept>.
@@ -94,9 +95,9 @@ common_env() {
 
 run_wrap() {
   if [[ $VERBOSE == 1 ]]; then
-    common_env "$ROOT_WRAP" "$@" > "$WORK/out" 2> >(tee "$WORK/err" >&2); RC=$?
+    common_env "${WRAP_BIN:-$ROOT_WRAP}" "$@" > "$WORK/out" 2> >(tee "$WORK/err" >&2); RC=$?
   else
-    common_env "$ROOT_WRAP" "$@" > "$WORK/out" 2> "$WORK/err"; RC=$?
+    common_env "${WRAP_BIN:-$ROOT_WRAP}" "$@" > "$WORK/out" 2> "$WORK/err"; RC=$?
   fi
   OUT="$(cat "$WORK/out")"; ERR="$(cat "$WORK/err")"
 }
@@ -199,9 +200,16 @@ github_access:
       mode: direct_runtime_commit
 EOF
 cp "$POLDIR/tony-policy.yaml" "$POLDIR/maya-policy.yaml"
-# run as if sudo'd by $1 (SUDO_USER); BUBBLE_MINT_TEST_NONROOT stands in for EUID 0
+# run as if sudo'd by $1 (SUDO_USER). The production script has NO test switch
+# (#1619 step 2): the EUID==0 gate is neutralised only in a sed-patched COPY
+# used here. W15 below runs the UNPATCHED script to prove the gate is live.
+ROOT_WRAP_NR="$WORK/root-wrapper-nonroot-copy.sh"
+sed 's/"$(id -u)" != "0"/"0" != "0"/' "$ROOT_WRAP" > "$ROOT_WRAP_NR"; chmod +x "$ROOT_WRAP_NR"
+if cmp -s "$ROOT_WRAP" "$ROOT_WRAP_NR"; then bad "W20 test copy not patched (EUID gate text changed?)"; fi
+[[ "$(grep -c 'BUBBLE_MINT_TEST_NONROOT' "$ROOT_WRAP")" == "0" ]] \
+  && ok "W20 production wrapper has no BUBBLE_MINT_TEST_NONROOT hatch" || bad "W20 hatch still in prod script"
 run_rw() { local su="$1"; shift
-  SUDO_USER="$su" BUBBLE_MINT_TEST_NONROOT=1 POLICY_DIR="$POLDIR" run_wrap "$@"; }
+  SUDO_USER="$su" WRAP_BIN="$ROOT_WRAP_NR" POLICY_DIR="$POLDIR" run_wrap "$@"; }
 
 # ---- W12: own-dept runtime_write_own accepted; broker forced onto the dept policy
 : > "$CAP"
@@ -276,6 +284,27 @@ run_rw agent-tony mint --dept maya --action runtime_read --repo bubble-ops-maya
 [[ $RC -eq 2 && "$ERR" == *"may only mint for its own dept"* ]] && ok "W19b cross-dept runtime_read denied" || bad "W19b (rc=$RC err=$ERR)"
 run_rw claude mint --dept tony --action runtime_read --repo bubble-ops-tony
 [[ $RC -eq 2 ]] && ok "W19c non-agent runtime_read denied" || bad "W19c (rc=$RC)"
+
+# ---- W21 (#1619 step 2): own vault repo accepted for runtime_*, never for settings_pr
+cat > "$POLDIR/ben-policy.yaml" <<'EOF'
+github_access:
+  actor: ops-loop-ben
+  own_repo: bubble-ops-ben
+  read: [bubble-ops-ben, bubble-ben-vault]
+  write:
+    - repo: bubble-ben-vault
+      allowed_paths: ["positions/**"]
+      mode: direct_runtime_commit
+EOF
+: > "$CAP"
+run_rw agent-ben mint --dept ben --action runtime_write_own --repo bubble-ben-vault --paths positions/AAPL.md
+[[ $RC -eq 0 && "$(cat "$CAP")" == *"--repo bubble-ben-vault"* ]] && ok "W21 own vault runtime_write_own accepted" || bad "W21 (rc=$RC err=$ERR)"
+run_rw agent-ben mint --dept ben --action runtime_read --repo bubble-ben-vault
+[[ $RC -eq 0 ]] && ok "W21b own vault runtime_read accepted" || bad "W21b (rc=$RC err=$ERR)"
+run_rw agent-ben mint --dept ben --action settings_pr --repo bubble-ben-vault --paths CLAUDE.md
+[[ $RC -eq 2 && "$ERR" == *"not the dept's own repo"* ]] && ok "W21c settings_pr never targets the vault" || bad "W21c (rc=$RC err=$ERR)"
+run_rw agent-ben mint --dept ben --action runtime_write_own --repo bubble-maya-vault --paths positions/AAPL.md
+[[ $RC -eq 2 && "$ERR" == *"not the dept's own repo"* ]] && ok "W21d another dept's vault refused" || bad "W21d (rc=$RC err=$ERR)"
 
 # ---- W10b: no PEM left after the new paths either
 LEFT="$(find "$TMPFS" -type f -name 'bubble-settings-pem.*' 2>/dev/null | wc -l | tr -d ' ')"
