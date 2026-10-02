@@ -192,7 +192,9 @@ def compact(wm: Path, cap: int, today: dt.date, dry_run: bool = False,
         return 0, res
     try:
         adir.mkdir(parents=True, exist_ok=True)
-        existing = afile.read_text(encoding="utf-8") if afile.exists() else ""
+        existed = afile.exists()
+        existing = afile.read_text(encoding="utf-8") if existed else ""
+        orig_existing, wrote = existing, False
         marker = "<!-- memory_compact sha256=%s -->" % digest
         if marker not in existing:
             add = "%s\n## Compacted %s (%d entries)\n\n%s" % (
@@ -200,13 +202,19 @@ def compact(wm: Path, cap: int, today: dt.date, dry_run: bool = False,
             if existing and not existing.endswith("\n"):
                 existing += "\n"
             _atomic_write(afile, (existing + ("\n" if existing else "") + add))
+            wrote = True
         if body not in afile.read_text(encoding="utf-8"):
             return 2, {"status": "refused", "reason": "archive verification failed; WORKING_MEMORY untouched"}
         # compare-and-swap: abort if anything touched WORKING_MEMORY.md since we read it.
-        # (The archive append is idempotent via its sha marker, so a retry adds no dupes.)
+        # On abort the archive append is rolled back so a retry cannot duplicate entries.
         st1 = wm.stat()
         if (st1.st_size, st1.st_mtime_ns) != (st0.st_size, st0.st_mtime_ns) \
                 or wm.read_bytes() != raw:
+            if wrote:
+                if existed:
+                    _atomic_write(afile, orig_existing)
+                else:
+                    afile.unlink()
             return 2, {"status": "refused",
                        "reason": "WORKING_MEMORY.md changed during compaction; untouched, retry"}
         _atomic_write(wm, new, mode=st1.st_mode & 0o7777)
