@@ -1,8 +1,7 @@
-"""test_concierge_route.py — /concierge/<name> page + live session fragment.
+"""test_concierge_route.py — concierge page + activity metadata fragment.
 
 Builds an app with the concierge router included and a fake agents_root +
-seeded session, so the route renders without depending on live machine
-state. (The router itself will be wired into main.py separately.)
+seeded synthetic session, so privacy behavior is tested without live state.
 
 TDD: written alongside the route.
 """
@@ -40,13 +39,15 @@ def client(tmp_path, monkeypatch):
     from console.services import concierge_reader
     monkeypatch.setattr(concierge_reader, "list_concierges",
                         lambda agents_root=str(agents): _orig_list(str(agents)))
-    # Simpler: monkeypatch the module-level default by wrapping get/read.
+    # Simpler: monkeypatch the module-level default by wrapping get.  Transcript
+    # parsing must never be reached by cockpit routes after board #1673.
     _real_get = concierge_reader.get_concierge
-    _real_read = concierge_reader.read_recent_session
     monkeypatch.setattr(concierge_reader, "get_concierge",
                         lambda name, agents_root=str(agents): _real_get(name, str(agents)))
     monkeypatch.setattr(concierge_reader, "read_recent_session",
-                        lambda name, n=30, agents_root=str(agents): _real_read(name, n, str(agents)))
+                        lambda *args, **kwargs: pytest.fail(
+                            "cockpit route opened transcript content"
+                        ))
 
     app = FastAPI()
     templates = Jinja2Templates(directory=str(CONSOLE_DIR / "templates"))
@@ -65,12 +66,13 @@ def _orig_list(agents_root):
     return _l(agents_root)
 
 
-def test_concierge_page_renders_status_and_session(client):
+def test_concierge_page_renders_status_without_session_text(client):
     r = client.get("/concierge/morty")
     assert r.status_code == 200, r.text
     assert "Morty" in r.text
-    assert "MORTY_IS_WORKING" in r.text          # live session turn rendered
-    assert "Session en direct" in r.text          # the live view section
+    assert "MORTY_IS_WORKING" not in r.text
+    assert "Activité et livrables" in r.text
+    assert "Le texte des sessions n’est pas affiché" in r.text
 
 
 def test_concierge_page_has_htmx_autorefresh(client):
@@ -84,10 +86,12 @@ def test_unknown_concierge_404(client):
     assert r.status_code == 404
 
 
-def test_session_fragment_renders_turns(client):
+def test_session_fragment_renders_activity_metadata_not_turns(client):
     r = client.get("/concierge/morty/session")
     assert r.status_code == 200
-    assert "MORTY_IS_WORKING" in r.text
+    assert "MORTY_IS_WORKING" not in r.text
+    assert "Dernière activité" in r.text
+    assert "Le texte des sessions n’est pas affiché" in r.text
 
 
 def test_session_fragment_unknown_404(client):

@@ -1,9 +1,9 @@
-"""agent_session.py — read an agent's live session transcript.
+"""Agent-session archive helpers.
 
-Shared by the concierge pages and the dept pages. An agent's raw terminal
-output is discarded (`script -qfc … /dev/null`), so the JSONL transcript
-at ~/.claude/projects/-home-claude-agents-<dir>/ IS the real-time
-activity stream.
+Board #1673 forbids exposing transcript prose/tool arguments in cockpit UI.
+Cockpit routes may use metadata-only helpers such as
+``newest_session_mtime_iso``; content parsing remains solely for separately
+authorized archive/audit workflows and regression coverage.
 
 The session DIR is not perfectly predictable from the slug: depts run
 from a prefixed workdir (bubble-ops-<slug>) but the session dir can be
@@ -152,7 +152,7 @@ def newest_session_file(dir_suffixes: List[str]) -> Optional[str]:
 
 
 def read_session_turns(session_file: Optional[str], n: int = 30) -> List[SessionTurn]:
-    """Return the last ``n`` classified turns from a transcript file."""
+    """Return archived turns; never pass this result to a cockpit response."""
     if not session_file:
         return []
     try:
