@@ -128,6 +128,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOOT_REARM_INSTALLER="$SCRIPT_DIR/install-boot-rearm.sh"
 INJECT_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/bubble-inject.block.ts"
 LEDGER_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/delivery-ledger.block.ts"
+CHOICES_BLOCK="$PROJECT_ROOT/deploy/telegram-plugin/choices.block.ts"
+CHOICES_PATCHER="$SCRIPT_DIR/apply-choices-patch.py"
 PEER_ENSURE="$SCRIPT_DIR/ensure-agent-message-watcher.py"
 
 PLUGIN_GLOB="${CHANNEL_PATCHES_PLUGIN_GLOB:-$HOME/.claude/plugins/cache/claude-plugins-official/telegram/*/}"
@@ -402,6 +404,11 @@ run_critical_section() {
   local ledger_rc=$?
   [[ "$ledger_rc" != "0" ]] && section_rc=1
 
+  # ── 4. choices — inline-button answers for the reply tool (Joris 2026-10-02) ──
+  apply_choices
+  local choices_rc=$?
+  [[ "$choices_rc" != "0" ]] && section_rc=1
+
   peer_after="$(peer_watcher_digest)" || peer_after="malformed"
   if [[ "$peer_after" != "$peer_protected" ]]; then
     log "agent-message watcher changed during channel patch — restoring combined backup"
@@ -638,6 +645,60 @@ PY
     return 0
   else
     log "delivery-ledger: bun build FAILED — restoring backup (see $build_log)"
+    cp "$bak" "$SERVER_TS"
+    rm -rf "$build_out"
+    return 4
+  fi
+}
+
+apply_choices() {
+  # Inline-button "choices" for the reply tool (+ ch: callback handler). Opt-out: CHANNEL_PATCHES_CHOICES=0.
+  if [[ "${CHANNEL_PATCHES_CHOICES:-1}" == "0" ]]; then
+    log "choices: disabled (CHANNEL_PATCHES_CHOICES=0) — skip"
+    return 0
+  fi
+  if [[ ! -f "$CHOICES_BLOCK" || ! -f "$CHOICES_PATCHER" ]]; then
+    log "choices: canonical block/patcher missing — skip"
+    return 2
+  fi
+  if python3 "$CHOICES_PATCHER" "$SERVER_TS" "$CHOICES_BLOCK" --check; then
+    log "choices: already present — no-op"
+    return 0
+  fi
+  if [[ "$DRY" == "1" ]]; then
+    log "choices: DRY — would back up server.ts, apply the choices patch (helpers + reply schema/send + ch: callback), bun build validate"
+    return 0
+  fi
+
+  local ts bak prc
+  ts="$(date -u +%Y%m%d-%H%M%S)"
+  bak="${SERVER_TS}.bak-choices-${ts}"
+  cp "$SERVER_TS" "$bak"
+
+  python3 "$CHOICES_PATCHER" "$SERVER_TS" "$CHOICES_BLOCK" >/dev/null
+  prc=$?
+  if [[ "$prc" != "0" ]]; then
+    log "choices: insertion failed (rc=$prc; anchor drift?) — restoring backup"
+    cp "$bak" "$SERVER_TS"
+    return 3
+  fi
+
+  if [[ -z "$BUN_BIN" || ! -x "$BUN_BIN" ]]; then
+    log "choices: bun not found (checked \$CHANNEL_PATCHES_BUN and PATH) — cannot validate, restoring backup"
+    cp "$bak" "$SERVER_TS"
+    return 2
+  fi
+
+  local build_out build_log
+  build_out="$(mktemp -d)"
+  build_log="$(mktemp "${TMPDIR:-/tmp}/install-channel-patches-choices-build.XXXXXX")"
+  if ( cd "$PLUGIN_DIR" && PATH="$(dirname "$BUN_BIN"):$PATH" "$BUN_BIN" build server.ts --target=node --outdir="$build_out" ) \
+      >"$build_log" 2>&1; then
+    log "choices: applied + bun build OK ($SERVER_TS)"
+    rm -rf "$build_out" "$build_log"
+    return 0
+  else
+    log "choices: bun build FAILED — restoring backup (see $build_log)"
     cp "$bak" "$SERVER_TS"
     rm -rf "$build_out"
     return 4
