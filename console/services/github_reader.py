@@ -2323,6 +2323,24 @@ def list_recent_decisions(slugs: List[str], limit: Optional[int] = 10) -> List[D
                 except Exception as exc:  # noqa: BLE001 — skip malformed files, but log it
                     _log.warning("list_recent_decisions: skipping malformed %s: %s", dp, exc)
 
+    # #1639: a decision archived under .processed/ supersedes a same-gate
+    # unprocessed file that is not newer. On a host:local dept's read-only VPS
+    # mirror the cockpit's untracked hide-marker (inbox/decisions/<gate>.yaml)
+    # is preserved across every sync, so after the dept archives the decision
+    # (git-tracked .processed/<gate>.yaml) both files coexist and the marker
+    # kept the gate "awaiting processing" forever.
+    done = {}
+    for d in results:
+        if d["processed"]:
+            key = (d["slug"], d["gate_id"])
+            done[key] = max(done.get(key, ""), d["decided_at"])
+    results = [
+        d for d in results
+        if d["processed"]
+        or (d["slug"], d["gate_id"]) not in done
+        or d["decided_at"] > done[(d["slug"], d["gate_id"])]
+    ]
+
     # Sort by decided_at descending (ISO strings sort lexicographically correctly).
     results.sort(key=lambda d: d["decided_at"], reverse=True)
     return results[:limit]

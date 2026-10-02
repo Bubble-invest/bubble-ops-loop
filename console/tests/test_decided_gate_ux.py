@@ -547,3 +547,24 @@ def test_dept_lists_remote_marker_as_pending_not_actionable(
         r'class="decision-card[^" ]*(?: [^"]*)?"\s+href="/gate/fixture/remote-list-1597"',
         page.text,
     )
+
+
+def test_processed_supersedes_stale_unprocessed_marker_1639(tmp_path, monkeypatch):
+    """host:local mirror keeps the cockpit hide-marker after the dept archives
+    the decision under .processed/: the gate must not stay 'awaiting'."""
+    from console.services import github_reader
+    mirror = _make_dept_repo(tmp_path, "mirror")
+    _write_decision(mirror, "done-1", decided_at="2026-09-26T15:45:00Z")
+    _write_decision(mirror, "done-1", decided_at="2026-09-26T15:45:00Z", processed=True)
+    _write_decision(mirror, "open-1", decided_at="2026-09-27T10:00:00Z")
+    # re-decided after the archived one -> still pending
+    _write_decision(mirror, "redo-1", decided_at="2026-09-28T10:00:00Z")
+    _write_decision(mirror, "redo-1", decided_at="2026-09-20T10:00:00Z", processed=True)
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: mirror)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: None)
+    rows = {(d["gate_id"], d["processed"]) for d in
+            github_reader.list_recent_decisions(["fixture"], limit=None)}
+    assert ("done-1", False) not in rows
+    assert ("done-1", True) in rows
+    assert ("open-1", False) in rows
+    assert ("redo-1", False) in rows
