@@ -9,7 +9,8 @@
 #
 # Asserts the wrapper (the sudo-able root script):
 #   W1  REFUSES a non-`mint` subcommand.
-#   W2  REFUSES --action other than settings_pr (runtime_write_own).
+#   W2  REFUSES --action outside {settings_pr, runtime_write_own} (open_priority_pr).
+#   W12-W18 (#1619) runtime_write_own: own-dept only (SUDO_USER), policy-forced.
 #   W3  REFUSES an unknown --dept (no installation id mapped).
 #   W4  REFUSES a repo that isn't the dept's own bubble-ops-<dept>.
 #   W5  REFUSES an unknown/extra flag (no arg smuggling into the broker).
@@ -86,7 +87,7 @@ chmod +x "$STUB_BROKER"
 
 # common env that retargets the wrapper at the fakes
 common_env() {
-  BROKER_BIN="$STUB_BROKER" SOPS_BIN="$STUB_SOPS" \
+  BROKER_BIN="${BROKER_OVERRIDE:-$STUB_BROKER}" SOPS_BIN="$STUB_SOPS" \
   AGE_KEY_FILE="$AGE" SOPS_PEM_PATH="$ENC" \
   TMPFS_DIRS="$TMPFS" "$@"
 }
@@ -108,9 +109,9 @@ if [[ $RC -eq 2 && "$ERR" == *"only the 'mint' subcommand"* ]]; then
   ok "W1 refuses non-mint subcommand"; else bad "W1 (rc=$RC err=$ERR)"; fi
 
 # ---- W2: non-settings_pr action ---------------------------------------------
-run_wrap mint --dept fixture --action runtime_write_own --repo bubble-ops-fixture
-if [[ $RC -eq 2 && "$ERR" == *"must be 'settings_pr'"* ]]; then
-  ok "W2 refuses non-settings_pr action"; else bad "W2 (rc=$RC err=$ERR)"; fi
+run_wrap mint --dept fixture --action open_priority_pr --repo bubble-ops-fixture
+if [[ $RC -eq 2 && "$ERR" == *"must be 'settings_pr', 'runtime_write_own' or 'runtime_read'"* ]]; then
+  ok "W2 refuses open_priority_pr action"; else bad "W2 (rc=$RC err=$ERR)"; fi
 
 # ---- W3: unknown dept -------------------------------------------------------
 run_wrap mint --dept eviltwin --action settings_pr --repo bubble-ops-eviltwin
@@ -183,6 +184,102 @@ SL="$(cat "$FAKE_SUDO_LOG")"
 if [[ "$SL" == *"-n /usr/local/bin/bubble-broker-mint-settings-root.sh mint --dept fixture --action settings_pr --repo bubble-ops-fixture"* ]]; then
   ok "W11 shim execs 'sudo -n <root helper>' with argv intact"
 else bad "W11 sudo_line=$SL"; fi
+
+# =============================================================================
+# #1619 step 1: runtime_write_own, own-dept only, via the broker policy
+# =============================================================================
+POLDIR="$WORK/policies"; mkdir -p "$POLDIR"
+cat > "$POLDIR/tony-policy.yaml" <<'EOF'
+github_access:
+  actor: ops-loop-tony
+  own_repo: bubble-ops-tony
+  write:
+    - repo: bubble-ops-tony
+      allowed_paths: ["outputs/**", "queues/**"]
+      mode: direct_runtime_commit
+EOF
+cp "$POLDIR/tony-policy.yaml" "$POLDIR/maya-policy.yaml"
+# run as if sudo'd by $1 (SUDO_USER); BUBBLE_MINT_TEST_NONROOT stands in for EUID 0
+run_rw() { local su="$1"; shift
+  SUDO_USER="$su" BUBBLE_MINT_TEST_NONROOT=1 POLICY_DIR="$POLDIR" run_wrap "$@"; }
+
+# ---- W12: own-dept runtime_write_own accepted; broker forced onto the dept policy
+: > "$CAP"
+run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths outputs/a.md queues/x.json
+BL="$(cat "$CAP")"
+if [[ $RC -eq 0 && "$OUT" == "ghs_FAKETOKEN_FROM_STUB" \
+   && "$BL" == *"--action runtime_write_own"* \
+   && "$BL" == *"--paths outputs/a.md queues/x.json --policy $POLDIR/tony-policy.yaml"* \
+   && "$BL" == *"--installation-id 135214360"* ]]; then
+  ok "W12 own-dept runtime_write_own accepted; --policy forced to tony-policy.yaml"
+else bad "W12 (rc=$RC out=$OUT bl=$BL err=$ERR)"; fi
+
+# ---- W13: another dept's dept/repo denied (cross-dept)
+run_rw agent-tony mint --dept maya --action runtime_write_own --repo bubble-ops-maya --paths outputs/a.md
+[[ $RC -eq 2 && "$ERR" == *"may only mint for its own dept"* ]] \
+  && ok "W13 agent-tony cannot mint for maya" || bad "W13 (rc=$RC err=$ERR)"
+run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-maya --paths outputs/a.md
+[[ $RC -eq 2 && "$ERR" == *"not the dept's own repo"* ]] \
+  && ok "W13b agent-tony cannot target maya's repo" || bad "W13b (rc=$RC err=$ERR)"
+run_rw agent-tony mint --dept maya --action settings_pr --repo bubble-ops-maya
+[[ $RC -eq 2 && "$ERR" == *"may only mint for its own dept"* ]] \
+  && ok "W13c settings_pr also bound to caller dept" || bad "W13c (rc=$RC err=$ERR)"
+
+# ---- W14: missing --paths, and non-agent caller, refused
+run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-tony
+[[ $RC -eq 2 && "$ERR" == *"requires --paths"* ]] && ok "W14 runtime_write_own without --paths refused" || bad "W14 (rc=$RC err=$ERR)"
+run_rw claude mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths outputs/a.md
+[[ $RC -eq 2 && "$ERR" == *"requires an agent-<slug> caller"* ]] && ok "W14b non-agent caller (claude) refused" || bad "W14b (rc=$RC err=$ERR)"
+
+# ---- W15: SUDO_USER spoof when NOT run via sudo (EUID != 0, no test override)
+if [[ "$(id -u)" != "0" ]]; then
+  SUDO_USER=agent-tony POLICY_DIR="$POLDIR" run_wrap mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths outputs/a.md
+  [[ $RC -eq 2 && "$ERR" == *"must be invoked through sudo"* ]] \
+    && ok "W15 spoofed SUDO_USER without sudo (EUID!=0) refused" || bad "W15 (rc=$RC err=$ERR)"
+else echo "  SKIP: W15 (running as root)"; fi
+
+# ---- W16: arg/action injection denied; caller policy env ignored
+run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths outputs/a.md --policy /tmp/evil.yaml
+[[ $RC -eq 2 && "$ERR" == *"disallowed/unknown argument"* ]] && ok "W16 caller --policy rejected" || bad "W16 (rc=$RC err=$ERR)"
+run_rw agent-tony mint --dept tony --action "runtime_write_own --action settings_pr" --repo bubble-ops-tony --paths outputs/a.md
+[[ $RC -eq 2 && "$ERR" == *"must be 'settings_pr', 'runtime_write_own' or 'runtime_read'"* ]] && ok "W16b action injection via value refused" || bad "W16b (rc=$RC err=$ERR)"
+: > "$CAP"
+BUBBLE_TOKEN_BROKER_POLICY=/tmp/evil.yaml run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths outputs/a.md
+BL="$(cat "$CAP")"
+[[ $RC -eq 0 && "$BL" == *"--policy $POLDIR/tony-policy.yaml"* ]] && ok "W16c caller BUBBLE_TOKEN_BROKER_POLICY ignored" || bad "W16c (rc=$RC bl=$BL)"
+
+# ---- W17: missing policy file => refuse (fail-closed)
+rm -f "$POLDIR/maya-policy.yaml"
+run_rw agent-maya mint --dept maya --action runtime_write_own --repo bubble-ops-maya --paths outputs/a.md
+[[ $RC -eq 2 && "$ERR" == *"no policy file"* ]] && ok "W17 no policy file => refused" || bad "W17 (rc=$RC err=$ERR)"
+
+# ---- W18: structural / traversal path denied by the REAL broker policy.enforce
+# (real broker CLI, --mock-github: no network). Skips if python yaml/broker src absent.
+BROKER_SRC="$(cd "$HERE/../../token-broker" && pwd)"
+if python3 -c "import yaml" 2>/dev/null && [[ -f "$BROKER_SRC/src/cli.py" ]]; then
+  REALB="$WORK/realbroker"
+  printf '#!/usr/bin/env bash\ncd "%s" && exec python3 -m src.cli "$@" --mock-github --audit-log "%s/audit.jsonl"\n' "$BROKER_SRC" "$WORK" > "$REALB"; chmod +x "$REALB"
+  real_rw() { BROKER_OVERRIDE="$REALB" run_rw agent-tony mint --dept tony --action runtime_write_own --repo bubble-ops-tony --paths "$@"; }
+  real_rw outputs/ok.md;         [[ $RC -eq 0 && "$OUT" == ghs_MOCK* ]] && ok "W18 real policy: outputs/ file issued" || bad "W18 (rc=$RC err=$ERR)"
+  real_rw dept.yaml;             [[ $RC -ne 0 && "$ERR" == *"DENIED"* ]] && ok "W18b real policy: dept.yaml denied" || bad "W18b (rc=$RC err=$ERR)"
+  real_rw outputs/../MANDATE.md; [[ $RC -ne 0 && "$ERR" == *"DENIED"* ]] && ok "W18c real policy: '..' traversal denied" || bad "W18c (rc=$RC err=$ERR)"
+  real_rw outputs/ok.md CLAUDE.md; [[ $RC -ne 0 && "$ERR" == *"DENIED"* ]] && ok "W18d real policy: mixed batch denied" || bad "W18d (rc=$RC err=$ERR)"
+else echo "  SKIP: W18 (python yaml / broker src unavailable)"; fi
+
+# ---- W19: runtime_read (guard's pre-push base-fetch token): own dept, no --paths needed
+: > "$CAP"
+run_rw agent-tony mint --dept tony --action runtime_read --repo bubble-ops-tony
+BL="$(cat "$CAP")"
+[[ $RC -eq 0 && "$BL" == *"--action runtime_read"* && "$BL" == *"--policy $POLDIR/tony-policy.yaml"* ]] \
+  && ok "W19 own-dept runtime_read accepted (policy forced)" || bad "W19 (rc=$RC bl=$BL err=$ERR)"
+run_rw agent-tony mint --dept maya --action runtime_read --repo bubble-ops-maya
+[[ $RC -eq 2 && "$ERR" == *"may only mint for its own dept"* ]] && ok "W19b cross-dept runtime_read denied" || bad "W19b (rc=$RC err=$ERR)"
+run_rw claude mint --dept tony --action runtime_read --repo bubble-ops-tony
+[[ $RC -eq 2 ]] && ok "W19c non-agent runtime_read denied" || bad "W19c (rc=$RC)"
+
+# ---- W10b: no PEM left after the new paths either
+LEFT="$(find "$TMPFS" -type f -name 'bubble-settings-pem.*' 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$LEFT" == "0" ]] && ok "W10b no PEM left after runtime_write_own runs" || bad "W10b left $LEFT pem file(s)"
 
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
