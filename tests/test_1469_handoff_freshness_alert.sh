@@ -4,9 +4,11 @@
 #   1. The HANDOFF.md freshness gate is now 12h by default (was ~20-24h),
 #      still overridable via HANDOFF_MAX_AGE_H — a stale-day handoff must
 #      SKIP, not rotate into a context-thin session.
-#   2. Every SKIP (missing OR stale HANDOFF.md) now alerts via the fleet's
+#   2. Every non-dry-run SKIP (missing OR stale HANDOFF.md) alerts via the fleet's
 #      existing kanban emitter (tools/kanban/emit_kanban_item.sh) instead of
 #      failing silently, with a per-slug-per-day dedup title.
+#   3. --dry-run only prints intentions on SKIP, ask-handoff and rotate paths;
+#      it never emits a card/notification, injects, or changes workspace/home files.
 #
 # Covers both scripts/bubble-session-rotate.sh (VPS) and its Mac twin
 # deploy/local/bubble-session-rotate-mac.sh.
@@ -38,6 +40,35 @@ pass() { echo "PASS: $*"; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+
+# Trap side-effecting commands before any script runs, including notification
+# fallbacks and service/process control. Injection is also checked on disk below.
+STUBBIN="$TMP/stubbin"
+mkdir -p "$STUBBIN"
+cat > "$STUBBIN/side-effect" <<'EOF'
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >> "${STUB_SIDE_EFFECT_LOG:?}"
+exit 0
+EOF
+chmod +x "$STUBBIN/side-effect"
+for cmd in launchctl systemctl tmux notify telegram bubble-notify bubble-inject gh curl; do
+  cp "$STUBBIN/side-effect" "$STUBBIN/$cmd"
+done
+export STUB_SIDE_EFFECT_LOG="$TMP/side-effects.log"
+export PATH="$STUBBIN:$PATH" TMUX_BIN="$STUBBIN/tmux"
+export ROTATE_ASK_HANDOFF=0 HANDOFF_MAX_AGE_H=12
+
+# macOS's stock Bash 3 lacks mapfile; emulate only the VPS script's usage so
+# its read-only rotate preview is exercised on this host too.
+if (( BASH_VERSINFO[0] < 4 )); then
+  mapfile() {
+    local line
+    [[ "$1" == -t && "$2" == jsonls ]] || return 1
+    jsonls=()
+    while IFS= read -r line; do jsonls+=("$line"); done
+  }
+  export -f mapfile
+fi
 
 # ── stub emit_kanban_item.sh: records its argv, never touches gh/curl ──────
 mk_stub_emitter() {
@@ -91,8 +122,9 @@ run_mac() {
     touch_hours_ago "$age" "$M_WORK/HANDOFF.md"
   fi
   STUB_EMIT_LOG="$TMP/mac_emit.log" \
+  EMIT_KANBAN_ITEM="$M_WORK/tools/kanban/emit_kanban_item.sh" \
   HOME="$TMP/mac-home" \
-    bash "$MAC_SCRIPT" macslug --workdir "$M_WORK" "$@" 2>&1 || true
+    bash "$MAC_SCRIPT" macslug --workdir "$M_WORK" "$@" 2>&1
 }
 
 # We need a real plist at $HOME/Library/LaunchAgents/com.bubble.ops-loop-macslug.plist
@@ -100,7 +132,7 @@ touch "$TMP/mac-home/Library/LaunchAgents/com.bubble.ops-loop-macslug.plist"
 
 # --- 2a. missing HANDOFF.md -> SKIP + alert ---------------------------------
 rm -f "$TMP/mac_emit.log"
-out=$(run_mac "" --dry-run)
+out=$(run_mac "")
 if echo "$out" | grep -q "SKIP macslug: no HANDOFF.md"; then
   pass "Mac: missing HANDOFF.md -> SKIP"
 else
@@ -117,7 +149,7 @@ fi
 #         the NEW 12h default -> must now SKIP (the regression this card
 #         fixes) + alert -------------------------------------------------
 rm -f "$TMP/mac_emit.log"
-out=$(run_mac 13 --dry-run)
+out=$(run_mac 13)
 if echo "$out" | grep -q "SKIP macslug: HANDOFF.md is 13h stale"; then
   pass "Mac: 13h-old HANDOFF.md SKIPs under the new 12h default (was allowed under the old ~20-24h window)"
 else
@@ -145,11 +177,7 @@ fi
 
 # --- 2d. HANDOFF_MAX_AGE_H override still works (e.g. loosened to 24h) -----
 rm -f "$TMP/mac_emit.log"
-out=$(HANDOFF_MAX_AGE_H=24 STUB_EMIT_LOG="$TMP/mac_emit.log" HOME="$TMP/mac-home" \
-      bash "$MAC_SCRIPT" macslug --workdir "$M_WORK" --dry-run 2>&1 || true)
-touch_hours_ago 13 "$M_WORK/HANDOFF.md"
-out=$(HANDOFF_MAX_AGE_H=24 STUB_EMIT_LOG="$TMP/mac_emit.log" HOME="$TMP/mac-home" \
-      bash "$MAC_SCRIPT" macslug --workdir "$M_WORK" --dry-run 2>&1 || true)
+out=$(HANDOFF_MAX_AGE_H=24 run_mac 13 --dry-run)
 if echo "$out" | grep -q "HANDOFF.md present + fresh"; then
   pass "Mac: HANDOFF_MAX_AGE_H=24 override widens the window back for a 13h-old handoff"
 else
@@ -160,8 +188,8 @@ fi
 #         with the IDENTICAL title (dedup key) so emit_kanban_item.sh's own
 #         open-issue check would collapse them to one card -----------------
 rm -f "$TMP/mac_emit.log"
-run_mac "" --dry-run >/dev/null
-run_mac 13 --dry-run >/dev/null
+run_mac "" >/dev/null
+run_mac 13 >/dev/null
 titles=$(grep -o 'title=session-rotate SKIP: macslug ([0-9-]*)' "$TMP/mac_emit.log" | sort -u | wc -l | tr -d ' ')
 if [ "$titles" = "1" ]; then
   pass "Mac: repeat SKIPs same day produce the SAME dedup title (task+title key)"
@@ -194,8 +222,6 @@ fi
 
 # STUBBIN: a GNU-stat shim (`stat -c %Y FILE`) ahead of PATH, since this
 # script targets Linux/systemd and a BSD/macOS dev box's stat has no -c flag.
-STUBBIN="$TMP/stubbin"
-mkdir -p "$STUBBIN"
 cat > "$STUBBIN/stat" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%Y" ]; then
@@ -212,12 +238,13 @@ run_vps() {
     touch_hours_ago "$age" "$V_WORK/HANDOFF.md"
   fi
   PATH="$STUBBIN:$PATH" STUB_EMIT_LOG="$TMP/vps_emit.log" \
-    bash "$VPS_TEST_COPY" vpsslug "$@" 2>&1 || true
+  EMIT_KANBAN_ITEM="$V_WORK/tools/kanban/emit_kanban_item.sh" HOME="$V_HOME" \
+    bash "$VPS_TEST_COPY" vpsslug "$@" 2>&1
 }
 
 # --- 3a. missing HANDOFF.md -> SKIP + alert ---------------------------------
 rm -f "$TMP/vps_emit.log"
-out=$(run_vps "" --dry-run)
+out=$(run_vps "")
 if echo "$out" | grep -q "SKIP vpsslug: no HANDOFF.md"; then
   pass "VPS: missing HANDOFF.md -> SKIP"
 else
@@ -231,7 +258,7 @@ fi
 
 # --- 3b. 13h-old HANDOFF.md -> SKIPs under the new 12h default -------------
 rm -f "$TMP/vps_emit.log"
-out=$(run_vps 13 --dry-run)
+out=$(run_vps 13)
 if echo "$out" | grep -q "SKIP vpsslug: HANDOFF.md is 13h stale"; then
   pass "VPS: 13h-old HANDOFF.md SKIPs under the new 12h default"
 else
@@ -266,6 +293,67 @@ if echo "$out" | grep -q "SKIP"; then
 else
   pass "VPS: --force bypasses the HANDOFF gate (no SKIP)"
 fi
+
+# =============================================================================
+# Group 4: dry-run is read-only on every path, for both variants (#1195).
+# =============================================================================
+snapshot_files() {
+  find "$@" -print
+  find "$@" -type f -exec cksum {} \;
+}
+
+check_dry_run() {
+  local variant="$1" age="$2" expected="$3"; shift 3
+  local work home script slug emitter before after out rc proj
+  local args=()
+  if [[ "$variant" == Mac ]]; then
+    work="$M_WORK"; home="$TMP/mac-home"; script="$MAC_SCRIPT"; slug=macslug
+    args=("$slug" --workdir "$work")
+  else
+    work="$V_WORK"; home="$V_HOME"; script="$VPS_TEST_COPY"; slug=vpsslug
+    args=("$slug")
+  fi
+  emitter="$work/tools/kanban/emit_kanban_item.sh"
+  rm -f "$work/HANDOFF.md" "$TMP/dry_emit.log" "$STUB_SIDE_EFFECT_LOG"
+  [[ -z "$age" ]] || touch_hours_ago "$age" "$work/HANDOFF.md"
+  printf 'existing inject line\n' > "$work/inject"
+  printf 'existing rotation state\n' > "$home/rotation.state"
+  # A real fixture transcript must stay in place, even for --force.
+  if [[ "$variant" == Mac ]]; then
+    proj="$home/.claude/projects/$(printf '%s' "$work" | LC_ALL=C tr -c 'A-Za-z0-9' '-')"
+  else
+    proj="$home/.claude/projects/test-project"
+  fi
+  mkdir -p "$proj"; printf '{}\n' > "$proj/session.jsonl"
+  before=$(snapshot_files "$work" "$home" | sort)
+  out=$(HOME="$home" EMIT_KANBAN_ITEM="$emitter" STUB_EMIT_LOG="$TMP/dry_emit.log" \
+        ROTATE_INJECT_FILE="$work/inject" \
+        bash "$script" "${args[@]}" --dry-run "$@" 2>&1)
+  rc=$?
+  after=$(snapshot_files "$work" "$home" | sort)
+  if [[ "$rc" == 0 ]] && echo "$out" | grep -q "DRY-RUN $slug: $expected"; then
+    pass "$variant: dry-run ${age:-missing}h $*: exit 0 + would-do output"
+  else
+    fail "$variant: dry-run exit $rc or missing would-do output: $out"
+  fi
+  if [[ ! -e "$TMP/dry_emit.log" && ! -e "$STUB_SIDE_EFFECT_LOG" && "$before" == "$after" ]]; then
+    pass "$variant: dry-run ${age:-missing}h $*: no card/notify/inject/control calls or file changes"
+  else
+    fail "$variant: dry-run invoked a side effect or changed workspace/home files: $out"
+  fi
+  if [[ "$*" == *--ask-handoff* ]] && ! echo "$out" | grep -q "would ask the agent for a handoff"; then
+    fail "$variant: dry-run ask-handoff did not print its intention: $out"
+  fi
+}
+
+for variant in Mac VPS; do
+  check_dry_run "$variant" 13 "would skip rotation and alert: HANDOFF.md is 13h stale"
+  check_dry_run "$variant" "" "would skip rotation and alert: no HANDOFF.md"
+  check_dry_run "$variant" 13 "would skip rotation and alert: HANDOFF.md is 13h stale" --ask-handoff
+  check_dry_run "$variant" "" "would skip rotation and alert: no HANDOFF.md" --ask-handoff
+  check_dry_run "$variant" 2 "would \(bootout\|stop\)"
+  check_dry_run "$variant" 13 "would \(bootout\|stop\)" --force
+done
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL PASS"

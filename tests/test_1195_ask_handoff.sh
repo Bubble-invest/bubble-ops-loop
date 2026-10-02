@@ -17,18 +17,21 @@ cat > "$W/tools/kanban/emit_kanban_item.sh" <<'E'
 echo "$*" >> "$STUB_EMIT_LOG"
 E
 chmod +x "$W/tools/kanban/emit_kanban_item.sh"; export STUB_EMIT_LOG="$TMP/emit.log"; : > "$STUB_EMIT_LOG"
+export EMIT_KANBAN_ITEM="$W/tools/kanban/emit_kanban_item.sh" ROTATE_ASK_HANDOFF=0 HANDOFF_MAX_AGE_H=12
 INJ="$TMP/inject"; : > "$INJ"
 OLD="$(date -u -v-3d +%Y-%m-%d 2>/dev/null || date -u -d '-3 days' +%Y-%m-%d)"
 printf '# t - session handoff (updated %s 10:00 UTC)\n' "$OLD" > "$W/HANDOFF.md"   # fresh mtime, stale stamp
-out=$(bash "$MAC" t --workdir "$W" --dry-run 2>&1); echo "$out" | grep -q "SKIP t:" && pass "stale header stamp SKIPs despite fresh mtime" || fail "stamp not honored: $out"
+out=$(bash "$MAC" t --workdir "$W" --dry-run 2>&1); rc=$?
+[[ "$rc" == 0 ]] && echo "$out" | grep -q "DRY-RUN t: would skip rotation" && pass "stale header stamp would SKIP despite fresh mtime (exit 0)" || fail "stamp not honored (exit $rc): $out"
+[[ ! -s "$STUB_EMIT_LOG" ]] && pass "dry-run stale header does not emit a card/notification" || fail "dry-run stale header alerted"
 
 # stubs: nothing real may be stopped/started
 mkdir -p "$TMP/bin"; printf '#!/bin/sh\necho "launchctl $*" >> "$STUB_LC_LOG"\n' > "$TMP/bin/launchctl"; chmod +x "$TMP/bin/launchctl"
 export STUB_LC_LOG="$TMP/lc.log"; : > "$STUB_LC_LOG"; export PATH="$TMP/bin:$PATH"; export TMUX_BIN="$TMP/bin/nonexistent-tmux"
 
 # dry-run must NOT inject (no side effect on a live agent)
-: > "$INJ"; ROTATE_IDLE_S=0 bash "$MAC" t --workdir "$W" --ask-handoff --inject-file "$INJ" --dry-run >/dev/null 2>&1
-[[ ! -s "$INJ" ]] && pass "dry-run does not inject" || fail "dry-run injected"
+: > "$INJ"; out=$(ROTATE_IDLE_S=0 bash "$MAC" t --workdir "$W" --ask-handoff --inject-file "$INJ" --dry-run 2>&1); rc=$?
+[[ "$rc" == 0 && ! -s "$INJ" && ! -s "$STUB_EMIT_LOG" && ! -s "$STUB_LC_LOG" ]] && pass "dry-run ask-handoff exits 0 without inject/alert/service calls" || fail "dry-run ask-handoff side effect or exit $rc: $out"
 
 # fake agent: when the inject file gets a line, rewrite HANDOFF.md with a fresh stamp
 : > "$INJ"
