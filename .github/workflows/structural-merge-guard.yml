@@ -43,13 +43,18 @@ jobs:
         run: |
           set -euo pipefail
           # Paginate both lists (PRs can exceed one page of files/reviews).
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '[.[]|{path:.filename}]')
+          # Write to files, not shell vars: --paginate --jq emits one array PER PAGE
+          # (invalid as a single --argjson value past 100 files) and a big PR's JSON
+          # overflows ARG_MAX ("jq: Argument list too long", ops-loop#575, 1,986 files).
+          # --slurpfile + add flattens the per-page arrays.
+          tmp=$(mktemp -d)
+          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '[.[]|{path:.filename}]' > "$tmp/files.json"
           # Board #1461 review follow-up: `type` and `id` are REQUIRED here,
           # not just `login` — the guard script now matches all three (login
           # exact + type=="Bot" + id) so a plain human account cannot satisfy
           # the gate merely by registering a same-named GitHub username.
-          reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '[.[]|{user:{login:.user.login,type:.user.type,id:.user.id},state:.state,commit_id:.commit_id}]')
-          jq -n --argjson files "$files" --argjson reviews "$reviews" \
-            '{files:$files, reviews:$reviews}' \
+          gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '[.[]|{user:{login:.user.login,type:.user.type,id:.user.id},state:.state,commit_id:.commit_id}]' > "$tmp/reviews.json"
+          jq -n --slurpfile f "$tmp/files.json" --slurpfile r "$tmp/reviews.json" \
+            '{files:($f|add // []), reviews:($r|add // [])}' \
           | python3 .github/scripts/structural_merge_guard.py \
               --repo "$REPO" --head-sha "$HEAD_SHA" --approver-bot-id "$APPROVER_BOT_ID"
