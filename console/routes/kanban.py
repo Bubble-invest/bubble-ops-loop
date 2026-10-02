@@ -38,6 +38,7 @@ from console.services.github_reader import (
 from console.services.cockpit_comment_author import annotate_comment_authors
 
 from console.services.mission_alignment import alignment_summary
+from console.services import bu_filter
 
 from console import settings
 
@@ -448,6 +449,7 @@ def issue_to_card(issue: dict) -> dict:
         "created":      created_display,
         "created_raw":  created_raw,
         "host":         host_val,
+        "bu_label":     _extract_label_value(labels, "bu") or "",
         # Resolved project bucket (used by group_by_project; "" means fall through
         # to derive_project keyword heuristic).
         "project":      project,
@@ -1209,7 +1211,7 @@ def sort_by_date_added(cards: list) -> list:
 
 
 @router.get("/kanban", response_class=HTMLResponse)
-def kanban_board(request: Request):
+def kanban_board(request: Request, bu: Optional[str] = None):
     """Full kanban board — all open issues from the GitHub board repo.
 
     Passes three groupings to the template:
@@ -1224,6 +1226,7 @@ def kanban_board(request: Request):
     request on this single-worker console for up to ~100s).
     """
     columns: dict = {}
+    active_bu = bu_filter.normalize_bu(bu)
     generated_at = ""
     error: str | None = None
     counts: dict = {}
@@ -1237,7 +1240,13 @@ def kanban_board(request: Request):
         for issue in issues:
             card = issue_to_card(issue)
             raw_columns[card["column"]].append(card)
-        columns = dict(raw_columns)
+        # Optional business-unit lens (?bu=<slug>, board #1603); default = all.
+        active_bu = bu_filter.normalize_bu(bu)
+        if active_bu:
+            by_dept_units = bu_filter.dept_units()
+            raw_columns = {col: bu_filter.filter_cards(cs, active_bu, by_dept_units)
+                           for col, cs in raw_columns.items()}
+        columns = {col: cs for col, cs in raw_columns.items() if cs or not active_bu}
 
         # generated_at: timestamp of newest issue's updatedAt (or now if empty)
         if issues:
@@ -1303,4 +1312,6 @@ def kanban_board(request: Request):
         "error":        error,
         "generated_at": generated_at,
         "counts":       counts,
+        "bu_options":   bu_filter.BU_LABELS,
+        "active_bu":    active_bu,
     })

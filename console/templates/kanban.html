@@ -53,6 +53,11 @@
    so the group title isn't tucked under the top of the viewport. */
 .dept-anchor { display: block; height: 0; scroll-margin-top: 76px; }
 /* ── View-switcher tabs ──────────────────────────────────────────── */
+.vp-bu { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.vp-bu-chip { padding: 4px 12px; border: 1px solid var(--line, #d0d0d0); border-radius: 999px;
+  font-size: 13px; color: var(--muted, #666); text-decoration: none; }
+.vp-bu-chip:hover { color: var(--ink); }
+.vp-bu-chip.active { color: var(--ink); border-color: var(--ink); font-weight: 600; }
 .vp-tabs {
   display: flex;
   gap: 4px;
@@ -413,6 +418,12 @@
 {# Dept grouping is the default view (#524b, Joris: "kanban cards grouped by
    dept as well"). The other lenses (projet / statut / échéances / récent)
    remain one tab away. #}
+<nav class="vp-bu" aria-label="Filtrer par business unit">
+  <a href="/kanban" class="vp-bu-chip{% if not active_bu %} active{% endif %}">Toutes</a>
+  {% for slug, label in bu_options.items() %}
+  <a href="/kanban?bu={{ slug }}" class="vp-bu-chip{% if active_bu == slug %} active{% endif %}">{{ label }}</a>
+  {% endfor %}
+</nav>
 <div class="vp-tabs" role="tablist">
   <button class="vp-tab" data-view="dept" role="tab" aria-selected="true">Par département</button>
   <button class="vp-tab" data-view="projet" role="tab" aria-selected="false">Par projet</button>
