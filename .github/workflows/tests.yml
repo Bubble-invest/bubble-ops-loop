@@ -42,6 +42,13 @@ jobs:
         run: python3 -m pytest token-broker/tests/ -q --tb=short
       - name: Git-guard tests
         run: python3 -m pytest git-guard/tests/ -q --tb=short
+      # #1619: the sudo-able root mint wrapper and the root credential helper
+      # (agent callers read-only) are the push chokepoints. Hermetic shell tests
+      # (stub sops/broker/curl; no root, no network, no real key).
+      - name: Broker mint wrapper + credential helper shell tests
+        run: |
+          bash tests/bubble-broker-mint-settings/test_bubble_broker_mint_settings.sh
+          bash tests/bubble-gh-credential-helper/test_agent_readonly.sh
       # Deploy-time hooks (SessionStart re-arm #754, mission-file guard, output
       # guard) run on every live agent. They were previously untested in CI, so a
       # regression in the compact re-arm (loop goes dormant, #754) could ship
