@@ -1,0 +1,10 @@
+[Unit]
+Description=Bubble Fleet — refresh Hermes usage mirrors
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+Unit=hermes-usage-export.service
+
+[Install]
+WantedBy=timers.target

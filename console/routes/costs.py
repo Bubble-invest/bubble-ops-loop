@@ -51,7 +51,7 @@ def _agent_budgets(report: dict) -> dict:
     spent = the agent's week real-$ cost (its WHOLE session spend — interactive
     + operating + dev, not just missions). budget = the agent's weekly
     operating envelope from settings.OPERATING_ENVELOPE_WEEKLY_USD, looked up
-    by the FULL report agent-key (e.g. "tony (local)") since the envelope is
+    by the FULL report agent-key (e.g. "tonio") since the envelope is
     per-agent-session, not per-dept. Returns {agent_key: budget_status_dict}
     plus a fleet-total under key "__fleet__": {spent, budget, pct, level,
     defined} (fleet budget = Σ envelopes of agents that have one defined).

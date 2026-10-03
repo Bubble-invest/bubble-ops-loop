@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,7 @@ def _session(path: Path, *, model: str, turns: list[dict], first_user: str = "")
     if first_user:
         lines.append({"type": "user", "message": {"role": "user", "content": first_user}})
     for u in turns:
-        lines.append({"type": "assistant", "message": {"role": "assistant", "model": model, "usage": u}})
+        lines.append({"type": "assistant", "timestamp": datetime.now(timezone.utc).isoformat(), "message": {"role": "assistant", "model": model, "usage": u}})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
 
@@ -410,11 +411,8 @@ def test_report_refresh_true_always_bypasses_ttl_cache(fake_projects):
 
 
 # ─── day= per-message-timestamp bucketing (board #499 residual #2) ─────────
-# build_report's default (day=None) path buckets by FILE MTIME. That's fast
-# but wrong for an exceptional-day audit: editing/touching an old session
-# file today makes it look like today's spend under mtime bucketing, and you
-# can't isolate one specific past calendar day at all. day="YYYY-MM-DD" adds
-# a "day" span computed from each message's OWN timestamp instead.
+# Both default spans and day= now bucket message timestamps in Europe/Paris.
+# File mtime is only a parse-cache key (#1712).
 
 def test_day_none_path_unchanged_by_new_param(fake_projects):
     """Back-compat: calling build_report with no day= arg at all produces the
@@ -458,10 +456,8 @@ def test_day_filter_isolates_one_calendar_day_by_message_ts(fake_projects):
 def test_day_filter_touched_old_file_not_miscounted_as_today(fake_projects, monkeypatch):
     """The motivating bug: a session file's mtime says "today" (because it was
     edited/touched today) but its actual messages are timestamped on an OLDER
-    day. Under the default mtime-based "today" bucket this file wrongly counts
-    as today's spend. Under day=<that older day>, it correctly isolates to
-    that day and does NOT show up in the (separate) mtime "today" bucket
-    confusion — i.e. the day= figure reflects message content, not mtime."""
+    day. Both default "today" and the requested day use message timestamps,
+    so touching the file cannot reattribute its old usage."""
     f = fake_projects / "-home-claude-agents-bubble-ops-ben" / "old.jsonl"
     _session_with_ts(
         f, model="claude-sonnet-4-6",
@@ -475,6 +471,7 @@ def test_day_filter_touched_old_file_not_miscounted_as_today(fake_projects, monk
     os.utime(f, (now, now))
 
     rep = cost_tracker.build_report(refresh=True, day="2026-07-02")
+    assert rep["totals"]["today"]["tokens"] == 0
     day_span = rep["agents"]["ben"]["day"]
     assert day_span["tokens"] == 500_000
     assert day_span["cost"] == pytest.approx(1.5, abs=0.01)  # 0.5M x $3/1M sonnet
@@ -491,10 +488,8 @@ def test_day_filter_no_matching_messages_is_empty_not_error(fake_projects):
     )
     rep = cost_tracker.build_report(refresh=True, day="1999-01-01")
     assert rep["day_requested"] == "1999-01-01"
-    # ben still appears (from the today/week mtime pass) but its "day" span is blank
-    assert rep["agents"]["ben"]["day"] == {
-        "cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}
-    }
+    assert rep["totals"]["day"]["runs"] == 0
+    assert "ben" not in rep["agents"]  # old file mtime no longer implies recent activity
 
 
 def test_day_filter_deepseek_still_zero_priced_in_day_span(fake_projects):
@@ -514,14 +509,14 @@ def test_day_filter_deepseek_still_zero_priced_in_day_span(fake_projects):
 
 def test_parse_session_for_day_unit(tmp_path):
     """Unit-level check on parse_session_for_day directly (bypassing
-    build_report): only entries whose timestamp[:10] == day are accumulated."""
+    build_report): only entries on the Paris calendar day are accumulated."""
     f = tmp_path / "s.jsonl"
     _session_with_ts(
         f, model="claude-haiku-4-5",
         turns=[
             {"ts": "2026-07-01T00:00:00.000Z", "input_tokens": 10, "output_tokens": 0,
              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
-            {"ts": "2026-07-02T23:59:59.999Z", "input_tokens": 20, "output_tokens": 0,
+            {"ts": "2026-07-02T21:59:59.999Z", "input_tokens": 20, "output_tokens": 0,
              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
             {"ts": "2026-07-03T00:00:00.000Z", "input_tokens": 40, "output_tokens": 0,
              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
