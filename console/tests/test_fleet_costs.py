@@ -8,6 +8,9 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -557,10 +560,13 @@ def test_cache_publication_rolls_back_on_interrupted_scan(projects, monkeypatch)
         yield {'identity': 'partial', 'session_id': 'partial', 'timestamp': '2026-10-03T08:00:00Z',
                'model': 'claude-sonnet-4-6', 'usage': dict.fromkeys(tracker.TOKEN_CLASSES, 5)}
         raise RuntimeError('interrupted')
+    original = tracker._session_records
     monkeypatch.setattr(tracker, '_session_records', interrupted)
     with pytest.raises(RuntimeError, match='interrupted'):
         tracker.build_report(day='2026-10-03')
     assert tracker.CACHE_FILE.read_bytes() == before
+    monkeypatch.setattr(tracker, '_session_records', original)
+    assert tracker.build_report(day='2026-10-03')['totals']['day']['tokens'] == 590
 
 
 def test_idless_content_copies_collapse_but_different_time_or_usage_survive(projects):
@@ -717,3 +723,234 @@ def test_incomplete_discovery_still_prunes_confirmed_deleted_sources(projects, m
     with sqlite3.connect(tracker.CACHE_FILE) as db:
         assert db.execute('SELECT count(*) FROM files').fetchone() == (0,)
         assert db.execute('SELECT count(*) FROM records').fetchone() == (0,)
+
+
+@pytest.mark.parametrize('damage', ['garbage', 'truncated', 'version', 'schema'])
+def test_broken_usage_cache_rebuilt_from_sources(projects, damage):
+    from console.services.cost_cache import SCHEMA_VERSION
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    baseline = tracker.build_report(day='2026-10-03')
+    if damage == 'garbage':
+        tracker.CACHE_FILE.write_bytes(b'not a database')
+        for suffix in ('-journal', '-wal', '-shm'):
+            Path(str(tracker.CACHE_FILE) + suffix).write_bytes(b'bad sibling')
+    elif damage == 'truncated':
+        data = tracker.CACHE_FILE.read_bytes()
+        tracker.CACHE_FILE.write_bytes(data[:len(data) // 2])
+    else:
+        with sqlite3.connect(tracker.CACHE_FILE) as db:
+            if damage == 'version':
+                db.execute(f'PRAGMA user_version={SCHEMA_VERSION + 1}')
+            else:
+                db.execute('DROP TABLE daily')
+                db.execute('CREATE TABLE daily (wrong INTEGER)')
+    assert tracker.build_report(day='2026-10-03') == baseline
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+        assert db.execute('PRAGMA user_version').fetchone() == (SCHEMA_VERSION,)
+        assert db.execute('SELECT count(*) FROM records').fetchone() == (1,)
+    assert all(not Path(str(tracker.CACHE_FILE) + suffix).exists()
+               for suffix in ('-journal', '-wal', '-shm'))
+    assert stat.S_IMODE(tracker.CACHE_FILE.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize('lock_kind', ['IMMEDIATE', 'EXCLUSIVE'])
+def test_usage_cache_lock_falls_back_without_changing_cache(projects, caplog, lock_kind):
+    from console.services.cost_cache import BUSY_TIMEOUT_SECONDS
+    path = projects / '_vps-ben/work/s.jsonl'
+    write_lines(path, message())
+    tracker.build_report(day='2026-10-03')
+    before = tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns
+    write_lines(path, message(tokens=500))
+    with sqlite3.connect(tracker.CACHE_FILE) as holder:
+        holder.execute(f'BEGIN {lock_kind}')
+        start = time.monotonic()
+        report = tracker.build_report(day='2026-10-03')
+        elapsed = time.monotonic() - start
+        assert BUSY_TIMEOUT_SECONDS <= elapsed < 3
+        assert holder.in_transaction  # Lock stays held beyond the entire fallback.
+        assert report['totals']['day']['tokens'] == 590
+        assert report['totals']['day']['runs'] == 1
+        assert (tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns) == before
+    warnings = [r for r in caplog.records if 'private cache' in r.message]
+    assert len(warnings) == 1
+    # The shared file still contains the old fingerprint and must be re-ingested.
+    assert tracker.build_report(day='2026-10-03') == report
+
+
+@pytest.mark.parametrize('refresh,day', [(False, None), (True, None), (False, '2026-10-03')])
+def test_concurrent_reports_wait_and_reuse_one_scan(projects, monkeypatch, refresh, day):
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    entered = threading.Event()
+    release = threading.Event()
+    original = tracker._session_records
+    scans = []
+    def blocked(path, meta):
+        scans.append(path)
+        entered.set()
+        assert release.wait(3)
+        yield from original(path, meta)
+    monkeypatch.setattr(tracker, '_session_records', blocked)
+    # Instrument the lock to prove the second request is waiting, without sleeps.
+    second_waiting = threading.Event()
+    real_lock = tracker._report_build_lock
+    class ObservedLock:
+        def __enter__(self):
+            if real_lock.locked():
+                second_waiting.set()
+            real_lock.acquire()
+        def __exit__(self, *args):
+            real_lock.release()
+    monkeypatch.setattr(tracker, '_report_build_lock', ObservedLock())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(tracker.build_report, refresh=refresh, day=day)
+        assert entered.wait(3)
+        second = pool.submit(tracker.build_report, refresh=refresh, day=day)
+        try:
+            assert second_waiting.wait(3)
+            assert not second.done()
+        finally:
+            release.set()
+        a, b = first.result(timeout=3), second.result(timeout=3)
+    assert a is b
+    assert a['totals']['today']['tokens'] == 190
+    assert len(scans) == 1
+
+
+@pytest.mark.parametrize('warm', [False, True])
+def test_transcript_scan_does_not_reserve_a_write_transaction(projects, monkeypatch, warm):
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    if warm:
+        tracker.build_report(day='2026-10-03')
+    from console.services.cost_cache import UsageCache
+    original = UsageCache.sync_file
+    checked = []
+    def check(self, *args):
+        # Another connection can reserve the main DB while this scan is active.
+        writer = sqlite3.connect(tracker.CACHE_FILE, timeout=0)
+        try:
+            writer.execute('BEGIN IMMEDIATE')
+            checked.append(True)
+        finally:
+            writer.rollback()
+            writer.close()
+        return original(self, *args)
+    monkeypatch.setattr(UsageCache, 'sync_file', check)
+    assert tracker.build_report(day='2026-10-03')['totals']['day']['tokens'] == 190
+    assert checked == [True]
+
+
+@pytest.mark.parametrize('operation', ['sync_file', 'finish', 'rows'])
+def test_sqlite_error_during_use_restarts_whole_report(projects, monkeypatch, operation):
+    from console.services.cost_cache import UsageCache
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    baseline = tracker.build_report(day='2026-10-03')
+    original = getattr(UsageCache, operation)
+    failures = []
+    def fail_once(self, *args, **kwargs):
+        if not failures:
+            failures.append(True)
+            raise sqlite3.DatabaseError('fixture corruption during use')
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(UsageCache, operation, fail_once)
+    assert tracker.build_report(day='2026-10-03') == baseline
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+        assert db.execute('SELECT count(*) FROM records').fetchone() == (1,)
+
+
+def test_failed_rebuild_uses_private_cache_and_warns_once(projects, monkeypatch, caplog):
+    from console.services import cost_cache
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    baseline = tracker.build_report(day='2026-10-03')
+    original = cost_cache.sqlite3.connect
+    attempts = []
+    def broken(path, *args, **kwargs):
+        if str(path) == str(tracker.CACHE_FILE):
+            attempts.append(path)
+            raise sqlite3.DatabaseError('fixture persistent failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(cost_cache.sqlite3, 'connect', broken)
+    assert tracker.build_report(day='2026-10-03') == baseline
+    assert len(attempts) == 2
+    assert len([r for r in caplog.records if 'private cache' in r.message]) == 1
+
+
+def test_changed_generation_during_publication_rebuilds_privately(projects, monkeypatch, caplog):
+    from console.services.cost_cache import UsageCache
+    path = projects / '_vps-ben/work/s.jsonl'
+    write_lines(path, message())
+    tracker.build_report(day='2026-10-03')
+    write_lines(path, message(tokens=500))
+    original = UsageCache.finish
+    changed = []
+    def intervening_writer(self, *args, **kwargs):
+        if not changed:
+            # Model the gap between releasing the scan snapshot and publishing.
+            self.db.commit()
+            writer = sqlite3.connect(tracker.CACHE_FILE)
+            try:
+                writer.execute("UPDATE metadata SET value=value+1 WHERE key='generation'")
+                writer.commit()
+            finally:
+                writer.close()
+            changed.append(True)
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(UsageCache, 'finish', intervening_writer)
+    report = tracker.build_report(day='2026-10-03')
+    assert report['totals']['day']['tokens'] == 590
+    assert len([r for r in caplog.records if 'private cache' in r.message]) == 1
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('SELECT i FROM daily').fetchone() == (100,)
+
+
+@pytest.mark.parametrize('endpoint', ['/costs', '/costs.json'])
+@pytest.mark.parametrize('problem', ['garbage', 'truncated', 'locked', 'schema'])
+def test_cost_routes_return_correct_usage_with_broken_or_locked_cache(projects, monkeypatch,
+                                                                     endpoint, problem):
+    from contextlib import closing
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from jinja2 import ChoiceLoader, DictLoader
+    from starlette.templating import Jinja2Templates
+    from console.routes import costs
+    write_lines(projects / '_vps-ben/work/s.jsonl', message())
+    # Use the production router with a local template base and no external
+    # heartbeat/sidebar/budget readers. Unrelated routes need Python >=3.10.
+    monkeypatch.setattr(costs, 'cost_tracker', tracker)
+    monkeypatch.setattr(costs.dept_registry, 'live_departments', lambda: [])
+    monkeypatch.setattr(costs.dept_registry, 'list_departments', lambda: [])
+    monkeypatch.setattr(costs.morty_reader, 'loop_pulse', lambda slugs: {})
+    app = FastAPI()
+    app.include_router(costs.router)
+    templates = Jinja2Templates(directory=str(REPO / 'console/templates'))
+    templates.env.loader = ChoiceLoader([
+        DictLoader({'base.html': '{% block content %}{% endblock %}'}),
+        templates.env.loader,
+    ])
+    app.state.templates = templates
+    baseline = tracker.build_report(refresh=True)
+    before = tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns
+    tracker._report_cache.update(report=None, built_at=0)
+    with closing(sqlite3.connect(tracker.CACHE_FILE)) as holder:
+        if problem == 'locked':
+            holder.execute('BEGIN EXCLUSIVE')
+        elif problem == 'schema':
+            holder.execute('PRAGMA user_version=999')
+        elif problem == 'truncated':
+            tracker.CACHE_FILE.write_bytes(before[0][:len(before[0]) // 2])
+        else:
+            tracker.CACHE_FILE.write_bytes(b'garbage')
+        with TestClient(app) as client:
+            response = client.get(endpoint)
+        assert response.status_code == 200
+        if endpoint == '/costs.json':
+            report = response.json()
+            assert report['totals'] == baseline['totals']
+            assert report['agents'] == baseline['agents']
+        else:
+            assert '190 / 190' in response.text
+            assert 'ben' in response.text
+        if problem == 'locked':
+            assert (tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns) == before
+        holder.rollback()

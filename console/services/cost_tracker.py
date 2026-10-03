@@ -30,6 +30,8 @@ import json
 import logging
 import math
 import os
+import sqlite3
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -400,6 +402,8 @@ def parse_session_for_day(
 # this TTL, so explicit refresh discovers newly changed sources immediately.
 # Unchanged fingerprints are reused even for day-specific/refresh reports.
 _REPORT_TTL_SECONDS = 45
+_report_build_lock = threading.Lock()
+_last_build = {"serial": 0, "day": None, "report": None}
 _report_cache: dict = {"report": None, "built_at": 0.0}
 
 
@@ -424,14 +428,21 @@ def build_report(refresh: bool = False, day: Optional[str] = None) -> dict:
     """
     if day is not None:
         datetime.strptime(day, "%Y-%m-%d")
-    if day is None and not refresh:
-        cached = _cached_report()
-        if cached is not None and cached.get("today_date") == datetime.now(PARIS).date().isoformat():
-            return cached
-    report = _build_report_uncached(refresh=refresh, day=day)
-    if day is None:
-        _store_report(report)
-    return report
+    # Check TTL after acquiring the lock: requests queued behind a cold scan
+    # reuse its report rather than starting their own scan.
+    serial = _last_build["serial"]
+    with _report_build_lock:
+        if _last_build["serial"] != serial and _last_build["day"] == day:
+            return _last_build["report"]
+        if day is None and not refresh:
+            cached = _cached_report()
+            if cached is not None and cached.get("today_date") == datetime.now(PARIS).date().isoformat():
+                return cached
+        report = _build_report_uncached(refresh=refresh, day=day)
+        if day is None:
+            _store_report(report)
+        _last_build.update(serial=_last_build["serial"] + 1, day=day, report=report)
+        return report
 
 
 def _hermes_records(path: Path, notes: set) -> list[dict]:
@@ -485,7 +496,38 @@ def _hermes_records(path: Path, notes: set) -> list[dict]:
         return []
 
 
+def _cache_locked(error: sqlite3.DatabaseError) -> bool:
+    code = getattr(error, "sqlite_errorcode", None)
+    return (code is not None and (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            or "locked" in str(error).lower() or "busy" in str(error).lower())
+
+
 def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> dict:
+    # Retry the WHOLE build, including reading aggregates. A failed cache must
+    # never leak partially ingested usage into the returned report.
+    for attempt in range(2):
+        try:
+            return _build_report_from_cache(CACHE_FILE, day=day)
+        except sqlite3.DatabaseError as error:
+            if _cache_locked(error) or attempt:
+                reason = error
+                break
+            try:
+                for suffix in ("", "-journal", "-wal", "-shm"):
+                    Path(str(CACHE_FILE) + suffix).unlink(missing_ok=True)
+            except OSError as error:
+                reason = error
+                break
+        except (OSError, ValueError) as error:
+            # Unwritable directories/unsafe cache paths are also optional-cache
+            # failures, not missing transcripts.
+            reason = error
+            break
+    _log.warning("cost_tracker: usage cache unavailable; building with private cache: %s", reason)
+    return _build_report_from_cache(None, day=day)
+
+
+def _build_report_from_cache(cache_path: Optional[Path], day: Optional[str] = None) -> dict:
     # Defer sibling imports: mission_kpis loads pricing constants by file spec.
     if __package__:
         from .cost_cache import UsageCache
@@ -535,7 +577,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
         dt = _timestamp(timestamp)
         return dt.astimezone(PARIS).date().toordinal() if dt else None
 
-    with closing(UsageCache(CACHE_FILE)) as cache:
+    with closing(UsageCache(cache_path)) as cache:
         for proj in projects:
             if proj.is_symlink() or not proj.is_dir():
                 continue
