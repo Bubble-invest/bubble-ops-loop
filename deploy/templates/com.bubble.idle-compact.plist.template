@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.bubble.idle-compact-@SLUG@</string>
+  <key>StartInterval</key><integer>300</integer>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/python3</string>
+    <string>@FRAMEWORK_ROOT@/scripts/idle-compact/idle_compact.py</string>
+    <string>--config</string><string>@CONFIG@</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONDONTWRITEBYTECODE</key><string>1</string>
+  </dict>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/idle-compact-@SLUG@-launchd.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/idle-compact-@SLUG@-launchd-error.log</string>
+</dict></plist>
