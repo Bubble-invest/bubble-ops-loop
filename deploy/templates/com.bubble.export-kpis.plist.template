@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.bubble.export-kpis-@SLUG@</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- launchd shares arguments across calendar entries. Morning runs
+             refresh yesterday as well; evening runs refresh today only. -->
+        <string>framework="$1"; dept="$2"; transcripts="$3"; set -- /bin/bash "$framework/scripts/mac-export-kpis.sh" --dept-dir "$dept" --transcripts-dir "$transcripts"; case "$(/bin/date +%H)" in 0[0-9]|1[01]) set -- "$@" --also-yesterday ;; esac; exec "$@"</string>
+        <string>export-kpis</string>
+        <string>@FRAMEWORK_ROOT@</string>
+        <string>@DEPT_DIR@</string>
+        <string>@TRANSCRIPTS_DIR@</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>10</integer></dict>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key><string>@HOME@</string>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:@HOME@/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key><string>@FRAMEWORK_ROOT@</string>
+    <key>StandardOutPath</key><string>@HOME@/Library/Logs/export-kpis-@SLUG@.log</string>
+    <key>StandardErrorPath</key><string>@HOME@/Library/Logs/export-kpis-@SLUG@.log</string>
+</dict>
+</plist>
