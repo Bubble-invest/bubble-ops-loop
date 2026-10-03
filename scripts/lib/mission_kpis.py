@@ -165,6 +165,42 @@ def token_totals(calls: list[dict], pricing: dict | None) -> dict:
     return totals
 
 
+def attribute_calls(calls: list[dict], records: list[tuple], missions: dict,
+                    report_day: dt.date) -> tuple[dict, dict]:
+    """Assign each call once; split integer token classes across shared windows."""
+    begin = dt.datetime.combine(report_day, dt.time(), PARIS)
+    end = dt.datetime.combine(report_day + dt.timedelta(days=1), dt.time(), PARIS)
+    windows = {mission: [(max(r[2], begin), min(r[3], end)) for r in records if r[0] == mission
+                         and r[2] is not None and r[3] is not None and r[3] >= r[2]
+                         and r[2] < end and r[3] >= begin]
+               for mission in missions}
+    attributed = {mission: [] for mission in missions}
+    shared = {mission: set() for mission in missions}
+    # Mark intersecting windows even if no transcript call falls in the overlap.
+    for mission, spans in windows.items():
+        for other, other_spans in windows.items():
+            if mission != other and any(max(a, c) <= min(b, d) and max(a, c) < end
+                                        for a, b in spans for c, d in other_spans):
+                shared[mission].add(other)
+    for call in calls:
+        owners = sorted(mission for mission, spans in windows.items()
+                        if any(a <= call["timestamp"] <= b for a, b in spans))
+        if not owners:
+            continue
+        portions = [dict(call) for _ in owners]
+        # Rotate remainders across classes to keep tiny odd counts balanced.
+        cursor = 0
+        for key in TOKEN_FIELDS:
+            quotient, remainder = divmod(call[key], len(owners))
+            for index, portion in enumerate(portions):
+                portion[key] = quotient + int((index - cursor) % len(owners) < remainder)
+            cursor = (cursor + remainder) % len(owners)
+        for mission, portion in zip(owners, portions):
+            portion["total_tokens"] = sum(portion[key] for key in TOKEN_FIELDS)
+            attributed[mission].append(portion)
+    return attributed, shared
+
+
 def optional_metrics(mapping: dict, board: list | None, runs: list | None,
                      start: dt.date, end: dt.date) -> dict:
     """Reference semantics: first title match, UTC creation day, last equal-day run."""
@@ -251,12 +287,22 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
         date = (start + dt.timedelta(days=offset)).isoformat()
         ledger = read_source(dept_dir / "outputs" / date / "dispatch.json",
                              missing, "dispatch", dict, not_configured=set())
-        if ledger is None:
+        successes = read_source(dept_dir / "outputs" / date / "due-dispatch.json",
+                                missing, "dispatch", list, not_configured=set())
+        if ledger is None and successes is None:
             dispatch_complete = False
             dispatch_days_absent.append(date)
             continue
-        for mission, record in sorted(ledger.items()):
-            if not MISSION_ID.fullmatch(mission) or not isinstance(record, dict):
+        daily_records = [(mission, record, False) for mission, record in sorted((ledger or {}).items())]
+        daily_records.extend((record.get("mission_id"), record, True) if isinstance(record, dict)
+                             else (None, record, True) for record in successes or [])
+        for mission, record, success in daily_records:
+            if not isinstance(mission, str) or not MISSION_ID.fullmatch(mission) or not isinstance(record, dict):
+                missing.add("dispatch")
+                dispatch_complete = False
+                continue
+            if success and (not isinstance(record.get("period"), str) or not record["period"]
+                            or timestamp(record.get("completed_at")) is None):
                 missing.add("dispatch")
                 dispatch_complete = False
                 continue
@@ -274,26 +320,40 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                 completed = None
             if dispatched and start <= dispatched.astimezone(PARIS).date() <= end:
                 records.append((mission, date, dispatched, completed, record))
+            elif success and not dispatched and completed \
+                    and start <= completed.astimezone(PARIS).date() <= end:
+                # Mac acknowledgements without a lease prove success, not a start/window.
+                records.append((mission, date, None, completed, record))
     if len(dispatch_days_absent) == 28:
         missing.add("dispatch")
+    dispatch_complete = dispatch_complete and "dispatch" not in missing
     calls = read_calls(transcripts_dir or Path(
         f"/home/agent-{dept_dir.name}/.claude/projects/-srv-agents-{dept_dir.name}"), missing)
     pricing = pricing_table()
+    today_calls = [c for c in calls or [] if c["timestamp"].astimezone(PARIS).date() == end]
+    attributed, shared = attribute_calls(today_calls, records, missions, end)
+    loop = (manifest or {}).get("loop")
+    mac_schema = isinstance(loop, dict) and isinstance(loop.get("due_dispatch"), dict)
     for mission, data in missions.items():
         matched = [r for r in records if r[0] == mission]
+        if mac_schema:
+            data.update(history_days_present=28 - len(dispatch_days_absent),
+                        history_days_absent=len(dispatch_days_absent))
         if not matched and not dispatch_complete:
             continue  # No observation plus a missing ledger is not zero runs.
-        data.update(days_dispatched=len({r[1] for r in matched}), runs_dispatched=len(matched),
+        data.update(days_dispatched=len({r[2].astimezone(PARIS).date() for r in matched if r[2] is not None}),
+                    runs_recorded=len(matched), runs_dispatched=sum(r[2] is not None for r in matched),
                     runs_completed=sum(r[3] is not None for r in matched),
                     runs_incomplete=sum(r[3] is None for r in matched),
-                    runs_unattributed=sum(r[3] is None or r[3] < r[2] for r in matched))
+                    runs_unattributed=sum(r[2] is None or r[3] is None or r[3] < r[2] for r in matched))
         artifacts = [r[4]["artifacts"] for r in matched if isinstance(r[4].get("artifacts"), list)]
         if artifacts:
             data["artifacts_count"] = sum(len(a) for a in artifacts)
         if calls is not None:
-            windows = [(r[2], r[3]) for r in matched if r[3] is not None and r[3] >= r[2]]
-            attributed = [c for c in calls if any(a <= c["timestamp"] <= b for a, b in windows)]
-            for key, value in token_totals(attributed, pricing).items():
+            data["tokens_date"] = report_day
+            if shared[mission]:
+                data.update(attribution="shared_window", shared_with=sorted(shared[mission]))
+            for key, value in token_totals(attributed[mission], pricing).items():
                 if key.endswith("tokens"):
                     data[f"{key}_approx"] = value
                 elif key == "cost_usd_estimate":
@@ -322,7 +382,6 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                     missions.setdefault(mission, {}).update(data)
             except (ValueError, TypeError, KeyError, re.error):
                 missing.add(name)
-    today_calls = [c for c in calls or [] if c["timestamp"].astimezone(PARIS).date() == end]
     today = token_totals(today_calls, pricing) if calls is not None else {}
     flat = dict(dispatch_days_present=28 - len(dispatch_days_absent),
                 dispatch_days_absent=len(dispatch_days_absent))
@@ -334,7 +393,8 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
     for mission, data in sorted(missions.items()):
         # Mission ids stay unchanged in keys; attention ids use the schema's kebab form.
         identifier = "kpi-" + re.sub(r"[^a-z0-9-]+", "-", mission.lower())
-        flat.update({f"m_{mission}_{key}": value for key, value in data.items()})
+        flat.update({f"m_{mission}_{key}": value for key, value in data.items()
+                     if isinstance(value, (int, float))})
         if data.get("runs_incomplete", 0) >= 2:
             flag(f"{identifier}-incomplete-runs", "high",
                  f"{mission}: {data['runs_incomplete']} recorded dispatches lack completion evidence in 28 days")
@@ -357,8 +417,8 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                 sources_not_configured=sorted(not_configured),
                 dispatch_days_absent_list=dispatch_days_absent,
                 notes=["Days and transcript totals use Europe/Paris; optional board creation dates use UTC.",
-                       "Dispatch counts cover surviving ledger records; overwritten runs and uncommitted crashes are unobservable.",
-                       "Mission token and cost windows are approximate and may overlap across missions.",
+                       "Run counts cover 28 days: surviving VPS dispatches and appended Mac success acknowledgements.",
+                       "Mission tokens and costs cover the report day; overlapping windows share each call's tokens once.",
                        "Dollar estimates use the console pricing constant; unpriced or unreadable usage has no dollar figure."])
 
 
