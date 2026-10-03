@@ -1,0 +1,8 @@
+
+✻ Cogitated for 3m 13s · done 2:06 PM
+                                                                                new task? /clear to save 885.1k tokens
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ok lecture
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 (1M context) ~/claude-workspaces/ellie (main) ctx:88% 7d:25%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ⧉ ellie-mission-site · ← 3 agents

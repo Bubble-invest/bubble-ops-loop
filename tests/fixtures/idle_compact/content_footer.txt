@@ -1,0 +1,6 @@
+Done.
+────────────────
+❯ 
+────────────────
+  bubble-ops-content (main) [Opus 5.5 (1M context)] | ctx: 20% | session: 201…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -460,15 +460,26 @@ def check_pane(pane):
     status_pattern = (r".+\|\s*(?:Opus|Sonnet|Haiku)\b[^|]+\|\s*ctx\s+\d+(?:\.\d+)?%\s+left"
                       r"(?:\s*\|\s*(?:5h|7d)\s+\d+(?:\.\d+)?%)*"
                       r"(?:\s*(?:\|\s*(?:5h|7d)\b[^|…]*)?…)?")
+    # Other sampled Mac status lines put the model first, or bracket it after
+    # the repository/branch. Keep each grammar anchored to both model and ctx.
+    model = r"(?:Opus|Sonnet|Haiku)\s+\d+(?:\.\d+)+(?:\s+\(\d+(?:\.\d+)?[MK] context\))?"
+    percent = r"\d+(?:\.\d+)?%"
+    status_patterns = (
+        status_pattern,
+        model + r"\s+\S+\s+\([^()\n]+\)\s+ctx:\s*" + percent
+        + r"(?:\s+(?:5h|7d):\s*" + percent + r")*",
+        r"\S+\s+\([^()\n]+\)\s+\[" + model + r"\]\s*\|\s*ctx:\s*" + percent
+        + r"\s*\|\s*session:\s*\d+(?:…)?",
+    )
     # Mode lines vary; require the model/context status line and allow only known
     # additional footer lines, so a shell prompt under the box still skips.
     mode = r"⏵⏵ .*permissions.*"
     if not footer:
         raise Unsafe("unrecognized_pane_footer")
     for line in footer:
-        if not (re.fullmatch(mode, line) or re.fullmatch(status_pattern, line)):
+        if not (re.fullmatch(mode, line) or any(re.fullmatch(pattern, line) for pattern in status_patterns)):
             raise Unsafe("unrecognized_pane_footer")
-    if not any(re.fullmatch(status_pattern, line) for line in footer):
+    if not any(re.fullmatch(pattern, line) for line in footer for pattern in status_patterns):
         raise Unsafe("unrecognized_pane_footer")
 
 

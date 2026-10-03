@@ -1,4 +1,4 @@
-"""Synthetic fixtures only. No real tmux or launchctl calls."""
+"""Synthetic inputs and captured pane fixtures. No real tmux or launchctl calls."""
 
 import ast
 import fcntl
@@ -17,6 +17,7 @@ import idle_compact as pilot
 
 
 NOW = 1791028800.0
+PANE_FIXTURES = Path(__file__).resolve().parent / "fixtures/idle_compact"
 EMPTY_PANE = ("Done.\n────────────────\n❯\u00a0\n────────────────\n"
               "  bubble-rnd-workspace | main | Opus 5.5 (1M context) | ctx 54% left | 5h 7% | 7d 18%\n")
 
@@ -383,6 +384,63 @@ class PilotTests(unittest.TestCase):
         self.runner.pane = EMPTY_PANE.replace(
             "❯\u00a0", "\x1b[39m❯\u00a0\x1b[2mfix it and switch it live\x1b[0m")
         self.assertEqual(self.check()[0], "COMPACT_SENT")
+
+    def test_captured_mac_panes_and_content_footer_dry_run(self):
+        self.config.dry_run = True
+        self.entries = [self.assistant(tokens=884786)]
+        self.ledger_rows[0]["ts"] = pilot.iso(NOW - 301 * 60)
+        self.save()
+        for name in ("ellie_tail8_escapes.txt", "accountant_tail8_escapes.txt", "content_footer.txt"):
+            pane = (PANE_FIXTURES / name).read_bytes().decode("utf-8")
+            for trailing in ("", "\n" * 20):
+                with self.subTest(fixture=name, trailing_blanks=len(trailing)):
+                    self.runner.pane = pane + trailing
+                    self.assertIsNone(pilot.check_pane(self.runner.pane))
+                    self.assertEqual(self.check(), ("WOULD COMPACT", "all_conditions_met"))
+                    self.assertEqual(self.runner.sends, [])
+                    self.assertFalse(self.config.state.exists())
+        self.assertIn("idle_minutes=301.00 context_tokens=884786", self.config.log.read_text())
+        captures = [call for call in self.runner.calls if call[1] == "capture-pane"]
+        self.assertTrue(captures)
+        self.assertTrue(all("-e" in call for call in captures))
+
+    def test_captured_ghost_without_styling_fails_closed(self):
+        # Plain tmux capture cannot distinguish this suggestion from a typed draft.
+        self.runner.pane = (PANE_FIXTURES / "ellie_tail8_plain.txt").read_text(encoding="utf-8")
+        self.assert_skip("draft_present")
+
+    def test_captured_ghost_with_normal_intensity_text_fails_closed(self):
+        pane = (PANE_FIXTURES / "ellie_tail8_escapes.txt").read_text(encoding="utf-8")
+        ghost = "\x1b[2mok lecture\x1b[0m"
+        for text in ("ok lecture", "typed " + ghost, ghost + "typed",
+                     "\x1b[2mok\x1b[22m lecture", "\x1b[38;5;2mok lecture\x1b[0m"):
+            with self.subTest(text=repr(text)):
+                self.runner.pane = pane.replace(ghost, text)
+                self.assert_skip("draft_present")
+
+    def test_captured_panes_with_menus_or_dialogs_fail_closed(self):
+        for name in ("ellie_tail8_escapes.txt", "accountant_tail8_escapes.txt", "content_footer.txt"):
+            pane = (PANE_FIXTURES / name).read_text(encoding="utf-8")
+            for dialog in ("  1. Yes\n  2. No\n", "  Select a model\n", "  Allow this tool?\n"):
+                for candidate in (pane + dialog, pane.replace("❯\u00a0", dialog + "❯\u00a0")):
+                    with self.subTest(fixture=name, dialog=dialog, inside=candidate != pane + dialog):
+                        self.runner.pane = candidate
+                        self.assertEqual(self.check()[0], "SKIP")
+                        self.assertEqual(self.runner.sends, [])
+
+    def test_new_status_layouts_require_complete_model_and_context(self):
+        box = "Done.\n────────────────\n❯\u00a0\n────────────────\n"
+        for status in (
+            "Opus 5.5 (1M context) ~/repo (main) 7d:25%",
+            "~/repo (main) ctx:88% 7d:25%",
+            "Opus 5.5 (1M context) ~/repo (main) ctx:88% unknown",
+            "bubble-ops-content (main) [Opus 5.5 (1M context)] | session: 201…",
+            "bubble-ops-content (main) | ctx: 20% | session: 201…",
+            "bubble-ops-content (main) [Opus 5.5 (1M context)] | ctx: 20% | session: 201… extra",
+        ):
+            with self.subTest(status=status):
+                self.runner.pane = box + status + "\n  ⏵⏵ bypass permissions on\n"
+                self.assert_skip("unrecognized_pane_footer")
 
     def test_normal_intensity_text_after_suggestion_is_a_draft(self):
         self.runner.pane = EMPTY_PANE.replace(
