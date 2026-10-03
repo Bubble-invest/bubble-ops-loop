@@ -1,0 +1,12 @@
+{
+  "data_update": {
+    "artifacts": [
+      "outputs/2026-10-03/1/logs.jsonl",
+      "outputs/2026-10-03/1/situation_brief.md",
+      "outputs/2026-10-03/1/summary.md"
+    ],
+    "completed_at": "2026-10-03T05:44:44.351066+00:00",
+    "dispatched_at": "2026-10-03T05:34:00+00:00",
+    "materialized_at": "2026-10-03T05:34:00+00:00"
+  }
+}

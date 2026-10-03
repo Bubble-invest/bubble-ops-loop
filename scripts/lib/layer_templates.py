@@ -251,7 +251,11 @@ Produce the canonical review artifacts (force-commit-push after each one):
 1. `outputs/<today>/4/risk-brief.md` — the day's narrative brief: volumes, \
 incidents, points awaiting {{OPERATOR}}, tomorrow's actions. {l4_brief}
 2. `outputs/<today>/4/management-export.yaml` — export for Tony (format \
-`schemas-draft/management-export.schema.yaml`).
+`schemas-draft/management-export.schema.yaml`). This export is mandatory every day.
+3. `outputs/<today>/4/summary.md` — the department's own day report, including what went wrong.
+
+Per-mission cost, results, and token figures are added automatically by the fleet check;
+do not hand-write them in the export.
 {l4_extra}
 
 ## STEP 3 — The day's logbook (Notion, MANDATORY)

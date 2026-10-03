@@ -1,0 +1,14 @@
+{
+  "inbox_watch": {
+    "artifacts": [],
+    "completed_at": "2026-10-03T08:08:43.517525+00:00",
+    "dispatched_at": "2026-10-03T08:08:00+00:00",
+    "materialized_at": "2026-10-03T06:05:00+00:00"
+  },
+  "morning_brief": {
+    "artifacts": [],
+    "completed_at": "2026-10-03T05:42:00+00:00",
+    "dispatched_at": "2026-10-03T05:35:00+00:00",
+    "materialized_at": "2026-10-03T05:35:00+00:00"
+  }
+}

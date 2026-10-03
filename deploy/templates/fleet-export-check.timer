@@ -1,0 +1,12 @@
+[Unit]
+Description=Bubble Fleet — daily export checks in Europe/Paris
+
+[Timer]
+OnCalendar=*-*-* 21:50:00 Europe/Paris
+OnCalendar=*-*-* 23:30:00 Europe/Paris
+OnCalendar=*-*-* 08:10:00 Europe/Paris
+AccuracySec=1s
+Unit=fleet-export-check.service
+
+[Install]
+WantedBy=timers.target
