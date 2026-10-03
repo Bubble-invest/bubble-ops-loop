@@ -17,7 +17,7 @@ set -uo pipefail
 
 RUNNER="${1:-$(cd "$(dirname "$0")/.." && pwd)/deploy/local/local-loop-backup-runner.sh}"
 ROOT="$(cd "$(dirname "$RUNNER")/../.." && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rnd-1491-mac-wake-test.XXXXXX")"
+WORK="$(mktemp -d "$HOME/.rnd-1491-mac-wake-test.XXXXXX")"
 cleanup() { find "$WORK" -depth -delete; }
 trap cleanup EXIT
 
