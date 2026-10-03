@@ -85,12 +85,30 @@ def test_result_requires_exact_plan_bound_receipt(tmp_path):
     finally:
         wiki_delta.scan_sources = original
     marker = tmp_path / "marker.json"
-    for receipt in ("", "WIKI_COMPILE_RECEIPT:wrong"):
+    run_id = json.loads(pathlib.Path(plan_args.plan).read_text())["run_id"]
+    good = f"WIKI_COMPILE_RECEIPT:{run_id}"
+    for receipt in (
+        "", "WIKI_COMPILE_RECEIPT:wrong",
+        f"{good}\nOne more thing: STEP 7 failed.",   # text AFTER the receipt
+        f"All done. {good}",                         # receipt not on its own line
+        f"{good} (partial)",                         # trailing text on the line
+        f"Report queued.\nWIKI_COMPILE_RECEIPT:wrong",
+    ):
         with pytest.raises(ValueError, match="plan-bound"):
             wiki_delta.command_accept_result(SimpleNamespace(
                 plan=plan_args.plan, marker=str(marker),
                 result=str(successful_result(plan_args, receipt=receipt)),
             ))
+    # Board #1700: a preamble before the exact last-line receipt is accepted
+    # (the 2026-10-02 night), as is trailing whitespace.
+    for receipt in (
+        f"Report queued. All STEP 0-10 actions are complete. Final turn is the receipt only.\n\n{good}",
+        f"{good}\n\n  ",
+    ):
+        wiki_delta.command_accept_result(SimpleNamespace(
+            plan=plan_args.plan, marker=str(marker),
+            result=str(successful_result(plan_args, receipt=receipt)),
+        ))
     wiki_delta.command_accept_result(SimpleNamespace(
         plan=plan_args.plan, marker=str(marker), result=str(successful_result(plan_args)),
     ))
