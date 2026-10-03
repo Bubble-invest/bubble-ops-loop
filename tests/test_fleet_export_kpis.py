@@ -1,7 +1,6 @@
 """Offline fixtures for #1708: real ledger shapes, owner writes, independent alarms."""
 from __future__ import annotations
 
-import copy
 import datetime as dt
 import json
 import os
@@ -13,7 +12,8 @@ import pytest
 import yaml
 
 from scripts.lib import mission_kpis as kpi
-from scripts.lib.enrich_management_export import enrich, load_export
+from scripts.lib import management_kpis as sidecar
+from scripts.lib import fleet_export_check as fleet_check
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / 'fixtures/fleet-export'
@@ -31,7 +31,7 @@ def ledger(dept, date, value):
 
 def manifest(dept, ids=('inbox_watch', 'idle')):
     dept.mkdir(parents=True, exist_ok=True)
-    (dept / 'dept.yaml').write_text(yaml.safe_dump({'recurring_missions': [{'id': m} for m in ids]}))
+    (dept / 'dept.yaml').write_text(yaml.safe_dump({'status': 'live', 'layers': {'subscribed': [1, 4]}, 'recurring_missions': [{'id': m} for m in ids]}))
 
 
 def message(identifier='a', stamp='2026-10-03T08:08:20Z', *, model='claude-sonnet-4', **usage):
@@ -166,14 +166,14 @@ def test_malformed_sources_are_missing(evidence, kind):
 
 def test_unreadable_source_is_missing(evidence, monkeypatch):
     dept, sessions = evidence
-    original = Path.open
+    original = kpi.open_text
 
     def open_file(path, *args, **kwargs):
         if path.name == 'main.jsonl':
             raise PermissionError('fixture permission denied')
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, 'open', open_file)
+    monkeypatch.setattr(kpi, 'open_text', open_file)
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     assert 'transcripts' in doc['sources_missing']
     assert doc['dept_tokens_today'] == {}
@@ -224,217 +224,10 @@ def test_kpi_cli(evidence):
     dept, sessions = evidence
     out = dept / 'kpi.json'
     result = subprocess.run([sys.executable, str(ROOT / 'scripts/lib/mission_kpis.py'), '--dept-dir', str(dept),
-                             '--day', DAY, '--transcripts-dir', str(sessions), '--out', str(out)], capture_output=True, text=True)
+                             '--day', DAY, '--transcripts-dir', str(sessions), '--out', str(out)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(out.read_text())['dept_tokens_today']['total_tokens'] == 100
     assert out.stat().st_uid == os.getuid()
-
-
-def test_enrichment_preserves_model_content_is_atomic_and_idempotent(evidence):
-    dept, sessions = evidence
-    doc = valid_export()
-    doc['top_kpis']['model_calls_today'] = 99
-    doc['needs_management_attention'].append(dict(id='kpi-sources-missing', kind='model', priority='high', summary='Original'))
-    path = export_file(dept, doc)
-    path.chmod(0o640)
-    (path.parent / 'summary.md').write_text('Day report: something went wrong.\n')
-    kpis = kpi.build(dept, DAY, transcripts_dir=sessions)
-    assert enrich(path, kpis, dept, DAY)
-    value = load_export(path)
-    assert value['top_kpis']['model_calls_today'] == 99
-    assert value['top_kpis']['model_kpi'] == doc['top_kpis']['model_kpi']
-    assert value['top_kpis']['export_enriched'] == 1
-    assert value['needs_management_attention'] == doc['needs_management_attention']
-    assert value['links']['day_report'] == f'outputs/{DAY}/4/summary.md'
-    assert value['links']['gates'] == doc['links']['gates']
-    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
-    assert not enrich(path, kpis, dept, DAY)
-    assert path.read_bytes() == before and path.stat().st_mtime_ns == mtime
-    assert path.stat().st_mode & 0o777 == 0o640
-    assert not list(path.parent.glob('.management-export.yaml.*'))
-
-
-@pytest.mark.parametrize('contents', [None, '', '  \n'])
-def test_day_report_missing_and_string_attention_preserved(evidence, contents):
-    dept, sessions = evidence
-    path = export_file(dept)
-    if contents is not None:
-        (path.parent / 'summary.md').write_text(contents)
-    kpis = kpi.build(dept, DAY, transcripts_dir=sessions)
-    enrich(path, kpis, dept, DAY)
-    enrich(path, kpis, dept, DAY)
-    value = load_export(path)
-    assert 'day_report' not in value['links']
-    assert value['needs_management_attention'][0] == 'Keep this free-form model note.'
-    assert sum(isinstance(a, dict) and a['id'] == 'kpi-day-report-missing' for a in value['needs_management_attention']) == 1
-
-
-@pytest.mark.parametrize('invalid', ['bad-yaml', 'missing-root', 'extra-root', 'bad-attention', 'bad-links', 'duplicate-key', 'wrong-day', 'bad-kpi'])
-def test_enrichment_refuses_and_does_not_touch_file(evidence, invalid):
-    dept, sessions = evidence
-    doc = valid_export()
-    if invalid == 'missing-root':
-        del doc['open_gates']
-    if invalid == 'extra-root':
-        doc['unexpected'] = 1
-    if invalid == 'bad-attention':
-        doc['needs_management_attention'] = [dict(id='not_kebab', kind='x', priority='low', summary='s')]
-    if invalid == 'bad-links':
-        doc['links'] = {'empty': ''}
-    if invalid == 'wrong-day':
-        doc['date'] = '2026-10-02'
-    path = export_file(dept, doc)
-    if invalid == 'bad-yaml':
-        path.write_text('[broken')
-    if invalid == 'duplicate-key':
-        path.write_text(path.read_text() + 'dept: ben\n')
-    kpis = kpi.build(dept, DAY, transcripts_dir=sessions)
-    if invalid == 'bad-kpi':
-        kpis['top_kpis_flat'] = {'nan': float('nan')}
-    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
-    with pytest.raises((ValueError, yaml.YAMLError)):
-        enrich(path, kpis, dept, DAY)
-    assert path.read_bytes() == before and path.stat().st_mtime_ns == mtime
-
-
-def test_enrichment_preserves_schema_optional_autonomy_and_unquoted_date(evidence):
-    dept, sessions = evidence
-    doc = valid_export()
-    doc['date'] = dt.date.fromisoformat(DAY)
-    doc['autonomy_readiness'] = {'window_days': 14, 'action_classes': []}
-    path = export_file(dept, doc)
-    enrich(path, kpi.build(dept, DAY, transcripts_dir=sessions), dept, DAY)
-    assert load_export(path)['autonomy_readiness'] == doc['autonomy_readiness']
-
-
-def test_enrich_cli_refusal(evidence):
-    dept, _ = evidence
-    path = export_file(dept)
-    path.write_text('[broken')
-    inputs = dept / 'kpis.json'
-    write_json(inputs, dict(top_kpis_flat={}, attention=[]))
-    result = subprocess.run([sys.executable, str(ROOT / 'scripts/lib/enrich_management_export.py'), '--export', str(path),
-                             '--kpis', str(inputs), '--dept-dir', str(dept), '--day', DAY], capture_output=True, text=True)
-    assert result.returncode != 0
-    assert path.read_text() == '[broken'
-
-
-@pytest.fixture
-def fleet(tmp_path):
-    agents, sessions, state = tmp_path / 'agents', tmp_path / 'transcripts', tmp_path / 'state'
-    for slug in ('tony', 'ben'):
-        manifest(agents / slug)
-    path = export_file(agents / 'tony')
-    (path.parent / 'summary.md').write_text('Day report.\n')
-    transcript(sessions / 'tony/main.jsonl', [message()])
-    # If symlinks are followed this creates an extra missing-export alarm.
-    outside = tmp_path / 'outside'
-    manifest(outside)
-    (agents / 'bubble-ops-maya').symlink_to(outside, target_is_directory=True)
-    calls = tmp_path / 'emits.jsonl'
-    emitter = tmp_path / 'emit.py'
-    emitter.write_text(f'#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n'
-                       f'with Path({str(calls)!r}).open("a") as stream:\n'
-                       '    stream.write(json.dumps(sys.argv[1:]) + "\\n")\n')
-    emitter.chmod(0o755)
-    env = dict(os.environ, AGENTS_ROOT=str(agents), TRANSCRIPTS_ROOT=str(sessions),
-               FLEET_EXPORT_STATE_DIR=str(state), EMIT_BIN=str(emitter), PYTHON_BIN=sys.executable,
-               RUNUSER_BIN='/nonexistent-runuser', FLEET_EXPORT_NOW='2026-10-03T23:30:00+02:00')
-    # Root CI uses an injected owner-command shim instead of actual privilege changes.
-    if os.geteuid() == 0:
-        shim = tmp_path / 'runuser'
-        shim.write_text('#!/bin/sh\nshift 3\nexec "$@"\n')
-        shim.chmod(0o755)
-        env['RUNUSER_BIN'] = str(shim)
-    return agents, path, calls, state, env
-
-
-def fleet_run(env, *args):
-    return subprocess.run(['bash', str(ROOT / 'scripts/fleet-export-check.sh'), *args],
-                          env=env, capture_output=True, text=True)
-
-
-def test_fleet_dry_run_changes_nothing(fleet):
-    agents, path, calls, state, env = fleet
-    before = {str(p): p.read_bytes() for p in agents.rglob('*') if p.is_file()}
-    result = fleet_run(env, '--dry-run', '--day', DAY)
-    assert result.returncode == 0, result.stderr
-    assert 'DRY RUN enrich tony' in result.stdout
-    assert 'DRY RUN alarm ben' in result.stdout
-    assert 'bubble-ops-maya' not in result.stdout
-    assert not state.exists() and not calls.exists()
-    assert before == {str(p): p.read_bytes() for p in agents.rglob('*') if p.is_file()}
-
-
-def test_fleet_enriches_once_alarms_once_and_skips_symlink(fleet):
-    agents, path, calls, state, env = fleet
-    first = fleet_run(env, '--day', DAY)
-    assert first.returncode == 0, first.stderr
-    assert 'Enriched tony' in first.stdout and 'ALARM ben' in first.stdout
-    value = load_export(path)
-    assert value['top_kpis']['export_enriched'] == 1
-    assert value['top_kpis']['model_calls_today'] == 1
-    kpis = path.with_name('mission-kpis.json')
-    mtimes = path.stat().st_mtime_ns, kpis.stat().st_mtime_ns
-    second = fleet_run(env, '--day', DAY)
-    assert second.returncode == 0, second.stderr
-    assert 'Enriched' not in second.stdout
-    assert mtimes == (path.stat().st_mtime_ns, kpis.stat().st_mtime_ns)
-    emitted = [json.loads(line) for line in calls.read_text().splitlines()]
-    assert len(emitted) == 1
-    assert f'task=fleet-export-missing-ben-{DAY}' in emitted[0]
-    assert f'title=Missing daily management export: ben {DAY}' in emitted[0]
-    assert 'budget=5' in emitted[0]
-    assert 'bubble-ops-maya' not in first.stdout + second.stdout
-    assert all(p.stat().st_uid == agents.stat().st_uid for p in agents.rglob('*') if not p.is_symlink())
-
-
-@pytest.mark.parametrize('now,date,alarm', [('2026-10-03T21:50:00+02:00', DAY, False),
-                                          ('2026-10-03T23:29:59+02:00', DAY, False),
-                                          ('2026-10-03T23:30:00+02:00', DAY, True),
-                                          ('2026-10-04T08:10:00+02:00', DAY, True)])
-def test_fleet_deadline_and_previous_day_selection(fleet, now, date, alarm):
-    _, _, _, _, env = fleet
-    env['FLEET_EXPORT_NOW'] = now
-    result = fleet_run(env, '--dry-run')
-    assert result.returncode == 0, result.stderr
-    assert f'ben {date}' in result.stdout
-    assert ('DRY RUN alarm ben' in result.stdout) is alarm
-
-
-def test_fleet_emitter_failure_retries_without_receipt(fleet, tmp_path):
-    _, _, calls, state, env = fleet
-    emitter = env['EMIT_BIN']
-    failing = tmp_path / 'fail'
-    failing.write_text('#!/bin/sh\nexit 1\n')
-    failing.chmod(0o755)
-    env['EMIT_BIN'] = str(failing)
-    result = fleet_run(env, '--day', DAY)
-    assert result.returncode == 1
-    assert not list(state.glob('*.sent'))
-    env['EMIT_BIN'] = emitter
-    assert fleet_run(env, '--day', DAY).returncode == 0
-    assert len(calls.read_text().splitlines()) == 1
-
-
-def test_fleet_bad_export_does_not_hide_other_dept_alarm(fleet):
-    _, path, calls, _, env = fleet
-    path.write_text('[broken')
-    result = fleet_run(env, '--day', DAY)
-    assert result.returncode == 1
-    assert 'ERROR tony' in result.stderr
-    assert len(calls.read_text().splitlines()) == 1
-    assert path.read_text() == '[broken'
-
-
-def test_timer_and_service_contract():
-    timer = (ROOT / 'deploy/templates/fleet-export-check.timer').read_text()
-    for hour in ('21:50', '23:30', '08:10'):
-        assert f'OnCalendar=*-*-* {hour}:00 Europe/Paris' in timer
-    service = (ROOT / 'deploy/templates/fleet-export-check.service').read_text()
-    assert 'User=root' in service
-    assert 'ConditionPathExists' not in service and 'EnvironmentFile' not in service
-    assert 'ExecStart=/opt/bubble-ops-loop/scripts/fleet-export-check.sh' in service
 
 
 @pytest.mark.parametrize('completed', ['not-a-timestamp', '2026-10-03T08:00:00Z', '2026-10-04T09:00:00Z'])
@@ -457,49 +250,6 @@ def test_invalid_map_is_missing_and_does_not_fabricate_optional_zeroes(evidence)
     assert 'cards_created' not in doc['missions']['inbox_watch']
 
 
-def test_fleet_root_uses_runuser_with_actual_directory_owner(fleet, tmp_path):
-    import pwd
-    agents, path, _, _, env = fleet
-    owner = pwd.getpwuid(agents.stat().st_uid).pw_name
-    shim = tmp_path / 'python-shim'
-    shim.write_text(f'#!{sys.executable}\nimport os, sys\n'
-                   'if sys.argv[1] == "-":\n'
-                   '    os.geteuid = lambda: 0\n'
-                   '    sys.argv = sys.argv[1:]\n'
-                   '    exec(compile(sys.stdin.read(), "fleet-check", "exec"))\n'
-                   'else:\n'
-                   '    os.execv(sys.executable, [sys.executable] + sys.argv[1:])\n')
-    shim.chmod(0o755)
-    log = tmp_path / 'owner-calls.jsonl'
-    runuser = tmp_path / 'runuser-shim'
-    runuser.write_text(f'#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n'
-                       f'with Path({str(log)!r}).open("a") as f:\n'
-                       '    f.write(json.dumps(sys.argv[1:]) + "\\n")\n'
-                       'os.execv(sys.argv[4], sys.argv[4:])\n')
-    runuser.chmod(0o755)
-    env.update(PYTHON_BIN=str(shim), RUNUSER_BIN=str(runuser))
-    result = fleet_run(env, '--day', DAY)
-    assert result.returncode == 0, result.stderr
-    invocations = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(invocations) == 2
-    assert all(call[:3] == ['-u', owner, '--'] for call in invocations)
-    assert 'mission_kpis.py' in invocations[0][4]
-    assert 'enrich_management_export.py' in invocations[1][4]
-    assert load_export(path)['top_kpis']['export_enriched'] == 1
-
-
-@pytest.mark.parametrize('stamp', [0, True, '1'])
-def test_existing_enrichment_stamp_is_not_overwritten(evidence, stamp):
-    dept, sessions = evidence
-    doc = valid_export()
-    doc['top_kpis']['export_enriched'] = stamp
-    path = export_file(dept, doc)
-    original = path.read_bytes()
-    with pytest.raises(ValueError, match='conflicts'):
-        enrich(path, kpi.build(dept, DAY, transcripts_dir=sessions), dept, DAY)
-    assert path.read_bytes() == original
-
-
 def test_overlapping_windows_count_each_message_once_per_mission(evidence):
     dept, sessions = evidence
     # Both surviving records cover the same call; the summed mission volume is a union.
@@ -508,3 +258,368 @@ def test_overlapping_windows_count_each_message_once_per_mission(evidence):
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     assert doc['missions']['inbox_watch']['runs_dispatched'] == 2
     assert doc['missions']['inbox_watch']['total_tokens_approx'] == 100
+
+
+@pytest.fixture(autouse=True)
+def nonroot_child_fixtures(monkeypatch):
+    # Offline CI may be uid 0; no real privilege transitions are attempted.
+    monkeypatch.setattr(sidecar.os, 'geteuid', lambda: 1000)
+
+
+def read_sidecar(dept):
+    return yaml.safe_load((dept / 'outputs' / DAY / '4/management-kpis.yaml').read_text())
+
+
+@pytest.mark.parametrize('fixture,shape', [('export-schema.yaml', 'schema'),
+                                         ('export-wrapped.yaml', 'wrapped:export'),
+                                         ('export-extra.yaml', 'nonconforming')])
+def test_real_export_shapes_write_sidecar_and_preserve_bytes(evidence, fixture, shape):
+    dept, sessions = evidence
+    path = export_file(dept)
+    path.write_bytes((FIXTURES / fixture).read_bytes())
+    before = path.read_bytes()
+    (path.parent / 'summary.md').write_text('Something went wrong today.\n')
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    assert path.read_bytes() == before
+    doc = read_sidecar(dept)
+    assert doc['dept'] == 'tony' and doc['date'] == DAY
+    assert doc['export_shape'] == shape and doc['export_present'] is True
+    assert doc['links'] == {'day_report': f'outputs/{DAY}/4/summary.md'}
+    assert doc['top_kpis']['model_calls_today'] == 1
+    assert all(type(n) in (int, float) for n in doc['top_kpis'].values())
+    assert dt.datetime.fromisoformat(doc['generated_at'].replace('Z', '+00:00')).utcoffset() == dt.timedelta(0)
+    assert any(a['id'] == 'kpi-export-nonconforming' and a['priority'] == 'low'
+               for a in doc['attention']) is (shape != 'schema')
+    if fixture == 'export-extra.yaml':
+        assert 'extra root keys: schema_version, summary' in doc['export_shape_note']
+        assert 'MODEL PRIVATE CONTENT' not in doc['export_shape_note']
+    out = path.with_name('management-kpis.yaml')
+    assert out.stat().st_mode & 0o777 == 0o644
+    assert out.stat().st_uid == os.getuid()
+    assert not list(path.parent.glob('.management-kpis.*'))
+
+
+@pytest.mark.parametrize('contents', [None, '', ' \n'])
+def test_day_report_missing(evidence, contents):
+    dept, sessions = evidence
+    path = export_file(dept)
+    if contents is not None:
+        path.with_name('summary.md').write_text(contents)
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    doc = read_sidecar(dept)
+    assert doc['links'] == {}
+    assert 'day_report' in doc['sources_missing']
+    assert [a['priority'] for a in doc['attention'] if a['id'] == 'kpi-day-report-missing'] == ['low']
+
+
+@pytest.mark.parametrize('raw', [b'[broken', b'x' * (1024 * 1024 + 1), b'!!python/object:hostile {}',
+                                 b'dept: tony\ndept: ben\n', b'\xff'],
+                         ids=['bad-yaml', 'oversized', 'unsafe-tag', 'duplicate-key', 'bad-utf8'])
+def test_unparseable_and_oversized_still_write(evidence, raw):
+    dept, sessions = evidence
+    path = export_file(dept)
+    path.write_bytes(raw)
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    assert read_sidecar(dept)['export_shape'] == 'unparseable'
+    assert path.read_bytes() == raw
+
+
+def test_rewritten_sidecar_refreshes_time_and_late_activity(evidence):
+    dept, sessions = evidence
+    path = export_file(dept)
+    before = path.read_bytes()
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    first = read_sidecar(dept)
+    transcript(sessions / 'main.jsonl', [message(), message('later')])
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    second = read_sidecar(dept)
+    assert second['generated_at'] > first['generated_at']
+    assert second['dept_tokens_today']['model_calls'] == 2
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('component', ['management-export.yaml', 'summary.md', 'day', 'outputs', 'dept'])
+def test_child_symlink_refuses_before_any_file_read_or_write(evidence, tmp_path, monkeypatch, component):
+    dept, _ = evidence
+    path = export_file(dept)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    target = outside / 'target'
+    target.write_bytes(b'SECRET MODEL CONTENT')
+    if component in ('management-export.yaml', 'summary.md'):
+        link = path.with_name(component)
+        if link.exists():
+            link.unlink()
+        link.symlink_to(target)
+        argument = dept
+    else:
+        link = {'day': dept / 'outputs' / DAY, 'outputs': dept / 'outputs', 'dept': dept}[component]
+        link.rename(link.with_name(link.name + '-original'))
+        link.symlink_to(outside, target_is_directory=True)
+        argument = dept
+    reads = []
+    original = sidecar.read_file
+    def guarded_read(fd, name):
+        reads.append(name)
+        return original(fd, name)
+    monkeypatch.setattr(sidecar, 'read_file', guarded_read)
+    monkeypatch.setattr(sidecar, 'build', lambda *a, **k: pytest.fail('KPI sources must not be read'))
+    status = sidecar.child(argument, DAY)
+    assert status.startswith('skipped:symlink-')
+    assert reads == ([] if component == 'dept' else ['dept.yaml'])
+    assert target.read_bytes() == b'SECRET MODEL CONTENT'
+    assert sorted(p.name for p in outside.iterdir()) == ['target']
+    assert not list(dept.rglob('management-kpis.yaml'))
+
+
+@pytest.mark.parametrize('status,layers,expected', [('paused', [4], 'skipped:not-live'),
+                                                   ('live', [1, 2, 3], 'skipped:no-l4')])
+def test_ineligible_skips_without_sidecar_or_alarm(evidence, tmp_path, status, layers, expected):
+    dept, _ = evidence
+    (dept / 'dept.yaml').write_text(yaml.safe_dump({'status': status, 'layers': {'subscribed': layers}}))
+    assert sidecar.child(dept, DAY) == expected
+    assert not (dept / 'outputs' / DAY / '4/management-kpis.yaml').exists()
+    emitted = []
+    result = fleet_check.run_loop(dept.parent, tmp_path / 'state', DAY, True, env={},
+        owner_check=lambda p, o: ('agent-tony', None) if p == dept else (None, 'fixture'),
+        child_runner=lambda c, **k: sidecar.child(dept, DAY),
+        emit_runner=lambda *a, **k: emitted.append(a))
+    assert result == 0 and emitted == []
+
+
+def test_nested_live_case_insensitive(evidence):
+    dept, sessions = evidence
+    manifest_doc = yaml.safe_load((dept / 'dept.yaml').read_text())
+    del manifest_doc['status']
+    manifest_doc['department'] = {'status': 'LiVe'}
+    (dept / 'dept.yaml').write_text(yaml.safe_dump(manifest_doc))
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'export_missing'
+    assert read_sidecar(dept)['export_shape'] == 'absent'
+
+
+@pytest.mark.parametrize('mode,uid,user,reason', [(0o120777, 1000, 'agent-tony', 'symlink-dept'),
+    (0o40755, 0, 'root', 'uid-below-1000'), (0o40755, 999, 'agent-tony', 'uid-below-1000'),
+    (0o40755, 1000, 'wrong-owner', 'owner-name-mismatch')])
+def test_root_owner_refusals_injected(mode, uid, user, reason):
+    from types import SimpleNamespace
+    def lookup(n):
+        assert n >= 1000
+        return SimpleNamespace(pw_name=user, pw_uid=n)
+    assert fleet_check.owner_for(Path('/agents/tony'), {},
+        lstat=lambda p: SimpleNamespace(st_mode=mode, st_uid=uid), lookup=lookup) == (None, reason)
+
+
+def test_owner_override_never_allows_uid_zero():
+    from types import SimpleNamespace
+    for uid in (0, 1000):
+        result = fleet_check.owner_for(Path('/agents/tony'), {'tony': 'legacy'},
+            lstat=lambda p: SimpleNamespace(st_mode=0o40755, st_uid=uid),
+            lookup=lambda n: SimpleNamespace(pw_name='legacy', pw_uid=n))
+        assert result == (('legacy', None) if uid == 1000 else (None, 'uid-below-1000'))
+
+
+@pytest.fixture
+def fleet(tmp_path):
+    agents = tmp_path / 'agents'
+    for slug in ('ben', 'tony'):
+        manifest(agents / slug)
+    path = export_file(agents / 'tony')
+    sessions = tmp_path / 'sessions'
+    transcript(sessions / 'tony/main.jsonl', [message()])
+    outside = tmp_path / 'outside'
+    manifest(outside)
+    (agents / 'maya').symlink_to(outside, target_is_directory=True)
+    state = tmp_path / 'state'
+    env = {'PYTHON_BIN': sys.executable, 'TRANSCRIPTS_ROOT': str(sessions)}
+    return agents, state, env, path
+
+
+def run_fleet(fleet, *, runner=None, emitter=None, dry_run=False, due=True):
+    from types import SimpleNamespace
+    agents, state, env, _ = fleet
+    def owner_check(dept, overrides):
+        # Real lstat; inject only uid/pwd because this workstation has uid 501.
+        def fixture_stat(path):
+            value = os.lstat(path)
+            return SimpleNamespace(st_mode=value.st_mode, st_uid=1000)
+        return fleet_check.owner_for(dept, overrides, lstat=fixture_stat,
+            lookup=lambda n: SimpleNamespace(pw_name='agent-' + dept.name, pw_uid=n))
+    def child_runner(command, **kwargs):
+        dept = Path(command[command.index('--dept-dir') + 1])
+        return sidecar.child(dept, DAY, dry_run='--dry-run' in command,
+            transcripts_dir=Path(env['TRANSCRIPTS_ROOT']) / dept.name)
+    return fleet_check.run_loop(agents, state, DAY, due, env=env,
+        dry_run=dry_run, owner_check=owner_check, child_runner=runner or child_runner,
+        emit_runner=emitter or (lambda *a, **k: None))
+
+
+def test_root_does_not_read_or_follow_dept_files(fleet, monkeypatch):
+    agents, _, _, path = fleet
+    original_stat = os.stat
+    original_open = Path.open
+    def no_dept_stat(p, *a, **k):
+        if str(p).startswith(str(agents) + '/'):
+            pytest.fail('root followed department path')
+        return original_stat(p, *a, **k)
+    def no_dept_read(p, *a, **k):
+        if str(p).startswith(str(agents) + '/'):
+            pytest.fail('root opened department file')
+        return original_open(p, *a, **k)
+    monkeypatch.setattr(os, 'stat', no_dept_stat)
+    monkeypatch.setattr(Path, 'open', no_dept_read)
+    commands = []
+    def runner(command, **kwargs):
+        commands.append(command)
+        assert kwargs['timeout'] == 120
+        return 'written'
+    assert run_fleet(fleet, runner=runner) == 0
+    assert len(commands) == 2
+    for command in commands:
+        slug = Path(command[command.index('--dept-dir') + 1]).name
+        assert command[:4] == ['runuser', '-u', 'agent-' + slug, '--']
+        assert command[4:7] == [sys.executable, '-I', str(ROOT / 'scripts/lib/management_kpis.py')]
+
+
+def test_missing_export_alarm_once_retry_after_failed_emit(fleet):
+    agents, state, _, _ = fleet
+    calls = []
+    def emit(command, **kwargs):
+        calls.append(command)
+        assert kwargs['timeout'] == 60 and kwargs['check'] is True
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, command)
+    assert run_fleet(fleet, emitter=emit) == 1
+    assert not list(state.glob('*.sent'))
+    assert read_sidecar(agents / 'ben')['export_present'] is False
+    assert run_fleet(fleet, emitter=emit) == 0
+    assert run_fleet(fleet, emitter=emit) == 0
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert f'task=fleet-export-missing-ben-{DAY}' in calls[0]
+    assert f'title=Missing daily management export: ben {DAY}' in calls[0]
+    assert len(list(state.glob('*.sent'))) == 1
+
+
+def test_alarm_contains_only_root_slug_and_day(fleet):
+    agents, _, _, _ = fleet
+    (agents / 'ben/dept.yaml').write_text('status: live\nlayers: {subscribed: [4]}\ndepartment: {name: EVIL-CONTENT}\n')
+    calls = []
+    assert run_fleet(fleet, emitter=lambda cmd, **k: calls.append(cmd)) == 0
+    assert 'EVIL-CONTENT' not in ' '.join(calls[0])
+
+
+def test_dry_run_no_write_and_does_not_emit(fleet):
+    agents, state, _, _ = fleet
+    before = {p: p.read_bytes() for p in agents.rglob('*') if p.is_file()}
+    assert run_fleet(fleet, dry_run=True, emitter=lambda *a, **k: pytest.fail('unexpected emit')) == 0
+    assert not state.exists()
+    assert before == {p: p.read_bytes() for p in agents.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('now,date,alarm', [('2026-10-03T21:50:00+02:00', DAY, False),
+    ('2026-10-03T23:29:59+02:00', DAY, False), ('2026-10-03T23:30:00+02:00', DAY, True),
+    ('2026-10-04T08:10:00+02:00', DAY, True)])
+def test_paris_day_deadline(now, date, alarm):
+    assert fleet_check.select_day(dt.datetime.fromisoformat(now)) == (date, alarm)
+
+
+def test_pending_export_no_alarm(fleet):
+    assert run_fleet(fleet, due=False, emitter=lambda *a, **k: pytest.fail('early alarm')) == 0
+
+
+def test_real_child_timeout_loop_continues_next_department(fleet, capsys):
+    commands = []
+    def runner(command, **kwargs):
+        commands.append(command)
+        if len(commands) == 1:
+            return fleet_check.run_child([sys.executable, '-c', 'import time; time.sleep(60)'], timeout=0.1)
+        return 'written'
+    assert run_fleet(fleet, runner=runner) == 1
+    output = capsys.readouterr().out
+    assert 'ben ' + DAY + ': error:child-timeout' in output
+    assert 'tony ' + DAY + ': written' in output
+    assert len(commands) == 2
+
+
+@pytest.mark.parametrize('code,raw', [(0, b'{"status":"written","evil":1}\n'),
+    (0, b'{"status":"written","status":"export_missing"}\n'),
+    (1, b'{"status":"export_missing"}\n'), (0, b'[]\n'), (0, b'x' * 4097),
+    (0, b'{"status":"written"}\nmore\n'), (0, b'{"status":"error:evil content"}\n')])
+def test_untrusted_reply_rejected(code, raw):
+    assert fleet_check.parse_reply(code, raw).startswith('error:')
+
+
+def test_bounded_real_child_output_and_framework_cli(evidence):
+    dept, _ = evidence
+    result = fleet_check.run_child([sys.executable, '-c', 'print("x" * 100000)'], timeout=5)
+    assert result == 'error:oversized-reply'
+    # This workstation's PyYAML is in user-site, disabled by -I. Add only its
+    # installed dependency directory in this offline bootstrap (production uses system PyYAML).
+    bootstrap = ('import sys,runpy; sys.path.append(' + repr(str(Path(yaml.__file__).parent.parent)) + '); '
+                 'script=sys.argv.pop(1); runpy.run_path(script,run_name="__main__")')
+    result = fleet_check.run_child([sys.executable, '-I', '-c', bootstrap,
+                                   str(ROOT / 'scripts/lib/management_kpis.py'),
+                                   '--dept-dir', str(dept), '--day', DAY, '--dry-run'], timeout=10)
+    assert result in ('export_missing', 'skipped:uid-zero')  # Actual host UID, no shim.
+
+
+def test_timer_service_contract():
+    timer = (ROOT / 'deploy/templates/fleet-export-check.timer').read_text()
+    for hour in ('21:50', '23:30', '08:10'):
+        assert f'OnCalendar=*-*-* {hour}:00 Europe/Paris' in timer
+    assert 'Persistent=true' in timer
+    service = (ROOT / 'deploy/templates/fleet-export-check.service').read_text()
+    assert 'User=root' in service and 'TimeoutStartSec=20min' in service
+    assert 'ExecStart=/opt/bubble-ops-loop/scripts/fleet-export-check.sh' in service
+    assert 'ConditionPathExists' not in service and 'EnvironmentFile' not in service
+
+
+@pytest.mark.parametrize('uid,user,reason', [(0, 'root', 'uid-below-1000'),
+    (999, 'agent-ben', 'uid-below-1000'), (1000, 'wrong-user', 'owner-name-mismatch')])
+def test_root_refusals_log_and_never_dispatch_or_alarm(fleet, uid, user, reason, capsys):
+    from types import SimpleNamespace
+    agents, state, env, _ = fleet
+    def owner_check(dept, overrides):
+        return fleet_check.owner_for(dept, overrides,
+            lstat=lambda p: SimpleNamespace(st_mode=0o40755, st_uid=uid),
+            lookup=lambda n: SimpleNamespace(pw_name=user, pw_uid=n))
+    result = fleet_check.run_loop(agents, state, DAY, True, env=env,
+        owner_check=owner_check, child_runner=lambda *a, **k: pytest.fail('refused owner dispatched'),
+        emit_runner=lambda *a, **k: pytest.fail('refused owner alarmed'))
+    assert result == 0
+    assert reason in capsys.readouterr().out
+    assert not list(state.glob('*.sent'))
+
+
+def test_long_whitespace_prefix_day_report_is_nonempty(evidence):
+    dept, sessions = evidence
+    path = export_file(dept)
+    path.with_name('summary.md').write_bytes(b' ' * (1024 * 1024 + 10) + b'A late paragraph.')
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    assert 'day_report' in read_sidecar(dept)['links']
+
+
+def test_missing_required_root_note_and_attention_item_schema(evidence):
+    from scripts.lib.management_export_shape import validate
+    dept, sessions = evidence
+    doc = valid_export()
+    del doc['open_gates']
+    export_file(dept, doc)
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    out = read_sidecar(dept)
+    assert out['export_shape'] == 'nonconforming'
+    assert out['export_shape_note'] == 'missing required root keys: open_gates'
+    schema = yaml.safe_load((ROOT / 'schemas-draft/management-export.schema.yaml').read_text())
+    for item in out['attention']:
+        validate(item, schema['properties']['needs_management_attention']['items'])
+
+
+def test_symlink_kpi_source_not_followed(evidence, tmp_path):
+    dept, sessions = evidence
+    target = tmp_path / 'target-ledger'
+    target.write_text(json.dumps({'secret': {'dispatched_at': DAY + 'T08:00:00Z'}}))
+    source = dept / 'outputs' / DAY / 'dispatch.json'
+    source.unlink()
+    source.symlink_to(target)
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert f'dispatch:{DAY}' in doc['sources_missing']
+    assert 'secret' not in doc['missions']

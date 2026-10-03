@@ -12,7 +12,7 @@ if [[ "$REPO_ROOT" != /opt/bubble-ops-loop ]]; then
   echo "install-fleet-export-check: install from /opt/bubble-ops-loop" >&2
   exit 1
 fi
-python3 -c 'import yaml, zoneinfo; zoneinfo.ZoneInfo("Europe/Paris")'
+python3 -I -c 'import yaml, zoneinfo; zoneinfo.ZoneInfo("Europe/Paris")'
 install -m 0644 "$REPO_ROOT/deploy/templates/fleet-export-check.service" "$UNIT_DIR/fleet-export-check.service"
 install -m 0644 "$REPO_ROOT/deploy/templates/fleet-export-check.timer" "$UNIT_DIR/fleet-export-check.timer"
 "$SYSTEMCTL_BIN" daemon-reload

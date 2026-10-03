@@ -82,5 +82,7 @@ def test_l4_requires_daily_export_and_department_day_report():
     assert 'export is mandatory every day' in text
     assert 'outputs/<today>/4/summary.md' in text
     assert 'including what went wrong' in text
-    assert 'added automatically by the fleet check' in text
+    assert 'written automatically by the fleet check' in text
+    assert 'outputs/<today>/4/management-kpis.yaml' in text
+    assert 'mandatory day report' in text
     assert 'do not hand-write them' in text

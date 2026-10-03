@@ -15,6 +15,11 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+try:
+    from .nofollow_io import open_text
+except ImportError:
+    from nofollow_io import open_text
+
 PARIS = ZoneInfo("Europe/Paris")
 TOKEN_FIELDS = {
     "input_tokens": "input_tokens",
@@ -64,7 +69,8 @@ def atomic_write(path: Path, body: str) -> None:
 def read_source(path: Path, missing: set[str], name: str, expected: type,
                 *, yaml_source: bool = False):
     try:
-        text = path.read_text(encoding="utf-8")
+        with open_text(path) as stream:
+            text = stream.read()
         value = yaml.safe_load(text) if yaml_source else json.loads(text)
         if not isinstance(value, expected):
             raise ValueError("unexpected source shape")
@@ -90,7 +96,7 @@ def read_calls(root: Path, missing: set[str]) -> list[dict] | None:
     calls = {}
     try:
         for path in sorted(paths):
-            with path.open(encoding="utf-8") as stream:
+            with open_text(path) as stream:
                 for index, line in enumerate(stream):
                     if not line.strip():
                         continue

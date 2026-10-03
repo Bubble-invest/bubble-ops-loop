@@ -6,6 +6,7 @@ OnCalendar=*-*-* 21:50:00 Europe/Paris
 OnCalendar=*-*-* 23:30:00 Europe/Paris
 OnCalendar=*-*-* 08:10:00 Europe/Paris
 AccuracySec=1s
+Persistent=true
 Unit=fleet-export-check.service
 
 [Install]
