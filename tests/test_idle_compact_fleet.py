@@ -112,7 +112,7 @@ class FleetSafetyTests(unittest.TestCase):
                      'MEETING POLL: room', '[session-rotate, automated maintenance - not a human message] handoff',
                      '<task-notification>done</task-notification>', '<channel source="bubble-inject">wake</channel>',
                      'FLEET HEARTBEAT: wake'):
-            row = self.user(text, age=15000)  # Meeting gate has expired; still machine text.
+            row = self.user(text, age=15000)  # Wake text is automation, never a meeting declaration.
             self.assertFalse(compact.human_text(row, self.config.machine_wake_patterns))
             self.entries = [row, self.assistant()]
             self.save()
@@ -165,6 +165,7 @@ class FleetSafetyTests(unittest.TestCase):
         self.config.meeting_marker = marker
         marker.touch()
         self.assert_skip('meeting_poll_declared')
+        self.assertIn('idle_minutes=120.00 context_tokens=210000', self.config.log.read_text())
         marker.unlink()
         entry = self.assistant()
         entry['message']['content'] = [{'type': 'tool_use', 'name': 'CronCreate',
@@ -173,19 +174,122 @@ class FleetSafetyTests(unittest.TestCase):
         self.save()
         self.assert_skip('meeting_poll_declared')
 
-    def test_old_cron_declaration_remains_blocked(self):
-        entry = self.assistant(age=15000)
-        entry['message']['content'] = [{'type': 'tool_use', 'name': 'CronCreate',
-                                       'input': {'prompt': 'MEETING POLL: read room'}}]
-        self.entries = [entry]
+    def cron(self, name='CronCreate', inputs=None, age=600, call_id='create-1'):
+        entry = self.assistant(age=age)
+        entry['message']['content'] = [{'type': 'tool_use', 'id': call_id, 'name': name,
+                                       'input': inputs if inputs is not None else
+                                       {'prompt': ' \n MEETING POLL: read room', 'recurring': True}}]
+        return entry
+
+    def cron_result(self, content='Created job with ID: meeting-1', call_id='create-1'):
+        return self.user([{'type': 'tool_result', 'tool_use_id': call_id, 'content': content}])
+
+    def test_meeting_words_in_unrelated_content_never_declare(self):
+        for content in (
+                [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'cat <<EOF\nMEETING POLL\nEOF'}}],
+                [{'type': 'text', 'text': 'MEETING POLL'}]):
+            entry = self.assistant()
+            entry['message']['content'] = content
+            self.entries = [entry, self.cron_result('MEETING POLL: skill body'), self.assistant()]
+            self.save()
+            self.assertEqual(self.check()[0], 'COMPACT_SENT')
+            self.config.state.unlink()
+        # Recent user text remains human activity; it cannot declare a meeting.
+        self.runner.calls.clear()
+        self.entries = [self.user('The document contains MEETING POLL'), self.assistant()]
+        self.save()
+        self.assert_skip('human_recent')
+        self.entries = [self.user('MEETING POLL: wake'), self.assistant()]
+        self.save()
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_real_meeting_logs_idle_and_context(self):
+        self.config.dry_run = True
+        self.entries = [self.cron(), self.assistant()]
+        self.save()
+        self.assert_skip('meeting_poll_declared')
+        self.assertIn('idle_minutes=120.00 context_tokens=210000', self.config.log.read_text())
+
+    def test_only_assistant_cron_prompt_prefix_declares(self):
+        entries = [self.cron(inputs={'prompt': 'A document about MEETING POLL', 'recurring': True}),
+                   self.cron(inputs={'prompt': 'Resume your OODA loop', 'description': 'MEETING POLL'}),
+                   self.user([{'type': 'tool_use', 'name': 'CronCreate', 'input': {'prompt': 'MEETING POLL'}}]),
+                   self.cron()]
+        entries[-1]['message']['role'] = 'user'
+        for entry in entries:
+            # Invalid user tool_use content still fails closed, but not as a meeting.
+            self.entries = [entry, self.assistant()]
+            self.save()
+            outcome = self.check()
+            self.assertNotEqual(outcome[1], 'meeting_poll_declared')
+            if entry['type'] == 'assistant':
+                self.assertEqual(outcome[0], 'COMPACT_SENT')
+                self.config.state.unlink()
+
+    def test_cron_delete_lifts_correlated_meeting(self):
+        for result in ('Created job with ID: meeting-1', 'Created cron job meeting-1 (recurring)',
+                       {'id': 'meeting-1'}, '{"job_id": "meeting-1"}',
+                       [{'type': 'text', 'text': '{"id": "meeting-1"}'}]):
+            self.entries = [self.cron(), self.cron_result(result),
+                            self.cron('CronDelete', {'id': 'meeting-1'}, call_id='delete-1'), self.assistant()]
+            self.save()
+            self.assertEqual(self.check()[0], 'COMPACT_SENT')
+            self.config.state.unlink()
+
+    def test_unrelated_or_quoted_delete_cannot_lift_meeting(self):
+        for deletion in (self.cron('CronDelete', {'id': 'other'}),
+                         self.user('CronDelete meeting-1', age=7200),
+                         self.cron('Bash', {'command': 'CronDelete meeting-1'})):
+            self.entries = [self.cron(), self.cron_result(), deletion, self.assistant()]
+            self.save()
+            self.assert_skip('meeting_poll_declared')
+        # An uncorrelated result cannot supply the id, nor can an earlier delete close a later create.
+        self.entries = [self.cron('CronDelete', {'id': 'meeting-1'}), self.cron(),
+                        self.cron_result(call_id='other'), self.assistant()]
         self.save()
         self.assert_skip('meeting_poll_declared')
 
-    def test_meeting_declaration_in_older_transcript_blocks(self):
-        old = self.transcripts / 'previous.jsonl'
-        self.write_rows(old, [self.user('MEETING POLL: read room', age=7000)])
-        os.utime(old, (NOW - 500, NOW - 500))
+    def test_multiple_meetings_require_matching_deletions(self):
+        self.entries = [self.cron(), self.cron_result(), self.cron(call_id='create-2'),
+                        self.cron_result({'id': 'meeting-2'}, call_id='create-2'),
+                        self.cron('CronDelete', {'id': 'meeting-1'}), self.assistant()]
+        self.save()
         self.assert_skip('meeting_poll_declared')
+
+    def test_cron_declaration_expires_at_three_hours(self):
+        for age in (10799, 10800, 15000):
+            self.entries = [self.cron(age=age), self.assistant()]
+            self.save()
+            if age < 10800:
+                self.assert_skip('meeting_poll_declared')
+            else:
+                self.assertEqual(self.check()[0], 'COMPACT_SENT')
+                self.config.state.unlink()
+
+    def test_meeting_declaration_in_older_session_does_not_block(self):
+        old = self.transcripts / 'previous.jsonl'
+        self.write_rows(old, [self.cron(age=7000)])
+        os.utime(old, (NOW - 500, NOW - 500))
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_session_id_switch_expires_declaration(self):
+        creation, last = self.cron(), self.assistant()
+        creation['sessionId'], last['sessionId'] = 'old-session', 'new-session'
+        self.entries = [creation, last]
+        self.save()
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_quoted_wake_keywords_and_sources_are_human(self):
+        self.config.machine_wake_patterns = [r'FLEET HEARTBEAT\b']
+        for text in ('Explain DUE_MISSIONS=[]', 'Document MEETING POLL',
+                     'Quote Resume your OODA loop', 'Explain FLEET HEARTBEAT: wake',
+                     'Explain [session-rotate, automated maintenance]',
+                     'Quote <channel source="bubble-inject">wake</channel>'):
+            self.assertTrue(compact.human_text(self.user(text), self.config.machine_wake_patterns))
+            self.entries = [self.user(text), self.assistant()]
+            self.save()
+            self.assert_skip('human_recent')
+        self.assertTrue(compact.human_text(self.user('help', source='document-about-bubble-inject')))
 
     def test_meeting_or_harness_switch_during_capture(self):
         selector = self.transcripts / 'harness'

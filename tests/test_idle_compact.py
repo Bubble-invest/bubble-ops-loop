@@ -165,7 +165,7 @@ class PilotTests(unittest.TestCase):
     def test_wakes_injections_wrappers_and_tool_results_not_human(self):
         ignored = [
             self.user("Resume Rick's OODA loop now"),
-            self.user("tick DUE_MISSIONS=[x]"),
+            self.user("DUE_MISSIONS=[x]"),
             self.user('<channel source="bubble-inject">machine</channel>'),
             self.user('<channel source="ops-loop-boot-rearm">boot</channel>'),
             self.user('<channel source="plugin:telegram:telegram">human via ledger</channel>'),

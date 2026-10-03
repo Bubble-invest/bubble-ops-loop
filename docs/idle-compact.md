@@ -26,9 +26,12 @@ machine wakes do not count as humans. Built-in machine recognisers are:
 - `Resume <Name>'s OODA loop` (including multiword, hyphenated and Unicode names,
   and `Resume your OODA loop`), `DUE_MISSIONS=`, and `MEETING POLL`.
 - `[session-rotate, automated maintenance` and transcript/message sources
-  containing `bubble-inject` or `ops-loop-boot-rearm`.
+  equal to `bubble-inject` or `ops-loop-boot-rearm`.
 
-Wake regexes are case-insensitive. Add per-agent regular expressions in the
+Wake regexes are case-insensitive and match only at the start of user text
+(after whitespace); keywords quoted later in text do not suppress human activity.
+Tool inputs/results and assistant text are never searched for wake keywords.
+Add per-agent regular expressions in the
 installed config's `runtime.machine_wake_patterns` array (built-ins remain
 active), for example `["^FLEET HEARTBEAT\\b"]`. Mac reinstalls and VPS `--all` preserve these additions.
 Invalid regexes, empty patterns and patterns matching empty text skip safely.
@@ -66,12 +69,15 @@ check: tmux has no atomic conditional send primitive.
 Declare an ongoing meeting by creating `<dept>/state/meeting-poll.active`
 **before** scheduling its poll and retain it until the poll job is deleted.
 Use `--meeting-marker PATH` for another declaration path. Its mere existence,
-including an unreadable/broken symlink, blocks. Transcript `MEETING POLL` events also block for three hours (the meeting-room
-skill's meeting bound). A CronCreate declaration in a scanned transcript blocks
-without expiry: this checkout has no verified CronDelete result format, so it
-cannot prove that the job was removed. A subsequent fresh transcript/session
-rotation eventually drops that conservative guard; do not edit transcripts to
-bypass it. The marker covers declarations outside scanned transcripts and
+including an unreadable/broken symlink, blocks. In the newest transcript only,
+an assistant `CronCreate` tool-use declares a meeting when its `prompt` starts
+with `MEETING POLL` after optional whitespace. Text in documents, shell commands,
+tool results or user messages cannot declare a meeting. The declaration ends
+on a later assistant `CronDelete` targeting the job id from the correlated
+`CronCreate` result, at three hours (the meeting-room skill's bound), or on
+session rotation, whichever comes first. Unknown result formats retain the
+three-hour bound. Meeting skips include human idle and context token metrics.
+The marker covers declarations outside scanned transcripts and
 longer meetings or poll schedules with no recent transcript event. No pre-existing meeting marker
 contract exists in this repository; meeting operators must adopt this one.
 

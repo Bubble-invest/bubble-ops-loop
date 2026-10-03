@@ -23,8 +23,8 @@ METADATA = {"mode", "permission-mode", "atis-latch", "last-prompt", "pr-link",
 WRAPPERS = ("<channel", "<local-command", "<command-name", "<command-message",
             "<command-args", "<task-notification", "<system-reminder", "[SYSTEM NOTIFICATION")
 MACHINE_WAKE_PATTERNS = (
-    r"^Resume\s+.+?\s+OODA\s+loop\b", r"\bDUE_MISSIONS=",
-    r"\bMEETING POLL\b", r"^\[session-rotate,\s*automated maintenance\b",
+    r"^Resume\s+.+?\s+OODA\s+loop\b", r"^DUE_MISSIONS=",
+    r"^MEETING POLL\b", r"^\[session-rotate,\s*automated maintenance\b",
 )
 
 
@@ -67,7 +67,10 @@ def check_declarations(config, now):
             raise Unsafe("hermes_harness_skipped")
         if harness != "claude":
             raise Unsafe("unknown_harness")
-    if config.meeting_marker and os.path.lexists(config.meeting_marker):
+
+
+def check_meeting(config, declared=False):
+    if declared or (config.meeting_marker and os.path.lexists(config.meeting_marker)):
         raise Unsafe("meeting_poll_declared")
 
 
@@ -149,7 +152,7 @@ def human_text(row, extra_patterns=()):
         source = obj.get("source", "")
         if not isinstance(source, str):
             raise Unsafe("invalid_message_source")
-        if "bubble-inject" in source.lower() or "ops-loop-boot-rearm" in source.lower():
+        if source.lower() in ("bubble-inject", "ops-loop-boot-rearm"):
             return False
     content = message.get("content")
     if isinstance(content, str):
@@ -170,7 +173,7 @@ def human_text(row, extra_patterns=()):
         raise Unsafe("invalid_user_content")
     def machine(text):
         return (text.lstrip().lower().startswith(tuple(prefix.lower() for prefix in WRAPPERS)) or any(
-            re.search(pattern, text.lstrip(), re.IGNORECASE)
+            re.match(pattern, text.lstrip(), re.IGNORECASE)
             for pattern in (*MACHINE_WAKE_PATTERNS, *extra_patterns)))
     joined = "".join(texts)
     # Bounded envelopes may span text blocks. Preserve human text outside them.
@@ -184,20 +187,84 @@ def human_text(row, extra_patterns=()):
     return bool(candidates) and not machine("".join(candidates))
 
 
-def check_meeting_record(row, now):
-    message = row.get("message", {})
-    if "MEETING POLL" not in json.dumps(message):
-        return
-    content = message.get("content", []) if isinstance(message, dict) else []
-    if isinstance(content, list) and any(
-            isinstance(block, dict) and block.get("type") == "tool_use" and
-            block.get("name") == "CronCreate" and "MEETING POLL" in json.dumps(block.get("input", {}))
-            for block in content):
-        # A creation declaration is not evidence of its later deletion. Without
-        # a proven CronDelete result format, keep this transcript blocked.
-        raise Unsafe("meeting_poll_declared")
-    if now - timestamp(row.get("timestamp"), now) < 10800:
-        raise Unsafe("meeting_poll_declared")
+def cron_job_id(value):
+    """Read an explicit job-id field, never search arbitrary result text for ids."""
+    if isinstance(value, dict):
+        for key in ("id", "job_id", "jobId"):
+            job_id = value.get(key)
+            if isinstance(job_id, str) and job_id.strip():
+                return job_id
+    return None
+
+
+def cron_result_id(content):
+    if isinstance(content, list):
+        # Tool results can wrap their payload in text blocks.
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                job_id = cron_result_id(block.get("text"))
+                if job_id:
+                    return job_id
+    if isinstance(content, str):
+        try:
+            job_id = cron_job_id(json.loads(content))
+        except ValueError:
+            job_id = None
+        if job_id:
+            return job_id
+        match = re.match(r"^\s*(?:Successfully )?Created (?:cron )?job "
+                         r"(?:with ID:\s*)?([\w-]+)(?=\s|[.(]|$)", content)
+        return match[1] if match else None
+    return cron_job_id(content)
+
+
+class MeetingPolls:
+    """Replay only structured cron events in the selected transcript/session."""
+
+    def __init__(self, now):
+        self.now = now
+        self.session = None
+        self.active = {}  # tool_use id -> (declaration timestamp, returned job id)
+
+    def observe(self, row):
+        session = row.get("sessionId")
+        if isinstance(session, str):
+            if self.session is not None and session != self.session:
+                self.active.clear()
+            self.session = session
+        message = row.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            return
+        role = message.get("role")
+        for block in message["content"]:
+            if not isinstance(block, dict):
+                continue
+            if row.get("type") == "assistant" and role == "assistant" and block.get("type") == "tool_use":
+                inputs = block.get("input")
+                if not isinstance(inputs, dict):
+                    continue
+                prompt = inputs.get("prompt")
+                if (block.get("name") == "CronCreate" and isinstance(prompt, str) and
+                        prompt.lstrip().startswith("MEETING POLL")):
+                    declared = timestamp(row.get("timestamp"), self.now)
+                    # Missing call ids still block until expiry, but cannot correlate a result.
+                    call_id = block.get("id")
+                    key = call_id if isinstance(call_id, str) else object()
+                    self.active[key] = (declared, None)
+                elif block.get("name") == "CronDelete":
+                    job_id = cron_job_id(inputs)
+                    if job_id:
+                        self.active = {key: value for key, value in self.active.items()
+                                       if value[1] != job_id}
+            elif (row.get("type") == "user" and role == "user" and
+                  block.get("type") == "tool_result" and not block.get("is_error")):
+                call_id = block.get("tool_use_id")
+                if isinstance(call_id, str) and call_id in self.active:
+                    declared, _ = self.active[call_id]
+                    self.active[call_id] = (declared, cron_result_id(block.get("content")))
+
+    def declared(self):
+        return any(self.now - declared < 3 * 3600 for declared, _ in self.active.values())
 
 
 def inspect_inputs(config, now, previous_send=None):
@@ -226,6 +293,7 @@ def inspect_inputs(config, now, previous_send=None):
     boundary_time = None
     meaningful = None
     regrowth_baseline = False
+    meetings = MeetingPolls(now)
     for path in files:
         if path != latest:
             # Older transcripts only matter for recent terminal-typed human text. Skip files
@@ -235,15 +303,10 @@ def inspect_inputs(config, now, previous_send=None):
                 continue
             try:
                 for row in rows(path):
-                    check_meeting_record(row, now)
                     if row.get("type") == "user" and human_text(row, config.machine_wake_patterns):
                         activity = timestamp(row.get("timestamp"), now)
                         human = activity if human is None else max(human, activity)
-            except Unsafe as exc:
-                # A meeting declaration is a gate, not a malformed older row.
-                # It must propagate even when the file mtime is older than 55m.
-                if str(exc) == "meeting_poll_declared":
-                    raise
+            except Unsafe:
                 activity = stamps[path][3] / 1e9
                 human = activity if human is None else max(human, activity)
             continue
@@ -251,7 +314,7 @@ def inspect_inputs(config, now, previous_send=None):
             kind = row.get("type")
             if not isinstance(kind, str):
                 raise Unsafe("invalid_transcript_type")
-            check_meeting_record(row, now)
+            meetings.observe(row)
             if kind == "user" and human_text(row, config.machine_wake_patterns):
                 activity = timestamp(row.get("timestamp"), now)
                 human = activity if human is None else max(human, activity)
@@ -297,7 +360,7 @@ def inspect_inputs(config, now, previous_send=None):
     if not unchanged(config, snapshot):
         raise Unsafe("inputs_changed_during_read")
     regrown = regrowth_baseline and previous_send is not None and assistant_time > previous_send
-    return human, context, latest_mtime / 1e9, meaningful, snapshot, regrown
+    return human, context, latest_mtime / 1e9, meaningful, snapshot, regrown, meetings.declared()
 
 
 def unchanged(config, snapshot):
@@ -468,9 +531,10 @@ def check(config, runner=run_tmux, clock=time.time):
                     state = read_state(config.state, now)
                     check_declarations(config, now)
                     pane = target_pane(config, runner)
-                    human, context, mtime, last, snapshot, regrown = inspect_inputs(
+                    human, context, mtime, last, snapshot, regrown, meeting = inspect_inputs(
                         config, now, state[0] if state else None)
                     idle = (now - human) / 60
+                    check_meeting(config, meeting)
                     if idle < config.idle_min:
                         raise Unsafe("human_recent")
                     if context < config.min_context:
@@ -494,6 +558,7 @@ def check(config, runner=run_tmux, clock=time.time):
                     time.sleep(config.recheck_delay)
                     check_pane(runner(capture_args))
                     check_declarations(config, clock())
+                    check_meeting(config)
                     check_clients(config, runner, clock())
                     if target_pane(config, runner) != pane:
                         raise Unsafe("pane_changed_before_send")
