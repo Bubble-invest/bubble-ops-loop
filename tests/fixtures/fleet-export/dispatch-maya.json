@@ -1,0 +1,51 @@
+{
+  "draft_batch": {
+    "artifacts": [
+      "inbox/decisions/prospect_dm-alain-morice-active-family-office-20261003-065040.yaml",
+      "inbox/decisions/prospect_dm-arnaud-zeboulon-az-wealth-management-20261003-065050.yaml",
+      "inbox/decisions/prospect_dm-aurelie-yiflach-tenenbaum-serenitys-patrimoine-20261003-065052.yaml",
+      "inbox/decisions/prospect_dm-emmanuel-collineau-de-meezemaker-grisbee-gestion-privee-20261003-065053.yaml",
+      "inbox/decisions/prospect_dm-frederique-simon-financiere-d3-20261003-065055.yaml",
+      "inbox/decisions/prospect_dm-guillaume-de-vigneral-eventia-patrimoine-20261003-065057.yaml",
+      "inbox/decisions/prospect_dm-regis-donzeau-patrimoine-ingenierie-conseil-20261003-065059.yaml",
+      "inbox/decisions/prospect_dm-sonia-rousseau-enata-gestion-privee-20261003-065101.yaml",
+      "inbox/decisions/prospect_email-christian-de-witt-dwt-family-office-20261003-065102.yaml",
+      "outputs/2026-10-03/missions/draft_batch/result.yaml",
+      "queues/gates/news_post-20261003-065104.yaml",
+      "queues/gates/strategic_question-20261003-065104.yaml"
+    ],
+    "completed_at": "2026-10-03T06:53:00.809973+00:00",
+    "dispatched_at": "2026-10-03T06:47:13+00:00",
+    "materialized_at": "2026-10-03T06:47:13+00:00"
+  },
+  "morning_sync": {
+    "artifacts": [
+      "outputs/2026-10-03/1/logs.jsonl",
+      "outputs/2026-10-03/1/morning_briefing.md",
+      "outputs/2026-10-03/1/summary.md",
+      "queues/research/draft_task-alain-morice-active-family-office-20261003-053753.yaml",
+      "queues/research/draft_task-arnaud-zeboulon-az-wealth-management-20261003-053753.yaml",
+      "queues/research/draft_task-aurelie-yiflach-tenenbaum-serenitys-patrimoine-20261003-053753.yaml",
+      "queues/research/draft_task-emmanuel-collineau-de-meezemaker-grisbee-gestion-privee-20261003-053753.yaml",
+      "queues/research/draft_task-frederique-simon-financiere-d3-20261003-053753.yaml",
+      "queues/research/draft_task-guillaume-de-vigneral-eventia-patrimoine-20261003-053753.yaml",
+      "queues/research/draft_task-regis-donzeau-patrimoine-ingenierie-conseil-20261003-053753.yaml",
+      "queues/research/draft_task-sonia-rousseau-enata-gestion-privee-20261003-053753.yaml",
+      "queues/research/email_draft_task-christian-de-witt-dwt-family-office-20261003-053753.yaml",
+      "queues/research/strategic_question-morning_sync-20261003-053753.yaml"
+    ],
+    "completed_at": "2026-10-03T05:38:35.892652+00:00",
+    "dispatched_at": "2026-10-03T05:35:00+00:00",
+    "materialized_at": "2026-10-03T05:35:00+00:00"
+  },
+  "news_relay": {
+    "artifacts": [
+      "outputs/2026-10-03/1/logs.jsonl",
+      "outputs/2026-10-03/1/summary.md",
+      "queues/research/news_post_task-news_relay-20261003-053753.yaml"
+    ],
+    "completed_at": "2026-10-03T05:38:35.892652+00:00",
+    "dispatched_at": "2026-10-03T05:35:00+00:00",
+    "materialized_at": "2026-10-03T05:35:00+00:00"
+  }
+}

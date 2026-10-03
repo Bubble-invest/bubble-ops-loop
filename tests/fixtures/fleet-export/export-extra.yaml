@@ -1,0 +1,17 @@
+# Model comment must remain byte-identical.
+dept: maya
+date: '2026-10-03'
+status: warning
+last_successful_layer: 4
+open_gates: 0
+open_exceptions: 0
+top_kpis:
+  model_kpi:
+    status: fine
+needs_management_attention:
+- Keep this free-form model note.
+links:
+  gates: queues/gates/
+schema_version: 3
+summary: MODEL PRIVATE CONTENT
+# Long comment remains exactly as the model wrote it, including spacing.

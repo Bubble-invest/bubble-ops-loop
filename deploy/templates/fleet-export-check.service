@@ -1,0 +1,17 @@
+[Unit]
+Description=Bubble Fleet — write daily KPI sidecars and alarm on missing exports
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=20min
+KillMode=control-group
+User=root
+WorkingDirectory=/opt/bubble-ops-loop
+ExecStart=/opt/bubble-ops-loop/scripts/fleet-export-check.sh
+StateDirectory=bubble-fleet-export-check
+StateDirectoryMode=0700
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fleet-export-check
