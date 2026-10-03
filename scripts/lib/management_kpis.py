@@ -59,7 +59,7 @@ def read_file(fd, name):
         return stream.read(CAP + 1)
 
 
-def child(dept_dir: Path, report_day: str, *, dry_run=False,
+def child(dept_dir: Path, report_day: str, *, dry_run=False, check_only=False,
           transcripts_dir=None, token_threshold=30_000_000) -> str:
     day(report_day)
     # Never run this child as root. Owner validation remains the parent's job.
@@ -103,6 +103,8 @@ def child(dept_dir: Path, report_day: str, *, dry_run=False,
             summary = read_file(fd, 'summary.md')
         else:
             export = summary = None
+        if check_only:
+            return 'export_missing' if export is None else 'export_present'
         if dry_run:
             return 'export_missing' if export is None else 'written'
         # Create missing paths safely, retaining directory descriptors across renames.
@@ -186,10 +188,11 @@ def main():
     parser.add_argument('--dept-dir', type=Path, required=True)
     parser.add_argument('--day', required=True)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--check-only', action='store_true', help='Inspect eligibility and export presence; never write')
     parser.add_argument('--transcripts-dir', type=Path)
     parser.add_argument('--token-threshold', type=int, default=30_000_000)
     args = parser.parse_args()
-    status = child(args.dept_dir, args.day, dry_run=args.dry_run,
+    status = child(args.dept_dir, args.day, dry_run=args.dry_run, check_only=args.check_only,
                    transcripts_dir=args.transcripts_dir, token_threshold=args.token_threshold)
     print(json.dumps({'status': status}, separators=(',', ':')))
     return int(status.startswith('error:'))

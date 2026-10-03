@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import json
 import os
@@ -27,6 +28,7 @@ else:
 ROOT = Path(__file__).resolve().parents[2]
 SLUG = re.compile(r'[a-z][a-z0-9-]{0,79}')
 STATUS = re.compile(r'(?:written|export_missing|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
+CHECK_STATUS = re.compile(r'(?:export_present|export_missing|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
 MAX_REPLY = 4096
 CHILD_TIMEOUT = 120
 EMIT_TIMEOUT = 60
@@ -58,6 +60,64 @@ def owner_for(dept, overrides, *, lstat=os.lstat, lookup=pwd.getpwuid):
         return None, 'owner-unavailable'
 
 
+def mirror_for(entry, mirror_root, mirror_owner, *, lstat=os.lstat,
+               readlink=os.readlink, lookup=pwd.getpwuid):
+    """Inspect names, symlink strings and directory metadata only, never files.
+
+    Resolve bounded symlink chains using path strings, then lstat only the
+    final directory if it is a direct child of the trusted mirror root.
+    """
+    if not entry.name.startswith('bubble-ops-'):
+        return None, None, 'not-mirror'
+    slug = entry.name[len('bubble-ops-'):]
+    if not SLUG.fullmatch(slug):
+        return None, None, 'invalid-slug'
+    try:
+        if not stat.S_ISLNK(lstat(entry).st_mode):
+            return None, None, 'not-symlink'
+        # A real department takes precedence even if its owner is refused.
+        try:
+            real = lstat(entry.parent / slug)
+        except FileNotFoundError:
+            real = None
+        if real is not None and stat.S_ISDIR(real.st_mode):
+            return None, None, 'real-department'
+        link = Path(readlink(entry))
+        target = Path(os.path.abspath(link if link.is_absolute() else entry.parent / link))
+        mirror_root = Path(os.path.abspath(mirror_root))
+        seen = {Path(os.path.abspath(entry))}
+        for _ in range(40):
+            if target in seen:
+                return None, None, 'symlink-loop'
+            seen.add(target)
+            try:
+                link = Path(readlink(target))
+            except OSError as exc:
+                if exc.errno != errno.EINVAL:  # EINVAL means the target is not a symlink.
+                    raise
+                break
+            target = Path(os.path.abspath(link if link.is_absolute() else target.parent / link))
+        else:
+            return None, None, 'symlink-loop'
+        if target.parent != mirror_root:
+            return None, None, 'outside-mirror-root'
+        info = lstat(target)
+        if not stat.S_ISDIR(info.st_mode):
+            return None, None, 'not-directory'
+        if info.st_uid == 0:
+            return None, None, 'uid-zero'
+        owner = lookup(info.st_uid)
+        if owner.pw_uid != info.st_uid:
+            return None, None, 'owner-uid-mismatch'
+        if owner.pw_name != mirror_owner:
+            return None, None, 'owner-name-mismatch'
+        if not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_.-]{0,79}', owner.pw_name):
+            return None, None, 'invalid-owner-name'
+        return target, owner.pw_name, None
+    except (OSError, KeyError):
+        return None, None, 'owner-unavailable'
+
+
 def parse_reply(code, raw):
     if not isinstance(raw, bytes) or len(raw) > MAX_REPLY:
         return 'error:invalid-reply'
@@ -72,7 +132,7 @@ def parse_reply(code, raw):
             return dict(pairs)
         doc = json.loads(lines[0], object_pairs_hook=unique)
         status = doc['status']
-        if not isinstance(status, str) or not STATUS.fullmatch(status):
+        if not isinstance(status, str) or not (STATUS.fullmatch(status) or CHECK_STATUS.fullmatch(status)):
             raise ValueError
         if code != (1 if status.startswith('error:') else 0):
             return 'error:child-exit'
@@ -127,8 +187,102 @@ def select_day(now, requested=None):
     return report_day.isoformat(), alarm_due
 
 
+def mirror_alarm_due(now, report):
+    """Only the morning activation checking yesterday tolerates mirror lag."""
+    local = now.astimezone(ZoneInfo('Europe/Paris'))
+    return local.hour < 12 and day(report) == local.date() - dt.timedelta(days=1)
+
+
+def emit_alarm(env, emit_runner, slug, report, task, title, body):
+    emit_runner([env.get('EMIT_BIN', str(ROOT / 'tools/kanban/emit_kanban_item.sh')),
+                 f'task={task}', f'title={title}',
+                 'type=incident', 'priority=high', f'owner={slug}', 'budget=5',
+                 'intent=system-convergence-north-star', f'body={body}',
+                 f'context_url=outputs/{report}/4/management-export.yaml'],
+                check=True, timeout=EMIT_TIMEOUT, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT)
+
+
+def mirror_receipt(path):
+    """Read a bounded receipt in root's own state directory, never the mirror."""
+    if path.is_symlink():
+        raise ValueError('symlink receipt')
+    try:
+        with path.open() as stream:
+            doc = json.loads(stream.read(MAX_REPLY + 1))
+    except FileNotFoundError:
+        return None
+    if not isinstance(doc, dict) or set(doc) != {'first_missing_day', 'last_alarm'}:
+        raise ValueError('invalid mirror receipt')
+    day(doc['first_missing_day'])
+    if doc['last_alarm'] is not None:
+        day(doc['last_alarm'])
+    return doc
+
+
+def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
+                  child_runner, emit_runner):
+    failed = False
+    processed = 0
+    for entry in entries:
+        if not entry.name.startswith('bubble-ops-'):
+            continue
+        target, owner, reason = mirror_check(
+            entry, Path(env.get('FLEET_EXPORT_MIRROR_ROOT', '/home/claude/agents')),
+            env.get('FLEET_EXPORT_MIRROR_OWNER', 'claude'))
+        if reason:
+            print(f'SKIP mirror {entry.name!r}: {reason}')
+            continue
+        # Revalidate even an injected checker; alarm text is root-derived only.
+        slug = entry.name[len('bubble-ops-'):]
+        if not entry.name.startswith('bubble-ops-') or not SLUG.fullmatch(slug):
+            failed = True
+            continue
+        command = [env.get('RUNUSER_BIN', 'runuser'), '-u', owner, '--',
+                   env.get('PYTHON_BIN', 'python3'), '-I',
+                   str(ROOT / 'scripts/lib/management_kpis.py'),
+                   '--dept-dir', str(target), '--day', report, '--check-only']
+        try:
+            status = child_runner(command, timeout=CHILD_TIMEOUT)
+            if not isinstance(status, str) or not CHECK_STATUS.fullmatch(status):
+                status = 'error:invalid-reply'
+            print(f'mirror {slug} {report}: {status}')
+            if status.startswith('error:'):
+                failed = True
+            if status not in ('export_present', 'export_missing'):
+                continue
+            processed += 1
+            receipt = state / f'fleet-export-missing-{slug}.mirror.json'
+            if status == 'export_present':
+                if not dry_run:
+                    receipt.unlink(missing_ok=True)
+                continue
+            previous = mirror_receipt(receipt)
+            if previous is not None and previous['last_alarm'] is not None:
+                continue
+            outage = previous or dict(first_missing_day=report, last_alarm=None)
+            first = outage['first_missing_day']
+            print(f'{"DRY RUN alarm" if dry_run else "ALARM"} mirror {slug} since {first}')
+            if dry_run:
+                continue
+            # Persist the first observation before emission so failed emits on
+            # subsequent days retain the original outage start. Retry until sent.
+            atomic_write(receipt, json.dumps(outage) + '\n')
+            emit_alarm(env, emit_runner, slug, report, f'fleet-export-missing-{slug}',
+                       f'Missing daily management export: {slug} since {first}',
+                       f'Mandatory daily export is missing for {slug} since {first}; '
+                       f'latest missing day is {report}. Check the Mac runtime and its outputs publication.')
+            outage['last_alarm'] = report
+            atomic_write(receipt, json.dumps(outage) + '\n')
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            failed = True
+            print(f'ERROR mirror {slug} {report}: child-or-emit-failed', file=sys.stderr)
+    return processed, failed
+
+
 def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
-             owner_check=owner_for, child_runner=run_child, emit_runner=subprocess.run):
+             owner_check=owner_for, child_runner=run_child, emit_runner=subprocess.run,
+             mirror_due=False, mirror_check=mirror_for):
     overrides = {}
     for entry in env.get('FLEET_EXPORT_OWNER_OVERRIDES', '').split(','):
         if entry:
@@ -145,7 +299,8 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
             lock = (state / 'check.lock').open('a')
             fcntl.flock(lock, fcntl.LOCK_EX)
         # iterdir lists names only. No is_dir/stat-follow/dept.yaml checks here.
-        for dept in sorted(agents.iterdir()):
+        entries = sorted(agents.iterdir())
+        for dept in entries:
             owner, reason = owner_check(dept, overrides)
             if reason:
                 print(f'SKIP {dept.name!r}: {reason}')
@@ -183,18 +338,19 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
                 if dry_run:
                     continue
                 # Every character comes from validated directory slug + canonical day.
-                emit_runner([env.get('EMIT_BIN', str(ROOT / 'tools/kanban/emit_kanban_item.sh')),
-                             f'task={task}', f'title=Missing daily management export: {slug} {report}',
-                             'type=incident', 'priority=high', f'owner={slug}', 'budget=5',
-                             'intent=system-convergence-north-star',
-                             f'body=Mandatory daily export is missing for {slug} on {report}; check Layer 4 and restore its day report.',
-                             f'context_url=outputs/{report}/4/management-export.yaml'],
-                            check=True, timeout=EMIT_TIMEOUT, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT)
+                emit_alarm(env, emit_runner, slug, report, task,
+                           f'Missing daily management export: {slug} {report}',
+                           f'Mandatory daily export is missing for {slug} on {report}; check Layer 4 and restore its day report.')
                 atomic_write(receipt, 'emitter accepted\n')
             except (OSError, ValueError, subprocess.SubprocessError):
                 failed = True
                 print(f'ERROR {slug} {report}: child-or-emit-failed', file=sys.stderr)
+        if alarm_due and mirror_due:
+            mirror_processed, mirror_failed = check_mirrors(
+                entries, state, report, env=env, dry_run=dry_run,
+                mirror_check=mirror_check, child_runner=child_runner, emit_runner=emit_runner)
+            processed += mirror_processed
+            failed = failed or mirror_failed
     finally:
         if lock is not None:
             lock.close()
@@ -217,7 +373,8 @@ def main():
     try:
         return run_loop(Path(os.environ.get('AGENTS_ROOT', '/srv/agents')),
                         Path(os.environ.get('FLEET_EXPORT_STATE_DIR', '/var/lib/bubble-fleet-export-check')),
-                        report, alarm_due, env=os.environ, dry_run=args.dry_run)
+                        report, alarm_due, env=os.environ, dry_run=args.dry_run,
+                        mirror_due=mirror_alarm_due(now, report))
     except (OSError, ValueError):
         print('ERROR fleet configuration or directory enumeration', file=sys.stderr)
         return 1
