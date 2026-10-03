@@ -127,6 +127,15 @@ def build_jev_caller(backend: str = "openrouter") -> JevCaller:
     return _call
 
 
+def _is_assessed_as_of(value: Any) -> bool:
+    """True when `value` is an ISO date that is not in the future (UTC)."""
+    try:
+        parsed = datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    return parsed <= datetime.now(timezone.utc).date()
+
+
 def jev_verdict_for_page(page_id: str, page_evidence: Dict[str, Any],
                           call_jev: JevCaller) -> Dict[str, Any]:
     """Normalizes one Jev call into {"verdict","confidence","reason"}. NEVER
@@ -158,14 +167,43 @@ def jev_verdict_for_page(page_id: str, page_evidence: Dict[str, Any],
             for c in checks
         ],
     }
+    for check in state["checks"]:
+        if (str(check.get("id") or "").startswith("nav_freshness_")
+                and check["collector_verdict"] == "consistent"
+                and check.get("error") is None):
+            observed = check.get("observed") or {}
+            canonical = observed.get("canonical_nav")
+            # Only vouch for freshness the collector actually assessed:
+            # check_nav_freshness skips its age test on a missing/malformed
+            # as_of and does not reject a future one, so those stay raw.
+            if isinstance(canonical, dict) and _is_assessed_as_of(canonical.get("as_of")):
+                # #1684: the console's is_stale means "before today", whereas
+                # check_nav_freshness applies its own age tolerance. Sending
+                # that UI flag made Jev contradict an accepted Friday NAV on
+                # Saturday. Keep dates/numbers for unassessed comparisons,
+                # but make the collector's freshness conclusion explicit.
+                # Copy rather than mutate the original evidence bundle.
+                check["observed"] = {
+                    **observed,
+                    "canonical_nav": {k: v for k, v in canonical.items()
+                                      if k != "is_stale"},
+                }
+                check["collector_conclusions"] = {
+                    "nav_freshness": "acceptable_under_collector_policy",
+                }
     questions = {
         "page_health": {
             "type": "choice",
             "instructions": (
                 "Each check carries the deterministic collector's own "
-                "collector_verdict. Default to 'ok'. Answer 'suspicious' ONLY "
+                "collector_verdict. collector_conclusions names properties "
+                "already checked under the collector's policy. Do not re-derive "
+                "those judgments from raw values: a NAV as_of before today "
+                "alone does not contradict acceptable nav_freshness. Default "
+                "to 'ok'. Answer 'suspicious' ONLY "
                 "when the observed values concretely contradict that verdict "
-                "or the reason (e.g. a date older than the stated as_of, a "
+                "or the reason on a property not covered by collector_conclusions "
+                "(e.g. mismatched snapshot dates not already checked, a "
                 "non-null error, numbers that disagree with each other). A "
                 "check that is 'consistent' or 'informational', with a "
                 "plausible reason and no contradiction in its observed "
@@ -179,9 +217,10 @@ def jev_verdict_for_page(page_id: str, page_evidence: Dict[str, Any],
                        "informational and its observed values do not contradict "
                        "it; no check has a non-null error",
                 "suspicious": "at least one check has a concrete, observable "
-                               "contradiction (stale date vs as_of, non-null "
-                               "error, mismatched numbers) that the collector "
-                               "did not flag",
+                               "contradiction on a property not covered by "
+                               "collector_conclusions (non-null error, "
+                               "mismatched numbers or unassessed snapshot "
+                               "dates) that the collector did not flag",
                 "needs_review": "the evidence is too sparse or ambiguous to "
                                  "judge either way",
             },

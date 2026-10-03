@@ -12,6 +12,8 @@ import json
 import subprocess
 import sys
 import types
+from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -372,3 +374,130 @@ def test_state_carries_collector_verdict_and_prompt_defaults_to_ok():
     q = captured["q"]["page_health"]
     assert "even if not flagged hard" not in json.dumps(q)
     assert "needs_review" in q["criteria"]
+
+
+@pytest.fixture
+def weekend_nav_evidence():
+    # Shape and values of evidence_20261003T000126Z.json (is_stale was True
+    # after midnight while the collector still judged the NAV consistent).
+    return {"run_at": "2026-10-03T00:01:26Z", "pages": {
+        "dept_ben_portfolio": {
+            "path": "/dept/ben/portfolio",
+            "description": "Ben portfolio / exposure",
+            "http": {"status_code": 200, "ok": True,
+                     "latency_ms": 705.9, "error": None},
+            "checks": [{
+                "id": "nav_freshness_ben", "page": "dept_ben_portfolio",
+                "description": "ben: canonical NAV freshness + exposure/NAV snapshot consistency",
+                "observed": {"canonical_nav": {
+                    "nav": 261601.92, "since_rebase_pct": 5.21,
+                    "as_of": "2026-10-02", "is_stale": True,
+                    "source": "graph-data.json"},
+                    "exposure_as_of": "2026-10-02"},
+                "source": {"latest_graph_data_day_on_disk": "2026-10-02",
+                           "runtime_repo_path": "/srv/agents/ben",
+                           "latest_nav_snapshot_date": "2026-10-02",
+                           "fund_db_read_method": "private_temp_copy",
+                           "scan_window_days": 30},
+                "consistent": True, "hard_inconsistency": False,
+                "reason": "canonical NAV looks fresh, exposure matches its NAV snapshot, and pages render",
+                "error": None,
+            }],
+        }}}
+
+
+@pytest.mark.parametrize("ui_stale", [False, True])
+def test_weekend_nav_sends_collector_freshness_not_ui_stale(
+        weekend_nav_evidence, ui_stale, tmp_path):
+    check = weekend_nav_evidence["pages"]["dept_ben_portfolio"]["checks"][0]
+    check["observed"]["canonical_nav"]["is_stale"] = ui_stale
+    before = deepcopy(weekend_nav_evidence)
+    run_day = date.fromisoformat(weekend_nav_evidence["run_at"][:10])
+    assert run_day.weekday() == 5
+    assert run_day - date.fromisoformat(check["observed"]["canonical_nav"]["as_of"]) == timedelta(days=1)
+
+    def call(state, questions):
+        sent = state["checks"][0]
+        assert sent["collector_verdict"] == "consistent"
+        assert sent["collector_conclusions"] == {
+            "nav_freshness": "acceptable_under_collector_policy"}
+        expected_observed = deepcopy(check["observed"])
+        del expected_observed["canonical_nav"]["is_stale"]
+        assert sent["observed"] == expected_observed
+        assert sent["source"] == check["source"]
+        instructions = questions["page_health"]["instructions"]
+        assert "Do not re-derive" in instructions
+        assert "before today" in instructions
+        return _stub("ok", {"ok": 1.0})(state, questions)
+
+    result = judge.judge_evidence(
+        weekend_nav_evidence, call, shadow=True,
+        emit_script=Path("/nope.sh"), shadow_log_path=tmp_path / "shadow.jsonl")
+    assert result[0]["combined"]["final"] == "ok"
+    assert result[0]["outcome"]["action"] == "none"
+    assert weekend_nav_evidence == before  # Full collected evidence stays intact.
+
+
+@pytest.mark.parametrize("as_of", [None, "", "not-a-date", "2999-01-01"])
+def test_unassessed_as_of_gets_no_freshness_conclusion(
+        weekend_nav_evidence, as_of, tmp_path):
+    """check_nav_freshness skips its age test on a missing/malformed as_of
+    and accepts a future one, so the judge must not vouch for freshness:
+    Jev keeps the raw observed block (is_stale included)."""
+    check = weekend_nav_evidence["pages"]["dept_ben_portfolio"]["checks"][0]
+    check["observed"]["canonical_nav"]["as_of"] = as_of
+
+    def call(state, questions):
+        sent = state["checks"][0]
+        assert "collector_conclusions" not in sent
+        assert sent["observed"] == check["observed"]
+        return _stub("ok", {"ok": 1.0})(state, questions)
+
+    judge.judge_evidence(
+        weekend_nav_evidence, call, shadow=True,
+        emit_script=Path("/nope.sh"), shadow_log_path=tmp_path / "shadow.jsonl")
+
+
+@pytest.mark.parametrize("failure", ["stale_nav", "snapshot_mismatch"])
+def test_nav_hard_evidence_remains_visible_when_jev_says_ok(
+        weekend_nav_evidence, failure, tmp_path):
+    check = weekend_nav_evidence["pages"]["dept_ben_portfolio"]["checks"][0]
+    check.update(consistent=False, hard_inconsistency=True)
+    if failure == "stale_nav":
+        check["observed"]["canonical_nav"]["as_of"] = "2026-09-29"
+        check["reason"] = "canonical NAV as-of 2026-09-29 is 4d old (> 2d threshold)"
+    else:
+        check["observed"]["exposure_as_of"] = "2026-10-01"
+        check["reason"] = "exposure as-of 2026-10-01 does not match latest NAV snapshot 2026-10-02"
+
+    def call(state, questions):
+        sent = state["checks"][0]
+        assert sent["collector_verdict"] == "HARD_INCONSISTENT"
+        assert sent["observed"] == check["observed"]
+        assert sent["source"] == check["source"]
+        assert "collector_conclusions" not in sent
+        return _stub("ok", {"ok": 1.0})(state, questions)
+
+    log = tmp_path / "shadow.jsonl"
+    result = judge.judge_evidence(
+        weekend_nav_evidence, call, shadow=True,
+        emit_script=Path("/nope.sh"), shadow_log_path=log)
+    assert result[0]["combined"]["final"] == "suspicious"
+    row = json.loads(log.read_text())
+    assert row["cause"] == "collector_hard_inconsistency"
+    assert "[HARD] nav_freshness_ben" in row["evidence_summary"]
+
+
+def test_jev_can_escalate_unchecked_nav_values(weekend_nav_evidence, tmp_path):
+    check = weekend_nav_evidence["pages"]["dept_ben_portfolio"]["checks"][0]
+    # NAV sign is not one of check_nav_freshness's deterministic comparisons.
+    check["observed"]["canonical_nav"]["nav"] = -261601.92
+
+    def call(state, questions):
+        assert state["checks"][0]["observed"]["canonical_nav"]["nav"] < 0
+        return _stub("suspicious", {"suspicious": 0.9})(state, questions)
+
+    result = judge.judge_evidence(
+        weekend_nav_evidence, call, shadow=True,
+        emit_script=Path("/nope.sh"), shadow_log_path=tmp_path / "shadow.jsonl")
+    assert result[0]["combined"]["cause"] == "jev_escalation"
