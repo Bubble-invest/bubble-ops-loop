@@ -1589,6 +1589,56 @@ fi
 unset BUBBLE_BACKUP_CLAUDE_BIN N_ENABLED_SLUG
 export BUBBLE_BACKUP_CLAUDE_BIN="$CLAUDE_STUB"
 
+# Room check: exercise BOTH headless floor prompt paths at every layer.
+ROOM_CLAUSE="$("$PY" "$REPO_ROOT/scripts/due_missions.py" room-check-clause)"
+for shape in legacy mission; do
+    for layer in 1 2 3 4; do
+        reset_fixtures
+        common_env
+        export BUBBLE_BACKUP_LAYER_OFFSET_H=-48
+        slug="room${layer}"
+        make_dept "$slug" 10800
+        make_layer "$slug" "$layer"
+        for prior in 1 2 3; do
+            if (( prior < layer )); then
+                make_layer_marker "$slug" "$prior"
+            fi
+        done
+        if [[ "$shape" == mission ]]; then
+            cat >"$AGENTS_ROOT/bubble-ops-$slug/dept.yaml" <<YAML
+recurring_missions:
+- id: room_test_mission
+  layer: $layer
+  cadence: daily
+  time: '00:00'
+YAML
+        fi
+        set_enabled "$slug"
+        export BUBBLE_BACKUP_DEPTS="$slug"
+        : > "$CLAUDE_ARGS"; : > "$CLAUDE_LOG"
+        with_dryrun -unset- -unset- "$SCRIPT" --layer "$layer"
+        if [[ "$RC" == 0 ]] && [[ -s "$CLAUDE_LOG" ]] \
+           && { [[ "$shape" == legacy ]] || grep -q 'mission `room_test_mission`' "$CLAUDE_ARGS"; }; then
+            ok "room check: $shape L$layer headless path ran"
+        else
+            bad "room check: $shape L$layer did not run expected path: $ALL"
+        fi
+        if [[ "$layer" == 1 ]]; then
+            if [[ -n "$ROOM_CLAUSE" ]] && grep -qF "$ROOM_CLAUSE" "$CLAUDE_ARGS" \
+                    && [[ "$(grep -c 'ROOM CHECK' "$CLAUDE_ARGS")" == 1 ]]; then
+                ok "room check: $shape L1 has the exact shared clause once"
+            else
+                bad "room check: $shape L1 missing/duplicate clause"
+            fi
+        elif ! grep -q 'ROOM CHECK' "$CLAUDE_ARGS"; then
+            ok "room check: $shape L$layer has no clause"
+        else
+            bad "room check: $shape L$layer unexpectedly has clause"
+        fi
+    done
+done
+unset BUBBLE_BACKUP_LAYER_OFFSET_H
+
 echo
 echo "== RESULT: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]

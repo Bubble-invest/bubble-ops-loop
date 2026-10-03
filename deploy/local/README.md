@@ -379,6 +379,13 @@ nothing due this instant is no longer a refusal — `wake-prompt` emits a
 machine-generated `DUE_MISSIONS=[]` idle envelope instead (exit 0), so the
 runner uses that, not the free-text fallback, on that tick.
 
+For both schemas, tick and wake envelopes include one fixed `ROOM CHECK`
+clause when the resolved plan contains a layer-1 mission. It points to
+`skills/meeting-room/SKILL.md` section "Every layer-1 run: room check" for
+reading member/chair rooms, answering addressed messages, and saving watermarks.
+Missing tools or refused access are reported in the run output and layer-4
+export notes. Plans containing only layers 2–4 and idle envelopes omit it.
+
 ### Prompt wake-catch (`com.bubble.ops-loop-wake-<slug>`)
 
 launchd's coalesce-on-wake fires the missed `StartInterval` only **once** on wake

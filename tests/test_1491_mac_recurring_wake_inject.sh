@@ -144,5 +144,39 @@ grep -q 'inject using generated DUE_MISSIONS wake-prompt' "$WORK/accountant.log"
     && ok "accountant: log records the generator path was used (idle envelope, not a refusal)" \
     || bad "accountant: log did not record generator use: $(cat "$WORK/accountant.log")"
 
+# Case 3: unknown schema falls back to a full tick that includes layer 1.
+FALLBACK="$WORK/tony"
+FALLBACK_STATE="$WORK/tony-state"
+mkdir -p "$FALLBACK" "$FALLBACK_STATE"
+chmod 700 "$FALLBACK_STATE"
+printf '{}\n' >"$FALLBACK/dept.yaml"
+fallback_args=(--dept-dir "$FALLBACK" --slug tony --telegram-state-dir "$FALLBACK_STATE" --session-name ops-loop-tony --harness-selector "$SELECTOR" --tmux-bin "$TMUX" --activate-inject)
+LOCAL_LOOP_NOW_EPOCH=1789300800 run "${fallback_args[@]}" >"$WORK/tony.log" 2>&1
+rc=$?
+prompt3="$(tail -n 1 "$FALLBACK_STATE/inject" 2>/dev/null)"
+ROOM_CLAUSE="$(python3 "$ROOT/scripts/due_missions.py" room-check-clause)"
+[[ "$rc" == 0 && "$prompt3" == *"$FALLBACK_NEEDLE"* && "$prompt3" == *"$ROOM_CLAUSE"* && "$prompt3" != *'DUE_MISSIONS='* ]] \
+    && ok "tony: full-tick fallback includes exact shared room check" \
+    || bad "tony: fallback failed (rc=$rc): $prompt3"
+
+# Case 4: clause command fails; injection survives with one diagnostic.
+PY_REAL="$(command -v python3)"
+cat >"$WORK/python-no-clause" <<EOF
+#!/bin/bash
+if [[ "\${2:-}" == room-check-clause ]]; then exit 2; fi
+exec "$PY_REAL" "\$@"
+EOF
+chmod 700 "$WORK/python-no-clause"
+rm -f "$FALLBACK_STATE/inject"
+LOCAL_LOOP_PYTHON="$WORK/python-no-clause" LOCAL_LOOP_NOW_EPOCH=1789301800 run "${fallback_args[@]}" >"$WORK/no-clause.log" 2>&1
+rc=$?
+prompt4="$(tail -n 1 "$FALLBACK_STATE/inject" 2>/dev/null)"
+[[ "$rc" == 0 && "$prompt4" == *"$FALLBACK_NEEDLE"* && "$prompt4" != *'ROOM CHECK'* ]] \
+    && ok "tony: missing clause remains nonfatal" \
+    || bad "tony: missing clause interrupted fallback (rc=$rc): $(cat "$WORK/no-clause.log")"
+[[ "$(grep -c 'room-check clause unavailable' "$WORK/no-clause.log")" == 1 ]] \
+    && ok "tony: missing clause logged exactly once" \
+    || bad "tony: missing clause diagnostic absent/duplicated"
+
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

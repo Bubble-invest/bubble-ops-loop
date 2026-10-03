@@ -32,6 +32,18 @@ except ImportError as _exc:  # pragma: no cover - depends on the host's interpre
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+# Fixed, fleet-wide generated text; wake prompts inherit it from the tick
+# envelope. Only the resolved plan decides whether this layer-1 step is due.
+ROOM_CHECK_CLAUSE = (
+    ' ROOM CHECK (part of this layer-1 run): follow the "Every layer-1 run: room check" '
+    "section of the meeting-room skill (skills/meeting-room/SKILL.md; registry "
+    "skills/meeting-room/rooms.yaml): for each room listing you as member or chair, "
+    "read the messages newer than your last read, answer those addressed to you or "
+    "to @all, and record the new watermark. If the skill or the ArtifactData tool "
+    "is unavailable, or a room refuses access, say so in this run's output and "
+    "continue; never skip silently."
+)
+
 
 def _require_yaml() -> None:
     """Raise a clear, actionable DueMissionConfigError if `yaml` failed to
@@ -56,6 +68,7 @@ from scripts.lib.loop_backup import (
     release_due_claims,
     write_due_success,
 )
+from scripts.lib.due_dispatch_ledger import append_success
 
 
 def _now(epoch: int | None) -> dt.datetime:
@@ -174,6 +187,7 @@ def _prompt(plan: list[dict], dept_dir: Path, dept_label: str = "Rick's") -> str
         "is in flight; it is not success, and an uncompleted mission retries after lease expiry. "
         + " | ".join(commands)
         + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
+        + (ROOM_CHECK_CLAUSE if any(1 in item["layers"] for item in plan) else "")
     )
 
 
@@ -861,6 +875,7 @@ def _prompt_recurring(plan: list[dict], dept_dir: Path, dept_label: str = "the d
         "never self-merge mission/mandate/loop/agent-def changes. "
         + " | ".join(commands)
         + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
+        + (ROOM_CHECK_CLAUSE if any(item["layer"] == 1 for item in plan) else "")
     )
 
 
@@ -969,7 +984,20 @@ def command_complete(args: argparse.Namespace) -> int:
         raise DueMissionConfigError(f"mission is not in due-dispatch scope: {args.mission}")
     _validate_completion_period(mission["cadence"], args.period)
     path = due_watermark_path(str(dept_dir), manifest)
-    write_due_success(path, args.mission, args.period, _now(args.now_epoch))
+    completed_at = _now(args.now_epoch)
+    leased_at = None
+    # Capture the lease before success clears it. KPI evidence is best effort;
+    # neither reading nor publishing it may alter completion's outcome.
+    try:
+        entry = read_due_watermarks(path).get("missions", {}).get(args.mission, {})
+        pending = entry.get("pending") if isinstance(entry, dict) else None
+        if isinstance(pending, dict) and pending.get("period") == args.period:
+            candidate = dt.datetime.fromisoformat(pending["claimed_at"].replace("Z", "+00:00"))
+            if candidate.tzinfo is not None and candidate <= completed_at:
+                leased_at = candidate
+    except Exception as exc:
+        print(f"due-mission KPI ledger warning: cannot read lease: {exc}", file=sys.stderr)
+    write_due_success(path, args.mission, args.period, completed_at)
     # #1235/#1316/#1330: a completion is only real if the marker is actually
     # written — verify the write actually landed (read the persisted state
     # back, not just trust write_due_success's in-memory return) before
@@ -985,13 +1013,25 @@ def command_complete(args: argparse.Namespace) -> int:
             f"(watermark reads {recorded!r} after write) — treat this as a "
             f"FAILED completion, not a success"
         )
+    try:
+        append_success(dept_dir, args.mission, args.period, completed_at, leased_at)
+    except Exception as exc:
+        print(f"due-mission KPI ledger warning: {args.mission}: {exc}", file=sys.stderr)
     print(f"completed {args.mission} for {args.period}")
+    return 0
+
+
+def command_room_check_clause(args: argparse.Namespace) -> int:
+    """Expose the shared clause without loading a dept manifest."""
+    print(ROOM_CHECK_CLAUSE, end="")
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
+    room_check = sub.add_parser("room-check-clause")
+    room_check.set_defaults(func=command_room_check_clause)
     plan = sub.add_parser("plan")
     plan.add_argument("--dept-dir", required=True)
     plan.add_argument("--now-epoch", type=int)

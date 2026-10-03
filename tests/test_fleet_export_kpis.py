@@ -827,3 +827,171 @@ def test_symlinked_transcript_entry_is_skipped_not_fatal(tmp_path):
     calls = kpi.read_calls(root, missing)
     assert missing == set()
     assert [c["total_tokens"] for c in calls] == [10]
+
+
+@pytest.fixture
+def mac_evidence(tmp_path, monkeypatch):
+    """Mac schema with one leased mission, one start-less success, one unseen mission."""
+    from scripts.due_missions import command_complete, parser
+    from scripts.lib.loop_backup import claim_due_missions
+
+    dept = tmp_path / 'rick'
+    dept.mkdir()
+    entries = [dict(id='daily_scan', cadence='daily', status='live', layer=1,
+                    due={'policy': 'calendar_period', 'timezone': 'Europe/Paris'},
+                    mission_file='missions/daily_scan.md'),
+               dict(id='board', cadence='continuous', status='live', layer=1,
+                    due={'policy': 'every_tick'}, mission_file='missions/board.md'),
+               dict(id='unseen', cadence='daily', status='live', layer=1,
+                    due={'policy': 'calendar_period', 'timezone': 'Europe/Paris'},
+                    mission_file='missions/unseen.md')]
+    data = dict(status='live', layers={'subscribed': [1, 4]}, recurring_missions=entries,
+                loop={'due_dispatch': {'mission_ids': [m['id'] for m in entries],
+                                      'watermark': 'monitoring/due.json', 'pending_lease_seconds': 21600}})
+    (dept / 'dept.yaml').write_text(yaml.safe_dump(data))
+    for entry in entries:
+        path = dept / entry['mission_file']
+        path.parent.mkdir(exist_ok=True)
+        path.write_text('# synthetic mission\n')
+    for layer in (1, 4):
+        path = dept / f'layers/{layer}/PROMPT.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('# synthetic layer\n')
+    started = dt.datetime(2026, 10, 3, 8, 0, tzinfo=dt.timezone.utc)
+    # The sidecar's autouse fixture simulates a nonroot UID; writes must use
+    # the real fixture owner, then restore the sidecar's isolated-child UID.
+    with monkeypatch.context() as owner:
+        owner.setattr(os, 'geteuid', os.getuid)
+        claim_due_missions(dept / 'monitoring/due.json', data, started, 21600)
+        for mission_id, period in (('daily_scan', DAY), ('board', 'continuous')):
+            args = parser().parse_args(['complete', '--dept-dir', str(dept), '--mission', mission_id,
+                                        '--period', period, '--now-epoch', str(int(started.timestamp()) + 600)])
+            assert command_complete(args) == 0
+    sessions = tmp_path / 'sessions'
+    transcript(sessions / 'main.jsonl', [message(stamp=DAY + 'T08:05:00Z')])
+    return dept, sessions
+
+
+def test_1711_mac_reader_successes_and_short_history(mac_evidence):
+    dept, sessions = mac_evidence
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert doc['top_kpis_flat']['dispatch_days_present'] == 1
+    assert doc['top_kpis_flat']['dispatch_days_absent'] == len(doc['dispatch_days_absent_list']) == 27
+    assert 'dispatch' not in doc['sources_missing']
+    scan = doc['missions']['daily_scan']
+    assert scan['runs_recorded'] == scan['runs_dispatched'] == scan['runs_completed'] == 1
+    assert scan['runs_unattributed'] == 0
+    assert scan['total_tokens_approx'] == 100
+    board = doc['missions']['board']
+    assert board['runs_completed'] == board['runs_recorded'] == board['runs_unattributed'] == 1
+    assert board['runs_dispatched'] == board['days_dispatched'] == 0
+    assert board['total_tokens_approx'] == 0
+    for data in doc['missions'].values():
+        assert data['history_days_present'] == 1
+        assert data['history_days_absent'] == 27
+    assert doc['missions']['unseen'] == {'history_days_present': 1, 'history_days_absent': 27}
+
+
+def test_1711_mac_sidecar_contains_real_mission_evidence(mac_evidence, nonroot_child_fixtures):
+    dept, sessions = mac_evidence
+    export_file(dept)
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    doc = read_sidecar(dept)
+    assert doc['missions']['daily_scan']['runs_completed'] == 1
+    assert doc['missions']['daily_scan']['tokens_date'] == DAY
+    assert doc['top_kpis']['dispatch_days_present'] == 1
+    assert all(isinstance(value, (int, float)) for value in doc['top_kpis'].values())
+
+
+@pytest.mark.parametrize('mac', [False, True])
+def test_1711_shared_windows_split_once_and_mark_estimates(evidence, mac):
+    dept, sessions = evidence
+    manifest(dept, ('morning_sync', 'news_relay', 'solo'))
+    records = {mission: dict(dispatched_at=DAY + 'T07:00:00Z', completed_at=DAY + 'T07:30:00Z')
+               for mission in ('morning_sync', 'news_relay')}
+    records['solo'] = dict(dispatched_at=DAY + 'T09:00:00Z', completed_at=DAY + 'T09:30:00Z')
+    if mac:
+        ledger(dept, DAY, {})
+        write_json(dept / 'outputs' / DAY / 'due-dispatch.json',
+                   [dict(mission_id=mission, period=DAY, **record) for mission, record in records.items()])
+    else:
+        ledger(dept, DAY, records)
+    transcript(sessions / 'main.jsonl', [
+        message('shared', DAY + 'T07:10:00Z', input_tokens=11, output_tokens=5,
+                cache_read_input_tokens=21, cache_creation_input_tokens=31),
+        message('solo', DAY + 'T09:10:00Z'), message('outside', DAY + 'T10:00:00Z')])
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    missions = doc['missions']
+    assert missions['morning_sync']['total_tokens_approx'] == 34
+    assert missions['news_relay']['total_tokens_approx'] == 34
+    for mission, peer in (('morning_sync', 'news_relay'), ('news_relay', 'morning_sync')):
+        assert missions[mission]['attribution'] == 'shared_window'
+        assert missions[mission]['shared_with'] == [peer]
+        assert missions[mission]['tokens_date'] == DAY
+    assert missions['solo']['total_tokens_approx'] == 100
+    assert 'attribution' not in missions['solo'] and 'shared_with' not in missions['solo']
+    for key in (*kpi.TOKEN_FIELDS, 'total_tokens'):
+        assert sum(data[key + '_approx'] for data in missions.values()) <= doc['dept_tokens_today'][key]
+    assert doc['dept_tokens_today']['total_tokens'] == 268
+
+
+def test_1711_partial_three_way_overlap_and_prior_day_calls(evidence):
+    dept, sessions = evidence
+    manifest(dept, ('first', 'second', 'third'))
+    ledger(dept, DAY, {
+        'first': dict(dispatched_at=DAY + 'T07:00:00Z', completed_at=DAY + 'T08:00:00Z'),
+        'second': dict(dispatched_at=DAY + 'T07:30:00Z', completed_at=DAY + 'T08:30:00Z'),
+        'third': dict(dispatched_at=DAY + 'T07:45:00Z', completed_at=DAY + 'T08:00:00Z')})
+    ledger(dept, '2026-10-02', {'first': dict(dispatched_at='2026-10-02T07:00:00Z',
+                                             completed_at='2026-10-02T08:00:00Z')})
+    transcript(sessions / 'main.jsonl', [
+        message('prior', '2026-10-02T07:15:00Z', input_tokens=999),
+        message('first', DAY + 'T07:15:00Z', input_tokens=30),
+        message('two', DAY + 'T07:40:00Z', input_tokens=20),
+        message('three', DAY + 'T07:50:00Z', input_tokens=9),
+        message('last', DAY + 'T08:15:00Z', input_tokens=40)])
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert [doc['missions'][m]['total_tokens_approx'] for m in ('first', 'second', 'third')] == [43, 53, 3]
+    assert doc['missions']['first']['runs_dispatched'] == 2
+    assert sum(m['total_tokens_approx'] for m in doc['missions'].values()) == doc['dept_tokens_today']['total_tokens'] == 99
+    assert doc['missions']['first']['shared_with'] == ['second', 'third']
+    assert all(m['attribution'] == 'shared_window' for m in doc['missions'].values())
+
+
+def test_1711_shared_marker_without_transcript_calls_in_overlap(evidence):
+    dept, sessions = evidence
+    manifest(dept, ('first', 'second'))
+    ledger(dept, DAY, {mission: dict(dispatched_at=DAY + 'T07:00:00Z', completed_at=DAY + 'T07:30:00Z')
+                       for mission in ('first', 'second')})
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert all(m['attribution'] == 'shared_window' for m in doc['missions'].values())
+    assert all(m['total_tokens_approx'] == 0 for m in doc['missions'].values())
+
+
+@pytest.mark.parametrize('value', ['broken json', '{}', '[null]', '[{"mission_id": "board"}]'])
+def test_1711_malformed_mac_ledger_is_visible(evidence, value):
+    dept, sessions = evidence
+    path = dept / 'outputs' / DAY / 'due-dispatch.json'
+    path.write_text(value)
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert 'dispatch' in doc['sources_missing']
+    assert 'kpi-sources-missing' in {a['id'] for a in doc['attention']}
+
+
+def test_1711_mac_without_ledger_reports_unknown_history(mac_evidence):
+    dept, sessions = mac_evidence
+    (dept / 'outputs' / DAY / 'due-dispatch.json').unlink()
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert 'dispatch' in doc['sources_missing']
+    assert all(data == {'history_days_present': 0, 'history_days_absent': 28}
+               for data in doc['missions'].values())
+
+
+def test_1711_mac_ledger_symlink_is_not_followed(evidence, tmp_path):
+    dept, sessions = evidence
+    target = tmp_path / 'external.json'
+    write_json(target, [dict(mission_id='external', period=DAY, completed_at=DAY + 'T08:10:00Z')])
+    (dept / 'outputs' / DAY / 'due-dispatch.json').symlink_to(target)
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert 'dispatch' in doc['sources_missing']
+    assert 'external' not in doc['missions']

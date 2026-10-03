@@ -3,7 +3,7 @@
 # must try the machine-generated DUE_MISSIONS wake-prompt FIRST (the same
 # generator #1484 built for Mac, now extended to the VPS/content/accountant
 # `recurring_missions` schema) and fall back to the historical free-text
-# nudge, UNCHANGED, whenever the generator refuses or errors.
+# full tick, with the shared room check, whenever the generator refuses or errors.
 #
 # Modeled on scripts/tests/test_606_primary_wake_only.sh's "Successful
 # classic primary wakes" fixture (same systemctl/inject/watcher harness),
@@ -117,7 +117,7 @@ grep -qF "$FALLBACK_NEEDLE" "$inject_ben" \
   && fail "ben: fallback free text used even though the generator had real due work"
 echo "case 1 (recurring_missions, live due mission) PASS"
 
-# ── Case 2: unrecognized/empty schema — must fall back UNCHANGED ───────────
+# ── Case 2: unrecognized/empty schema — full-tick fallback with room check ───────────
 mkdir -p "$TMP/agents/tony/layers/1"
 printf '{}\n' >"$TMP/agents/tony/dept.yaml"
 printf 'layer one\n' >"$TMP/agents/tony/layers/1/PROMPT.md"
@@ -132,6 +132,9 @@ grep -qF "$FALLBACK_NEEDLE" "$inject_tony" \
   || fail "tony: fallback text missing/changed for an unrecognized manifest: $(cat "$inject_tony")"
 grep -q "DUE_MISSIONS=" "$inject_tony" \
   && fail "tony: a DUE_MISSIONS envelope leaked in for a manifest with no due work"
-echo "case 2 (unrecognized manifest, fallback unchanged) PASS"
+ROOM_CLAUSE="$("$PY_BIN" "$ROOT/scripts/due_missions.py" room-check-clause)"
+grep -qF "$ROOM_CLAUSE" "$inject_tony" \
+  || fail "tony: full-tick fallback missing shared room check"
+echo "case 2 (unrecognized manifest, fallback with room check) PASS"
 
 printf '%s\n' "#1487 recurring-missions wake-inject tests: PASS"
