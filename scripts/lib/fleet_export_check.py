@@ -7,6 +7,7 @@ import datetime as dt
 import errno
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -28,7 +29,7 @@ else:
 ROOT = Path(__file__).resolve().parents[2]
 SLUG = re.compile(r'[a-z][a-z0-9-]{0,79}')
 STATUS = re.compile(r'(?:written|export_missing|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
-CHECK_STATUS = re.compile(r'(?:export_present|export_missing|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
+CHECK_STATUS = re.compile(r'(?:export_present|export_missing|mirror_stale|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
 MAX_REPLY = 4096
 CHILD_TIMEOUT = 120
 EMIT_TIMEOUT = 60
@@ -118,7 +119,7 @@ def mirror_for(entry, mirror_root, mirror_owner, *, lstat=os.lstat,
         return None, None, 'owner-unavailable'
 
 
-def parse_reply(code, raw):
+def parse_reply(code, raw, *, check_only=False):
     if not isinstance(raw, bytes) or len(raw) > MAX_REPLY:
         return 'error:invalid-reply'
     try:
@@ -132,7 +133,8 @@ def parse_reply(code, raw):
             return dict(pairs)
         doc = json.loads(lines[0], object_pairs_hook=unique)
         status = doc['status']
-        if not isinstance(status, str) or not (STATUS.fullmatch(status) or CHECK_STATUS.fullmatch(status)):
+        contract = CHECK_STATUS if check_only else STATUS
+        if not isinstance(status, str) or not contract.fullmatch(status):
             raise ValueError
         if code != (1 if status.startswith('error:') else 0):
             return 'error:child-exit'
@@ -164,7 +166,7 @@ def run_child(command, *, timeout=CHILD_TIMEOUT):
                         if len(data) > MAX_REPLY:
                             raise ValueError('oversized-reply')
         code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-        return parse_reply(code, bytes(data))
+        return parse_reply(code, bytes(data), check_only='--check-only' in command)
     except subprocess.TimeoutExpired:
         return 'error:child-timeout'
     except ValueError:
@@ -190,7 +192,7 @@ def select_day(now, requested=None):
 def mirror_alarm_due(now, report):
     """Only the morning activation checking yesterday tolerates mirror lag."""
     local = now.astimezone(ZoneInfo('Europe/Paris'))
-    return local.hour < 12 and day(report) == local.date() - dt.timedelta(days=1)
+    return 6 <= local.hour < 12 and day(report) == local.date() - dt.timedelta(days=1)
 
 
 def emit_alarm(env, emit_runner, slug, report, task, title, body):
@@ -203,25 +205,32 @@ def emit_alarm(env, emit_runner, slug, report, task, title, body):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT)
 
 
-def mirror_receipt(path):
+def mirror_receipt(path, *, first_key='first_missing_day'):
     """Read a bounded receipt in root's own state directory, never the mirror."""
-    if path.is_symlink():
-        raise ValueError('symlink receipt')
     try:
-        with path.open() as stream:
-            doc = json.loads(stream.read(MAX_REPLY + 1))
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_REPLY:
+            raise ValueError('nonregular or oversized receipt')
+        with path.open('rb') as stream:
+            raw = stream.read(MAX_REPLY + 1)
+        if len(raw) > MAX_REPLY:
+            raise ValueError('oversized receipt')
+        doc = json.loads(raw)
+        if not isinstance(doc, dict) or set(doc) != {first_key, 'last_alarm'}:
+            raise ValueError('invalid mirror receipt')
+        day(doc[first_key])
+        if doc['last_alarm'] is not None:
+            day(doc['last_alarm'])
+        return doc
     except FileNotFoundError:
         return None
-    if not isinstance(doc, dict) or set(doc) != {'first_missing_day', 'last_alarm'}:
-        raise ValueError('invalid mirror receipt')
-    day(doc['first_missing_day'])
-    if doc['last_alarm'] is not None:
-        day(doc['last_alarm'])
-    return doc
+    except (OSError, ValueError, TypeError):
+        print(f'WARN ignoring unreadable or invalid mirror receipt: {path.name}', file=sys.stderr)
+        return None
 
 
 def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
-                  child_runner, emit_runner):
+                  child_runner, emit_runner, mirror_max_age_hours=6):
     failed = False
     processed = 0
     for entry in entries:
@@ -241,7 +250,8 @@ def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
         command = [env.get('RUNUSER_BIN', 'runuser'), '-u', owner, '--',
                    env.get('PYTHON_BIN', 'python3'), '-I',
                    str(ROOT / 'scripts/lib/management_kpis.py'),
-                   '--dept-dir', str(target), '--day', report, '--check-only']
+                   '--dept-dir', str(target), '--day', report,
+                   '--mirror-max-age-hours', str(mirror_max_age_hours), '--check-only']
         try:
             status = child_runner(command, timeout=CHILD_TIMEOUT)
             if not isinstance(status, str) or not CHECK_STATUS.fullmatch(status):
@@ -249,29 +259,44 @@ def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
             print(f'mirror {slug} {report}: {status}')
             if status.startswith('error:'):
                 failed = True
-            if status not in ('export_present', 'export_missing'):
+            if status not in ('export_present', 'export_missing', 'mirror_stale'):
                 continue
             processed += 1
-            receipt = state / f'fleet-export-missing-{slug}.mirror.json'
+            stale = status == 'mirror_stale'
+            stale_receipt = state / f'fleet-mirror-stale-{slug}.mirror.json'
+            if not stale and not dry_run:
+                stale_receipt.unlink(missing_ok=True)
+            task = f'fleet-mirror-stale-{slug}' if stale else f'fleet-export-missing-{slug}'
+            receipt = state / f'{task}.mirror.json'
             if status == 'export_present':
                 if not dry_run:
                     receipt.unlink(missing_ok=True)
                 continue
-            previous = mirror_receipt(receipt)
+            first_key = 'first_stale_day' if stale else 'first_missing_day'
+            previous = mirror_receipt(receipt, first_key=first_key)
             if previous is not None and previous['last_alarm'] is not None:
                 continue
-            outage = previous or dict(first_missing_day=report, last_alarm=None)
-            first = outage['first_missing_day']
+            outage = previous or {first_key: report, 'last_alarm': None}
+            first = outage[first_key]
             print(f'{"DRY RUN alarm" if dry_run else "ALARM"} mirror {slug} since {first}')
             if dry_run:
                 continue
+            if previous is None:
+                # Invalid receipts are absent, including refused symlinks/FIFOs.
+                # Replace them without carrying their metadata into the new file.
+                receipt.unlink(missing_ok=True)
             # Persist the first observation before emission so failed emits on
             # subsequent days retain the original outage start. Retry until sent.
             atomic_write(receipt, json.dumps(outage) + '\n')
-            emit_alarm(env, emit_runner, slug, report, f'fleet-export-missing-{slug}',
-                       f'Missing daily management export: {slug} since {first}',
-                       f'Mandatory daily export is missing for {slug} since {first}; '
-                       f'latest missing day is {report}. Check the Mac runtime and its outputs publication.')
+            if stale:
+                title = f'VPS mirror of {slug} is not updating since {first}'
+                body = (f'VPS mirror of {slug} is stale since {first}; latest check day is {report}. '
+                        'Check the VPS mirror sync job and file ownership. The Mac export status is unknown.')
+            else:
+                title = f'Missing daily management export: {slug} since {first}'
+                body = (f'Mandatory daily export is missing for {slug} since {first}; '
+                        f'latest missing day is {report}. Check the Mac runtime and its outputs publication.')
+            emit_alarm(env, emit_runner, slug, report, task, title, body)
             outage['last_alarm'] = report
             atomic_write(receipt, json.dumps(outage) + '\n')
         except (OSError, ValueError, TypeError, subprocess.SubprocessError):
@@ -282,7 +307,7 @@ def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
 
 def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
              owner_check=owner_for, child_runner=run_child, emit_runner=subprocess.run,
-             mirror_due=False, mirror_check=mirror_for):
+             mirror_due=False, mirror_check=mirror_for, mirror_max_age_hours=6):
     overrides = {}
     for entry in env.get('FLEET_EXPORT_OWNER_OVERRIDES', '').split(','):
         if entry:
@@ -348,7 +373,8 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
         if alarm_due and mirror_due:
             mirror_processed, mirror_failed = check_mirrors(
                 entries, state, report, env=env, dry_run=dry_run,
-                mirror_check=mirror_check, child_runner=child_runner, emit_runner=emit_runner)
+                mirror_check=mirror_check, child_runner=child_runner, emit_runner=emit_runner,
+                mirror_max_age_hours=mirror_max_age_hours)
             processed += mirror_processed
             failed = failed or mirror_failed
     finally:
@@ -364,7 +390,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--day')
+    parser.add_argument('--mirror-max-age-hours', type=float, default=6)
     args = parser.parse_args()
+    if not math.isfinite(args.mirror_max_age_hours) or args.mirror_max_age_hours <= 0:
+        parser.error('--mirror-max-age-hours must be finite and positive')
     text = os.environ.get('FLEET_EXPORT_NOW')
     now = dt.datetime.fromisoformat(text) if text else dt.datetime.now(dt.timezone.utc)
     if now.tzinfo is None:
@@ -374,6 +403,7 @@ def main():
         return run_loop(Path(os.environ.get('AGENTS_ROOT', '/srv/agents')),
                         Path(os.environ.get('FLEET_EXPORT_STATE_DIR', '/var/lib/bubble-fleet-export-check')),
                         report, alarm_due, env=os.environ, dry_run=args.dry_run,
+                        mirror_max_age_hours=args.mirror_max_age_hours,
                         mirror_due=mirror_alarm_due(now, report))
     except (OSError, ValueError):
         print('ERROR fleet configuration or directory enumeration', file=sys.stderr)

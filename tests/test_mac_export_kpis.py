@@ -37,6 +37,29 @@ def export(dept, date=DAY):
     return path
 
 
+def git_state(dept, *, local='a' * 40, remote=None, age_hours=0, packed=False,
+              branch='main'):
+    """Offline git metadata fixture: no git process or remote needed."""
+    remote = local if remote is None else remote
+    git = dept / '.git'
+    git.mkdir(exist_ok=True)
+    (git / 'HEAD').write_text(f'ref: refs/heads/{branch}\n')
+    refs = {f'refs/heads/{branch}': local, f'refs/remotes/origin/{branch}': remote}
+    if packed:
+        (git / 'packed-refs').write_text('# pack-refs with: peeled fully-peeled sorted\n' +
+                                       ''.join(f'{oid} {ref}\n' for ref, oid in refs.items()))
+    else:
+        for ref, oid in refs.items():
+            path = git / ref
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(oid + '\n')
+    fetch = git / 'FETCH_HEAD'
+    fetch.write_text(local + '\t\tbranch\n')
+    stamp = dt.datetime.now(dt.timezone.utc).timestamp() - age_hours * 3600
+    os.utime(fetch, (stamp, stamp))
+    return git
+
+
 def snapshot(dept):
     return {str(p.relative_to(dept)): ('link', os.readlink(p)) if p.is_symlink()
             else ('dir',) if p.is_dir() else ('file', p.read_bytes())
@@ -188,10 +211,12 @@ def test_macos_publication_path_exercised_on_all_platforms(tmp_path, monkeypatch
 def test_check_only_no_directory_or_file_changes(tmp_path, monkeypatch, present):
     dept = tmp_path / 'content'
     manifest(dept)
+    git_state(dept)
     if present:
         export(dept).write_bytes(b'x' * (child.CAP + 1))
     before = snapshot(dept)
     monkeypatch.setattr(child, 'build', lambda *a, **k: pytest.fail('check-only tried KPI generation'))
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('check-only spawned a subprocess'))
     assert child.child(dept, DAY, check_only=True) == ('export_present' if present else 'export_missing')
     assert snapshot(dept) == before
 
@@ -202,6 +227,7 @@ def test_check_only_no_directory_or_file_changes(tmp_path, monkeypatch, present)
 def test_check_only_same_filesystem_refusals(tmp_path, component, kind):
     dept = tmp_path / 'content'
     manifest(dept)
+    git_state(dept)
     path = export(dept)
     target = {'dept': dept, 'outputs': dept / 'outputs', DAY: dept / 'outputs' / DAY,
               '4': path.parent}.get(component, path.with_name(component))
@@ -235,13 +261,14 @@ def test_check_only_eligibility(tmp_path, manifest_text, expected):
 def test_check_only_cli_reply(tmp_path, shell_env):
     dept = tmp_path / 'content'
     manifest(dept)
+    git_state(dept)
     export(dept)
     before = snapshot(dept)
     result = subprocess.run(['python3', '-I', str(ROOT / 'scripts/lib/management_kpis.py'),
         '--dept-dir', str(dept), '--day', DAY, '--check-only'], env=shell_env,
         capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert fleet.parse_reply(result.returncode, result.stdout) == 'export_present'
+    assert fleet.parse_reply(result.returncode, result.stdout, check_only=True) == 'export_present'
     assert snapshot(dept) == before
 
 
@@ -352,6 +379,7 @@ def mirrors(tmp_path):
     mirror_root = tmp_path / 'mirrors'
     target = mirror_root / 'bubble-ops-content'
     manifest(target)
+    git_state(target)
     (agents / 'bubble-ops-content').symlink_to(target, target_is_directory=True)
     state = tmp_path / 'state'
     env = dict(FLEET_EXPORT_MIRROR_ROOT=str(mirror_root), PYTHON_BIN=sys.executable)
@@ -374,15 +402,18 @@ def fixture_real(entry, overrides):
 
 
 def run_mirrors(mirrors, report=DAY, *, due=True, morning=True, dry_run=False,
-                runner=None, emitter=None, checker=fixture_mirror):
+                runner=None, emitter=None, checker=fixture_mirror, mirror_max_age_hours=6):
     agents, state, _, env = mirrors
     def owner_child(command, **kwargs):
         assert kwargs == dict(timeout=120)
         dept = Path(command[command.index('--dept-dir') + 1])
         date = command[command.index('--day') + 1]
-        return child.child(dept, date, check_only='--check-only' in command, dry_run='--dry-run' in command)
+        return child.child(dept, date, check_only='--check-only' in command, dry_run='--dry-run' in command,
+                           mirror_max_age_hours=float(command[command.index('--mirror-max-age-hours') + 1])
+                           if '--check-only' in command else 6)
     return fleet.run_loop(agents, state, report, due, env=env, dry_run=dry_run,
         owner_check=fixture_real, mirror_check=checker, mirror_due=morning,
+        mirror_max_age_hours=mirror_max_age_hours,
         child_runner=runner or owner_child, emit_runner=emitter or (lambda *a, **k: None))
 
 
@@ -513,6 +544,11 @@ def test_mirror_only_in_morning_alarm_activation(mirrors, morning, due):
 
 
 @pytest.mark.parametrize('now,requested,expected', [
+    ('2026-10-04T00:05:00+02:00', None, False),
+    ('2026-10-04T05:59:59+02:00', None, False),
+    ('2026-10-04T06:00:00+02:00', None, True),
+    ('2026-10-04T11:59:59+02:00', None, True),
+    ('2026-10-04T12:00:00+02:00', DAY, False),
     ('2026-10-04T08:10:00+02:00', None, True),
     ('2026-10-04T21:50:00+02:00', None, False),
     ('2026-10-04T23:30:00+02:00', DAY, False),
@@ -537,7 +573,8 @@ def test_mirror_dry_run_has_no_state_or_output_writes(mirrors):
     assert not state.exists()
 
 
-def test_root_never_opens_or_follows_mirror_files(mirrors, monkeypatch):
+@pytest.mark.parametrize('status', ['export_missing', 'mirror_stale', 'export_present'])
+def test_root_never_opens_or_follows_mirror_files(mirrors, monkeypatch, status):
     agents, _, target, _ = mirrors
     original_open = Path.open
     original_builtin_open = builtins.open
@@ -571,7 +608,7 @@ def test_root_never_opens_or_follows_mirror_files(mirrors, monkeypatch):
     monkeypatch.setattr(os, 'open', os_open)
     monkeypatch.setattr(os, 'stat', os_stat)
     # Inject owner reply: this is the root process, not its owner child.
-    assert run_mirrors(mirrors, checker=checker, runner=lambda *a, **k: 'export_missing') == 0
+    assert run_mirrors(mirrors, checker=checker, runner=lambda *a, **k: status) == 0
     assert metadata == [agents / 'bubble-ops-content', agents / 'content', target]
 
 
@@ -586,10 +623,14 @@ def test_check_only_uid_zero_refused_before_read(tmp_path, monkeypatch):
 @pytest.mark.parametrize('status', ['skipped:not-live', 'skipped:no-l4',
                                   'skipped:invalid-manifest', 'error:child-failed',
                                   'written', 'untrusted model text'])
-def test_mirror_skip_or_error_preserves_outage_receipt(mirrors, status):
-    _, state, _, _ = mirrors
+@pytest.mark.parametrize('stale', [False, True])
+def test_mirror_skip_or_error_preserves_outage_receipt(mirrors, status, stale):
+    _, state, target, _ = mirrors
+    if stale:
+        git_state(target, remote='b' * 40)
     assert run_mirrors(mirrors) == 0
-    receipt = state / 'fleet-export-missing-content.mirror.json'
+    task = 'fleet-mirror-stale-content' if stale else 'fleet-export-missing-content'
+    receipt = state / f'{task}.mirror.json'
     before = receipt.read_bytes()
     assert run_mirrors(mirrors, '2026-10-04', runner=lambda *a, **k: status,
         emitter=lambda *a, **k: pytest.fail('skip/error emitted')) == fleet.NOTHING_PROCESSED
@@ -679,3 +720,208 @@ def test_runner_prefers_framework_venv_and_fails_closed_without_yaml(tmp_path):
     assert result.returncode == 1
     assert 'error:python-missing-yaml' in result.stdout
     assert list(dept.iterdir()) == []
+
+
+@pytest.mark.parametrize('packed', [False, True])
+@pytest.mark.parametrize('present', [False, True])
+def test_current_git_refs_allow_export_decision(tmp_path, monkeypatch, packed, present):
+    dept = tmp_path / 'content'
+    manifest(dept)
+    git_state(dept, packed=packed, branch='feature/export')
+    if present:
+        export(dept)
+    before = snapshot(dept)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('mirror child spawned a process'))
+    assert child.child(dept, DAY, check_only=True) == ('export_present' if present else 'export_missing')
+    assert snapshot(dept) == before
+
+
+@pytest.mark.parametrize('kind', [
+    'diverged', 'old-fetch', 'no-fetch', 'no-git', 'no-head', 'detached', 'malformed-head',
+    'traversal-head', 'no-local', 'no-remote', 'malformed-local', 'malformed-remote',
+    'malformed-packed', 'packed-diverged', 'symlink-head', 'symlink-ref-dir',
+    'symlink-fetch', 'symlink-git', 'fifo-head', 'fifo-fetch', 'oversized-head',
+    'unreadable-head', 'unreadable-ref', 'unreadable-fetch'])
+def test_stale_git_metadata_read_only_no_subprocess(tmp_path, monkeypatch, kind):
+    dept = tmp_path / 'content'
+    manifest(dept)
+    git = git_state(dept, remote='b' * 40 if kind in ('diverged', 'packed-diverged') else None,
+                    age_hours=7 if kind == 'old-fetch' else 0,
+                    packed=kind in ('malformed-packed', 'packed-diverged'))
+    path = export(dept)
+    # A stale mirror does not inspect export paths, even an unsafe one.
+    path.unlink()
+    path.symlink_to(tmp_path / 'missing')
+    if kind == 'no-git':
+        shutil.rmtree(git)
+    elif kind.startswith('no-'):
+        (git / {'no-head': 'HEAD', 'no-fetch': 'FETCH_HEAD', 'no-local': 'refs/heads/main',
+                'no-remote': 'refs/remotes/origin/main'}[kind]).unlink()
+    elif kind in ('detached', 'malformed-head', 'traversal-head', 'oversized-head'):
+        (git / 'HEAD').write_text({'detached': 'a' * 40 + '\n', 'malformed-head': 'junk\n',
+                                 'traversal-head': 'ref: refs/heads/../../outside\n',
+                                 'oversized-head': 'x' * (child.CAP + 1)}[kind])
+    elif kind in ('malformed-local', 'malformed-remote', 'malformed-packed'):
+        (git / {'malformed-local': 'refs/heads/main', 'malformed-remote': 'refs/remotes/origin/main',
+                'malformed-packed': 'packed-refs'}[kind]).write_text('bad commit\n')
+    elif kind.startswith(('symlink-', 'fifo-')):
+        target = {'symlink-head': git / 'HEAD', 'symlink-ref-dir': git / 'refs/heads',
+                  'symlink-fetch': git / 'FETCH_HEAD', 'symlink-git': git,
+                  'fifo-head': git / 'HEAD', 'fifo-fetch': git / 'FETCH_HEAD'}[kind]
+        target.rename(target.with_name(target.name + '-saved'))
+        if kind.startswith('symlink-'):
+            target.symlink_to(tmp_path / 'outside')
+        else:
+            os.mkfifo(target)
+    elif kind.startswith('unreadable-'):
+        original_open = os.open
+        denied = {'unreadable-head': 'HEAD', 'unreadable-ref': 'main',
+                  'unreadable-fetch': 'FETCH_HEAD'}[kind]
+        def unreadable(name, *args, **kwargs):
+            if name == denied:
+                raise PermissionError('fixture unreadable')
+            return original_open(name, *args, **kwargs)
+        monkeypatch.setattr(os, 'open', unreadable)
+    before = {str(p.relative_to(dept)): os.lstat(p).st_mode for p in dept.rglob('*')}
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('mirror child spawned a process'))
+    assert child.child(dept, DAY, check_only=True) == 'mirror_stale'
+    assert {str(p.relative_to(dept)): os.lstat(p).st_mode for p in dept.rglob('*')} == before
+    assert not list(dept.rglob('management-kpis.yaml'))
+
+
+def test_mirror_age_threshold_cli_and_parent_forwarding(mirrors, shell_env):
+    _, _, target, _ = mirrors
+    git_state(target, age_hours=7)
+    emitted = []
+    assert run_mirrors(mirrors, mirror_max_age_hours=8, emitter=lambda c, **k: emitted.append(c)) == 0
+    assert 'task=fleet-export-missing-content' in emitted[0]
+    result = subprocess.run(['python3', '-I', str(ROOT / 'scripts/lib/management_kpis.py'),
+        '--dept-dir', str(target), '--day', DAY, '--check-only', '--mirror-max-age-hours', '8'],
+        env=shell_env, capture_output=True, timeout=30)
+    assert result.returncode == 0
+    assert fleet.parse_reply(0, result.stdout, check_only=True) == 'export_missing'
+    result = subprocess.run(['python3', '-I', str(ROOT / 'scripts/lib/management_kpis.py'),
+        '--dept-dir', str(target), '--day', DAY, '--check-only'],
+        env=shell_env, capture_output=True, timeout=30)
+    assert result.returncode == 0
+    assert fleet.parse_reply(0, result.stdout, check_only=True) == 'mirror_stale'
+
+
+@pytest.mark.parametrize('present', [False, True])
+def test_stale_mirror_one_card_across_days_recovery_and_later_outage(mirrors, present):
+    _, state, target, _ = mirrors
+    git = git_state(target, remote='b' * 40)
+    if present:
+        for date in (DAY, '2026-10-04', '2026-10-05', '2026-10-06'):
+            export(target, date)
+    before = snapshot(target)
+    emitted = []
+    emitter = lambda c, **k: emitted.append(c)
+    receipt = state / 'fleet-mirror-stale-content.mirror.json'
+    for date in (DAY, '2026-10-04', '2026-10-05'):
+        assert run_mirrors(mirrors, date, emitter=emitter) == 0
+    assert snapshot(target) == before
+    assert len(emitted) == 1
+    assert 'task=fleet-mirror-stale-content' in emitted[0]
+    assert f'title=VPS mirror of content is not updating since {DAY}' in emitted[0]
+    assert 'Mac export status is unknown' in ' '.join(emitted[0])
+    assert not (state / 'fleet-export-missing-content.mirror.json').exists()
+    assert json.loads(receipt.read_text()) == dict(first_stale_day=DAY, last_alarm=DAY)
+    git_state(target)
+    assert run_mirrors(mirrors, '2026-10-06', emitter=emitter) == 0
+    assert not receipt.exists()
+    assert len(emitted) == (1 if present else 2)
+    (git / 'FETCH_HEAD').unlink()
+    assert run_mirrors(mirrors, '2026-10-07', emitter=emitter) == 0
+    assert 'title=VPS mirror of content is not updating since 2026-10-07' in emitted[-1]
+    assert json.loads(receipt.read_text()) == dict(first_stale_day='2026-10-07', last_alarm='2026-10-07')
+
+
+def test_stale_emit_retry_preserves_first_day_and_missing_receipt(mirrors):
+    _, state, target, _ = mirrors
+    assert run_mirrors(mirrors) == 0
+    missing = state / 'fleet-export-missing-content.mirror.json'
+    before = missing.read_bytes()
+    git_state(target, remote='b' * 40)
+    calls = []
+    def emit(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, command)
+    assert run_mirrors(mirrors, '2026-10-04', emitter=emit) == 1
+    receipt = state / 'fleet-mirror-stale-content.mirror.json'
+    assert json.loads(receipt.read_text()) == dict(first_stale_day='2026-10-04', last_alarm=None)
+    assert run_mirrors(mirrors, '2026-10-05', emitter=emit) == 0
+    assert run_mirrors(mirrors, '2026-10-06', emitter=emit) == 0
+    assert len(calls) == 2
+    assert all('task=fleet-mirror-stale-content' in command for command in calls)
+    assert 'title=VPS mirror of content is not updating since 2026-10-04' in calls[1]
+    assert missing.read_bytes() == before
+
+
+@pytest.mark.parametrize('stale', [False, True])
+@pytest.mark.parametrize('corrupt', ['json', 'shape', 'date', 'type', 'oversized', 'encoding', 'unreadable',
+                                   'symlink', 'fifo'])
+def test_invalid_mirror_receipt_is_absent_and_replaced(mirrors, monkeypatch, capsys, stale, corrupt):
+    _, state, target, _ = mirrors
+    state.mkdir()
+    task = 'fleet-mirror-stale-content' if stale else 'fleet-export-missing-content'
+    first_key = 'first_stale_day' if stale else 'first_missing_day'
+    receipt = state / f'{task}.mirror.json'
+    if stale:
+        git_state(target, remote='b' * 40)
+    data = {'json': b'{broken', 'shape': b'{}',
+            'date': json.dumps({first_key: 'wrong date', 'last_alarm': None}).encode(),
+            'type': json.dumps({first_key: None, 'last_alarm': None}).encode(),
+            'oversized': b' ' * fleet.MAX_REPLY + b'{}', 'encoding': b'\xff',
+            'unreadable': b'{}', 'symlink': b'{}', 'fifo': b'{}'}[corrupt]
+    receipt.write_bytes(data)
+    if corrupt in ('symlink', 'fifo'):
+        receipt.unlink()
+        if corrupt == 'symlink':
+            outside = state / 'outside'
+            outside.write_text('unchanged')
+            receipt.symlink_to(outside)
+        else:
+            os.mkfifo(receipt)
+    if corrupt == 'unreadable':
+        original_open = Path.open
+        def unreadable(path, *args, **kwargs):
+            if path == receipt:
+                raise PermissionError('fixture unreadable')
+            return original_open(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'open', unreadable)
+    emitted = []
+    assert run_mirrors(mirrors, emitter=lambda c, **k: emitted.append(c)) == 0
+    assert len(emitted) == 1 and f'task={task}' in emitted[0]
+    assert capsys.readouterr().err.count('ignoring unreadable or invalid mirror receipt') == 1
+    monkeypatch.undo()
+    assert json.loads(receipt.read_text()) == {first_key: DAY, 'last_alarm': DAY}
+    if corrupt == 'symlink':
+        assert outside.read_text() == 'unchanged'
+
+
+@pytest.mark.parametrize('stale', [False, True])
+def test_stale_dry_run_never_changes_receipts_or_mirror(mirrors, stale):
+    _, state, target, _ = mirrors
+    git_state(target, remote='b' * 40)
+    assert run_mirrors(mirrors) == 0
+    if not stale:
+        git_state(target)
+        export(target)
+    before = snapshot(state), snapshot(target)
+    assert run_mirrors(mirrors, dry_run=True,
+                       emitter=lambda *a, **k: pytest.fail('dry run emitted')) == 0
+    assert (snapshot(state), snapshot(target)) == before
+
+
+@pytest.mark.parametrize('status', ['export_present', 'mirror_stale'])
+def test_mirror_status_parser_requires_mirror_mode(mirrors, status):
+    raw = json.dumps({'status': status}).encode() + b'\n'
+    assert fleet.parse_reply(0, raw, check_only=True) == status
+    assert fleet.parse_reply(0, raw) == 'error:invalid-reply'
+    assert fleet.parse_reply(1, raw, check_only=True) == 'error:child-exit'
+    agents, _, _, _ = mirrors
+    manifest(agents / 'ben')
+    assert run_mirrors(mirrors, morning=False, runner=lambda *a, **k: status) == fleet.NOTHING_PROCESSED
+    assert fleet.parse_reply(0, b'{"status":"written"}\n', check_only=True) == 'error:invalid-reply'
