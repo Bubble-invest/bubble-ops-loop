@@ -142,7 +142,9 @@ def child(dept_dir: Path, report_day: str, *, dry_run=False,
                    export_present=export is not None, export_shape=shape, export_shape_note=note,
                    top_kpis=kpis['top_kpis_flat'], missions=kpis['missions'],
                    dept_tokens_today=kpis['dept_tokens_today'], attention=attention,
-                   links=links, sources_missing=sorted(missing_sources))
+                   links=links, sources_missing=sorted(missing_sources),
+                   sources_not_configured=kpis['sources_not_configured'],
+                   dispatch_days_absent_list=kpis['dispatch_days_absent_list'])
         # /proc/self/fd pins the Linux output directory even during a hostile rename.
         if sys.platform.startswith('linux'):
             handle, temporary = tempfile.mkstemp(prefix='.management-kpis.', dir=f'/proc/self/fd/{fd}')

@@ -67,7 +67,7 @@ def atomic_write(path: Path, body: str) -> None:
 
 
 def read_source(path: Path, missing: set[str], name: str, expected: type,
-                *, yaml_source: bool = False):
+                *, yaml_source: bool = False, not_configured: set[str] | None = None):
     try:
         with open_text(path) as stream:
             text = stream.read()
@@ -75,6 +75,9 @@ def read_source(path: Path, missing: set[str], name: str, expected: type,
         if not isinstance(value, expected):
             raise ValueError("unexpected source shape")
         return value
+    except FileNotFoundError:
+        (missing if not_configured is None else not_configured).add(name)
+        return None
     except (OSError, UnicodeError, ValueError, yaml.YAMLError):
         missing.add(name)
         return None
@@ -153,7 +156,7 @@ def token_totals(calls: list[dict], pricing: dict | None) -> dict:
             ("input_tokens", "input"), ("output_tokens", "output"),
             ("cache_read_tokens", "cache_read"), ("cache_write_tokens", "cache_write"))) / 1e6)
     if pricing is not None:
-        totals["cost_usd_estimate"] = round(math.fsum(costs), 6)
+        totals["cost_usd_estimate"] = round(math.fsum(costs), 2)
     return totals
 
 
@@ -228,6 +231,7 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
     if token_threshold < 1:
         raise ValueError("token threshold must be positive")
     missing = set()
+    not_configured = set()
     manifest = read_source(dept_dir / "dept.yaml", missing, "dept.yaml", dict, yaml_source=True)
     entries = (manifest or {}).get("recurring_missions", [])
     if not isinstance(entries, list) or any(not isinstance(m, dict) or
@@ -237,16 +241,18 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
     missions = {m["id"]: {} for m in entries}
     records = []
     dispatch_complete = True
+    dispatch_days_absent = []
     for offset in range(28):
         date = (start + dt.timedelta(days=offset)).isoformat()
         ledger = read_source(dept_dir / "outputs" / date / "dispatch.json",
-                             missing, f"dispatch:{date}", dict)
+                             missing, "dispatch", dict, not_configured=set())
         if ledger is None:
             dispatch_complete = False
+            dispatch_days_absent.append(date)
             continue
         for mission, record in sorted(ledger.items()):
             if not MISSION_ID.fullmatch(mission) or not isinstance(record, dict):
-                missing.add(f"dispatch:{date}")
+                missing.add("dispatch")
                 dispatch_complete = False
                 continue
             missions.setdefault(mission, {})
@@ -255,7 +261,7 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
             if (record.get("dispatched_at") and dispatched is None) or (
                 record.get("completed_at") and (completed is None or dispatched and completed < dispatched)
             ):
-                missing.add(f"dispatch:{date}")
+                missing.add("dispatch")
                 dispatch_complete = False
             if completed is not None and (
                 completed.astimezone(PARIS).date() > end or dispatched and completed < dispatched
@@ -263,6 +269,8 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                 completed = None
             if dispatched and start <= dispatched.astimezone(PARIS).date() <= end:
                 records.append((mission, date, dispatched, completed, record))
+    if len(dispatch_days_absent) == 28:
+        missing.add("dispatch")
     calls = read_calls(transcripts_dir or Path(
         f"/home/agent-{dept_dir.name}/.claude/projects/-srv-agents-{dept_dir.name}"), missing)
     pricing = pricing_table()
@@ -286,9 +294,11 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                 elif key == "cost_usd_estimate":
                     data["cost_usd_estimate_approx"] = value
     mapping = read_source(dept_dir / "config/mission_kpi_map.yaml", missing,
-                          "mission_map", dict, yaml_source=True)
-    runs = read_source(runs_json or dept_dir / "monitoring/runs.json", missing, "runs", list)
-    board = read_source(board_json or dept_dir / "monitoring/board-issues.json", missing, "board", list)
+                          "mission_map", dict, yaml_source=True, not_configured=not_configured)
+    runs = read_source(runs_json or dept_dir / "monitoring/runs.json", missing, "runs", list,
+                       not_configured=not_configured)
+    board = read_source(board_json or dept_dir / "monitoring/board-issues.json", missing, "board", list,
+                        not_configured=not_configured)
     if mapping is not None:
         try:
             optional_metrics(mapping, None, None, start, end)
@@ -309,7 +319,8 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
                 missing.add(name)
     today_calls = [c for c in calls or [] if c["timestamp"].astimezone(PARIS).date() == end]
     today = token_totals(today_calls, pricing) if calls is not None else {}
-    flat = {}
+    flat = dict(dispatch_days_present=28 - len(dispatch_days_absent),
+                dispatch_days_absent=len(dispatch_days_absent))
     attention = []
 
     def flag(identifier, priority, summary):
@@ -326,16 +337,20 @@ def build(dept_dir: Path, report_day: str, *, transcripts_dir: Path | None = Non
             flag(f"{identifier}-low-yield", "medium",
                  f"{mission}: {data['cards_dropped']} of {data['cards_created']} cards closed without action in 28 days")
     if today:
-        flat.update(tokens_today_total_mtok=round(today["total_tokens"] / 1e6, 6),
-                    tokens_today_output_mtok=round(today["output_tokens"] / 1e6, 6),
+        flat.update(tokens_today_total_mtok=round(today["total_tokens"] / 1e6, 1),
+                    tokens_today_output_mtok=round(today["output_tokens"] / 1e6, 1),
                     model_calls_today=today["model_calls"])
         if today["total_tokens"] >= token_threshold:
-            flag("kpi-dept-token-use", "medium", f"Department used {today['total_tokens']} tokens on {report_day}")
+            flag("kpi-dept-token-use", "medium",
+                 f"Department used {today['total_tokens'] / 1e6:.1f} million tokens "
+                 f"across {today['model_calls']} model calls on {report_day}")
     flat["mission_kpi_sources_missing"] = len(missing)
     if missing:
         flag("kpi-sources-missing", "low", "KPI sources unreadable or absent: " + ", ".join(sorted(missing)))
     return dict(missions=dict(sorted(missions.items())), dept_tokens_today=today,
                 top_kpis_flat=flat, attention=attention, sources_missing=sorted(missing),
+                sources_not_configured=sorted(not_configured),
+                dispatch_days_absent_list=dispatch_days_absent,
                 notes=["Days and transcript totals use Europe/Paris; optional board creation dates use UTC.",
                        "Dispatch counts cover surviving ledger records; overwritten runs and uncommitted crashes are unobservable.",
                        "Mission token and cost windows are approximate and may overlap across missions.",

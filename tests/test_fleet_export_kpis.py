@@ -121,9 +121,9 @@ def test_tokens_windows_subagents_dedupe_and_paris_day(evidence):
     total = doc['dept_tokens_today']
     assert total['total_tokens'] == 600
     assert total['model_calls'] == 6
-    assert total['cost_usd_estimate'] == pytest.approx(0.004491)
-    assert data['cost_usd_estimate_approx'] == pytest.approx(0.0022455, abs=1e-6)
-    assert doc['top_kpis_flat']['tokens_today_total_mtok'] == 0.0006
+    assert total['cost_usd_estimate'] == 0.0
+    assert data['cost_usd_estimate_approx'] == 0.0
+    assert doc['top_kpis_flat']['tokens_today_total_mtok'] == 0.0
     assert any(a['id'] == 'kpi-dept-token-use' and a['priority'] == 'medium' for a in doc['attention'])
 
 
@@ -141,24 +141,32 @@ def test_missing_sources_are_absent_not_zero(tmp_path):
     assert doc['missions']['inbox_watch'] == {}
     assert doc['dept_tokens_today'] == {}
     assert 'model_calls_today' not in doc['top_kpis_flat']
-    assert {'board', 'runs', 'mission_map', 'transcripts', f'dispatch:{DAY}'} <= set(doc['sources_missing'])
+    assert doc['sources_missing'] == ['dispatch', 'transcripts']
+    assert doc['sources_not_configured'] == ['board', 'mission_map', 'runs']
+    assert doc['top_kpis_flat']['dispatch_days_present'] == 0
+    assert doc['top_kpis_flat']['dispatch_days_absent'] == 28
+    assert len(doc['dispatch_days_absent_list']) == 28
     assert doc['top_kpis_flat']['mission_kpi_sources_missing'] == len(doc['sources_missing'])
     assert next(a for a in doc['attention'] if a['id'] == 'kpi-sources-missing')['priority'] == 'low'
 
 
-@pytest.mark.parametrize('kind', ['bad-transcript', 'bad-board', 'bad-runs', 'bad-manifest', 'bad-ledger'])
+@pytest.mark.parametrize('kind', ['bad-transcript', 'bad-board', 'bad-runs', 'bad-map', 'bad-manifest', 'bad-ledger'])
 def test_malformed_sources_are_missing(evidence, kind):
     dept, sessions = evidence
     paths = {'bad-transcript': sessions / 'main.jsonl', 'bad-board': dept / 'monitoring/board-issues.json',
              'bad-runs': dept / 'monitoring/runs.json', 'bad-manifest': dept / 'dept.yaml',
+             'bad-map': dept / 'config/mission_kpi_map.yaml',
              'bad-ledger': dept / 'outputs' / DAY / 'dispatch.json'}
     path = paths[kind]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('[broken')
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     expected = {'bad-transcript': 'transcripts', 'bad-board': 'board', 'bad-runs': 'runs',
-                'bad-manifest': 'dept.yaml', 'bad-ledger': f'dispatch:{DAY}'}[kind]
+                'bad-map': 'mission_map',
+                'bad-manifest': 'dept.yaml', 'bad-ledger': 'dispatch'}[kind]
     assert expected in doc['sources_missing']
+    assert expected not in doc['sources_not_configured']
+    assert any(a['id'] == 'kpi-sources-missing' for a in doc['attention'])
     if kind == 'bad-transcript':
         assert doc['dept_tokens_today'] == {}
         assert 'total_tokens_approx' not in doc['missions']['inbox_watch']
@@ -177,6 +185,106 @@ def test_unreadable_source_is_missing(evidence, monkeypatch):
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     assert 'transcripts' in doc['sources_missing']
     assert doc['dept_tokens_today'] == {}
+
+
+def test_sparse_dispatch_days_and_unconfigured_sources_do_not_raise_attention(evidence):
+    dept, sessions = evidence
+    absent = sorted(path.parent.name for path in (dept / 'outputs').glob('*/dispatch.json')
+                    if path.parent.name != DAY)
+    for date in absent:
+        (dept / 'outputs' / date / 'dispatch.json').unlink()
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert doc['top_kpis_flat']['dispatch_days_present'] == 1
+    assert doc['top_kpis_flat']['dispatch_days_absent'] == 27
+    assert doc['dispatch_days_absent_list'] == absent
+    assert doc['sources_missing'] == []
+    assert doc['top_kpis_flat']['mission_kpi_sources_missing'] == 0
+    assert doc['sources_not_configured'] == ['board', 'mission_map', 'runs']
+    assert not any(a['id'] == 'kpi-sources-missing' for a in doc['attention'])
+    # The on-disk document exposes both new body keys and numeric counts.
+    export = export_file(dept)
+    export.with_name('summary.md').write_text('Daily report.\n')
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    out = read_sidecar(dept)
+    assert out['dispatch_days_absent_list'] == absent
+    assert out['sources_not_configured'] == doc['sources_not_configured']
+    assert out['sources_missing'] == []
+    assert out['top_kpis']['dispatch_days_present'] == 1
+    assert out['top_kpis']['dispatch_days_absent'] == 27
+    assert out['attention'] == []
+
+
+def test_empty_readable_dispatch_is_present(evidence):
+    dept, sessions = evidence
+    for path in (dept / 'outputs').glob('*/dispatch.json'):
+        path.unlink()
+    ledger(dept, DAY, {})
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert doc['top_kpis_flat']['dispatch_days_present'] == 1
+    assert doc['top_kpis_flat']['dispatch_days_absent'] == 27
+    assert 'dispatch' not in doc['sources_missing']
+
+
+@pytest.mark.parametrize('source', ['board', 'runs', 'mission_map', 'dispatch'])
+def test_existing_unreadable_sources_still_raise_attention(evidence, monkeypatch, source):
+    dept, sessions = evidence
+    paths = {'board': dept / 'monitoring/board-issues.json',
+             'runs': dept / 'monitoring/runs.json',
+             'mission_map': dept / 'config/mission_kpi_map.yaml',
+             'dispatch': dept / 'outputs' / DAY / 'dispatch.json'}
+    target = paths[source]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{}' if source in ('mission_map', 'dispatch') else '[]')
+    original = kpi.open_text
+
+    def open_file(path):
+        if path == target:
+            raise PermissionError('fixture permission denied')
+        return original(path)
+
+    monkeypatch.setattr(kpi, 'open_text', open_file)
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert doc['sources_missing'] == [source]
+    assert source not in doc['sources_not_configured']
+    assert next(a for a in doc['attention'] if a['id'] == 'kpi-sources-missing')['priority'] == 'low'
+    if source == 'dispatch':
+        assert doc['top_kpis_flat']['dispatch_days_present'] == 27
+        assert doc['dispatch_days_absent_list'] == [DAY]
+
+
+def test_token_and_dollar_rounding_in_written_sidecar(evidence):
+    dept, sessions = evidence
+    transcript(sessions / 'main.jsonl', [message(input_tokens=16_465_677, output_tokens=1_234_567)])
+    export = export_file(dept)
+    export.with_name('summary.md').write_text('Daily report.\n')
+    assert sidecar.child(dept, DAY, transcripts_dir=sessions) == 'written'
+    doc = read_sidecar(dept)
+    assert doc['top_kpis']['tokens_today_total_mtok'] == 17.7
+    assert doc['top_kpis']['tokens_today_output_mtok'] == 1.2
+    assert doc['dept_tokens_today']['total_tokens'] == 17_700_244
+    assert doc['dept_tokens_today']['cost_usd_estimate'] == 67.92
+    assert doc['missions']['inbox_watch']['cost_usd_estimate_approx'] == 67.92
+    for values in (doc['top_kpis'], doc['dept_tokens_today'], *doc['missions'].values()):
+        for key, value in values.items():
+            if key.endswith('_mtok'):
+                assert value == round(value, 1)
+            elif 'cost_usd' in key:
+                assert value == round(value, 2)
+            elif key.endswith(('tokens', 'tokens_approx')):
+                assert type(value) is int
+
+
+def test_heavy_token_summary_uses_millions_and_model_calls(evidence):
+    dept, sessions = evidence
+    calls = [message('large', input_tokens=34_750_337)]
+    calls.extend(message(f'call-{i}', input_tokens=1) for i in range(317))
+    transcript(sessions / 'main.jsonl', calls)
+    doc = kpi.build(dept, DAY, transcripts_dir=sessions)
+    assert doc['dept_tokens_today']['total_tokens'] == 34_750_654
+    flag = next(a for a in doc['attention'] if a['id'] == 'kpi-dept-token-use')
+    assert flag['priority'] == 'medium'
+    assert flag['summary'] == f'Department used 34.8 million tokens across 318 model calls on {DAY}'
+    assert doc['top_kpis_flat']['tokens_today_total_mtok'] == 34.8
 
 
 def test_unknown_model_is_not_priced_as_zero(evidence):
@@ -696,5 +804,5 @@ def test_symlink_kpi_source_not_followed(evidence, tmp_path):
     source.unlink()
     source.symlink_to(target)
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
-    assert f'dispatch:{DAY}' in doc['sources_missing']
+    assert doc['sources_missing'] == ['dispatch']
     assert 'secret' not in doc['missions']
