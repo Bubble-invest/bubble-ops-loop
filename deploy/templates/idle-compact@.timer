@@ -1,0 +1,11 @@
+[Unit]
+Description=Check %i for idle context compaction every five minutes
+
+[Timer]
+OnActiveSec=300
+OnUnitActiveSec=300
+AccuracySec=1s
+Unit=idle-compact@%i.service
+
+[Install]
+WantedBy=timers.target

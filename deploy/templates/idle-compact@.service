@@ -1,0 +1,32 @@
+[Unit]
+Description=Idle context compaction for %i (55 minutes)
+After=bubble-agent@%i.service
+ConditionPathIsDirectory=/srv/agents/%i
+ConditionPathExists=/etc/bubble-idle-compact/%i.json
+
+[Service]
+Type=oneshot
+User=agent-%i
+Group=agent-%i
+WorkingDirectory=/srv/agents/%i
+Environment=HOME=/home/agent-%i
+Environment=PATH=/home/agent-%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/bubble-ops-loop/scripts/idle-compact/idle_compact.py --config /etc/bubble-idle-compact/%i.json
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/agent-%i/.local/state/idle-compact
+# tmux's own-user socket is in /tmp/tmux-UID. PrivateTmp would hide it.
+PrivateTmp=false
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
