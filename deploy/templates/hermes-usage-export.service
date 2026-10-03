@@ -1,0 +1,19 @@
+[Unit]
+Description=Bubble Fleet — export read-only Hermes usage counters
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+User=root
+WorkingDirectory=/opt/bubble-ops-loop
+ExecStart=/usr/bin/python3 /opt/bubble-ops-loop/scripts/export-hermes-usage.py
+UMask=0022
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-usage-export
+
+# /home remains readable for isolated agent databases and mirrored transcripts.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/claude/.claude/projects

@@ -9,19 +9,22 @@
 {% block body_class %}m4{% endblock %}
 {% set nav_active = 'costs' %}
 {% block content %}
+{% macro dollars(value) -%}
+  {% if value is not none %}${{ '%.2f'|format(value) }}{% else %}—{% endif %}
+{%- endmacro %}
 
 <section class="page-hero m4-hero" aria-labelledby="costs-hero-title">
   <div class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span>COÛTS</div>
   <h1 class="page-hero-title" id="costs-hero-title">Coûts de l'équipe</h1>
   <p class="page-hero-lede">
-    Aujourd'hui&nbsp;: <b class="ochre-num">${{ '%.2f'|format(report.totals.today.cost) }}</b>
-    · 7&nbsp;derniers jours&nbsp;: <b class="ochre-num">${{ '%.2f'|format(report.totals.week.cost) }}</b>
+    Aujourd'hui&nbsp;: <b class="ochre-num">{{ dollars(report.totals.today.cost) }}</b>
+    · 7&nbsp;derniers jours&nbsp;: <b class="ochre-num">{{ dollars(report.totals.week.cost) }}</b>
     · {{ report.totals.week.runs }} sessions.
   </p>
   <p class="page-hero-lede" style="font-size:.85em;opacity:.75">
-    Coût <strong>réel-équivalent API</strong> (input + output) — le cache est neutralisé.
+    Claude : coût <strong>réel-équivalent API</strong> (input + output), cache à part. Hermes : coût total déclaré ou estimé.
     Cache (lecture/écriture), affiché à part&nbsp;:
-    <span style="opacity:.85">${{ '%.2f'|format(report.totals.week.cache_cost) }} sur 7&nbsp;j</span>.
+    <span style="opacity:.85">{{ dollars(report.totals.week.cache_cost) }} sur 7&nbsp;j</span>.
   </p>
   {% set fleet = agent_budgets.get('__fleet__') if agent_budgets else None %}
   {% if fleet and fleet.defined %}
@@ -42,6 +45,12 @@
     {{ report.pricing_note }} Dernier scan&nbsp;: {{ report.scanned_at[:16] }}Z.
   </p>
 </section>
+
+{% if report.notes %}
+<section class="cabinet-section" aria-label="Notes de mesure">
+  {% for note in report.notes %}<p>{{ note }}</p>{% endfor %}
+</section>
+{% endif %}
 
 {% if report.unreadable_transcripts %}
 <section class="cabinet-section" role="alert" aria-labelledby="cost-unreadable-heading"
@@ -142,8 +151,9 @@
     <thead>
       <tr style="text-align:left;border-bottom:2px solid var(--line)">
         <th style="padding:.5em .6em">Agent / Job</th>
-        <th style="padding:.5em .6em;text-align:right">Aujourd'hui</th>
+        <th style="padding:.5em .6em;text-align:right">Aujourd'hui (Europe/Paris)</th>
         <th style="padding:.5em .6em;text-align:right">7&nbsp;jours</th>
+        <th style="padding:.5em .6em;text-align:right">Tokens (jour / 7j)</th>
         <th style="padding:.5em .6em;text-align:right" title="Enveloppe opérationnelle hebdomadaire de l'agent — PAS le budget de mission (voir dept.yaml pour ça)">Enveloppe&nbsp;(hebdo)</th>
         <th style="padding:.5em .6em" title="Dépense totale de la semaine (session complète) vs l'enveloppe opérationnelle hebdomadaire de l'agent">Budget&nbsp;opérationnel&nbsp;(7j)</th>
         <th style="padding:.5em .6em;text-align:right;opacity:.6">Cache&nbsp;(7j)</th>
@@ -157,9 +167,10 @@
       <tr style="border-bottom:1px solid var(--line-soft)">
         <td style="padding:.5em .6em;font-weight:600">{{ name }}</td>
         <td style="padding:.5em .6em;text-align:right">
-          {% if a.today.cost > 0 %}${{ '%.2f'|format(a.today.cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}
+          {% if a.today.cost is not none and a.today.cost > 0 %}{{ dollars(a.today.cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}
         </td>
-        <td style="padding:.5em .6em;text-align:right;font-weight:600">${{ '%.2f'|format(a.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right;font-weight:600">{{ dollars(a.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right">{{ a.today.tokens }} / {{ a.week.tokens }}</td>
         <td style="padding:.5em .6em;text-align:right">
           {% if bud and bud.defined %}${{ '%.2f'|format(bud.budget) }}{% else %}<span style="opacity:.4" title="aucune enveloppe opérationnelle posée pour cet agent">non définie</span>{% endif %}
         </td>
@@ -173,10 +184,10 @@
           <span class="budget-pct budget-pct--{{ bud.level }}" style="font-size:.8em">{{ '%.0f'|format(bud.pct) }}%</span>
           {% else %}<span style="opacity:.4">—</span>{% endif %}
         </td>
-        <td style="padding:.5em .6em;text-align:right;opacity:.55">{% if a.week.cache_cost > 0 %}${{ '%.2f'|format(a.week.cache_cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}</td>
+        <td style="padding:.5em .6em;text-align:right;opacity:.55">{% if a.week.cache_cost is not none and a.week.cache_cost > 0 %}{{ dollars(a.week.cache_cost) }}{% else %}<span style="opacity:.4">—</span>{% endif %}</td>
         <td style="padding:.5em .6em;text-align:right">{{ a.week.runs }}</td>
         <td style="padding:.5em .6em;font-size:.85em;opacity:.8">
-          {% for m, bm in a.week.by_model.items() %}{{ m }} ${{ '%.2f'|format(bm.cost) }}{% if not loop.last %} · {% endif %}{% endfor %}
+          {% for m, bm in a.week.by_model.items() %}{{ m }} {{ dollars(bm.cost) }}{% if not loop.last %} · {% endif %}{% endfor %}
         </td>
       </tr>
       {% endfor %}
@@ -184,15 +195,16 @@
     <tfoot>
       <tr style="border-top:2px solid var(--line);font-weight:700">
         <td style="padding:.5em .6em">Total</td>
-        <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.today.cost) }}</td>
-        <td style="padding:.5em .6em;text-align:right">${{ '%.2f'|format(report.totals.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right">{{ dollars(report.totals.today.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right">{{ dollars(report.totals.week.cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right">{{ report.totals.today.tokens }} / {{ report.totals.week.tokens }}</td>
         <td style="padding:.5em .6em;text-align:right">
           {% if fleet and fleet.defined %}${{ '%.2f'|format(fleet.budget) }}{% else %}<span style="opacity:.4">non défini</span>{% endif %}
         </td>
         <td style="padding:.5em .6em">
           {% if fleet and fleet.defined %}<span class="budget-pct budget-pct--{{ fleet.level }}">{{ '%.0f'|format(fleet.pct) }}%</span>{% else %}<span style="opacity:.4">—</span>{% endif %}
         </td>
-        <td style="padding:.5em .6em;text-align:right;opacity:.55">${{ '%.2f'|format(report.totals.week.cache_cost) }}</td>
+        <td style="padding:.5em .6em;text-align:right;opacity:.55">{{ dollars(report.totals.week.cache_cost) }}</td>
         <td style="padding:.5em .6em;text-align:right">{{ report.totals.week.runs }}</td>
         <td></td>
       </tr>

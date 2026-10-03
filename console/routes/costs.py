@@ -51,7 +51,7 @@ def _agent_budgets(report: dict) -> dict:
     spent = the agent's week real-$ cost (its WHOLE session spend — interactive
     + operating + dev, not just missions). budget = the agent's weekly
     operating envelope from settings.OPERATING_ENVELOPE_WEEKLY_USD, looked up
-    by the FULL report agent-key (e.g. "tony (local)") since the envelope is
+    by the FULL report agent-key (e.g. "tonio") since the envelope is
     per-agent-session, not per-dept. Returns {agent_key: budget_status_dict}
     plus a fleet-total under key "__fleet__": {spent, budget, pct, level,
     defined} (fleet budget = Σ envelopes of agents that have one defined).
@@ -98,8 +98,10 @@ def _dept_budgets(report: dict) -> dict:
     central-dict envelope, board #550) when the dept.yaml field is absent —
     so nothing regresses for depts that haven't set the new field yet.
 
-    spent = the dept's rolled-up week real-$ spend (cost_tracker.spent_by_dept
-    — UNCHANGED attribution logic, just consumed here). Returns
+    spent = the dept's rolled-up week real-$ spend (cost_tracker.spent_by_dept).
+    Tonio's external-R&D spend has its own `tonio` key; the Tony/CEO envelope
+    consumes only `tony`. Tonio remains in the per-agent/fleet spend view even
+    when no live `tonio` department envelope is registered. Returns
     {dept_slug: budget_status_dict} plus a fleet-total under "__fleet__"
     (Σ envelopes of depts that have one defined, from EITHER source).
 

@@ -246,10 +246,12 @@ def test_operating_envelope_by_dept_json_malformed_falls_back_to_defaults(monkey
 # budget (that stays on the home page's per-dept "Coûts" section, unchanged).
 def _write_session(proj: Path, dirname: str, model: str, u: dict) -> None:
     import json
+    from datetime import datetime, timezone
     d = proj / dirname
     d.mkdir(parents=True, exist_ok=True)
     (d / "s.jsonl").write_text(
         json.dumps({"type": "assistant",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "message": {"role": "assistant", "model": model, "usage": u}}) + "\n",
         encoding="utf-8",
     )

@@ -94,7 +94,7 @@ BIND_PORT = int(os.environ.get("CONSOLE_BIND_PORT", "8642"))
 # dev), not just its recurring missions, so the right denominator is a
 # per-agent-session weekly envelope, not a Σ of one daily mission cycle's
 # budget. Keyed by the exact agent key the cost report uses (e.g.
-# "tony (local)" — includes the disambiguation suffix, unlike the dept-budget
+# "miranda (jade-mac)" — includes the disambiguation suffix, unlike the dept-budget
 # rollup which strips it). An agent key NOT in this map has no envelope
 # (defined=False, renders "—") — same graceful degradation as the old
 # mission-budget lookup.
@@ -102,13 +102,13 @@ BIND_PORT = int(os.environ.get("CONSOLE_BIND_PORT", "8642"))
 # Defaults are Rick's proposal from measured actuals + ~30-50% headroom —
 # tune via OPERATING_ENVELOPE_JSON (a JSON object merged OVER these defaults)
 # without a code change, e.g.:
-#   OPERATING_ENVELOPE_JSON='{"tony (local)": 200, "newagent": 50}'
+#   OPERATING_ENVELOPE_JSON='{"tonio": 200, "newagent": 50}'
 _OPERATING_ENVELOPE_WEEKLY_USD_DEFAULTS: dict[str, float] = {
     "rick": 800,
     "miranda (jade-mac)": 200,
     "claudette": 150,
     "tony": 150,
-    "tony (local)": 150,
+    "tonio": 150,
     "maya": 130,
     "accountant": 100,
     "ben": 90,
@@ -137,6 +137,10 @@ def _load_operating_envelope() -> dict[str, float]:
         return envelope
     if not isinstance(override, dict):
         return envelope
+    # Preserve existing operator overrides across the display-name correction.
+    if "tony (local)" in override and "tonio" not in override:
+        override["tonio"] = override["tony (local)"]
+    override.pop("tony (local)", None)
     for key, val in override.items():
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             envelope[str(key)] = float(val)

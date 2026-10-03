@@ -8,32 +8,39 @@ org-dashboard/lib), adapted for the VPS:
   - legacy shared-uid sessions remain under
     /home/claude/.claude/projects/-home-claude-agents-<...>
   - the wiki-compile + loop-backup floor cron run as `claude -p` under -home-claude
-  - Mac caches (_mac-{{OPERATOR_USER}}, _mac-{{OPERATOR_2_USER}}) are rsync'd in (Rick + local Tony live on the Mac)
+  - Mac caches are rsync'd in (Rick and Tonio live on the Mac)
 
-It reads token `usage` straight from each assistant message in the session JSONLs —
-that data is present in BOTH `claude -p` cron sessions AND interactive (--channels)
-dept-loop sessions, so every agent is covered (only the $ field total_cost_usd is
--p-only, which is why we price from tokens here, not from that field).
-
-Output JSON (see build_report): per-agent + per-job totals, today / 7d, per-model
-breakdown, est. USD. Per-session parses are cached by file mtime, and the
-assembled report itself is held for a short TTL (see _REPORT_TTL_SECONDS) so
-repeat /costs hits within the window skip the directory walk entirely.
+Reads Claude assistant usage and root-exported Hermes SQLite usage, using the
+existing pricing table. Claude days are message-time Europe/Paris days;
+Hermes cumulative session counters are attributed to their start day with a note.
+Usage records are cached by file fingerprint and the report for 45 seconds.
 
 Usage:
-    python3 cost_tracker.py            # scan + print JSON
-    python3 cost_tracker.py --refresh  # ignore cache, re-parse everything
+    python3 cost_tracker.py --refresh
+    python3 cost_tracker.py --fleet-summary --day YYYY-MM-DD --out PATH
+
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+from contextlib import closing
+from itertools import chain
 import json
 import logging
+import math
 import os
+import sqlite3
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
+
+FLEET_TIMEZONE = "Europe/Paris"
+PARIS = ZoneInfo(FLEET_TIMEZONE)
+TOKEN_CLASSES = ("input", "output", "cache_read", "cache_create", "reasoning")
 
 _log = logging.getLogger(__name__)
 
@@ -46,8 +53,9 @@ HOME = Path(os.environ.get("HOME", "/home/claude"))
 PROJECTS_DIR = Path(os.environ.get(
     "BUBBLE_COST_PROJECTS_DIR", str(HOME / ".claude" / "projects")
 ))
-CACHE_DIR = HOME / ".claude" / "cache"
-CACHE_FILE = CACHE_DIR / "console-cost-sessions.json"
+CACHE_DIR = Path(os.environ.get("BUBBLE_COST_CACHE_DIR", str(HOME / ".claude" / "cache")))
+CACHE_FILE = CACHE_DIR / "console-cost-sessions.sqlite3"
+
 
 # ── Pricing (USD per 1M tokens). Current public list prices; override via
 # BUBBLE_COST_PRICING_JSON (a JSON file path) if they change. Cache-read is
@@ -85,7 +93,7 @@ def _price_for_model(model: str, pricing: dict) -> dict:
     return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
 
 
-def _cost_split(model_usage: dict, pricing: dict) -> dict:
+def _cost_split(model_usage: dict, pricing: dict, *, rounded: bool = True) -> dict:
     """Split cost into {real, cache}. real = input+output (the neutralized
     'real-equivalent API cost' — what the work would cost without prompt caching);
     cache = cache_read + cache_write (shown SEPARATELY on /costs, board #358).
@@ -99,7 +107,7 @@ def _cost_split(model_usage: dict, pricing: dict) -> dict:
         real += (u.get("input", 0) * r["input"] + u.get("output", 0) * r["output"]) / 1_000_000.0
         cache += (u.get("cache_read", 0) * r["cache_read"]
                   + u.get("cache_create", 0) * r["cache_write"]) / 1_000_000.0
-    return {"real": round(real, 4), "cache": round(cache, 4)}
+    return {"real": round(real, 4), "cache": round(cache, 4)} if rounded else {"real": real, "cache": cache}
 
 
 def _cost_of(model_usage: dict, pricing: dict) -> float:
@@ -120,13 +128,13 @@ def _cost_of(model_usage: dict, pricing: dict) -> float:
 # VPS-live agents live in -home-claude-agents-bubble-ops-<slug> (or
 # -home-claude-agents-<name> for concierges). The -home-claude dir holds the
 # `claude -p` cron sessions (wiki-compile, loop-backup floor) — attributed by
-# job below. Mac caches (_mac-{{OPERATOR_USER}}/_mac-{{OPERATOR_2_USER}}) hold Rick + local-Tony.
+# job below. Mac caches (_mac-{{OPERATOR_USER}}/_mac-{{OPERATOR_2_USER}}) hold Rick + Tonio.
 def classify(dir_name: str) -> Optional[str]:
     """Map a project-dir name (top-level, OR a Mac-cache 'cache/workspace' pair
     joined by '/') → a friendly agent/job label. VPS-live agents live in
     -home-claude-agents-bubble-ops-<slug>. The -home-claude dir holds the
     `claude -p` cron sessions. Mac caches are NESTED: _mac-{{OPERATOR_USER}}/<workspace> and
-    _mac-{{OPERATOR_2_USER}}/<workspace> — Rick + local Tony + Miranda ({{OPERATOR}} Mac), Miranda
+    _mac-{{OPERATOR_2_USER}}/<workspace> — Rick + Tonio + Miranda ({{OPERATOR}} Mac), Miranda
     ({{OPERATOR_2}} Mac). We attribute Mac sessions by workspace, suffixed by whose Mac."""
     d = dir_name
     if d.startswith("-home-claude-agents-bubble-ops-"):
@@ -141,8 +149,7 @@ def classify(dir_name: str) -> Optional[str]:
     # Post-#1120 isolated VPS agents are copied by wiki-transcript-sync into
     # `_vps-<slug>/<mangled-workdir>/`. The slug belongs to the source root,
     # not the mangled child path. Hermes mirrors use the sibling
-    # `_vps-<slug>-hermes/` convention; accept those too if their JSONL schema
-    # carries compatible usage records.
+    # `_vps-<slug>-hermes/` convention, with root-exported SQLite usage.
     if d.startswith("_vps-"):
         source = d.split("/", 1)[0]
         slug = source[len("_vps-"):]
@@ -157,7 +164,7 @@ def classify(dir_name: str) -> Optional[str]:
         whose = prefix[len("_mac-"):] or "operator"
         # the workspace part after the cache prefix + '/'
         ws = d.split("/", 1)[1] if "/" in d else ""
-        wsl = ws.lower()
+        wsl = ws.lower().replace("_", "-")
         name = None
 
         # 1) bubble-ops-<slug> convention (the robust core). Any dept whose Mac
@@ -185,7 +192,7 @@ def classify(dir_name: str) -> Optional[str]:
         if name is None:
             for key, label in (
                 ("rick-rnd", "rick"),
-                ("tony-ceo", "tony (local)"),
+                ("tony-ceo", "tonio"),
                 ("miranda-socials", "miranda"),        # legacy workspace → still miranda
                 ("ellie", "ellie"),                    # concierge, not bubble-ops-prefixed
                 ("ben-fund", "ben (mac-legacy)"),
@@ -243,168 +250,160 @@ def _note_unreadable(
         _log.warning("cost_tracker: unreadable transcript path skipped: %s", filepath)
 
 
+def _timestamp(value) -> Optional[datetime]:
+    """Require an explicit offset for strings; Hermes numeric times are Unix seconds."""
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.fromtimestamp(value, timezone.utc)
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                return dt
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    return None
+
+
+def _number(value, *, integer=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+    except OverflowError:
+        return None
+    if integer and int(value) != value:
+        return None
+    return int(value) if integer else float(value)
+
+
+def _tokens(usage: dict, source: str) -> dict:
+    keys = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+            "cache_creation_input_tokens", "reasoning_tokens") if source == "claude" else (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+            "reasoning_tokens")
+    return {name: _number(usage.get(key), integer=True) or 0
+            for name, key in zip(TOKEN_CLASSES, keys)}
+
+
+def _token_total(usage: dict) -> int:
+    # Reasoning is a diagnostic subset of output; never charge/count it twice.
+    return sum(usage.get(key, 0) for key in TOKEN_CLASSES if key != "reasoning")
+
+
+def _merge_record(records: dict, record: dict) -> None:
+    """Claude emits content-block/stream snapshots sharing one message identity.
+
+    Keep maxima for cumulative usage classes rather than billing each snapshot.
+    ID-less copies use timestamp/model/usage/role content fingerprints.
+    """
+    key = record["identity"]
+    if key not in records:
+        records[key] = record
+    else:
+        old = records[key]
+        for name in TOKEN_CLASSES:
+            old["usage"][name] = max(old["usage"][name], record["usage"][name])
+
+
+def _session_records(filepath: Path, meta: dict):
+    """Stream billable rows; production never retains a whole transcript in RAM."""
+    if filepath.is_symlink():
+        return
+    with open(filepath, "r", errors="replace") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(d, dict) or not isinstance(d.get("message"), dict):
+                continue
+            msg = d["message"]
+            if not meta["first_user_text"] and d.get("type") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    meta["first_user_text"] = content[:2000]
+                elif isinstance(content, list):
+                    meta["first_user_text"] = " ".join(
+                        it.get("text", "") for it in content
+                        if isinstance(it, dict) and isinstance(it.get("text", ""), str)
+                    )[:2000]
+            if (d.get("type") != "assistant" or not isinstance(msg.get("usage"), dict)
+                    or msg.get("model") == "<synthetic>"):
+                continue
+            model = msg.get("model") if isinstance(msg.get("model"), str) else "unknown"
+            usage = _tokens(msg["usage"], "claude")
+            if msg.get("id"):
+                identity = f"message:{msg['id']}"
+            elif d.get("uuid"):
+                identity = f"uuid:{d['uuid']}"
+            else:
+                # No file/line component: identical resumed/sub-agent copies collapse.
+                # Truly independent calls with identical timestamp/model/usage/role
+                # also collapse; explicit provider IDs always take precedence.
+                content_key = json.dumps([d.get("timestamp"), model,
+                    [usage[k] for k in TOKEN_CLASSES], msg.get("role", "assistant")],
+                    separators=(",", ":"), sort_keys=True)
+                identity = "content:" + hashlib.blake2b(content_key.encode(), digest_size=16).hexdigest()
+            yield {"identity": identity, "session_id": d.get("sessionId") or filepath.stem,
+                   "timestamp": d.get("timestamp"), "model": model,
+                   "usage": usage, "source": "claude"}
+
+
 def parse_session(
     filepath: Path,
     on_unreadable: Optional[Callable[[Path], None]] = None,
 ) -> Optional[dict]:
-    """Return per-session per-model usage + the detected -p job (if any)."""
-    model_usage: dict[str, dict] = {}
-    first_user_text = ""
-    n_turns = 0
+    """Uncached compatibility/reference parser; reports use the streaming index."""
+    records = {}
+    meta = {"first_user_text": ""}
     try:
-        with open(filepath, "r", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except Exception:
-                    continue
-                if not first_user_text and d.get("type") == "user":
-                    msg = d.get("message")
-                    if isinstance(msg, dict):
-                        c = msg.get("content")
-                        if isinstance(c, str):
-                            first_user_text = c[:2000]
-                        elif isinstance(c, list):
-                            first_user_text = " ".join(
-                                it.get("text", "") for it in c if isinstance(it, dict)
-                            )[:2000]
-                if d.get("type") == "assistant":
-                    msg = d.get("message")
-                    if isinstance(msg, dict):
-                        u = msg.get("usage")
-                        if isinstance(u, dict):
-                            model = msg.get("model", "unknown")
-                            mu = model_usage.setdefault(
-                                model, {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
-                            )
-                            mu["input"] += u.get("input_tokens", 0) or 0
-                            mu["output"] += u.get("output_tokens", 0) or 0
-                            mu["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
-                            mu["cache_create"] += u.get("cache_creation_input_tokens", 0) or 0
-                            n_turns += 1
-    except OSError:
-        _note_unreadable(filepath, on_unreadable)
-        return None
-    if not model_usage:
-        return None
-    try:
+        for rec in _session_records(filepath, meta):
+            _merge_record(records, rec)
         mtime = filepath.stat().st_mtime
     except OSError:
         _note_unreadable(filepath, on_unreadable)
         return None
-    return {
-        "model_usage": model_usage,
-        "first_user_text": first_user_text,
-        "n_turns": n_turns,
-        "mtime": mtime,
-    }
+    if not records:
+        return None
+    model_usage = {}
+    for rec in records.values():
+        mu = model_usage.setdefault(rec["model"], dict.fromkeys(TOKEN_CLASSES, 0))
+        for key in TOKEN_CLASSES:
+            mu[key] += rec["usage"][key]
+    return {"model_usage": model_usage, "records": list(records.values()),
+            **meta, "n_turns": len(records), "mtime": mtime}
 
 
 def parse_session_for_day(
-    filepath: Path,
-    day: str,
+    filepath: Path, day: str,
     on_unreadable: Optional[Callable[[Path], None]] = None,
 ) -> Optional[dict]:
-    """Like parse_session, but bucket by the MESSAGE timestamp inside each
-    JSONL entry (not file mtime) and only accumulate model_usage for entries
-    whose timestamp falls on `day` (format "YYYY-MM-DD", UTC).
-
-    Used ONLY by the optional day= path in build_report — for an exceptional-
-    day reconciliation (e.g. #496) where a session file was edited/touched on
-    a LATER day than the messages it contains, so mtime bucketing would
-    misattribute (or miss) that day's actual spend. The default (day=None)
-    build_report path never calls this — it keeps using file mtime, which is
-    fast and correct for the common "today vs 7d" case.
-
-    Session timestamps look like "2026-06-23T09:22:55.380Z" (see
-    agent_session.py / concierge_reader.py for the same convention) — the
-    first 10 chars are the calendar date, so a plain string slice + compare
-    is enough; no datetime parsing needed.
-    """
-    model_usage: dict[str, dict] = {}
-    first_user_text = ""
-    n_turns = 0
-    try:
-        with open(filepath, "r", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except Exception:
-                    continue
-                if not first_user_text and d.get("type") == "user":
-                    msg = d.get("message")
-                    if isinstance(msg, dict):
-                        c = msg.get("content")
-                        if isinstance(c, str):
-                            first_user_text = c[:2000]
-                        elif isinstance(c, list):
-                            first_user_text = " ".join(
-                                it.get("text", "") for it in c if isinstance(it, dict)
-                            )[:2000]
-                if d.get("type") != "assistant":
-                    continue
-                ts = d.get("timestamp")
-                if not isinstance(ts, str) or ts[:10] != day:
-                    continue  # message not on the requested day — skip
-                msg = d.get("message")
-                if isinstance(msg, dict):
-                    u = msg.get("usage")
-                    if isinstance(u, dict):
-                        model = msg.get("model", "unknown")
-                        mu = model_usage.setdefault(
-                            model, {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
-                        )
-                        mu["input"] += u.get("input_tokens", 0) or 0
-                        mu["output"] += u.get("output_tokens", 0) or 0
-                        mu["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
-                        mu["cache_create"] += u.get("cache_creation_input_tokens", 0) or 0
-                        n_turns += 1
-    except OSError:
-        _note_unreadable(filepath, on_unreadable)
+    """Only assistant usage timestamped on this Europe/Paris calendar day."""
+    parsed = parse_session(filepath, on_unreadable)
+    if parsed is None:
         return None
-    if not model_usage:
+    records = [r for r in parsed["records"] if (dt := _timestamp(r["timestamp"]))
+               and dt.astimezone(PARIS).date().isoformat() == day]
+    if not records:
         return None
-    try:
-        mtime = filepath.stat().st_mtime
-    except OSError:
-        _note_unreadable(filepath, on_unreadable)
-        return None
-    return {
-        "model_usage": model_usage,
-        "first_user_text": first_user_text,
-        "n_turns": n_turns,
-        "mtime": mtime,
-    }
-
-
-def _load_cache() -> dict:
-    try:
-        return json.loads(CACHE_FILE.read_text())
-    except Exception:
-        return {}
-
-
-def _save_cache(cache: dict) -> None:
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(cache))
-    except Exception:
-        pass
+    models = {}
+    for rec in records:
+        mu = models.setdefault(rec["model"], dict.fromkeys(TOKEN_CLASSES, 0))
+        for key in TOKEN_CLASSES:
+            mu[key] += rec["usage"][key]
+    return {**parsed, "records": records, "model_usage": models, "n_turns": len(records)}
 
 
 # ── Report-level TTL cache. `build_report` still walks every project dir + stats
 # every JSONL to check mtimes even when the per-session parse is cache-hit (the
 # walk itself is the cost on large trees) — so on top of the mtime cache, keep
 # the assembled report around for a short window. `refresh=True` always bypasses
-# this (and the mtime cache below), so the explicit-refresh escape hatch still
-# forces a full rescan.
+# this TTL, so explicit refresh discovers newly changed sources immediately.
+# Unchanged fingerprints are reused even for day-specific/refresh reports.
 _REPORT_TTL_SECONDS = 45
+_report_build_lock = threading.Lock()
+_last_build = {"serial": 0, "day": None, "report": None}
 _report_cache: dict = {"report": None, "built_at": 0.0}
 
 
@@ -423,257 +422,329 @@ def _store_report(report: dict) -> None:
 
 
 def build_report(refresh: bool = False, day: Optional[str] = None) -> dict:
-    """Build the /costs report.
+    """Today and seven calendar days use message time in Europe/Paris.
 
-    day: OPTIONAL "YYYY-MM-DD" (UTC). When set, ADDITIONALLY buckets by the
-    per-MESSAGE timestamp inside each JSONL (not file mtime) into a "day"
-    span per agent + totals, isolating that exact calendar day's spend for an
-    exceptional-day reconciliation (e.g. #496, 2026-07-02) — a session file
-    touched/edited today would otherwise wrongly count as "today"'s spend
-    under plain mtime bucketing, and mtime bucketing alone can't isolate one
-    arbitrary past day at all.
-
-    When day=None (the default), behavior is COMPLETELY UNCHANGED from
-    before this param existed: only "today" (mtime, UTC-midnight-relative)
-    and "week" (mtime, 7d) spans are computed, exactly as before. The day=
-    path never touches or bypasses the existing mtime cache — it always
-    re-reads matching files fresh via parse_session_for_day (see there for
-    why: an exceptional-day audit is rare and wants ground truth, not a
-    cached mtime-keyed parse).
+    day adds an arbitrary Paris day. File mtime is only a parse-cache key.
     """
-    if day is None and not refresh:
-        cached = _cached_report()
-        if cached is not None:
-            return cached
+    if day is not None:
+        datetime.strptime(day, "%Y-%m-%d")
+    # Check TTL after acquiring the lock: requests queued behind a cold scan
+    # reuse its report rather than starting their own scan.
+    serial = _last_build["serial"]
+    with _report_build_lock:
+        if _last_build["serial"] != serial and _last_build["day"] == day:
+            return _last_build["report"]
+        if day is None and not refresh:
+            cached = _cached_report()
+            if cached is not None and cached.get("today_date") == datetime.now(PARIS).date().isoformat():
+                return cached
+        report = _build_report_uncached(refresh=refresh, day=day)
+        if day is None:
+            _store_report(report)
+        _last_build.update(serial=_last_build["serial"] + 1, day=day, report=report)
+        return report
 
-    report = _build_report_uncached(refresh=refresh, day=day)
-    if day is None:
-        _store_report(report)
-    return report
+
+def _hermes_records(path: Path, notes: set) -> list[dict]:
+    try:
+        if path.is_symlink():
+            notes.add(f"Skipped symlink Hermes export: {path.parent.name}")
+            return []
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+            raise ValueError("invalid export shape")
+        notes.update(str(n) for n in data.get("notes", []) if isinstance(n, str))
+        records = []
+        for row in data["rows"]:
+            if (not isinstance(row, dict) or not isinstance(row.get("session_id"), (str, int))
+                    or not isinstance(row.get("model"), str)
+                    or _number(row.get("input_tokens"), integer=True) is None
+                    or _number(row.get("output_tokens"), integer=True) is None):
+                notes.add(f"Invalid Hermes usage row: {path.parent.name}")
+                continue
+            records.append({"identity": f"hermes:{row['session_id']}:{row['model']}",
+                            "session_id": row["session_id"], "timestamp": row.get("started_at"),
+                            "model": row["model"], "usage": _tokens(row, "hermes"),
+                            "actual_cost_usd": _number(row.get("actual_cost_usd")),
+                            "estimated_cost_usd": _number(row.get("estimated_cost_usd")),
+                            "session_actual_cost_usd": _number(row.get("session_actual_cost_usd")),
+                            "session_estimated_cost_usd": _number(row.get("session_estimated_cost_usd")),
+                            "source": "hermes"})
+        groups = {}
+        for rec in records:
+            groups.setdefault(str(rec["session_id"]), []).append(rec)
+        for group in groups.values():
+            # Preserve an available session bill without allocating invented
+            # per-model prices or copying the whole bill into every model.
+            bill = next((r["session_actual_cost_usd"] for r in group
+                         if r["session_actual_cost_usd"] is not None), None)
+            needs_session_bill = any(r["actual_cost_usd"] is None for r in group)
+            if bill is None:
+                bill = next((r["session_estimated_cost_usd"] for r in group
+                             if r["session_estimated_cost_usd"] is not None), None)
+                needs_session_bill = any(r["actual_cost_usd"] is None and r["estimated_cost_usd"] is None for r in group)
+            if bill is not None and needs_session_bill:
+                for index, rec in enumerate(sorted(group, key=lambda r: r["model"])):
+                    rec["session_bill_usd"] = bill if index == 0 else 0.0
+                notes.add("Hermes session-level bills are counted once; their per-model dollar split is unavailable.")
+        notes.add("Hermes counters are cumulative session/model totals attributed to the Paris session start day; per-day usage within long-lived sessions is unavailable.")
+        notes.add("Reasoning tokens are treated as an output subset and excluded from token totals/additional pricing; verify provider semantics before billing use.")
+        notes.add("Hermes actual/estimated total bills have no separate cache-dollar split; cache_cost is null for those rows.")
+        return records
+    except (OSError, ValueError, TypeError):
+        notes.add(f"Missing or corrupt Hermes usage export: {path.parent.name}")
+        return []
+
+
+def _cache_locked(error: sqlite3.DatabaseError) -> bool:
+    code = getattr(error, "sqlite_errorcode", None)
+    return (code is not None and (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            or "locked" in str(error).lower() or "busy" in str(error).lower())
 
 
 def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> dict:
+    # Retry the WHOLE build, including reading aggregates. A failed cache must
+    # never leak partially ingested usage into the returned report.
+    for attempt in range(2):
+        try:
+            return _build_report_from_cache(CACHE_FILE, day=day)
+        except sqlite3.DatabaseError as error:
+            if _cache_locked(error) or attempt:
+                reason = error
+                break
+            try:
+                for suffix in ("", "-journal", "-wal", "-shm"):
+                    Path(str(CACHE_FILE) + suffix).unlink(missing_ok=True)
+            except OSError as error:
+                reason = error
+                break
+        except (OSError, ValueError) as error:
+            # Unwritable directories/unsafe cache paths are also optional-cache
+            # failures, not missing transcripts.
+            reason = error
+            break
+    _log.warning("cost_tracker: usage cache unavailable; building with private cache: %s", reason)
+    return _build_report_from_cache(None, day=day)
+
+
+def _build_report_from_cache(cache_path: Optional[Path], day: Optional[str] = None) -> dict:
+    # Defer sibling imports: mission_kpis loads pricing constants by file spec.
+    if __package__:
+        from .cost_cache import UsageCache
+    else:
+        from cost_cache import UsageCache
     pricing = _load_pricing()
-    cache = {} if refresh else _load_cache()
-    new_cache: dict = {}
-
-    # A partial permissions problem must not take down the whole /costs page.
-    # Keep paths deduplicated because day= scans readable candidates twice.
-    unreadable_paths: list[str] = []
-    unreadable_seen: set[str] = set()
-
-    def _record_unreadable(path: Path) -> None:
-        display = str(path)
-        if display in unreadable_seen:
-            return
-        unreadable_seen.add(display)
-        unreadable_paths.append(display)
-        _log.warning("cost_tracker: unreadable transcript path skipped: %s", display)
-
-    def _unreadable_fields() -> dict:
-        return {
-            "unreadable_transcripts": len(unreadable_paths),
-            "unreadable_transcript_paths": unreadable_paths[:3],
-        }
-
     now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-    cutoff_7d = (now - timedelta(days=7)).timestamp()
-    start_today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp()
+    today = now.astimezone(PARIS).date()
+    week_start = today - timedelta(days=6)
+    spans = ("today", "week", "day") if day is not None else ("today", "week")
+    notes = set()
+    unreadable = set()
 
-    # agent -> {today:{...}, week:{...}[, day:{...}]} accumulators. The "day"
-    # span only appears/accumulates when the optional day= param is set —
-    # additive, see build_report docstring.
-    def _blank():
-        span = {
-            "today": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
-            "week": {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}},
-        }
-        if day is not None:
-            span["day"] = {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0, "by_model": {}}
-        return span
+    def record_unreadable(path):
+        unreadable.add(str(path))
+        _log.warning("cost_tracker: unreadable transcript path skipped: %s", path)
 
-    agents: dict[str, dict] = {}
+    def blank_bucket():
+        return {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0,
+                "by_model": {}, "tokens_by_class": dict.fromkeys(TOKEN_CLASSES, 0),
+                "cost_usd_estimate": 0.0, "cost_usd_estimate_priced_only": 0.0}
+
+    def blank():
+        return {span: blank_bucket() for span in spans}
+
+    # Deterministic discovery: never recurse through a directory/file symlink.
+    def walk(path):
+        try:
+            for child in sorted(path.iterdir()):
+                if child.is_symlink():
+                    continue
+                if child.is_dir():
+                    yield from walk(child)
+                elif child.suffix == ".jsonl" and child.is_file():
+                    yield child
+        except OSError:
+            record_unreadable(path)
 
     try:
-        projects_dir_exists = PROJECTS_DIR.is_dir()
+        projects = sorted(PROJECTS_DIR.iterdir()) if not PROJECTS_DIR.is_symlink() else []
     except OSError:
-        _record_unreadable(PROJECTS_DIR)
-        projects_dir_exists = False
-    if not projects_dir_exists:
-        empty = {"scanned_at": now.isoformat(), "agents": {}, "totals": _blank(),
-                 "note": "no readable projects dir", **_unreadable_fields()}
-        if day is not None:
-            empty["day_requested"] = day
-        return empty
-
-    # Build (label, jsonl-files) work units. Flat dirs map directly; nested Mac
-    # caches and post-isolation VPS mirrors are descended one level.
-    work_files = []  # list of (label0, jsonl-files)
-    try:
-        projects = list(PROJECTS_DIR.iterdir())
-    except OSError:
-        _record_unreadable(PROJECTS_DIR)
+        record_unreadable(PROJECTS_DIR)
         projects = []
+    records = {}  # Hermes exports only; Claude records stay on disk.
+    claude_runs = {}
+    def paris_day(timestamp):
+        dt = _timestamp(timestamp)
+        return dt.astimezone(PARIS).date().toordinal() if dt else None
 
-    def _is_dir(path: Path) -> bool:
-        try:
-            return path.is_dir()
-        except OSError:
-            _record_unreadable(path)
-            return False
+    with closing(UsageCache(cache_path)) as cache:
+        for proj in projects:
+            if proj.is_symlink() or not proj.is_dir():
+                continue
+            if proj.name.startswith("_vps-") and proj.name.endswith("-hermes"):
+                label = classify(proj.name)
+                for rec in _hermes_records(proj / "hermes-usage.json", notes):
+                    rec["label"] = label
+                    records.setdefault((label, rec["identity"]), rec)
+                # state.db is authoritative; never also bill compatible Hermes JSONLs.
+                continue
+            try:
+                roots = [(classify(f"{proj.name}/{sub.name}"), sub) for sub in sorted(proj.iterdir())
+                         if not sub.is_symlink() and sub.is_dir()] if proj.name.startswith("_mac-") else [(classify(proj.name), proj)]
+            except OSError:
+                record_unreadable(proj)
+                continue
+            for label, root in roots:
+                if label is None:
+                    continue
+                for path in walk(root):
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        record_unreadable(path)
+                        continue
+                    meta = {"first_user_text": ""}
+                    try:
+                        cache.sync_file(path, (stat.st_mtime_ns, stat.st_size), label,
+                                        lambda: _session_records(path, meta), meta, paris_day, _detect_job)
+                    except OSError:
+                        record_unreadable(path)
+        cache.finish(prune=not unreadable)
+        if cache.invalid_timestamp():
+            notes.add("Usage without a valid timezone-aware timestamp was excluded; file mtime is never a day fallback.")
+        requested = datetime.strptime(day, "%Y-%m-%d").date().toordinal() if day else None
+        for span, start, end in (("today", today.toordinal(), today.toordinal()),
+                                 ("week", week_start.toordinal(), today.toordinal()),
+                                 ("day", requested, requested)):
+            if start is not None:
+                for label, runs in cache.run_counts(start, end).items():
+                    claude_runs[label, span] = runs
+        # Materialize only day/model aggregates, never message identities.
+        claude_records = [
+            {"label": label, "model": model, "usage": usage, "source": "claude",
+             "timestamp": datetime.fromordinal(date).replace(tzinfo=PARIS).isoformat()}
+            for date, label, model, usage in cache.rows(week_start.toordinal(), today.toordinal(), requested)
+        ]
 
-    def _jsonl_files(path: Path) -> list[Path]:
-        try:
-            return list(path.glob("*.jsonl"))
-        except OSError:
-            _record_unreadable(path)
-            return []
-
-    for proj in projects:
-        if not _is_dir(proj):
+    # A valid Hermes export identifies an agent even if its cumulative sessions
+    # started before the window. Keep a visible zero start-day bucket.
+    agents = {rec["label"]: {**blank(), "sources": ["hermes"]}
+              for rec in records.values() if rec["source"] == "hermes"}
+    run_sets = {}
+    for rec in chain(claude_records, records.values()):
+        if rec["model"] == "<synthetic>":
             continue
-        if proj.name.startswith(("_mac-", "_vps-")):
-            try:
-                subdirs = list(proj.iterdir())
-            except OSError:
-                _record_unreadable(proj)
-                continue
-            for sub in subdirs:
-                if not _is_dir(sub):
-                    continue
-                label0 = classify(f"{proj.name}/{sub.name}")
-                if label0 is None:
-                    continue
-                work_files.append((label0, _jsonl_files(sub)))
-        else:
-            label0 = classify(proj.name)
-            if label0 is None:
-                continue
-            work_files.append((label0, _jsonl_files(proj)))
-
-    # When day= is set we need every file whose CONTENT might touch that day,
-    # regardless of file mtime (that's the whole point — mtime is exactly
-    # what's unreliable for an exceptional-day audit). So the day pass below
-    # reuses the discovered file list rather than the mtime-filtered files from
-    # the today/week pass.
-
-    for label0, files in work_files:
-        for f in files:
-            try:
-                mtime = f.stat().st_mtime
-            except OSError:
-                _record_unreadable(f)
-                continue
-            if mtime < cutoff_7d:
-                continue  # only last 7d matters for the today/week panel
-            key = f"{f}"
-            cached = cache.get(key)
-            if cached and cached.get("mtime") == mtime:
-                parsed = cached
-            else:
-                parsed = parse_session(f, on_unreadable=_record_unreadable)
-                if parsed is None:
-                    continue
-            new_cache[key] = parsed
-
-            # resolve the real label (split the -p cron dir into jobs)
-            label = label0
-            if label0 == "_p_crons":
-                label = _detect_job(parsed.get("first_user_text", ""))
-
-            _split = _cost_split(parsed["model_usage"], pricing)
-            cost = _split["real"]          # neutralized: non-cache (the headline cost)
-            cache_cost = _split["cache"]   # shown separately on /costs
-            toks = sum(sum(mu.values()) for mu in parsed["model_usage"].values())
-
-            ag = agents.setdefault(label, _blank())
-            buckets = [ag["week"]]
-            if mtime >= start_today:
-                buckets.append(ag["today"])
-            for b in buckets:
-                b["cost"] += cost
-                b["cache_cost"] += cache_cost
-                b["tokens"] += toks
-                b["runs"] += 1
-                for model, mu in parsed["model_usage"].items():
-                    if "synthetic" in model or sum(mu.values()) == 0:
-                        continue
-                    short = ("opus" if "opus" in model else "sonnet" if "sonnet" in model
-                             else "haiku" if "haiku" in model else model)
-                    bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
-                    bm["tokens"] += sum(mu.values())
-                    bm["cost"] += _cost_of({model: mu}, pricing)
-
-    _save_cache(new_cache)
-
-    # ── Optional day= pass: bucket by MESSAGE timestamp, not file mtime.
-    # Independent of the mtime cache above (never reads/writes it) — always
-    # re-parses matching files fresh via parse_session_for_day, since an
-    # exceptional-day audit wants ground truth over the (fast but here
-    # unreliable) mtime cache. Runs over ALL files regardless of mtime — a
-    # session file touched long after `day` still has to be inspected, since
-    # its content may include messages timestamped on `day`.
-    if day is not None:
-        for label0, files in work_files:
-            for f in files:
-                parsed = parse_session_for_day(f, day, on_unreadable=_record_unreadable)
-                if parsed is None:
-                    continue
-                label = label0
-                if label0 == "_p_crons":
-                    label = _detect_job(parsed.get("first_user_text", ""))
-
-                _split = _cost_split(parsed["model_usage"], pricing)
-                cost = _split["real"]
-                cache_cost = _split["cache"]
-                toks = sum(sum(mu.values()) for mu in parsed["model_usage"].values())
-
-                ag = agents.setdefault(label, _blank())
-                b = ag["day"]
-                b["cost"] += cost
-                b["cache_cost"] += cache_cost
-                b["tokens"] += toks
-                b["runs"] += 1
-                for model, mu in parsed["model_usage"].items():
-                    if "synthetic" in model or sum(mu.values()) == 0:
-                        continue
-                    short = ("opus" if "opus" in model else "sonnet" if "sonnet" in model
-                             else "haiku" if "haiku" in model else model)
-                    bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
-                    bm["tokens"] += sum(mu.values())
-                    bm["cost"] += _cost_of({model: mu}, pricing)
-
-    # round + totals
-    _spans = ("today", "week", "day") if day is not None else ("today", "week")
-    totals = _blank()
+        dt = _timestamp(rec["timestamp"])
+        if dt is None:
+            notes.add("Usage without a valid timezone-aware timestamp was excluded; file mtime is never a day fallback.")
+            continue
+        date = dt.astimezone(PARIS).date()
+        buckets = []
+        if week_start <= date <= today:
+            buckets.append("week")
+        if date == today:
+            buckets.append("today")
+        if day is not None and date.isoformat() == day:
+            buckets.append("day")
+        if not buckets:
+            continue
+        label, model, usage = rec["label"], rec["model"], rec["usage"]
+        ag = agents.setdefault(label, blank())
+        sources = ag.setdefault("sources", [])
+        if rec["source"] not in sources:
+            sources.append(rec["source"])
+        # Round after bucket aggregation, never once per tiny API call.
+        split = _cost_split({model: usage}, pricing, rounded=False)
+        total_cost = split["real"] + split["cache"]
+        cache_cost = split["cache"]
+        headline = split["real"]
+        known_model = any(key in model.lower() for key in pricing)
+        has_tokens = any(usage.get(key, 0) > 0 for key in TOKEN_CLASSES)
+        if rec["source"] == "hermes":
+            own_cost = rec.get("session_bill_usd", rec.get("actual_cost_usd"))
+            if own_cost is None:
+                own_cost = rec.get("estimated_cost_usd")
+            if own_cost is not None:
+                total_cost = headline = own_cost
+                cache_cost = None  # Hermes costs have no separate cache-dollar split.
+            elif not known_model and has_tokens:
+                total_cost = headline = cache_cost = None
+                notes.add(f"Unpriced Hermes model for {label}: {model}; cost is null.")
+        elif not known_model and has_tokens:
+            # Preserve cockpit's legacy zero headline, but summary must not imply free.
+            total_cost = None
+            notes.add(f"Unpriced Claude model for {label}: {model}; summary cost is null.")
+        for span in buckets:
+            b = ag[span]
+            for field, amount in (("cost", headline), ("cache_cost", cache_cost), ("cost_usd_estimate", total_cost)):
+                b[field] = None if b[field] is None or amount is None else b[field] + amount
+            b["cost_usd_estimate_priced_only"] += total_cost if total_cost is not None else 0.0
+            b["tokens"] += _token_total(usage)
+            for name in TOKEN_CLASSES:
+                b["tokens_by_class"][name] += usage[name]
+            sessions = run_sets.setdefault((label, span), set())
+            if rec["source"] == "hermes":
+                sessions.add(str(rec["session_id"]))
+            b["runs"] = claude_runs.get((label, span), 0) + len(sessions)
+            if _token_total(usage):
+                short = next((m for m in ("opus", "sonnet", "haiku") if m in model), model)
+                bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
+                bm["tokens"] += _token_total(usage)
+                model_cost = None if "session_bill_usd" in rec else total_cost
+                bm["cost"] = None if bm["cost"] is None or model_cost is None else bm["cost"] + model_cost
+    totals = blank()
     for ag in agents.values():
-        for span in _spans:
-            ag[span]["cost"] = round(ag[span]["cost"], 3)
-            ag[span]["cache_cost"] = round(ag[span]["cache_cost"], 3)
-            totals[span]["cost"] += ag[span]["cost"]
-            totals[span]["cache_cost"] += ag[span]["cache_cost"]
-            totals[span]["tokens"] += ag[span]["tokens"]
-            totals[span]["runs"] += ag[span]["runs"]
-            for m, bm in ag[span]["by_model"].items():
-                bm["cost"] = round(bm["cost"], 3)
-    for span in _spans:
-        totals[span]["cost"] = round(totals[span]["cost"], 3)
-        totals[span]["cache_cost"] = round(totals[span]["cache_cost"], 3)
-
-    # sort agents by week cost desc
-    agents_sorted = dict(sorted(agents.items(), key=lambda kv: kv[1]["week"]["cost"], reverse=True))
-    out = {
-        "scanned_at": now.isoformat(),
-        "today_date": today,
-        "agents": agents_sorted,
-        "totals": totals,
-        "pricing_note": "Estimate from token counts × public list prices — for trend/relative cost, not billing.",
-        **_unreadable_fields(),
-    }
+        ag["sources"].sort()
+        for span in spans:
+            b = ag[span]
+            for key in ("cost", "cache_cost", "cost_usd_estimate", "cost_usd_estimate_priced_only"):
+                b[key] = round(b[key], 4) if b[key] is not None else None
+                t = totals[span]
+                t[key] = None if t[key] is None or b[key] is None else t[key] + b[key]
+            for key in ("tokens", "runs"):
+                totals[span][key] += b[key]
+            for key in TOKEN_CLASSES:
+                totals[span]["tokens_by_class"][key] += b["tokens_by_class"][key]
+            for bm in b["by_model"].values():
+                if bm["cost"] is not None:
+                    bm["cost"] = round(bm["cost"], 4)
+    for span in spans:
+        for key in ("cost", "cache_cost", "cost_usd_estimate", "cost_usd_estimate_priced_only"):
+            if totals[span][key] is not None:
+                totals[span][key] = round(totals[span][key], 4)
+    out = {"scanned_at": now.isoformat(), "today_date": today.isoformat(),
+           "timezone": FLEET_TIMEZONE, "agents": dict(sorted(agents.items(), key=lambda kv: kv[1]["week"]["cost"] or 0, reverse=True)),
+           "totals": totals, "notes": sorted(notes),
+           "pricing_note": "Claude: token × existing list-price estimate (cache separate). Hermes: actual/estimated total cost when available, otherwise matched list price; null means unavailable.",
+           "unreadable_transcripts": len(unreadable), "unreadable_transcript_paths": sorted(unreadable)[:3]}
+    if not projects:
+        out["note"] = "no readable projects dir"
     if day is not None:
         out["day_requested"] = day
     return out
+
+
+def fleet_summary(day: str, refresh: bool = False) -> dict:
+    report = build_report(refresh=refresh, day=day)
+    if str(PROJECTS_DIR) in report["unreadable_transcript_paths"] or PROJECTS_DIR.is_symlink():
+        raise OSError(f"Fleet summary projects directory is unreadable: {PROJECTS_DIR}")
+    def row(bucket):
+        return {key: bucket[key] for key in ("tokens", "tokens_by_class", "cost_usd_estimate", "cost_usd_estimate_priced_only", "cache_cost", "runs")}
+    agents = {name: {**row(ag["day"]), "source": ag["sources"][0] if len(ag["sources"]) == 1 else ag["sources"]}
+              for name, ag in report["agents"].items()}
+    expected = sorted(name for name, ag in report["agents"].items() if ag["week"]["runs"])
+    notes = list(report["notes"])
+    missing_costs = sorted(name for name, ag in agents.items() if ag["cost_usd_estimate"] is None)
+    if missing_costs:
+        notes.append(f"Fleet cost is null; missing costs for agents: {', '.join(missing_costs)}. cost_usd_estimate_priced_only is a lower bound.")
+    if report["unreadable_transcripts"]:
+        notes.append(f"{report['unreadable_transcripts']} unreadable transcript paths skipped; totals may be incomplete.")
+    if report.get("note"):
+        notes.append(report["note"])
+    return {"generated_at": report["scanned_at"], "day": day, "timezone": FLEET_TIMEZONE,
+            "agents": agents, "totals": row(report["totals"]["day"]),
+            "expected_agents": expected, "expected_agents_without_data": [name for name in expected if not agents[name]["runs"]],
+            "notes": notes}
 
 
 # ── Budget (read-only operator steer, board #524d) ──────────────────────
@@ -739,6 +810,7 @@ def mission_budget_total(dept_yaml: Optional[dict]) -> Optional[float]:
 _AGENT_KEY_TO_SLUG_ALIAS = {
     "miranda": "content",  # Miranda IS the content dept's agent (workspace bubble-ops-content)
     "rick": "rnd",
+    "tonio": "tonio",  # External R&D has its own spend; never roll into Tony/CEO.
     "eliot": "security",
 }
 
@@ -824,13 +896,28 @@ def budget_status(spent: float, budget: Optional[float]) -> dict:
 
 
 def main() -> int:
+    # Keep constant-only imports (mission_kpis.pricing_table) self-contained.
+    if __package__:
+        from .cost_io import atomic_json
+    else:
+        from cost_io import atomic_json
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true")
-    ap.add_argument("--day", default=None,
-                    help="YYYY-MM-DD: isolate that day's spend by message timestamp "
-                         "(for an exceptional-day reconciliation), additive to today/week")
+    ap.add_argument("--day", help="YYYY-MM-DD, Europe/Paris calendar day")
+    ap.add_argument("--fleet-summary", action="store_true")
+    ap.add_argument("--out", type=Path)
+    ap.add_argument("--latest", type=Path, help="Also atomically publish the same fleet summary here")
     a = ap.parse_args()
-    print(json.dumps(build_report(refresh=a.refresh, day=a.day), indent=2))
+    if a.latest and not a.fleet_summary:
+        ap.error("--latest requires --fleet-summary")
+    day = a.day or datetime.now(PARIS).date().isoformat()
+    result = fleet_summary(day, refresh=a.refresh) if a.fleet_summary else build_report(refresh=a.refresh, day=a.day)
+    if a.out:
+        atomic_json(a.out, result)
+    else:
+        print(json.dumps(result, indent=2, allow_nan=False))
+    if a.latest:
+        atomic_json(a.latest, result)
     return 0
 
 
