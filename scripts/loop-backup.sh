@@ -807,6 +807,18 @@ PYEOF
 # Two shapes. In layer-floor mode the prompt FORCES Layer N (no decide_dispatch);
 # in generic mode it runs the dispatcher's choice. Both end with the concise
 # report the wrapper relays to {{OPERATOR}} on Telegram.
+# Shared layer-1 clause. Diagnostics go to stderr, never into a captured prompt.
+room_check_clause() {
+    local clause
+    if clause="$("$PY" "${REPO_ROOT}/scripts/due_missions.py" room-check-clause 2>/dev/null)" \
+            && [[ -n "$clause" ]]; then
+        printf '%s' "$clause"
+    else
+        log "warn — room-check clause unavailable; continuing without it" >&2
+    fi
+    return 0
+}
+
 build_tick_prompt() {
     if [[ "${DEGRADED_L4:-0}" == "1" ]]; then
         cat <<PROMPT
@@ -880,6 +892,9 @@ concise report (max ~6 lines) the wrapper will forward verbatim:
     (e.g. "queues empty, L1 already ran today").
 PROMPT
     fi
+    if [[ "$FORCE_LAYER" == "1" ]]; then
+        room_check_clause
+    fi
 }
 # Built ONCE at startup: the legacy generic prompt ("run Layer N" / plain
 # decide_dispatch). Card #518 renamed this from the bare TICK_PROMPT global
@@ -934,6 +949,9 @@ concise report (max ~6 lines) the wrapper will forward verbatim:
   • Any gate created or subagent failure (and what it needs from {{OPERATOR}}).
   • If there was nothing for this mission to do, say so in one line and why.
 PROMPT
+    if [[ "$layer" == "1" ]]; then
+        room_check_clause
+    fi
 }
 
 
@@ -1023,6 +1041,8 @@ print(int(datetime.datetime.fromisoformat(sys.argv[1]).timestamp()))' "$BUBBLE_B
 
 _inject_wake_fallback_text() {
     printf 'Resume your OODA loop (self-paced). Run your full tick now: STEP A (safe_pull) -> STEP B (read queues) -> STEP C (decide_dispatch) -> STEP D (dispatch chosen layer subagent) -> STEP E (commit+push runtime paths) -> STEP F (Telegram notify). Always write heartbeat to outputs/<today>/heartbeat.log. Then arm your OWN next wake via a single CronCreate (CronList first, dedupe). The box clock is UTC, not Paris: NEVER hand-write a Paris HH:MM as the cron literal (board #850 - treating 08:03 Paris as 3 8 * * * fired a live market order 2h late). For any Paris-anchored target, derive the box-UTC cron via scripts/arm-wake-cron.sh Paris-HH:MM [daily|one-shot] (DST-safe, reads the tz database, never a hardcoded offset) and CronCreate the printed expression: toward the next due layer if work remains, a longer cadence (e.g. 0 */2 * * *, TZ-neutral) if quiet, or run scripts/arm-wake-cron.sh 08:03 one-shot for the correct box-UTC one-shot if all 4 layers are done. Never hardcode an hourly cron. The CronCreate prompt must be your full tick protocol (STEP A-F), never a bare slash-command like /loop-now (it delivers as a malformed inbound that can trip the deaf-watchdog).'
+    # A normal full tick can cover layer 1, regardless of the floor's layer.
+    room_check_clause
 }
 
 _inject_wake_text() {
@@ -1036,7 +1056,7 @@ _inject_wake_text() {
         printf '%s' "$generated"
         return 0
     fi
-    log "$slug: wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback free-text nudge, unchanged"
+    log "$slug: wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback full-tick nudge with shared room check"
     _inject_wake_fallback_text
 }
 

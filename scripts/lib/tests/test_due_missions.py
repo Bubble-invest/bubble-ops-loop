@@ -570,6 +570,93 @@ def test_completion_command_is_pinned_to_sys_executable_not_bare_python3():
 # cost-conscious" drift) ──────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("schema", ["mac", "recurring"])
+@pytest.mark.parametrize("wake", [False, True], ids=["tick", "wake"])
+@pytest.mark.parametrize("layers", [(), (1,), (2,), (3,), (4,), (2, 3, 4), (4, 1, 2), (1, 1)])
+def test_room_check_clause_only_for_plans_containing_layer_one(schema, wake, layers):
+    from scripts import due_missions
+
+    plan = [
+        {
+            "id": f"mission_{index}",
+            "cadence": "daily",
+            # Mac missions can attach several layers; L1 need not be first.
+            **({"period": "2026-09-13", "layers": [4, layer]} if schema == "mac"
+               else {"layer": layer}),
+            "mission_file": f"missions/mission_{index}.md",
+        }
+        for index, layer in enumerate(layers)
+    ]
+    name = "_wake_prompt" if wake else "_prompt"
+    if schema == "recurring":
+        name += "_recurring"
+    prompt = getattr(due_missions, name)(plan, Path("/tmp/dept"), "Maya's")
+    assert prompt.count(due_missions.ROOM_CHECK_CLAUSE) == (1 if 1 in layers else 0)
+    assert prompt.count("ROOM CHECK") == (1 if 1 in layers else 0)
+    assert prompt == getattr(due_missions, name)(plan, Path("/tmp/dept"), "Maya's")
+
+
+def test_room_check_clause_is_byte_identical_across_depts_and_prompt_variants():
+    from scripts import due_missions
+
+    mission = {"id": "morning", "cadence": "daily", "mission_file": "missions/morning.md"}
+    for slug, label in (("rnd", "Rick's"), ("maya", "Maya's"), ("ben", "Ben's")):
+        for name in ("_prompt", "_wake_prompt", "_prompt_recurring", "_wake_prompt_recurring"):
+            fields = {"layer": 1} if name.endswith("_recurring") else {
+                "period": "2026-09-13", "layers": [1],
+            }
+            plan = [{**mission, **fields}]
+            prompt = getattr(due_missions, name)(plan, Path("/tmp") / slug, label)
+            start = prompt.index(" ROOM CHECK")
+            clause = prompt[start:start + len(due_missions.ROOM_CHECK_CLAUSE)]
+            assert clause.encode("utf-8") == due_missions.ROOM_CHECK_CLAUSE.encode("utf-8")
+            assert prompt.count(due_missions.ROOM_CHECK_CLAUSE) == 1
+
+
+def test_idle_envelopes_never_include_room_check():
+    from scripts import due_missions
+
+    notes = "morning(daily@07:30)"
+    prompts = [due_missions._idle_prompt("Maya's", notes)]
+    for renderer in (due_missions._wake_idle_prompt, due_missions._wake_idle_prompt_recurring):
+        prompts.append(renderer(Path("/tmp/dept"), "Maya's", notes))
+    for prompt in prompts:
+        assert "DUE_MISSIONS=[]" in prompt
+        assert due_missions.ROOM_CHECK_CLAUSE not in prompt
+        assert "ROOM CHECK" not in prompt
+
+
+def test_room_check_clause_cli_is_exact_and_needs_no_yaml_or_manifest():
+    import subprocess
+    import sys
+    from scripts.due_missions import ROOM_CHECK_CLAUSE
+
+    script = Path(__file__).resolve().parents[2] / "due_missions.py"
+    result = subprocess.run(
+        [sys.executable, "-S", str(script), "room-check-clause"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ROOM_CHECK_CLAUSE
+    assert result.stderr == ""
+
+
+def test_shell_room_check_clause_failure_is_nonfatal_and_only_logs_to_stderr():
+    import re
+    import subprocess
+
+    script = Path(__file__).resolve().parents[2] / "loop-backup.sh"
+    helper = re.search(r"^room_check_clause\(\) \{.*?^\}", script.read_text(), re.M | re.S)
+    assert helper is not None
+    result = subprocess.run(
+        ["bash", "-c", 'PY=false; REPO_ROOT=.; log() { echo "$*"; }; ' + helper[0] + "\nroom_check_clause"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.count("room-check clause unavailable") == 1
+
+
 def test_dept_label_reads_department_display_name_or_slug_with_generic_fallback():
     from scripts.due_missions import _dept_label
 

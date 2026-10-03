@@ -71,6 +71,13 @@ primary purpose is STEP 0-ter below; the rest of your steps still run.
 2. `../dept.yaml` — recurring missions + data sources
 3. {l1_sources}
 
+### Room check (every L1 run)
+
+Follow `skills/meeting-room/SKILL.md` section "Every layer-1 run: room check":
+read rooms listing you as member or chair, answer messages addressed to you or
+@all, and save the watermark. Report unavailable tools or refused room access
+in this run's output and the layer-4 export notes; continue, never skip silently.
+
 ### Inbound management notes (STEP 0-ter — run on EVERY L1 tick)
 
 Tony (management) issues instructions through `queues/management/`. Notes arrive as \

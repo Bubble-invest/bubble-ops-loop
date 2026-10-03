@@ -87,7 +87,7 @@ trap release_pending_claims EXIT
 # in the actual injected turn. Planning is read-only: inbox acceptance never
 # advances a watermark. Each mission gets its own explicit success-only command
 # in the prompt; failed/partial work therefore remains due on the next wake.
-# Legacy local depts with no due_dispatch keep the exact generic wake above.
+# Legacy local depts with no due_dispatch use the generic full tick above.
 if [[ -f "$DEPT_DIR/dept.yaml" ]] && grep -q '^[[:space:]]*due_dispatch:' "$DEPT_DIR/dept.yaml"; then
     DUE_PLANNER="${LLL_REPO_ROOT}/scripts/due_missions.py"
     if [[ ! -f "$DUE_PLANNER" ]]; then
@@ -124,21 +124,32 @@ else
     # after due_missions.py grew a `wake-prompt` generator for that exact schema
     # (#1487). ops-loop#501 already wired the VPS twin of this same idle-nudge
     # (loop-backup.sh::inject_live_loop, via _inject_wake_text) to try the generator
-    # first and fall back to the historical free text, UNCHANGED, on any refusal or
+    # first and fall back to the historical full tick on any refusal or
     # error — never fatal. Mirror that here, verbatim in spirit: unlike the
     # loop.due_dispatch branch above (which fails closed — "no wake queued" — because
     # that schema's lease/claims-token bookkeeping makes a swallowed error unsafe),
     # this branch has no lease state to corrupt, so a refusal/error just means
     # "nothing new to say" and the generic WAKE_MESSAGE set above stands.
     DUE_PLANNER="${LLL_REPO_ROOT}/scripts/due_missions.py"
+    USE_GENERATED_WAKE=0
     if [[ -f "$DUE_PLANNER" ]]; then
         if GENERATED_WAKE="$(cd "$LLL_REPO_ROOT" && "$PY_BIN" "$DUE_PLANNER" wake-prompt \
                 --dept-dir "$DEPT_DIR" --now-epoch "$NOW_EPOCH" 2>/dev/null)" \
                 && [[ -n "$GENERATED_WAKE" ]]; then
+            USE_GENERATED_WAKE=1
             WAKE_MESSAGE="$GENERATED_WAKE"
             log "inject using generated DUE_MISSIONS wake-prompt (#1487/#1491)"
         else
-            log "wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback free-text nudge, unchanged"
+            log "wake-prompt generator refused/errored (unknown schema or nothing due) — using fallback full-tick nudge with shared room check"
+        fi
+    fi
+    if [[ "$USE_GENERATED_WAKE" == 0 ]]; then
+        # This fallback is a normal full tick, so it can cover layer 1.
+        if ROOM_CLAUSE="$("$PY_BIN" "$DUE_PLANNER" room-check-clause 2>/dev/null)" \
+                && [[ -n "$ROOM_CLAUSE" ]]; then
+            WAKE_MESSAGE+="$ROOM_CLAUSE"
+        else
+            log "warn — room-check clause unavailable; continuing without it"
         fi
     fi
 fi

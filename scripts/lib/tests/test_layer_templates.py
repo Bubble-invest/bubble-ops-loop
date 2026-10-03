@@ -24,6 +24,19 @@ def test_display_name_is_filled():
     assert "{display_name}" not in t  # no unfilled placeholder
 
 
+def test_l1_requires_meeting_room_check_and_failure_reporting():
+    text = render_layer_prompt(1, "maya", "Maya")
+    assert 'skills/meeting-room/SKILL.md' in text
+    assert '"Every layer-1 run: room check"' in text
+    assert 'member or chair' in text
+    assert '@all' in text
+    assert 'watermark' in text
+    assert 'layer-4 export notes' in text
+    assert 'never skip silently' in text
+    for layer in (2, 3, 4):
+        assert 'Room check (every L1 run)' not in render_layer_prompt(layer, "maya", "Maya")
+
+
 def test_no_unfilled_placeholders():
     for n in (1, 2, 3, 4):
         t = render_layer_prompt(n, "tony", "Tony")
