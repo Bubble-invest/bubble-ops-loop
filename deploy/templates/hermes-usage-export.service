@@ -11,3 +11,9 @@ UMask=0022
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hermes-usage-export
+
+# /home remains readable for isolated agent databases and mirrored transcripts.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/claude/.claude/projects

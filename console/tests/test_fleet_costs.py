@@ -28,7 +28,7 @@ def projects(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setattr(tracker, 'PROJECTS_DIR', root)
     monkeypatch.setattr(tracker, 'CACHE_DIR', tmp_path / 'cache')
-    monkeypatch.setattr(tracker, 'CACHE_FILE', tmp_path / 'cache/usage.json')
+    monkeypatch.setattr(tracker, 'CACHE_FILE', tmp_path / 'cache/usage.sqlite3')
     tracker._report_cache.update(report=None, built_at=0)
 
     class Clock(datetime):
@@ -138,15 +138,16 @@ def test_synthetic_records_in_old_parse_cache_ignored(projects):
     path = projects / '_vps-miranda/work/s.jsonl'
     write_lines(path, message())
     baseline = tracker.fleet_summary('2026-10-03', refresh=True)
-    cache = json.loads(tracker.CACHE_FILE.read_text())
-    # A pre-fix cache can contain synthetic records, even with a shared ID.
-    synthetic = {**cache[str(path)]['records'][0], 'model': '<synthetic>',
-                 'usage': dict.fromkeys(tracker.TOKEN_CLASSES, 1000)}
-    cache[str(path)]['records'].insert(0, synthetic)
-    cache[str(path)]['version'] = 2
-    tracker.CACHE_FILE.write_text(json.dumps(cache))
+    # Obsolete JSON cache is never loaded; incompatible SQLite file entries
+    # are reparsed from source (including filtering synthetic records).
+    legacy = tracker.CACHE_FILE.with_suffix('.json')
+    legacy.write_text(json.dumps({str(path): {'version': 2, 'records': [
+        {'model': '<synthetic>', 'usage': dict.fromkeys(tracker.TOKEN_CLASSES, 1000)}]}}))
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        db.execute('UPDATE files SET version=2')
     assert tracker.fleet_summary('2026-10-03', refresh=False) == baseline
-    assert json.loads(tracker.CACHE_FILE.read_text())[str(path)]['version'] == 3
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('SELECT version FROM files').fetchone() == (4,)
 
 
 @pytest.mark.parametrize('source', ['claude', 'hermes'])
@@ -367,9 +368,8 @@ def test_exporter_bad_database_produces_no_data(tmp_path, kind):
         with sqlite3.connect(db) as con:
             if kind == 'missing_required_columns':
                 con.execute('CREATE TABLE sessions (id TEXT, started_at REAL)')
-    data = exporter.read_usage(db)
-    assert data['rows'] == []
-    assert data['notes']
+    with pytest.raises(exporter.UsageReadError):
+        exporter.read_usage(db)
 
 
 def test_exporter_optional_columns_are_null(tmp_path):
@@ -383,7 +383,7 @@ def test_exporter_optional_columns_are_null(tmp_path):
     assert row['session_id'] == 's'
 
 
-def test_exporter_never_fails_surrounding_sync_on_destination_symlink(tmp_path):
+def test_exporter_reports_destination_symlink_failure(tmp_path):
     db = tmp_path / 'home/agent-morty/.hermes/profiles/morty/state.db'
     make_db(db)
     outside = tmp_path / 'outside'
@@ -391,7 +391,7 @@ def test_exporter_never_fails_surrounding_sync_on_destination_symlink(tmp_path):
     projects = tmp_path / 'projects'
     projects.mkdir()
     (projects / '_vps-morty-hermes').symlink_to(outside, target_is_directory=True)
-    assert exporter.export_all(tmp_path / 'home', projects) == 0
+    assert exporter.export_all(tmp_path / 'home', projects) == 1
     assert list(outside.iterdir()) == []
 
 
@@ -507,12 +507,213 @@ def test_resumed_copy_without_request_metadata_is_same_message(projects):
     assert tracker.build_report(refresh=True)['totals']['today']['tokens'] == 190
 
 
-def test_failed_database_refresh_replaces_stale_export_with_no_data(tmp_path, projects):
+@pytest.mark.parametrize('failure', ['corrupt', 'locked'])
+def test_failed_database_refresh_preserves_good_export(tmp_path, projects, monkeypatch, caplog, failure):
     db = tmp_path / 'home/agent-morty/.hermes/profiles/morty/state.db'
     make_db(db)
-    exporter.export_all(tmp_path / 'home', projects)
-    db.write_text('corrupt')
     assert exporter.export_all(tmp_path / 'home', projects) == 0
-    data = json.loads((projects / '_vps-morty-hermes/hermes-usage.json').read_text())
-    assert data['rows'] == []
-    assert data['notes']
+    output = projects / '_vps-morty-hermes/hermes-usage.json'
+    before = output.read_bytes(), output.stat().st_mtime_ns
+    if failure == 'corrupt':
+        db.write_text('corrupt')
+    else:
+        def locked(*args, **kwargs):
+            raise sqlite3.OperationalError('database is locked')
+        monkeypatch.setattr(exporter.sqlite3, 'connect', locked)
+    assert exporter.export_all(tmp_path / 'home', projects) == 1
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert 'previous export preserved' in caplog.text
+
+
+def test_cache_warm_days_do_not_parse_or_write_and_deleted_files_shrink(projects, monkeypatch):
+    a = projects / '_vps-ben/work/a.jsonl'
+    b = projects / '_vps-ben/work/b.jsonl'
+    write_lines(a, message())
+    write_lines(b, message(mid='b', session='b', ts='2026-10-02T08:00:00Z'))
+    tracker.build_report(day='2026-10-03')
+    before = tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns
+    def no_parse(*args):
+        raise AssertionError('unchanged files must not be parsed')
+    monkeypatch.setattr(tracker, '_session_records', no_parse)
+    assert tracker.build_report(day='2026-10-02')['totals']['day']['tokens'] == 190
+    assert tracker.build_report(refresh=True, day='2026-10-03')['totals']['day']['tokens'] == 190
+    assert (tracker.CACHE_FILE.read_bytes(), tracker.CACHE_FILE.stat().st_mtime_ns) == before
+    a.unlink()
+    report = tracker.build_report(day='2026-10-03')
+    assert report['totals']['day']['tokens'] == 0
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('SELECT path FROM files').fetchall() == [(str(b),)]
+        assert db.execute('SELECT count(*) FROM records').fetchone() == (1,)
+        assert db.execute('PRAGMA freelist_count').fetchone() == (0,)
+
+
+def test_cache_publication_rolls_back_on_interrupted_scan(projects, monkeypatch):
+    path = projects / '_vps-ben/work/a.jsonl'
+    write_lines(path, message())
+    tracker.build_report(day='2026-10-03')
+    before = tracker.CACHE_FILE.read_bytes()
+    write_lines(path, message(tokens=500))
+    def interrupted(path, meta):
+        yield {'identity': 'partial', 'session_id': 'partial', 'timestamp': '2026-10-03T08:00:00Z',
+               'model': 'claude-sonnet-4-6', 'usage': dict.fromkeys(tracker.TOKEN_CLASSES, 5)}
+        raise RuntimeError('interrupted')
+    monkeypatch.setattr(tracker, '_session_records', interrupted)
+    with pytest.raises(RuntimeError, match='interrupted'):
+        tracker.build_report(day='2026-10-03')
+    assert tracker.CACHE_FILE.read_bytes() == before
+
+
+def test_idless_content_copies_collapse_but_different_time_or_usage_survive(projects):
+    original = message(mid=None, uuid=None)
+    write_lines(projects / '_vps-ben/work/a.jsonl', original,
+                message(mid=None, uuid=None, ts='2026-10-03T08:00:01Z'),
+                message(mid=None, uuid=None, tokens=101))
+    write_lines(projects / '_vps-rick/work/subagents/copy.jsonl', original)
+    assert tracker.build_report(day='2026-10-03')['totals']['day']['tokens'] == 571
+
+
+def test_sqlite_matches_straightforward_uncached_reference(projects, monkeypatch):
+    """Independent line reader/global dict reference, including different-day
+    stream snapshots: maxima must be resolved before filtering by Paris day.
+    """
+    import hashlib
+    from collections import defaultdict
+    from zoneinfo import ZoneInfo
+    root = projects / '_vps-ben/work'
+    rows = [
+        message('2026-03-28T22:59:59Z', mid='before-midnight', tokens=10),
+        message('2026-03-28T23:00:00Z', mid='midnight', tokens=20, output=1),
+        message('2026-03-29T00:59:59Z', mid='spring-before', tokens=30),
+        message('2026-03-29T01:00:00Z', mid='spring-after', tokens=40),
+        message('2026-10-24T21:59:59Z', mid='autumn-midnight-before', tokens=50),
+        message('2026-10-24T22:00:00Z', mid='autumn-midnight', tokens=60),
+        message('2026-10-25T00:59:59Z', mid='autumn-before', tokens=70),
+        message('2026-10-25T01:00:00Z', mid='autumn-after', tokens=80),
+        message('2026-10-03T08:00:00Z', mid=None, uuid=None),
+    ]
+    haiku = message('2026-03-29T04:00:00Z', mid='haiku', tokens=17, output=7)
+    haiku['message']['model'] = 'claude-haiku-4-5'
+    rows.append(haiku)
+    write_lines(root / 'a.jsonl', *rows)
+    write_lines(root / 'b-resumed.jsonl', *rows,
+                message('2026-03-29T23:30:00Z', mid='midnight', output=46, tokens=25))
+    write_lines(root / 'subagents/agent.jsonl', *rows,
+                message('2026-10-25T01:30:00Z', mid='child', session='child', tokens=91))
+    write_lines(projects / '_vps-rick/work/compacted.jsonl', *rows)
+    reference = {}
+    for path in sorted(projects.rglob('*.jsonl')):
+        label = path.relative_to(projects).parts[0][len('_vps-'):]
+        for line in path.read_text().splitlines():
+            d = json.loads(line)
+            msg = d['message']
+            keys = ('input_tokens', 'output_tokens', 'cache_read_input_tokens',
+                    'cache_creation_input_tokens', 'reasoning_tokens')
+            usage = tuple(msg['usage'].get(k, 0) for k in keys)
+            identity = ('message', msg['id']) if msg.get('id') else ('uuid', d['uuid']) if d.get('uuid') else (
+                'content', hashlib.blake2b(json.dumps([d['timestamp'], msg['model'], list(usage),
+                    msg.get('role', 'assistant')], separators=(',', ':'), sort_keys=True).encode(), digest_size=16).digest())
+            if identity not in reference:
+                date = datetime.fromisoformat(d['timestamp'].replace('Z', '+00:00')).astimezone(ZoneInfo('Europe/Paris')).date().isoformat()
+                reference[identity] = [date, label, d['sessionId'], msg['model'], usage]
+            else:
+                reference[identity][4] = tuple(max(a, b) for a, b in zip(reference[identity][4], usage))
+    # Freeze today's date inside the autumn fixture to check default week/today,
+    # distinct runs across days and pricing as well as arbitrary backfill days.
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 25, 12, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(tracker, 'datetime', Clock)
+    for day in ['2026-03-28', '2026-03-29', '2026-03-30', '2026-10-03', '2026-10-24', '2026-10-25']:
+        report = tracker.build_report(day=day)
+        for span, dates in [('day', {day}), ('today', {'2026-10-25'}),
+                            ('week', {f'2026-10-{n}' for n in range(19, 26)})]:
+            totals = [0] * 5
+            by_agent = defaultdict(lambda: {'usage': [0] * 5, 'sessions': set(), 'real': 0., 'cache': 0., 'full': 0., 'models': defaultdict(lambda: [0, 0.])})
+            for date, label, session, model, usage in reference.values():
+                if date not in dates:
+                    continue
+                bucket = by_agent[label]
+                bucket['sessions'].add(session)
+                prices = (1, 5, .1, 1.25) if 'haiku' in model else (3, 15, .3, 3.75)
+                real = (usage[0] * prices[0] + usage[1] * prices[1]) / 1e6
+                cache = (usage[2] * prices[2] + usage[3] * prices[3]) / 1e6
+                short = 'haiku' if 'haiku' in model else 'sonnet'
+                bucket['models'][short][0] += sum(usage[:4])
+                bucket['models'][short][1] += real + cache
+                bucket['real'] += real
+                bucket['cache'] += cache
+                bucket['full'] += real + cache
+                for n, amount in enumerate(usage):
+                    totals[n] += amount
+                    bucket['usage'][n] += amount
+            actual = report['totals'][span]
+            assert actual['tokens_by_class'] == dict(zip(tracker.TOKEN_CLASSES, totals))
+            assert actual['tokens'] == sum(totals[:4])
+            assert actual['runs'] == sum(len(b['sessions']) for b in by_agent.values())
+            assert actual['cost'] == round(sum(round(b['real'], 4) for b in by_agent.values()), 4)
+            assert actual['cache_cost'] == round(sum(round(b['cache'], 4) for b in by_agent.values()), 4)
+            assert actual['cost_usd_estimate'] == round(sum(round(b['full'], 4) for b in by_agent.values()), 4)
+            for label, expected in by_agent.items():
+                got = report['agents'][label][span]
+                assert got['tokens_by_class'] == dict(zip(tracker.TOKEN_CLASSES, expected['usage']))
+                assert got['runs'] == len(expected['sessions'])
+                for model, (tokens, cost) in expected['models'].items():
+                    assert got['by_model'][model] == {'tokens': tokens, 'cost': round(cost, 4)}
+
+
+def test_unreadable_projects_cli_preserves_latest(tmp_path):
+    # A file in place of the directory is unreadable even when tests run as root.
+    projects = tmp_path / 'projects'
+    projects.write_text('not a directory')
+    latest = tmp_path / 'latest.json'
+    latest.write_text('{"last_good":true}\n')
+    before = latest.read_bytes(), latest.stat().st_mtime_ns
+    env = {**os.environ, 'BUBBLE_COST_PROJECTS_DIR': str(projects),
+           'BUBBLE_COST_CACHE_DIR': str(tmp_path / 'cache')}
+    result = subprocess.run([sys.executable, str(REPO / 'console/services/cost_tracker.py'),
+        '--fleet-summary', '--day', '2026-10-03', '--latest', str(latest)],
+        env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert 'unreadable' in result.stderr
+    assert (latest.read_bytes(), latest.stat().st_mtime_ns) == before
+
+
+def test_tonio_is_separate_from_tony_department_rollup():
+    report = {'agents': {'tony': {'week': {'cost': 3}},
+                         'tonio': {'week': {'cost': 7}},
+                         'rick': {'week': {'cost': 11}}}}
+    assert tracker.spent_by_dept(report) == {'tony': 3, 'tonio': 7, 'rnd': 11}
+
+
+def test_cost_services_hardening_matches_write_paths():
+    for name in ['hermes-usage-export', 'fleet-cost-summary']:
+        unit = (REPO / 'deploy/templates' / f'{name}.service').read_text()
+        for directive in ['NoNewPrivileges=true', 'PrivateTmp=true', 'ProtectSystem=strict']:
+            assert directive in unit
+        assert 'ProtectHome=' not in unit
+        assert 'ReadWritePaths=/home/claude/.claude/projects' in unit
+        if name == 'fleet-cost-summary':
+            assert 'BUBBLE_COST_CACHE_DIR=/var/lib/bubble-fleet/costs/cache' in unit
+            assert ' /var/lib/bubble-fleet/costs' in unit
+
+
+def test_incomplete_discovery_still_prunes_confirmed_deleted_sources(projects, monkeypatch):
+    path = projects / '_vps-ben/work/s.jsonl'
+    write_lines(path, message())
+    tracker.build_report(day='2026-10-03')
+    path.unlink()
+    broken = projects / '_vps-rick/broken'
+    broken.mkdir(parents=True)
+    original = Path.iterdir
+    def unreadable(self):
+        if self == broken:
+            raise PermissionError('fixture unreadable directory')
+        return original(self)
+    monkeypatch.setattr(Path, 'iterdir', unreadable)
+    report = tracker.build_report(day='2026-10-03')
+    assert report['unreadable_transcripts'] == 1
+    assert report['totals']['day']['tokens'] == 0
+    with sqlite3.connect(tracker.CACHE_FILE) as db:
+        assert db.execute('SELECT count(*) FROM files').fetchone() == (0,)
+        assert db.execute('SELECT count(*) FROM records').fetchone() == (0,)

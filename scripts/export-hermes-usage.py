@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Root-run, read-only Hermes counters export; no session text or prompts.
 
-Each profile is isolated: missing schemas/databases become explicit empty
-exports, and an unreadable profile never fails the surrounding transcript sync.
+Each profile is isolated: failed reads preserve the last good export, log an
+error and return non-zero. A transcript-sync caller may treat this as non-fatal.
 """
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ from cost_io import atomic_json
 
 FIELDS = ('model', 'input_tokens', 'output_tokens', 'cache_read_tokens',
           'cache_write_tokens', 'reasoning_tokens', 'estimated_cost_usd', 'actual_cost_usd')
+
+
+class UsageReadError(RuntimeError):
+    """Publication must keep the previous good export on read failure."""
 
 
 def _columns(db, table):
@@ -93,23 +97,27 @@ def read_usage(path: Path) -> dict:
                     rows.append({'session_id': str(sid), 'started_at': session['started_at'],
                                  'session_actual_cost_usd': session_clean['actual_cost_usd'],
                                  'session_estimated_cost_usd': session_clean['estimated_cost_usd'], **clean})
-    except (sqlite3.Error, OSError, ValueError, TypeError, OverflowError):
-        rows = []
-        notes.append('Hermes database missing, corrupt or schema unavailable; no data exported.')
+    except (sqlite3.Error, OSError, ValueError, TypeError, OverflowError) as exc:
+        raise UsageReadError(f'Hermes database read failed: {path}: {exc}') from exc
     return {'schema_version': 1, 'generated_at': datetime.now(timezone.utc).isoformat(),
             'rows': rows, 'notes': sorted(set(notes))}
 
 
 def export_all(home: Path, projects: Path) -> int:
+    failures = 0
     try:
-        agents = sorted(home.glob('agent-*'))
+        agents = sorted(p for p in home.iterdir() if p.name.startswith('agent-') and p.is_dir())
         for agent in agents:
             profiles = agent / '.hermes' / 'profiles'
             if agent.is_symlink() or (agent / '.hermes').is_symlink() or profiles.is_symlink():
                 continue
             try:
                 candidates = sorted(profiles.iterdir())
-            except OSError:
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logging.error('Hermes profile discovery failed for %s: %s', agent.name, exc)
+                failures += 1
                 continue
             for profile in candidates:
                 if profile.is_symlink() or not profile.is_dir():
@@ -120,11 +128,13 @@ def export_all(home: Path, projects: Path) -> int:
                 try:
                     atomic_json(projects / f'_vps-{slug}-hermes' / 'hermes-usage.json',
                                 read_usage(profile / 'state.db'))
-                except (OSError, ValueError, TypeError):
-                    logging.warning('Hermes usage publication skipped for profile %s', slug)
-    except OSError:
-        logging.warning('Hermes usage discovery unavailable')
-    return 0  # safe as a non-fatal hook in the external root transcript sync
+                except (UsageReadError, OSError, ValueError, TypeError) as exc:
+                    logging.error('Hermes usage publication failed for profile %s; previous export preserved: %s', slug, exc)
+                    failures += 1
+    except OSError as exc:
+        logging.error('Hermes usage discovery failed: %s', exc)
+        failures += 1
+    return 1 if failures else 0
 
 
 def main():

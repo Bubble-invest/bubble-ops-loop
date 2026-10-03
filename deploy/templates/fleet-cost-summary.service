@@ -11,9 +11,16 @@ WorkingDirectory=/opt/bubble-ops-loop
 ExecStartPre=-/usr/bin/python3 /opt/bubble-ops-loop/scripts/export-hermes-usage.py
 ExecStart=/opt/bubble-ops-loop/scripts/fleet-cost-summary.sh
 Environment=BUBBLE_COST_PROJECTS_DIR=/home/claude/.claude/projects
+Environment=BUBBLE_COST_CACHE_DIR=/var/lib/bubble-fleet/costs/cache
 StateDirectory=bubble-fleet/costs
 StateDirectoryMode=0755
 UMask=0022
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=fleet-cost-summary
+
+# /home remains readable for isolated agent databases and mirrored transcripts.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/claude/.claude/projects /var/lib/bubble-fleet/costs

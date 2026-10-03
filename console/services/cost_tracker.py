@@ -23,6 +23,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+from contextlib import closing
+from itertools import chain
 import json
 import logging
 import math
@@ -48,8 +51,9 @@ HOME = Path(os.environ.get("HOME", "/home/claude"))
 PROJECTS_DIR = Path(os.environ.get(
     "BUBBLE_COST_PROJECTS_DIR", str(HOME / ".claude" / "projects")
 ))
-CACHE_DIR = HOME / ".claude" / "cache"
-CACHE_FILE = CACHE_DIR / "console-cost-sessions.json"
+CACHE_DIR = Path(os.environ.get("BUBBLE_COST_CACHE_DIR", str(HOME / ".claude" / "cache")))
+CACHE_FILE = CACHE_DIR / "console-cost-sessions.sqlite3"
+
 
 # ── Pricing (USD per 1M tokens). Current public list prices; override via
 # BUBBLE_COST_PRICING_JSON (a JSON file path) if they change. Cache-read is
@@ -289,7 +293,7 @@ def _merge_record(records: dict, record: dict) -> None:
     """Claude emits content-block/stream snapshots sharing one message identity.
 
     Keep maxima for cumulative usage classes rather than billing each snapshot.
-    Records without IDs remain distinct: equal usage alone is not duplication.
+    ID-less copies use timestamp/model/usage/role content fingerprints.
     """
     key = record["identity"]
     if key not in records:
@@ -300,52 +304,60 @@ def _merge_record(records: dict, record: dict) -> None:
             old["usage"][name] = max(old["usage"][name], record["usage"][name])
 
 
+def _session_records(filepath: Path, meta: dict):
+    """Stream billable rows; production never retains a whole transcript in RAM."""
+    if filepath.is_symlink():
+        return
+    with open(filepath, "r", errors="replace") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(d, dict) or not isinstance(d.get("message"), dict):
+                continue
+            msg = d["message"]
+            if not meta["first_user_text"] and d.get("type") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    meta["first_user_text"] = content[:2000]
+                elif isinstance(content, list):
+                    meta["first_user_text"] = " ".join(
+                        it.get("text", "") for it in content
+                        if isinstance(it, dict) and isinstance(it.get("text", ""), str)
+                    )[:2000]
+            if (d.get("type") != "assistant" or not isinstance(msg.get("usage"), dict)
+                    or msg.get("model") == "<synthetic>"):
+                continue
+            model = msg.get("model") if isinstance(msg.get("model"), str) else "unknown"
+            usage = _tokens(msg["usage"], "claude")
+            if msg.get("id"):
+                identity = f"message:{msg['id']}"
+            elif d.get("uuid"):
+                identity = f"uuid:{d['uuid']}"
+            else:
+                # No file/line component: identical resumed/sub-agent copies collapse.
+                # Truly independent calls with identical timestamp/model/usage/role
+                # also collapse; explicit provider IDs always take precedence.
+                content_key = json.dumps([d.get("timestamp"), model,
+                    [usage[k] for k in TOKEN_CLASSES], msg.get("role", "assistant")],
+                    separators=(",", ":"), sort_keys=True)
+                identity = "content:" + hashlib.blake2b(content_key.encode(), digest_size=16).hexdigest()
+            yield {"identity": identity, "session_id": d.get("sessionId") or filepath.stem,
+                   "timestamp": d.get("timestamp"), "model": model,
+                   "usage": usage, "source": "claude"}
+
+
 def parse_session(
     filepath: Path,
     on_unreadable: Optional[Callable[[Path], None]] = None,
 ) -> Optional[dict]:
-    """Cache timestamped usage records, not whole-session date buckets."""
+    """Uncached compatibility/reference parser; reports use the streaming index."""
     records = {}
-    first_user_text = ""
+    meta = {"first_user_text": ""}
     try:
-        if filepath.is_symlink():
-            return None
-        with open(filepath, "r", errors="replace") as fh:
-            for lineno, line in enumerate(fh):
-                try:
-                    d = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(d, dict):
-                    continue
-                msg = d.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                if not first_user_text and d.get("type") == "user":
-                    content = msg.get("content")
-                    if isinstance(content, str):
-                        first_user_text = content[:2000]
-                    elif isinstance(content, list):
-                        first_user_text = " ".join(
-                            it.get("text", "") for it in content
-                            if isinstance(it, dict) and isinstance(it.get("text", ""), str)
-                        )[:2000]
-                if d.get("type") != "assistant" or not isinstance(msg.get("usage"), dict):
-                    continue
-                if msg.get("model") == "<synthetic>":
-                    # Local notices/errors are never billable API usage.
-                    continue
-                message_id = msg.get("id")
-                # Message IDs identify API calls; UUIDs identify transcript entries.
-                # IDs remain stable even when resumed copies omit request metadata.
-                identity = (f"message:{message_id}"
-                            if message_id else f"uuid:{d['uuid']}" if d.get("uuid")
-                            else f"file:{filepath}:{lineno}")
-                _merge_record(records, {
-                    "identity": identity, "session_id": d.get("sessionId") or filepath.stem,
-                    "timestamp": d.get("timestamp"), "model": msg.get("model") if isinstance(msg.get("model"), str) else "unknown",
-                    "usage": _tokens(msg["usage"], "claude"), "source": "claude",
-                })
+        for rec in _session_records(filepath, meta):
+            _merge_record(records, rec)
         mtime = filepath.stat().st_mtime
     except OSError:
         _note_unreadable(filepath, on_unreadable)
@@ -358,7 +370,7 @@ def parse_session(
         for key in TOKEN_CLASSES:
             mu[key] += rec["usage"][key]
     return {"model_usage": model_usage, "records": list(records.values()),
-            "first_user_text": first_user_text, "n_turns": len(records), "mtime": mtime}
+            **meta, "n_turns": len(records), "mtime": mtime}
 
 
 def parse_session_for_day(
@@ -381,28 +393,12 @@ def parse_session_for_day(
     return {**parsed, "records": records, "model_usage": models, "n_turns": len(records)}
 
 
-def _load_cache() -> dict:
-    try:
-        data = json.loads(CACHE_FILE.read_text())
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_cache(cache: dict) -> None:
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(cache))
-    except Exception:
-        pass
-
-
 # ── Report-level TTL cache. `build_report` still walks every project dir + stats
 # every JSONL to check mtimes even when the per-session parse is cache-hit (the
 # walk itself is the cost on large trees) — so on top of the mtime cache, keep
 # the assembled report around for a short window. `refresh=True` always bypasses
-# this (and the mtime cache below), so the explicit-refresh escape hatch still
-# forces a full rescan.
+# this TTL, so explicit refresh discovers newly changed sources immediately.
+# Unchanged fingerprints are reused even for day-specific/refresh reports.
 _REPORT_TTL_SECONDS = 45
 _report_cache: dict = {"report": None, "built_at": 0.0}
 
@@ -490,9 +486,12 @@ def _hermes_records(path: Path, notes: set) -> list[dict]:
 
 
 def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> dict:
+    # Defer sibling imports: mission_kpis loads pricing constants by file spec.
+    if __package__:
+        from .cost_cache import UsageCache
+    else:
+        from cost_cache import UsageCache
     pricing = _load_pricing()
-    cache = {} if refresh else _load_cache()
-    new_cache = {}
     now = datetime.now(timezone.utc)
     today = now.astimezone(PARIS).date()
     week_start = today - timedelta(days=6)
@@ -530,56 +529,67 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
     except OSError:
         record_unreadable(PROJECTS_DIR)
         projects = []
-    records = {}
-    for proj in projects:
-        if proj.is_symlink() or not proj.is_dir():
-            continue
-        if proj.name.startswith("_vps-") and proj.name.endswith("-hermes"):
-            label = classify(proj.name)
-            for rec in _hermes_records(proj / "hermes-usage.json", notes):
-                rec["label"] = label
-                records.setdefault((label, rec["identity"]), rec)
-            # state.db is authoritative; never also bill compatible Hermes JSONLs.
-            continue
-        try:
-            roots = [(classify(f"{proj.name}/{sub.name}"), sub) for sub in sorted(proj.iterdir())
-                     if not sub.is_symlink() and sub.is_dir()] if proj.name.startswith("_mac-") else [(classify(proj.name), proj)]
-        except OSError:
-            record_unreadable(proj)
-            continue
-        for label, root in roots:
-            if label is None:
+    records = {}  # Hermes exports only; Claude records stay on disk.
+    claude_runs = {}
+    def paris_day(timestamp):
+        dt = _timestamp(timestamp)
+        return dt.astimezone(PARIS).date().toordinal() if dt else None
+
+    with closing(UsageCache(CACHE_FILE)) as cache:
+        for proj in projects:
+            if proj.is_symlink() or not proj.is_dir():
                 continue
-            for path in walk(root):
-                try:
-                    stat = path.stat()
-                except OSError:
-                    record_unreadable(path)
+            if proj.name.startswith("_vps-") and proj.name.endswith("-hermes"):
+                label = classify(proj.name)
+                for rec in _hermes_records(proj / "hermes-usage.json", notes):
+                    rec["label"] = label
+                    records.setdefault((label, rec["identity"]), rec)
+                # state.db is authoritative; never also bill compatible Hermes JSONLs.
+                continue
+            try:
+                roots = [(classify(f"{proj.name}/{sub.name}"), sub) for sub in sorted(proj.iterdir())
+                         if not sub.is_symlink() and sub.is_dir()] if proj.name.startswith("_mac-") else [(classify(proj.name), proj)]
+            except OSError:
+                record_unreadable(proj)
+                continue
+            for label, root in roots:
+                if label is None:
                     continue
-                key = str(path)
-                cached = cache.get(key)
-                fingerprint = [stat.st_mtime_ns, stat.st_size]
-                parsed = cached if isinstance(cached, dict) and cached.get("version") == 3 and cached.get("fingerprint") == fingerprint else parse_session(path, record_unreadable)
-                if parsed is None:
-                    continue
-                new_cache[key] = {**parsed, "version": 3, "fingerprint": fingerprint}
-                resolved = _detect_job(parsed["first_user_text"]) if label == "_p_crons" else label
-                for rec in parsed["records"]:
-                    # Also ignore synthetic entries from existing parse caches.
-                    if rec["model"] == "<synthetic>":
+                for path in walk(root):
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        record_unreadable(path)
                         continue
-                    rec = {**rec, "usage": dict(rec["usage"]), "label": resolved}
-                    # Global identity prevents resumed/compacted copies billing twice,
-                    # even if copied into a different agent's workspace.
-                    _merge_record(records, rec)
-    _save_cache(new_cache)
+                    meta = {"first_user_text": ""}
+                    try:
+                        cache.sync_file(path, (stat.st_mtime_ns, stat.st_size), label,
+                                        lambda: _session_records(path, meta), meta, paris_day, _detect_job)
+                    except OSError:
+                        record_unreadable(path)
+        cache.finish(prune=not unreadable)
+        if cache.invalid_timestamp():
+            notes.add("Usage without a valid timezone-aware timestamp was excluded; file mtime is never a day fallback.")
+        requested = datetime.strptime(day, "%Y-%m-%d").date().toordinal() if day else None
+        for span, start, end in (("today", today.toordinal(), today.toordinal()),
+                                 ("week", week_start.toordinal(), today.toordinal()),
+                                 ("day", requested, requested)):
+            if start is not None:
+                for label, runs in cache.run_counts(start, end).items():
+                    claude_runs[label, span] = runs
+        # Materialize only day/model aggregates, never message identities.
+        claude_records = [
+            {"label": label, "model": model, "usage": usage, "source": "claude",
+             "timestamp": datetime.fromordinal(date).replace(tzinfo=PARIS).isoformat()}
+            for date, label, model, usage in cache.rows(week_start.toordinal(), today.toordinal(), requested)
+        ]
 
     # A valid Hermes export identifies an agent even if its cumulative sessions
     # started before the window. Keep a visible zero start-day bucket.
     agents = {rec["label"]: {**blank(), "sources": ["hermes"]}
               for rec in records.values() if rec["source"] == "hermes"}
     run_sets = {}
-    for rec in records.values():
+    for rec in chain(claude_records, records.values()):
         if rec["model"] == "<synthetic>":
             continue
         dt = _timestamp(rec["timestamp"])
@@ -631,8 +641,9 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
             for name in TOKEN_CLASSES:
                 b["tokens_by_class"][name] += usage[name]
             sessions = run_sets.setdefault((label, span), set())
-            sessions.add((rec["source"], str(rec["session_id"])))
-            b["runs"] = len(sessions)
+            if rec["source"] == "hermes":
+                sessions.add(str(rec["session_id"]))
+            b["runs"] = claude_runs.get((label, span), 0) + len(sessions)
             if _token_total(usage):
                 short = next((m for m in ("opus", "sonnet", "haiku") if m in model), model)
                 bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
@@ -673,6 +684,8 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
 
 def fleet_summary(day: str, refresh: bool = False) -> dict:
     report = build_report(refresh=refresh, day=day)
+    if str(PROJECTS_DIR) in report["unreadable_transcript_paths"] or PROJECTS_DIR.is_symlink():
+        raise OSError(f"Fleet summary projects directory is unreadable: {PROJECTS_DIR}")
     def row(bucket):
         return {key: bucket[key] for key in ("tokens", "tokens_by_class", "cost_usd_estimate", "cost_usd_estimate_priced_only", "cache_cost", "runs")}
     agents = {name: {**row(ag["day"]), "source": ag["sources"][0] if len(ag["sources"]) == 1 else ag["sources"]}
@@ -755,6 +768,7 @@ def mission_budget_total(dept_yaml: Optional[dict]) -> Optional[float]:
 _AGENT_KEY_TO_SLUG_ALIAS = {
     "miranda": "content",  # Miranda IS the content dept's agent (workspace bubble-ops-content)
     "rick": "rnd",
+    "tonio": "tonio",  # External R&D has its own spend; never roll into Tony/CEO.
     "eliot": "security",
 }
 
