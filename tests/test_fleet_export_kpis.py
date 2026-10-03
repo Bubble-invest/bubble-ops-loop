@@ -806,3 +806,24 @@ def test_symlink_kpi_source_not_followed(evidence, tmp_path):
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     assert doc['sources_missing'] == ['dispatch']
     assert 'secret' not in doc['missions']
+
+
+def test_symlinked_transcript_entry_is_skipped_not_fatal(tmp_path):
+    """Real case (accountant, 2026-10-03): one symlinked subagent .jsonl made
+    the whole transcript scan report "missing". It must be skipped: totals
+    come from the regular files, and the link is never followed."""
+    import json as _json
+    root = tmp_path / "transcripts"
+    (root / "s" / "subagents").mkdir(parents=True)
+    rec = {"type": "assistant", "timestamp": "2026-10-03T10:00:00Z",
+           "message": {"id": "m1", "model": "x", "usage": {"input_tokens": 1, "output_tokens": 2,
+                       "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}}}
+    (root / "main.jsonl").write_text(_json.dumps(rec) + "\n")
+    outside = tmp_path / "outside.jsonl"
+    other = dict(rec, message=dict(rec["message"], id="m2"))
+    outside.write_text(_json.dumps(other) + "\n")
+    (root / "s" / "subagents" / "agent-x.jsonl").symlink_to(outside)
+    missing = set()
+    calls = kpi.read_calls(root, missing)
+    assert missing == set()
+    assert [c["total_tokens"] for c in calls] == [10]
