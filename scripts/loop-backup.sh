@@ -48,6 +48,8 @@
 #   - layers/<N>/PROMPT.md           (the per-layer mission, floor mode)
 
 set -euo pipefail
+# Imports must never leave bytecode owned by this maintenance UID in dept trees.
+export PYTHONDONTWRITEBYTECODE=1
 
 # ── arg parse: --layer N ─────────────────────────────────────────────────────
 # When given, force OODA layer N (1..4) — bypass decide_dispatch and instruct

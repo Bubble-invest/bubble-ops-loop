@@ -248,7 +248,7 @@ def check_mirrors(entries, state, report, *, env, dry_run, mirror_check,
             failed = True
             continue
         command = [env.get('RUNUSER_BIN', 'runuser'), '-u', owner, '--',
-                   env.get('PYTHON_BIN', 'python3'), '-I',
+                   env.get('PYTHON_BIN', 'python3'), '-I', '-B',
                    str(ROOT / 'scripts/lib/management_kpis.py'),
                    '--dept-dir', str(target), '--day', report,
                    '--mirror-max-age-hours', str(mirror_max_age_hours), '--check-only']
@@ -332,7 +332,7 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
                 continue
             slug = dept.name
             command = [env.get('RUNUSER_BIN', 'runuser'), '-u', owner, '--',
-                       env.get('PYTHON_BIN', 'python3'), '-I',
+                       env.get('PYTHON_BIN', 'python3'), '-I', '-B',
                        str(ROOT / 'scripts/lib/management_kpis.py'),
                        '--dept-dir', str(dept), '--day', report,
                        '--token-threshold', env.get('TOKEN_THRESHOLD', '30000000')]

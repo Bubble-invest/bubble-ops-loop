@@ -45,6 +45,8 @@
 # Exit codes: 1 for a missing framework scripts/lib; 2 for invalid arguments.
 # Per-dept errors remain fail-open (logged in the sweep summary).
 set -uo pipefail
+# Imports must never leave bytecode owned by this maintenance UID in dept trees.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

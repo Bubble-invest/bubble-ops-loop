@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
 TimeoutStartSec=20min
 KillMode=control-group
 User=root

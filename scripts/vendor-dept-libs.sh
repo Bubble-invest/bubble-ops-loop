@@ -20,6 +20,8 @@
 # emit a deduplicated incident, and exit 0. Copies when the framework file differs
 # (cheap) and preserves the dept's own files for anything not in the set.
 set -uo pipefail
+# Imports must never leave bytecode owned by this maintenance UID in dept trees.
+export PYTHONDONTWRITEBYTECODE=1
 
 # bubble-agent-prepare invokes this through runuser as BUBBLE_AGENT_OS_USER.
 # Reject accidental privileged invocation before any writes or alert hooks.

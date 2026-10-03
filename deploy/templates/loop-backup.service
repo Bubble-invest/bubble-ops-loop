@@ -6,6 +6,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
 User=claude
 WorkingDirectory=/home/claude
 Environment=PATH=/home/claude/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin

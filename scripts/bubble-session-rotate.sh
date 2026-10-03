@@ -39,6 +39,8 @@
 #
 # Usage: bubble-session-rotate.sh <slug> [--force] [--dry-run]
 set -euo pipefail
+# Imports must never leave bytecode owned by this maintenance UID in dept trees.
+export PYTHONDONTWRITEBYTECODE=1
 
 HANDOFF_MAX_AGE_H="${HANDOFF_MAX_AGE_H:-12}"   # handoff must be newer than this (#1469: 20->12)
 

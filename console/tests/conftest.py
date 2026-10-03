@@ -30,6 +30,12 @@ def isolate_credentials(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_gate_markers(tmp_path, monkeypatch):
+    from console import settings
+    monkeypatch.setattr(settings, "SESSION_DB_PATH", tmp_path / "console-state" / "sessions.db")
+
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TEST_BEARER = "test-token-xyz"
 

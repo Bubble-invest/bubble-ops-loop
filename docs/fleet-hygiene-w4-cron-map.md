@@ -56,6 +56,16 @@ This map is a **superset of the card**. Items the card missed are marked **[MISS
 | `snapd.snap-repair.timer` | static (no schedule shown) | snapd self-repair | **keep-as-cron (inert)** | Stock OS, not actually scheduled, no action needed. |
 | `ua-timer.timer` | static (no schedule shown) | Ubuntu Advantage service | **keep-as-cron (inert)** | Stock OS, not actually scheduled, no action needed. |
 
+Mirror sync durability (#1709): `scripts/sync-local-dept-clones.sh` continues
+through all local departments, but exits non-zero on any failure and emits one
+best-effort board alarm with stable id `mirror-sync-failed-<slug>` (repeat ticks
+dedupe). Foreign-owned paths are reported with path and owner before fetching;
+no privileged deletion is attempted. Other non-ignored untracked work is quarantined then
+cleaned under the existing read-only contract; legacy decision markers remain
+preserved. New cockpit hide-markers live beside `CONSOLE_SESSION_DB` in
+`gate-markers/<slug>/`, outside mirrors; Mac decision delivery still uses GitHub.
+Maintenance Python disables bytecode, including explicit `-B` alongside `-I`.
+
 ### Items with enabled timers but disabled at unit-file level — NOT actually anomalous
 
 `bubble-restic-backup.service` shows `disabled` while `bubble-restic-backup.timer` shows `enabled` (and is actively firing — last run 3h20min ago at audit start). This is normal systemd behavior: a `.service` with no standalone `[Install]` shows `disabled` for direct `systemctl start`, but runs fine when its `.timer` is enabled and fires it. **Not a finding, no action needed** — noting it so it isn't mistaken for a gap on a future pass.

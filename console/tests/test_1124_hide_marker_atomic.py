@@ -6,7 +6,7 @@ from console.services import github_reader as reader
 
 def test_hide_marker_keeps_prior_complete_record_until_replace(tmp_path, monkeypatch):
     monkeypatch.setattr(reader, 'repo_path', lambda slug: tmp_path)
-    dest = tmp_path / 'inbox/decisions/synthetic.yaml'
+    dest = reader._local_hide_marker_dir('content') / 'synthetic.yaml'
     dest.parent.mkdir(parents=True)
     dest.write_text('decision: prior\n')
     calls = []
@@ -28,7 +28,7 @@ def test_hide_marker_keeps_prior_complete_record_until_replace(tmp_path, monkeyp
 
 def test_failed_hide_marker_replace_preserves_old_record_and_cleans_temp(tmp_path, monkeypatch):
     monkeypatch.setattr(reader, 'repo_path', lambda slug: tmp_path)
-    dest = tmp_path / 'inbox/decisions/synthetic.yaml'
+    dest = reader._local_hide_marker_dir('content') / 'synthetic.yaml'
     dest.parent.mkdir(parents=True)
     dest.write_text('decision: prior\n')
 
