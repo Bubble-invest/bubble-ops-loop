@@ -19,7 +19,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/agent-%i/.local/state/idle-compact
-# tmux's own-user socket is in /tmp/tmux-UID. PrivateTmp would hide it.
+# Connecting to the own-user dtach socket needs no filesystem write permission.
+# Keep /run visible (ProtectSystem=strict makes it read-only, not inaccessible).
+ReadOnlyPaths=-/run/bubble-agent-%i
+# Keep compatibility with existing own-user tmux configurations.
 PrivateTmp=false
 RestrictSUIDSGID=true
 ProtectKernelTunables=true
