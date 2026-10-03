@@ -74,6 +74,7 @@ def test_morty_own_actual_cost_precedes_estimate_and_no_cache_bill_invented(proj
     assert bucket['tokens'] == 190  # reasoning subset excluded
     assert bucket['tokens_by_class']['reasoning'] == 10
     assert bucket['cost'] == bucket['cost_usd_estimate'] == 0.75
+    assert bucket['cost_usd_estimate_priced_only'] == 0.75
     assert bucket['cache_cost'] is None
     assert bucket['runs'] == 1
     assert rep['agents']['morty']['week']['tokens'] == 190
@@ -83,7 +84,10 @@ def test_morty_own_actual_cost_precedes_estimate_and_no_cache_bill_invented(proj
 @pytest.mark.parametrize('value', [0.0, 0.123])
 def test_hermes_estimate_and_valid_zero_cost(projects, value):
     hermes_export(projects, hermes_row(estimated_cost_usd=value))
-    assert tracker.fleet_summary('2026-10-03')['agents']['morty']['cost_usd_estimate'] == value
+    summary = tracker.fleet_summary('2026-10-03')
+    assert summary['agents']['morty']['cost_usd_estimate'] == value
+    assert summary['agents']['morty']['cost_usd_estimate_priced_only'] == value
+    assert summary['totals']['cost_usd_estimate_priced_only'] == value
 
 
 def test_hermes_matched_model_uses_existing_prices(projects):
@@ -103,6 +107,96 @@ def test_unpriced_hermes_propagates_null_to_fleet_total(projects):
     assert summary['totals']['cost_usd_estimate'] is None
     assert summary['totals']['tokens'] == 380
     assert any('Unpriced Hermes' in n for n in summary['notes'])
+    assert summary['agents']['morty']['cost_usd_estimate_priced_only'] == 0.0
+    assert summary['totals']['cost_usd_estimate_priced_only'] == summary['agents']['ellie']['cost_usd_estimate']
+    assert any('missing costs for agents: morty.' in n for n in summary['notes'])
+
+
+@pytest.mark.parametrize('usage', [None, {}, {'input_tokens': 0, 'output_tokens': 0},
+                                  {'input_tokens': 1000, 'output_tokens': 2000,
+                                   'cache_read_input_tokens': 3000,
+                                   'cache_creation_input_tokens': 4000, 'reasoning_tokens': 5000}])
+def test_synthetic_records_ignored_entirely(projects, usage):
+    path = projects / '_vps-accountant/work/s.jsonl'
+    priced = message()
+    write_lines(path, priced)
+    baseline = tracker.fleet_summary('2026-10-03', refresh=True)
+    synthetic = message(ts=None, mid='local-notice', session='local-only')
+    synthetic['message']['model'] = '<synthetic>'
+    if usage is None:
+        synthetic['message'].pop('usage')
+    else:
+        synthetic['message']['usage'] = usage
+    write_lines(path, synthetic, priced)
+    assert tracker.fleet_summary('2026-10-03', refresh=True) == baseline
+    parsed = tracker.parse_session(path)
+    assert parsed['n_turns'] == 1
+    assert '<synthetic>' not in parsed['model_usage']
+
+
+def test_synthetic_records_in_old_parse_cache_ignored(projects):
+    path = projects / '_vps-miranda/work/s.jsonl'
+    write_lines(path, message())
+    baseline = tracker.fleet_summary('2026-10-03', refresh=True)
+    cache = json.loads(tracker.CACHE_FILE.read_text())
+    # A pre-fix cache can contain synthetic records, even with a shared ID.
+    synthetic = {**cache[str(path)]['records'][0], 'model': '<synthetic>',
+                 'usage': dict.fromkeys(tracker.TOKEN_CLASSES, 1000)}
+    cache[str(path)]['records'].insert(0, synthetic)
+    cache[str(path)]['version'] = 2
+    tracker.CACHE_FILE.write_text(json.dumps(cache))
+    assert tracker.fleet_summary('2026-10-03', refresh=False) == baseline
+    assert json.loads(tracker.CACHE_FILE.read_text())[str(path)]['version'] == 3
+
+
+@pytest.mark.parametrize('source', ['claude', 'hermes'])
+def test_zero_token_unknown_model_ignored_for_pricing(projects, source):
+    if source == 'claude':
+        row = message()
+        row['message'].update(model='future-unpriced', usage={})
+        write_lines(projects / '_vps-ben/work/s.jsonl', row)
+    else:
+        hermes_export(projects, hermes_row(model='future-unpriced', input_tokens=0,
+                      output_tokens=0, cache_read_tokens=0, cache_write_tokens=0,
+                      reasoning_tokens=0), slug='ben')
+    summary = tracker.fleet_summary('2026-10-03', refresh=True)
+    for bucket in (summary['agents']['ben'], summary['totals']):
+        assert bucket['tokens'] == 0
+        assert bucket['cost_usd_estimate'] == 0.0
+        assert bucket['cost_usd_estimate_priced_only'] == 0.0
+        assert bucket['cache_cost'] == 0.0
+    assert not any('Unpriced' in n or 'missing costs' in n for n in summary['notes'])
+
+
+@pytest.mark.parametrize('source', ['claude', 'hermes'])
+@pytest.mark.parametrize('token_class', tracker.TOKEN_CLASSES)
+def test_unknown_model_with_tokens_keeps_priced_lower_bound(projects, source, token_class):
+    known = message()
+    known['message']['usage'] = {'input_tokens': 1_000_000,
+                                'cache_read_input_tokens': 1_000_000}
+    other = message(mid='other-agent')
+    other['message'].update(model='claude-haiku-4-5', usage={'input_tokens': 1_000_000})
+    write_lines(projects / '_vps-ellie/work/s.jsonl', other)
+    write_lines(projects / '_vps-ben/work/s.jsonl', known)
+    claude_keys = dict(zip(tracker.TOKEN_CLASSES, ('input_tokens', 'output_tokens',
+                       'cache_read_input_tokens', 'cache_creation_input_tokens', 'reasoning_tokens')))
+    if source == 'claude':
+        unknown = message(mid='unknown')
+        unknown['message'].update(model='future-unpriced', usage={claude_keys[token_class]: 10})
+        write_lines(projects / '_vps-ben/work/s.jsonl', known, unknown)
+    else:
+        hermes_keys = {**claude_keys, 'cache_read': 'cache_read_tokens', 'cache_create': 'cache_write_tokens'}
+        usage = dict.fromkeys(hermes_keys.values(), 0)
+        usage[hermes_keys[token_class]] = 10
+        hermes_export(projects, hermes_row(model='future-unpriced', **usage), slug='ben')
+    summary = tracker.fleet_summary('2026-10-03', refresh=True)
+    assert summary['agents']['ben']['cost_usd_estimate'] is None
+    assert summary['totals']['cost_usd_estimate'] is None
+    assert summary['agents']['ben']['cost_usd_estimate_priced_only'] == 3.3
+    assert summary['totals']['cost_usd_estimate_priced_only'] == 4.3
+    assert summary['agents']['ben']['tokens_by_class'][token_class] >= 10
+    assert any(f'Unpriced {source.title()} model for ben: future-unpriced;' in n for n in summary['notes'])
+    assert any('missing costs for agents: ben.' in n for n in summary['notes'])
 
 
 @pytest.mark.parametrize('contents', [None, 'broken json', '[]', '{"rows":{}}', '{"rows":[null,3,{}]}'])
@@ -216,7 +310,8 @@ def test_summary_fields_expected_agents_and_no_content(projects):
     assert summary['expected_agents_without_data'] == ['ellie']
     assert summary['agents']['claudette']['source'] == 'claude'
     assert set(summary['agents']['claudette']) == {
-        'tokens', 'tokens_by_class', 'cost_usd_estimate', 'cache_cost', 'runs', 'source'}
+        'tokens', 'tokens_by_class', 'cost_usd_estimate', 'cost_usd_estimate_priced_only',
+        'cache_cost', 'runs', 'source'}
     assert summary['totals']['tokens'] == 190
     assert 'private session text' not in json.dumps(summary)
     assert 'session-1' not in json.dumps(summary)

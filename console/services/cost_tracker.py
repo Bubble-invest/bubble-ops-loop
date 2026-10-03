@@ -332,6 +332,9 @@ def parse_session(
                         )[:2000]
                 if d.get("type") != "assistant" or not isinstance(msg.get("usage"), dict):
                     continue
+                if msg.get("model") == "<synthetic>":
+                    # Local notices/errors are never billable API usage.
+                    continue
                 message_id = msg.get("id")
                 # Message IDs identify API calls; UUIDs identify transcript entries.
                 # IDs remain stable even when resumed copies omit request metadata.
@@ -504,7 +507,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
     def blank_bucket():
         return {"cost": 0.0, "cache_cost": 0.0, "tokens": 0, "runs": 0,
                 "by_model": {}, "tokens_by_class": dict.fromkeys(TOKEN_CLASSES, 0),
-                "cost_usd_estimate": 0.0}
+                "cost_usd_estimate": 0.0, "cost_usd_estimate_priced_only": 0.0}
 
     def blank():
         return {span: blank_bucket() for span in spans}
@@ -556,12 +559,15 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
                 key = str(path)
                 cached = cache.get(key)
                 fingerprint = [stat.st_mtime_ns, stat.st_size]
-                parsed = cached if isinstance(cached, dict) and cached.get("version") == 2 and cached.get("fingerprint") == fingerprint else parse_session(path, record_unreadable)
+                parsed = cached if isinstance(cached, dict) and cached.get("version") == 3 and cached.get("fingerprint") == fingerprint else parse_session(path, record_unreadable)
                 if parsed is None:
                     continue
-                new_cache[key] = {**parsed, "version": 2, "fingerprint": fingerprint}
+                new_cache[key] = {**parsed, "version": 3, "fingerprint": fingerprint}
                 resolved = _detect_job(parsed["first_user_text"]) if label == "_p_crons" else label
                 for rec in parsed["records"]:
+                    # Also ignore synthetic entries from existing parse caches.
+                    if rec["model"] == "<synthetic>":
+                        continue
                     rec = {**rec, "usage": dict(rec["usage"]), "label": resolved}
                     # Global identity prevents resumed/compacted copies billing twice,
                     # even if copied into a different agent's workspace.
@@ -574,6 +580,8 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
               for rec in records.values() if rec["source"] == "hermes"}
     run_sets = {}
     for rec in records.values():
+        if rec["model"] == "<synthetic>":
+            continue
         dt = _timestamp(rec["timestamp"])
         if dt is None:
             notes.add("Usage without a valid timezone-aware timestamp was excluded; file mtime is never a day fallback.")
@@ -599,6 +607,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
         cache_cost = split["cache"]
         headline = split["real"]
         known_model = any(key in model.lower() for key in pricing)
+        has_tokens = any(usage.get(key, 0) > 0 for key in TOKEN_CLASSES)
         if rec["source"] == "hermes":
             own_cost = rec.get("session_bill_usd", rec.get("actual_cost_usd"))
             if own_cost is None:
@@ -606,10 +615,10 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
             if own_cost is not None:
                 total_cost = headline = own_cost
                 cache_cost = None  # Hermes costs have no separate cache-dollar split.
-            elif not known_model:
+            elif not known_model and has_tokens:
                 total_cost = headline = cache_cost = None
                 notes.add(f"Unpriced Hermes model for {label}: {model}; cost is null.")
-        elif not known_model:
+        elif not known_model and has_tokens:
             # Preserve cockpit's legacy zero headline, but summary must not imply free.
             total_cost = None
             notes.add(f"Unpriced Claude model for {label}: {model}; summary cost is null.")
@@ -617,13 +626,14 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
             b = ag[span]
             for field, amount in (("cost", headline), ("cache_cost", cache_cost), ("cost_usd_estimate", total_cost)):
                 b[field] = None if b[field] is None or amount is None else b[field] + amount
+            b["cost_usd_estimate_priced_only"] += total_cost if total_cost is not None else 0.0
             b["tokens"] += _token_total(usage)
             for name in TOKEN_CLASSES:
                 b["tokens_by_class"][name] += usage[name]
             sessions = run_sets.setdefault((label, span), set())
             sessions.add((rec["source"], str(rec["session_id"])))
             b["runs"] = len(sessions)
-            if "synthetic" not in model and _token_total(usage):
+            if _token_total(usage):
                 short = next((m for m in ("opus", "sonnet", "haiku") if m in model), model)
                 bm = b["by_model"].setdefault(short, {"tokens": 0, "cost": 0.0})
                 bm["tokens"] += _token_total(usage)
@@ -634,7 +644,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
         ag["sources"].sort()
         for span in spans:
             b = ag[span]
-            for key in ("cost", "cache_cost", "cost_usd_estimate"):
+            for key in ("cost", "cache_cost", "cost_usd_estimate", "cost_usd_estimate_priced_only"):
                 b[key] = round(b[key], 4) if b[key] is not None else None
                 t = totals[span]
                 t[key] = None if t[key] is None or b[key] is None else t[key] + b[key]
@@ -646,7 +656,7 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
                 if bm["cost"] is not None:
                     bm["cost"] = round(bm["cost"], 4)
     for span in spans:
-        for key in ("cost", "cache_cost", "cost_usd_estimate"):
+        for key in ("cost", "cache_cost", "cost_usd_estimate", "cost_usd_estimate_priced_only"):
             if totals[span][key] is not None:
                 totals[span][key] = round(totals[span][key], 4)
     out = {"scanned_at": now.isoformat(), "today_date": today.isoformat(),
@@ -664,11 +674,14 @@ def _build_report_uncached(refresh: bool = False, day: Optional[str] = None) -> 
 def fleet_summary(day: str, refresh: bool = False) -> dict:
     report = build_report(refresh=refresh, day=day)
     def row(bucket):
-        return {key: bucket[key] for key in ("tokens", "tokens_by_class", "cost_usd_estimate", "cache_cost", "runs")}
+        return {key: bucket[key] for key in ("tokens", "tokens_by_class", "cost_usd_estimate", "cost_usd_estimate_priced_only", "cache_cost", "runs")}
     agents = {name: {**row(ag["day"]), "source": ag["sources"][0] if len(ag["sources"]) == 1 else ag["sources"]}
               for name, ag in report["agents"].items()}
     expected = sorted(name for name, ag in report["agents"].items() if ag["week"]["runs"])
     notes = list(report["notes"])
+    missing_costs = sorted(name for name, ag in agents.items() if ag["cost_usd_estimate"] is None)
+    if missing_costs:
+        notes.append(f"Fleet cost is null; missing costs for agents: {', '.join(missing_costs)}. cost_usd_estimate_priced_only is a lower bound.")
     if report["unreadable_transcripts"]:
         notes.append(f"{report['unreadable_transcripts']} unreadable transcript paths skipped; totals may be incomplete.")
     if report.get("note"):
