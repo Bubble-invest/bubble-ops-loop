@@ -378,8 +378,8 @@ def test_state_carries_collector_verdict_and_prompt_defaults_to_ok():
 
 @pytest.fixture
 def weekend_nav_evidence():
-    # Shape and values of evidence_20261003T000126Z.json. Contrary to the
-    # initial hypothesis, the console's is_stale was True after midnight.
+    # Shape and values of evidence_20261003T000126Z.json (is_stale was True
+    # after midnight while the collector still judged the NAV consistent).
     return {"run_at": "2026-10-03T00:01:26Z", "pages": {
         "dept_ben_portfolio": {
             "path": "/dept/ben/portfolio",
@@ -436,6 +436,26 @@ def test_weekend_nav_sends_collector_freshness_not_ui_stale(
     assert result[0]["combined"]["final"] == "ok"
     assert result[0]["outcome"]["action"] == "none"
     assert weekend_nav_evidence == before  # Full collected evidence stays intact.
+
+
+@pytest.mark.parametrize("as_of", [None, "", "not-a-date", "2999-01-01"])
+def test_unassessed_as_of_gets_no_freshness_conclusion(
+        weekend_nav_evidence, as_of, tmp_path):
+    """check_nav_freshness skips its age test on a missing/malformed as_of
+    and accepts a future one, so the judge must not vouch for freshness:
+    Jev keeps the raw observed block (is_stale included)."""
+    check = weekend_nav_evidence["pages"]["dept_ben_portfolio"]["checks"][0]
+    check["observed"]["canonical_nav"]["as_of"] = as_of
+
+    def call(state, questions):
+        sent = state["checks"][0]
+        assert "collector_conclusions" not in sent
+        assert sent["observed"] == check["observed"]
+        return _stub("ok", {"ok": 1.0})(state, questions)
+
+    judge.judge_evidence(
+        weekend_nav_evidence, call, shadow=True,
+        emit_script=Path("/nope.sh"), shadow_log_path=tmp_path / "shadow.jsonl")
 
 
 @pytest.mark.parametrize("failure", ["stale_nav", "snapshot_mismatch"])

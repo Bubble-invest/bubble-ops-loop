@@ -127,6 +127,15 @@ def build_jev_caller(backend: str = "openrouter") -> JevCaller:
     return _call
 
 
+def _is_assessed_as_of(value: Any) -> bool:
+    """True when `value` is an ISO date that is not in the future (UTC)."""
+    try:
+        parsed = datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    return parsed <= datetime.now(timezone.utc).date()
+
+
 def jev_verdict_for_page(page_id: str, page_evidence: Dict[str, Any],
                           call_jev: JevCaller) -> Dict[str, Any]:
     """Normalizes one Jev call into {"verdict","confidence","reason"}. NEVER
@@ -164,7 +173,10 @@ def jev_verdict_for_page(page_id: str, page_evidence: Dict[str, Any],
                 and check.get("error") is None):
             observed = check.get("observed") or {}
             canonical = observed.get("canonical_nav")
-            if isinstance(canonical, dict):
+            # Only vouch for freshness the collector actually assessed:
+            # check_nav_freshness skips its age test on a missing/malformed
+            # as_of and does not reject a future one, so those stay raw.
+            if isinstance(canonical, dict) and _is_assessed_as_of(canonical.get("as_of")):
                 # #1684: the console's is_stale means "before today", whereas
                 # check_nav_freshness applies its own age tolerance. Sending
                 # that UI flag made Jev contradict an accepted Friday NAV on
