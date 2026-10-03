@@ -8,6 +8,7 @@ description: >-
   middle and the validated outputs on the right. Use whenever Joris wants to
   "meet", "open the room", "get everyone around the table on <BU/project>", when
   you receive a "MEETING POLL" / "meeting mode" / "join the room" instruction,
+  at every layer-1 run to read your rooms and answer messages addressed to you,
   when you must post a decision for Joris to validate or an output to review in a
   room, or when a new business unit needs its own room.
 ---
@@ -79,9 +80,45 @@ Nothing wakes an agent on a database write, so during a meeting each member poll
 Cost: every poll is a model turn over your whole (cached) context, whether or not
 you are tagged. Keep meetings bounded and never leave a poll running afterwards.
 
+## Every layer-1 run: room check
+
+At every layer-1 run, including outside live meetings:
+
+1. Your key is your dept slug key as used in `skills/meeting-room/rooms.yaml`
+   `members` / `chair`. Check each room listing you as a member or chair once,
+   even if you are listed in both roles.
+2. Read `state/meeting-room-seen.json` in your dept directory. Its format is
+   `{"<room url>": "<ISO ts of the newest message handled>"}`. A missing file or
+   room entry means **7 days ago**, computed from the real clock; do not replay
+   the whole history.
+3. Make one `ArtifactData` `query` per room on `messages`, filtering `ts >`
+   that room's watermark. Never `list` the whole collection. Handle messages
+   from oldest to newest. Answer only messages not authored by you whose `to`
+   contains your key or `all`, or whose text contains `@<your key>` / `@all`.
+   Write one reply per message, signed `— Name`, using the real-clock `ts` and
+   `m-<UTC yyyymmddThhmmss>-<author>` doc_id rules above. Also re-read your own
+   pending `decisions` and act on those that moved to `done`, respecting the
+   normal approval gates.
+4. After handling, write the newest message `ts` seen to that room's watermark,
+   even when nothing was addressed to you. With no new messages, retain the
+   watermark (or the initial 7-days-ago value). Do not advance it past work you
+   could not handle.
+5. Nothing for you: post no message in the room; write one line in the run
+   output: `rooms: N read, 0 for me`.
+6. If the skill / registry or `ArtifactData` tool is unavailable, or access to
+   a room is refused, write one line in the run output naming the affected room
+   (or the unavailable skill / registry if rooms cannot be identified) and the
+   failure, then continue. Keep that room's watermark unchanged. Include the
+   failure in the layer-4 export notes so the operator sees it; never skip
+   silently.
+
+Cost: one messages query per room per layer-1 run, plus checks of your pending
+decisions; no cron for this check.
+
 ## Outside meetings
 
-Rooms are also the BU's standing board. Without polling, at your normal loop:
+Rooms are also the BU's standing board. Read them at every layer-1 run using
+the room check above; no meeting poll cron is needed. At your normal loop:
 post a real output to `outputs` when a BU mission produces one, and a decision to
 `decisions` when you need Joris's call on BU matters. Joris sees them next time he
 opens the room.

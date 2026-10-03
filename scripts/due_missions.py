@@ -32,6 +32,18 @@ except ImportError as _exc:  # pragma: no cover - depends on the host's interpre
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+# Fixed, fleet-wide generated text; wake prompts inherit it from the tick
+# envelope. Only the resolved plan decides whether this layer-1 step is due.
+ROOM_CHECK_CLAUSE = (
+    ' ROOM CHECK (part of this layer-1 run): follow the "Every layer-1 run: room check" '
+    "section of the meeting-room skill (skills/meeting-room/SKILL.md; registry "
+    "skills/meeting-room/rooms.yaml): for each room listing you as member or chair, "
+    "read the messages newer than your last read, answer those addressed to you or "
+    "to @all, and record the new watermark. If the skill or the ArtifactData tool "
+    "is unavailable, or a room refuses access, say so in this run's output and "
+    "continue; never skip silently."
+)
+
 
 def _require_yaml() -> None:
     """Raise a clear, actionable DueMissionConfigError if `yaml` failed to
@@ -174,6 +186,7 @@ def _prompt(plan: list[dict], dept_dir: Path, dept_label: str = "Rick's") -> str
         "is in flight; it is not success, and an uncompleted mission retries after lease expiry. "
         + " | ".join(commands)
         + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
+        + (ROOM_CHECK_CLAUSE if any(1 in item["layers"] for item in plan) else "")
     )
 
 
@@ -861,6 +874,7 @@ def _prompt_recurring(plan: list[dict], dept_dir: Path, dept_label: str = "the d
         "never self-merge mission/mandate/loop/agent-def changes. "
         + " | ".join(commands)
         + " | Then write the normal heartbeat and arm only the existing normal self-paced next wake."
+        + (ROOM_CHECK_CLAUSE if any(item["layer"] == 1 for item in plan) else "")
     )
 
 
