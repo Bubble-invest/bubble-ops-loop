@@ -71,11 +71,87 @@ class FleetSafetyTests(unittest.TestCase):
 
     def test_only_one_exact_claude_pane(self):
         original = self.runner
-        for panes in ('%1 claude\n%2 claude\n', '%1 hermes\n', '%1 bash\n', ''):
+        for panes in ('%1 claude\n%2 claude\n', '%1 hermes\n', '%1 bash\n'):
             def runner(args):
                 return panes if args[1] == 'list-panes' else original(args)
             self.assertEqual(compact.check(self.config, runner=runner, clock=lambda: NOW), ('SKIP', 'no_dedicated_claude_pane'))
         self.assertEqual(original.sends, [])
+
+    def test_claude_command_and_live_version_strings_require_model_and_gauge(self):
+        original = self.runner
+        for command in ('claude', '2.1.288', '2.1.283'):
+            def runner(args):
+                return '%1 ' + command + '\n' if args[1] == 'list-panes' else original(args)
+            self.assertEqual(compact.check(self.config, runner=runner, clock=lambda: NOW)[0], 'COMPACT_SENT')
+            self.config.state.unlink()
+        original.calls.clear()
+        for command in ('zsh', 'bash', 'sh', 'login', 'python', 'vim', 'ssh', 'node', '2.1', '2.1.288-beta', 'hermes'):
+            def runner(args):
+                return '%1 ' + command + '\n' if args[1] == 'list-panes' else original(args)
+            self.assertEqual(compact.check(self.config, runner=runner, clock=lambda: NOW), ('SKIP', 'no_dedicated_claude_pane'))
+        self.assertEqual(original.sends, [])
+        for footer in ('x | ctx 54% left', 'repo | Opus 5.5', '⏵⏵ bypass permissions on'):
+            original.pane = 'Done.\n────────────────\n❯ \n────────────────\n' + footer
+            def runner(args):
+                return '%1 2.1.288\n' if args[1] == 'list-panes' else original(args)
+            self.assertEqual(compact.check(self.config, runner=runner, clock=lambda: NOW), ('SKIP', 'unrecognized_pane_footer'))
+
+    def test_no_tmux_session_has_explicit_content_free_log(self):
+        for error in ("can't find session: private", 'no server running on /private/socket',
+                      'error connecting to /private/socket (No such file or directory)'):
+            def runner(args):
+                raise subprocess.CalledProcessError(1, args, stderr=error)
+            self.assertEqual(compact.check(self.config, runner=runner, clock=lambda: NOW), ('SKIP', 'no_tmux_session'))
+            self.assertIn('decision=SKIP reason=no_tmux_session', self.config.log.read_text())
+            self.assertNotIn('private', self.config.log.read_text())
+        self.assertEqual(compact.check(self.config, runner=lambda args: '', clock=lambda: NOW), ('SKIP', 'no_tmux_session'))
+
+    def test_generated_wakes_custom_patterns_and_real_humans(self):
+        self.config.machine_wake_patterns = [r'^FLEET HEARTBEAT\b']
+        for text in ("Resume Jean-Luc's OODA loop", "Resume Élodie's OODA loop", 'DUE_MISSIONS=[]',
+                     'MEETING POLL: room', '[session-rotate, automated maintenance - not a human message] handoff',
+                     '<task-notification>done</task-notification>', '<channel source="bubble-inject">wake</channel>',
+                     'FLEET HEARTBEAT: wake'):
+            row = self.user(text, age=15000)  # Meeting gate has expired; still machine text.
+            self.assertFalse(compact.human_text(row, self.config.machine_wake_patterns))
+            self.entries = [row, self.assistant()]
+            self.save()
+            self.assertEqual(self.check()[0], 'COMPACT_SENT')
+            self.config.state.unlink()
+        self.runner.calls.clear()
+        self.entries = [self.user([{'type': 'text', 'text': '<task-notification>done'},
+                                  {'type': 'text', 'text': 'Please help with this'}]), self.assistant()]
+        self.save()
+        self.assert_skip('human_recent')
+        # Human ledger activity is authoritative, even if it quotes a generated prompt.
+        self.entries = [self.user("Resume Rick's OODA loop"), self.assistant()]
+        self.ledger_rows.append({'ts': compact.iso(NOW - 30), 'user_id': '6532205130'})
+        self.save()
+        self.assert_skip('human_recent')
+
+    def test_invalid_wake_configuration_fails_closed(self):
+        for patterns in ('wake', ['('], [''], ['.*'], [None]):
+            self.config.machine_wake_patterns = patterns
+            self.assert_skip('invalid_machine_wake_patterns')
+
+    def test_split_channel_envelopes_and_outside_human_text(self):
+        parts = [{'type': 'text', 'text': '<channel source="bubble-inject">'},
+                 {'type': 'text', 'text': 'machine wake</channel>'}]
+        self.assertFalse(compact.human_text(self.user(parts)))
+        parts += [{'type': 'text', 'text': 'Please help with this'}]
+        self.assertTrue(compact.human_text(self.user(parts)))
+
+    def test_wake_patterns_load_from_agent_config_file(self):
+        path = self.transcripts / 'config.json'
+        runtime = dict(tmux_session=self.config.tmux_session, transcript_dir=str(self.transcripts),
+                       ledger=str(self.config.ledger), state=str(self.config.state), log=str(self.config.log),
+                       machine_wake_patterns=[r'^CUSTOM WAKE\b'])
+        path.write_text(json.dumps({'runtime': runtime}))
+        with patch.object(sys, 'argv', ['idle_compact.py', '--config', str(path)]), patch.object(compact, 'check') as check:
+            compact.main()
+        config = check.call_args.args[0]
+        self.assertFalse(compact.human_text(self.user('CUSTOM WAKE: tick'), config.machine_wake_patterns))
+        self.assertTrue(compact.human_text(self.user('Please help'), config.machine_wake_patterns))
 
     def test_tmux_binary_override_and_exact_session_lookup(self):
         self.config.tmux_bin = '/custom/bin/tmux'
@@ -159,6 +235,8 @@ class HostCommands:
                     self.active.add(unit)
             elif verb == 'disable':
                 self.enabled.discard(unit)
+                if '--now' in args:
+                    self.active.discard(unit)
             elif verb == 'start':
                 self.active.add(unit)
             elif verb == 'stop':
@@ -230,6 +308,52 @@ class InstallerTests(unittest.TestCase):
             installer.install_mac(self.args)
         self.assertTrue(self.cmd.loaded)
         self.assertEqual(previous, {path: path.read_bytes() for path in files})
+
+    def test_mac_restore_failure_still_rebootstraps_and_reports_both_errors(self):
+        installer.install_mac(self.args)
+        self.args.tmux_session = 'changed'
+        self.cmd.fail = lambda args: args[:2] == ('launchctl', 'bootstrap')
+        self.cmd.fail_once = True
+        with patch.object(installer, 'restore', side_effect=OSError('private payload')):
+            with self.assertRaises(installer.RollbackFailure) as caught:
+                installer.install_mac(self.args)
+        self.assertTrue(self.cmd.loaded)
+        self.assertIn('original=CalledProcessError', str(caught.exception))
+        self.assertIn('restore:OSError', str(caught.exception))
+        self.assertNotIn('private payload', str(caught.exception))
+
+    def test_mac_restore_and_rebootstrap_failures_are_both_reported(self):
+        installer.install_mac(self.args)
+        self.args.tmux_session = 'changed'
+        self.cmd.fail = lambda args: args[:2] == ('launchctl', 'bootstrap')
+        with patch.object(installer, 'restore', side_effect=OSError()):
+            with self.assertRaises(installer.RollbackFailure) as caught:
+                installer.install_mac(self.args)
+        self.assertIn('restore:OSError,rebootstrap:CalledProcessError', str(caught.exception))
+        self.assertEqual(sum(call[:2] == ('launchctl', 'bootstrap') for call in self.cmd.calls), 3)
+
+    def test_mac_uninstall_retains_state_logs_and_is_idempotent(self):
+        installer.install_mac(self.args)
+        config = json.loads(self.mac_files()[1].read_text())['runtime']
+        retained = [Path(config[key]) for key in ('state', 'log')]
+        for path in retained:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('retained')
+        self.args.config_dir = self.mac_files()[1].parent
+        installer.uninstall_mac(self.args)
+        self.assertFalse(self.cmd.loaded)
+        self.assertTrue(all(not p.exists() for p in self.mac_files()))
+        self.assertTrue(all(p.read_text() == 'retained' for p in retained))
+        installer.uninstall_mac(self.args)
+
+    def test_mac_reinstall_preserves_custom_wake_patterns(self):
+        installer.install_mac(self.args)
+        config = self.mac_files()[1]
+        data = json.loads(config.read_text())
+        data['runtime']['machine_wake_patterns'] = ['^CUSTOM WAKE']
+        config.write_text(json.dumps(data))
+        installer.install_mac(self.args)
+        self.assertEqual(json.loads(config.read_text())['runtime']['machine_wake_patterns'], ['^CUSTOM WAKE'])
 
     def test_mac_first_install_failure_removes_new_files(self):
         self.cmd.fail = lambda args: args[:2] == ('launchctl', 'bootstrap')
@@ -310,6 +434,9 @@ class InstallerTests(unittest.TestCase):
         patches.append(patch.object(installer, 'restore', lambda saved: old_restore({mapped(p): v for p, v in saved.items()})))
         old_mkdir = Path.mkdir
         patches.append(patch.object(Path, 'mkdir', lambda p, *a, **kw: old_mkdir(mapped(p), *a, **kw)))
+        old_unlink, old_glob = Path.unlink, Path.glob
+        patches.append(patch.object(Path, 'unlink', lambda p, *a, **kw: old_unlink(mapped(p), *a, **kw)))
+        patches.append(patch.object(Path, 'glob', lambda p, *a, **kw: old_glob(mapped(p), *a, **kw)))
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -339,6 +466,57 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((mapped / 'etc/bubble-idle-compact/rnd.json').exists())
         self.assertNotIn('idle-compact@rnd.timer', self.cmd.enabled)
         self.assertIn(('systemctl', 'disable', 'idle-compact@rnd.timer'), self.cmd.calls)
+
+    def test_vps_restore_failure_still_attempts_reload_and_timer_recovery(self):
+        self.vps_setup()
+        installer.install_vps(self.args)
+        self.args.tmux_session = 'changed'
+        self.cmd.fail = lambda args: args[:2] == ('systemctl', 'daemon-reload')
+        with patch.object(installer, 'restore', side_effect=OSError()):
+            with self.assertRaises(installer.RollbackFailure) as caught:
+                installer.install_vps(self.args)
+        self.assertIn('restore:OSError,daemon_reload:CalledProcessError', str(caught.exception))
+        self.assertEqual(self.cmd.calls[-2:], [('systemctl', 'enable', 'idle-compact@rnd.timer'),
+                                             ('systemctl', 'start', 'idle-compact@rnd.timer')])
+
+    def test_vps_uninstall_removes_units_and_retains_state_and_logs(self):
+        mapped = self.vps_setup()
+        installer.install_vps(self.args)
+        # Production home is mapped by vps_setup; state/logs stay outside definition removal.
+        state = mapped / 'home/agent-rnd/.local/state/idle-compact/rnd.json'
+        log = state.with_suffix('.log')
+        for path in (state, log):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('retained')
+        installer.uninstall_vps(self.args)
+        self.assertFalse(self.cmd.enabled)
+        self.assertFalse(self.cmd.active)
+        self.assertFalse((mapped / 'etc/bubble-idle-compact/rnd.json').exists())
+        self.assertFalse((self.args.unit_dir / 'idle-compact@.service').exists())
+        self.assertFalse((self.args.unit_dir / 'idle-compact@.timer').exists())
+        self.assertTrue(all(path.read_text() == 'retained' for path in (state, log)))
+
+    def test_vps_uninstall_keeps_shared_units_for_other_agents(self):
+        mapped = self.vps_setup()
+        installer.install_vps(self.args)
+        (mapped / 'etc/bubble-idle-compact/maya.json').write_text('{}')
+        installer.uninstall_vps(self.args)
+        self.assertTrue((self.args.unit_dir / 'idle-compact@.timer').exists())
+        self.assertTrue((mapped / 'etc/bubble-idle-compact/maya.json').exists())
+
+    def test_vps_uninstall_all_includes_configs_and_skips_uninstalled_agents(self):
+        mapped = self.vps_setup()
+        installer.install_vps(self.args)
+        self.args.all = True
+        self.args.slug = None
+        old_iterdir, old_exists = Path.iterdir, Path.exists
+        with patch.object(Path, 'iterdir', lambda p: iter([SimpleNamespace(name='maya', is_dir=lambda: True)])
+                          if p == self.args.agents_root else old_iterdir(p)), \
+             patch.object(Path, 'exists', lambda p: True if p == self.args.agents_root else old_exists(p)):
+            installer.uninstall_vps(self.args)
+        self.assertFalse(self.cmd.enabled)
+        self.assertFalse((mapped / 'etc/bubble-idle-compact/rnd.json').exists())
+        self.assertIn('SKIP slug=maya reason=not_installed', self.output.getvalue())
 
     def test_vps_partial_enable_failure_restores_timer_state(self):
         self.vps_setup()

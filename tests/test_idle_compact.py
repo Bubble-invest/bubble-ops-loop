@@ -103,7 +103,7 @@ class PilotTests(unittest.TestCase):
         expected = [["tmux", "send-keys", "-t", "%1", "-l", "/compact"],
                     ["tmux", "send-keys", "-t", "%1", "Enter"]]
         self.assertEqual(self.runner.sends, expected)
-        self.assertEqual(self.check(), ("SKIP", "already_compacted_this_idle_period"))
+        self.assertEqual(self.check(), ("SKIP", "compact_cooldown"))
         self.assertEqual(self.runner.sends, expected)
         state = json.loads(self.config.state.read_text())
         self.assertEqual(state["human_activity_at"], pilot.iso(NOW - 7200))
@@ -253,8 +253,63 @@ class PilotTests(unittest.TestCase):
     def test_no_repeat_even_after_cooldown_with_large_context(self):
         self.assertEqual(self.check()[0], "COMPACT_SENT")
         self.now += 3600
-        self.assertEqual(self.check(), ("SKIP", "already_compacted_this_idle_period"))
+        self.assertEqual(self.check(), ("SKIP", "context_not_regrown_since_send"))
         self.assertEqual(len(self.runner.sends), 2)
+
+    def test_autonomous_regrowth_for_three_days_at_each_wake_cadence(self):
+        for cadence in (1800, 3600, 10800):
+            with self.subTest(cadence=cadence):
+                self.config.state.unlink(missing_ok=True)
+                self.runner.calls.clear()
+                self.now = NOW
+                self.entries = [self.assistant()]
+                self.save()
+                self.assertEqual(self.check()[0], "COMPACT_SENT")
+                last_send = self.now
+                expected_sends = 1
+                for elapsed in range(cadence, 3 * 86400 + 1, cadence):
+                    self.now = NOW + elapsed
+                    # A completed compact followed by an autonomous wake and new turn.
+                    self.entries += [
+                        {"type": "system", "subtype": "compact_boundary", "timestamp": pilot.iso(last_send + 1)},
+                        self.user("Resume Rick's OODA loop", age=-elapsed + 300),
+                        self.assistant(age=-elapsed + 180),
+                    ]
+                    self.save(mtime=self.now - 180)
+                    eligible = self.now - last_send >= self.config.idle_min * 60
+                    self.assertEqual(self.check()[0], "COMPACT_SENT" if eligible else "SKIP")
+                    if eligible:
+                        last_send = self.now
+                        expected_sends += 1
+                    # Another poll of the same quiet stretch never sends.
+                    self.assertEqual(self.check()[0], "SKIP")
+                    self.assertEqual(len(self.runner.sends), expected_sends * 2)
+                    self.assertEqual(json.loads(self.config.state.read_text())["human_activity_at"], pilot.iso(NOW - 7200))
+                # No new turn: even a day later and still high, there is no resend.
+                self.now += 86400
+                self.assertEqual(self.check(), ("SKIP", "context_not_regrown_since_send"))
+                self.assertEqual(len(self.runner.sends), expected_sends * 2)
+
+    def test_new_high_turn_without_reduction_does_not_repeat(self):
+        self.check()
+        self.now += 3600
+        self.entries += [self.assistant(tokens=230000, age=-3400)]
+        self.save(mtime=self.now - 180)
+        self.assertEqual(self.check(), ("SKIP", "context_not_regrown_since_send"))
+        self.assertEqual(len(self.runner.sends), 2)
+
+    def test_lower_usage_then_regrowth_without_boundary_allows_repeat(self):
+        self.check()
+        self.now += 3600
+        self.entries += [self.assistant(tokens=50000, age=-10), self.assistant(tokens=230000, age=-3400)]
+        self.save(mtime=self.now - 180)
+        self.assertEqual(self.check()[0], "COMPACT_SENT")
+        self.now += 3600
+        self.assertEqual(self.check(), ("SKIP", "context_not_regrown_since_send"))
+
+    def test_permissions_only_footer_cannot_prove_claude_repl(self):
+        self.runner.pane = "Done.\n────────────────\n❯ \n────────────────\n⏵⏵ bypass permissions on\n"
+        self.assert_skip("unrecognized_pane_footer")
 
     def test_cooldown_expiry_small_context_still_skips(self):
         self.check()
@@ -272,6 +327,10 @@ class PilotTests(unittest.TestCase):
         self.save()
         self.assert_skip("human_recent")
         self.now = NOW + 3660
+        self.assertEqual(self.check(), ("SKIP", "context_not_regrown_since_send"))
+        self.entries += [{"type": "system", "subtype": "compact_boundary", "timestamp": pilot.iso(NOW + 10)},
+                         self.assistant(age=-3400)]
+        self.save(mtime=self.now - 180)
         self.assertEqual(self.check()[0], "COMPACT_SENT")
 
     def test_missing_or_invalid_usage_does_not_reuse_old_assistant(self):
@@ -405,10 +464,11 @@ class PilotTests(unittest.TestCase):
                 self.assert_skip("unrecognized_pane_footer")
 
     def test_real_footer_variants_accepted(self):
-        # Real idle captures: status line blank, mode line without "(shift+tab to cycle)".
-        for footer in ("  ⏵⏵ bypass permissions on · 1 shell · ← for agents\n",
-                       "  repo | main | Opus 5.5 (1M context) | ctx 49% left | 5h 8% | 7d 18%\n"
-                       "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"):
+        # Both permission mode variants require the model/context status line.
+        for footer in ("  repo | main | Opus 5.5 (1M context) | ctx 49% left | 5h 8% | 7d 18%\n"
+                       "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n",
+                       "  repo | main | Sonnet 4.6 | ctx 49% left\n"
+                       "  ⏵⏵ bypass permissions on · 1 shell · ← for agents\n"):
             with self.subTest(footer=footer[:30]):
                 self.runner.pane = "Done.\n────────────────\n❯\u00a0\n────────────────\n          \n" + footer
                 self.assertEqual(self.check()[0], "COMPACT_SENT")

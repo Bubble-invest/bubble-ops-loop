@@ -14,6 +14,25 @@ from xml.sax.saxutils import escape
 from idle_compact import fleet_status
 
 
+class RollbackFailure(Exception):
+    """Content-free diagnostics retain the original and every rollback failure."""
+    def __init__(self, original_error, failures):
+        self.original_error, self.failures = original_error, failures
+        super().__init__("original=" + type(original_error).__name__ + " rollback=" +
+                         ",".join(stage + ":" + type(error).__name__ for stage, error in failures))
+
+
+def rollback(error, steps):
+    failures = []
+    for stage, action in steps:
+        try:
+            action()
+        except Exception as exc:
+            failures.append((stage, exc))
+    if failures:
+        raise RollbackFailure(error, failures) from error
+
+
 def command(*args, check=True):
     return subprocess.run(list(args), check=check, capture_output=True, text=True, timeout=30)
 
@@ -72,6 +91,7 @@ def configuration(args, slug, home, dept, config, unit, selector):
                    log=str(home / ("Library/Logs/idle-compact-" + slug + ".log") if args.platform == "mac"
                            else state_dir / (slug + ".log")),
                    idle_min=55, min_context=200000, quiet_sec=120, dry_run=args.dry_run,
+                   machine_wake_patterns=[],
                    tmux_bin=args.tmux_bin, meeting_marker=str(args.meeting_marker or dept / "state/meeting-poll.active"),
                    harness_selector=str(selector))
     service = "gui/{}/com.bubble.idle-compact-{}".format(os.getuid(), slug) if args.platform == "mac" else "idle-compact@" + slug + ".timer"
@@ -103,6 +123,9 @@ def install_mac(args):
         command("plutil", "-lint", candidate.name)
     loaded = command("launchctl", "print", data["service"], check=False).returncode == 0
     saved = original([plist, config])
+    if saved[config] is not None:
+        previous = json.loads(saved[config])
+        data["runtime"]["machine_wake_patterns"] = previous["runtime"].get("machine_wake_patterns", [])
     if loaded and saved[plist] is None:
         raise ValueError("loaded LaunchAgent has no restorable plist")
     if loaded and saved[plist] == rendered and saved[config] == encoded(data):
@@ -117,12 +140,21 @@ def install_mac(args):
         publish(plist, rendered)
         bootstrap_attempted = True
         command("launchctl", "bootstrap", "gui/" + str(os.getuid()), str(plist))
-    except Exception:
-        if bootstrap_attempted and command("launchctl", "print", data["service"], check=False).returncode == 0:
-            command("launchctl", "bootout", data["service"])
-        restore(saved)
-        if loaded and command("launchctl", "print", data["service"], check=False).returncode != 0:
-            command("launchctl", "bootstrap", "gui/" + str(os.getuid()), str(plist))
+    except Exception as error:
+        def unload_partial():
+            if bootstrap_attempted and command("launchctl", "print", data["service"], check=False).returncode == 0:
+                command("launchctl", "bootout", data["service"])
+        def reload_previous():
+            if loaded:
+                try:
+                    present = command("launchctl", "print", data["service"], check=False).returncode == 0
+                except Exception:
+                    command("launchctl", "bootstrap", "gui/" + str(os.getuid()), str(plist))
+                    raise
+                if not present:
+                    command("launchctl", "bootstrap", "gui/" + str(os.getuid()), str(plist))
+        rollback(error, [("bootout_partial", unload_partial), ("restore", lambda: restore(saved)),
+                         ("rebootstrap", reload_previous)])
         raise
     print("INSTALLED slug=" + slug)
 
@@ -194,22 +226,61 @@ def install_vps(args):
         for service, (enabled, active) in timers.items():
             if not enabled or not active:
                 command("systemctl", "enable", "--now", service)
-    except Exception:
+    except Exception as error:
         # Restore all definitions, then restore each timer's prior enabled/active state.
-        restore(saved)
-        command("systemctl", "daemon-reload")
+        steps = [("restore", lambda: restore(saved)), ("daemon_reload", lambda: command("systemctl", "daemon-reload"))]
         for service, (enabled, active) in timers.items():
-            if not active:
-                command("systemctl", "stop", service)
-            if not enabled:
-                command("systemctl", "disable", service)
-            if enabled:
-                command("systemctl", "enable", service)
-            if active:
-                command("systemctl", "start", service)
+            for verb, needed in (("stop", not active), ("disable", not enabled), ("enable", enabled), ("start", active)):
+                if needed:
+                    steps.append((verb + "_" + service, lambda verb=verb, service=service: command("systemctl", verb, service)))
+        rollback(error, steps)
         raise
     for data, _ in plans:
         print(("INSTALLED" if changed else "UNCHANGED") + " slug=" + data["slug"])
+
+
+def uninstall_mac(args):
+    if os.geteuid() == 0:
+        raise ValueError("run the Mac installer as the agent's login user")
+    plist = args.home / "Library/LaunchAgents" / ("com.bubble.idle-compact-" + args.slug + ".plist")
+    config = args.config_dir / (args.slug + ".json")
+    original([plist, config])  # Refuse symlinked removal destinations.
+    service = "gui/{}/com.bubble.idle-compact-{}".format(os.getuid(), args.slug)
+    if command("launchctl", "print", service, check=False).returncode == 0:
+        command("launchctl", "bootout", service)
+    plist.unlink(missing_ok=True)
+    config.unlink(missing_ok=True)
+    print("UNINSTALLED slug=" + args.slug + " state_and_logs=retained")
+
+
+def uninstall_vps(args):
+    if os.geteuid() != 0:
+        raise ValueError("run VPS installer as root")
+    if args.config_dir != Path("/etc/bubble-idle-compact"):
+        raise ValueError("VPS config directory is /etc/bubble-idle-compact")
+    slugs = [args.slug] if args.slug else sorted({p.stem for p in args.config_dir.glob("*.json")} |
+        ({p.name for p in args.agents_root.iterdir() if p.is_dir()} if args.agents_root.exists() else set()))
+    units = [args.unit_dir / name for name in ("idle-compact@.service", "idle-compact@.timer")]
+    configs = [args.config_dir / (slug + ".json") for slug in slugs]
+    for slug in slugs:
+        validate_slug(slug)
+    original([*units, *configs])
+    for slug, config in zip(slugs, configs):
+        timer = "idle-compact@" + slug + ".timer"
+        if not config.exists() and command("systemctl", "show", timer, "-p", "LoadState", "--value", check=False).stdout.strip() != "loaded":
+            print("SKIP slug=" + slug + " reason=not_installed")
+            continue
+        command("systemctl", "disable", "--now", timer)
+        service = "idle-compact@" + slug + ".service"
+        if command("systemctl", "is-active", service, check=False).returncode == 0:
+            command("systemctl", "stop", service)
+        config.unlink(missing_ok=True)
+        print("UNINSTALLED slug=" + slug + " state_and_logs=retained")
+    # These templates are shared: keep them while another configured agent uses them.
+    if not any(args.config_dir.glob("*.json")):
+        for unit in units:
+            unit.unlink(missing_ok=True)
+    command("systemctl", "daemon-reload")
 
 
 def validate_slug(slug):
@@ -223,6 +294,7 @@ def main():
     parser.add_argument("--slug")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--uninstall", action="store_true", help="disable checks and remove definitions; retain state/logs")
     parser.add_argument("--framework-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--home", type=Path, default=Path.home())
     for name in ("dept-dir", "transcript-dir", "ledger", "meeting-marker", "selector-dir", "config-dir"):
@@ -251,13 +323,17 @@ def main():
         parser.error("per-agent path/session overrides require --slug")
     if args.slug:
         validate_slug(args.slug)
-    if args.platform == "mac" and not (args.dept_dir and args.tmux_session):
+    if args.platform == "mac" and not args.uninstall and not (args.dept_dir and args.tmux_session):
         parser.error("Mac requires --dept-dir and --tmux-session")
     try:
-        (install_mac if args.platform == "mac" else install_vps)(args)
+        action = (uninstall_mac if args.platform == "mac" else uninstall_vps) if args.uninstall else (
+            install_mac if args.platform == "mac" else install_vps)
+        action(args)
+    except RollbackFailure as exc:
+        parser.exit(1, "idle-compact install failed: " + str(exc) + "\n")
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         # Do not print command output or payloads on failure.
-        parser.exit(1, "idle-compact install failed: " + type(exc).__name__ + " (previous definitions restored on transaction failure)\n")
+        parser.exit(1, "idle-compact operation failed: " + type(exc).__name__ + "\n")
 
 
 if __name__ == "__main__":

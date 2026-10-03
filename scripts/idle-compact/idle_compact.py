@@ -22,6 +22,10 @@ METADATA = {"mode", "permission-mode", "atis-latch", "last-prompt", "pr-link",
 # harness notices (seen in Rick's real transcript 2026-10-02) are not human activity.
 WRAPPERS = ("<channel", "<local-command", "<command-name", "<command-message",
             "<command-args", "<task-notification", "<system-reminder", "[SYSTEM NOTIFICATION")
+MACHINE_WAKE_PATTERNS = (
+    r"^Resume\s+.+?\s+OODA\s+loop\b", r"\bDUE_MISSIONS=",
+    r"\bMEETING POLL\b", r"^\[session-rotate,\s*automated maintenance\b",
+)
 
 
 class Unsafe(Exception):
@@ -44,9 +48,19 @@ class Config:
     tmux_bin: str = "tmux"
     meeting_marker: Path = None
     harness_selector: Path = None
+    machine_wake_patterns: tuple = ()  # Per-agent additions to built-in recognisers.
 
 
 def check_declarations(config, now):
+    if not isinstance(config.machine_wake_patterns, (list, tuple)):
+        raise Unsafe("invalid_machine_wake_patterns")
+    for pattern in config.machine_wake_patterns:
+        try:
+            if not isinstance(pattern, str) or not pattern.strip() or re.search(pattern, "", re.IGNORECASE):
+                raise Unsafe("invalid_machine_wake_patterns")
+            re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            raise Unsafe("invalid_machine_wake_patterns") from None
     if config.harness_selector and os.path.lexists(config.harness_selector):
         harness = config.harness_selector.read_text().strip() or "claude"
         if harness == "hermes":
@@ -71,10 +85,18 @@ def check_clients(config, runner, now):
 
 def target_pane(config, runner):
     # Exact session lookup and one pane only: never send into an arbitrary selected pane.
-    raw = runner([config.tmux_bin, "list-panes", "-s", "-t", "=" + config.tmux_session,
-                  "-F", "#{pane_id} #{pane_current_command}"])
+    try:
+        raw = runner([config.tmux_bin, "list-panes", "-s", "-t", "=" + config.tmux_session,
+                      "-F", "#{pane_id} #{pane_current_command}"])
+    except subprocess.CalledProcessError as exc:
+        error = exc.stderr or ""
+        if re.search(r"can't find session:|no server running on|error connecting to .*No such file", error):
+            raise Unsafe("no_tmux_session") from None
+        raise
     lines = raw.splitlines()
-    if len(lines) != 1 or not re.fullmatch(r"%[0-9]+ claude", lines[0]):
+    if not lines:
+        raise Unsafe("no_tmux_session")
+    if len(lines) != 1 or not re.fullmatch(r"%[0-9]+ (?:claude|\d+\.\d+\.\d+)", lines[0]):
         raise Unsafe("no_dedicated_claude_pane")
     return lines[0].split()[0]
 
@@ -117,7 +139,7 @@ def rows(path):
             yield row
 
 
-def human_text(row):
+def human_text(row, extra_patterns=()):
     message = row.get("message")
     if not isinstance(message, dict):
         raise Unsafe("invalid_user_message")
@@ -127,7 +149,7 @@ def human_text(row):
         source = obj.get("source", "")
         if not isinstance(source, str):
             raise Unsafe("invalid_message_source")
-        if "bubble-inject" in source or "ops-loop-boot-rearm" in source:
+        if "bubble-inject" in source.lower() or "ops-loop-boot-rearm" in source.lower():
             return False
     content = message.get("content")
     if isinstance(content, str):
@@ -146,13 +168,20 @@ def human_text(row):
                 raise Unsafe("unknown_user_content")
     else:
         raise Unsafe("invalid_user_content")
-    # Check both the whole text and individual blocks so split wrappers are excluded.
-    joined = "".join(texts).lstrip()
-    if (joined.startswith(WRAPPERS) or
-            re.match(r"Resume (?:your|[A-Za-z]+(?:'s)?) OODA loop", joined)
-            or "DUE_MISSIONS=" in joined):
-        return False
-    return any(text.strip() and not text.lstrip().startswith(WRAPPERS) for text in texts)
+    def machine(text):
+        return (text.lstrip().lower().startswith(tuple(prefix.lower() for prefix in WRAPPERS)) or any(
+            re.search(pattern, text.lstrip(), re.IGNORECASE)
+            for pattern in (*MACHINE_WAKE_PATTERNS, *extra_patterns)))
+    joined = "".join(texts)
+    # Bounded envelopes may span text blocks. Preserve human text outside them.
+    outside = re.sub(r"<(channel|task-notification|system-reminder|local-command[\w-]*|command[\w-]*)\b[^>]*>.*?</\1\s*>",
+                     "", joined, flags=re.IGNORECASE | re.DOTALL)
+    if outside != joined:
+        return bool(outside.strip()) and not machine(outside)
+    # Separate human text blocks still reset idle even beside a machine notice.
+    # Joined text recognises wrappers split across blocks.
+    candidates = [text for text in texts if text.strip() and not machine(text)]
+    return bool(candidates) and not machine("".join(candidates))
 
 
 def check_meeting_record(row, now):
@@ -171,7 +200,7 @@ def check_meeting_record(row, now):
         raise Unsafe("meeting_poll_declared")
 
 
-def inspect_inputs(config, now):
+def inspect_inputs(config, now, previous_send=None):
     files = list(config.transcript_dir.glob("*.jsonl"))
     if not files:
         raise Unsafe("no_transcript")
@@ -196,6 +225,7 @@ def inspect_inputs(config, now):
     boundary_index = -1
     boundary_time = None
     meaningful = None
+    regrowth_baseline = False
     for path in files:
         if path != latest:
             # Older transcripts only matter for recent terminal-typed human text. Skip files
@@ -206,7 +236,7 @@ def inspect_inputs(config, now):
             try:
                 for row in rows(path):
                     check_meeting_record(row, now)
-                    if row.get("type") == "user" and human_text(row):
+                    if row.get("type") == "user" and human_text(row, config.machine_wake_patterns):
                         activity = timestamp(row.get("timestamp"), now)
                         human = activity if human is None else max(human, activity)
             except Unsafe as exc:
@@ -222,7 +252,7 @@ def inspect_inputs(config, now):
             if not isinstance(kind, str):
                 raise Unsafe("invalid_transcript_type")
             check_meeting_record(row, now)
-            if kind == "user" and human_text(row):
+            if kind == "user" and human_text(row, config.machine_wake_patterns):
                 activity = timestamp(row.get("timestamp"), now)
                 human = activity if human is None else max(human, activity)
             boundary = (row.get("isCompactSummary") is True or
@@ -230,9 +260,19 @@ def inspect_inputs(config, now):
             if boundary:
                 boundary_index = index
                 boundary_time = timestamp(row.get("timestamp"), now)
+                if previous_send is not None and boundary_time >= previous_send:
+                    regrowth_baseline = True
             if kind == "assistant":
                 assistant = row
                 assistant_index = index
+                if previous_send is not None and timestamp(row.get("timestamp"), now) > previous_send:
+                    prior_message = row.get("message")
+                    usage = prior_message.get("usage", {}) if isinstance(prior_message, dict) else {}
+                    counts = [usage.get(key) for key in (
+                        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")] if isinstance(usage, dict) else []
+                    if len(counts) == 3 and all(type(value) is int and value >= 0 for value in counts):
+                        if sum(counts) < config.min_context:
+                            regrowth_baseline = True
             if (kind not in METADATA and not
                     (kind == "system" and row.get("subtype") == "turn_duration")):
                 meaningful = row
@@ -256,7 +296,8 @@ def inspect_inputs(config, now):
     snapshot = (stamps, ledger_stamp)
     if not unchanged(config, snapshot):
         raise Unsafe("inputs_changed_during_read")
-    return human, context, latest_mtime / 1e9, meaningful, snapshot
+    regrown = regrowth_baseline and previous_send is not None and assistant_time > previous_send
+    return human, context, latest_mtime / 1e9, meaningful, snapshot, regrown
 
 
 def unchanged(config, snapshot):
@@ -353,18 +394,19 @@ def check_pane(pane):
     # "... | ctx 57% left | 5h 6% …"), so the usage segments after the ctx
     # anchor may be cut anywhere. The "| ctx N% left" anchor is what proves a
     # live Claude footer; if the cut falls before it, the line still skips.
-    status_pattern = (r".+\|\s*ctx\s+\d+(?:\.\d+)?%\s+left"
+    status_pattern = (r".+\|\s*(?:Opus|Sonnet|Haiku)\b[^|]+\|\s*ctx\s+\d+(?:\.\d+)?%\s+left"
                       r"(?:\s*\|\s*(?:5h|7d)\s+\d+(?:\.\d+)?%)*"
                       r"(?:\s*(?:\|\s*(?:5h|7d)\b[^|…]*)?…)?")
-    # The footer varies (status line can be blank; the mode line changes, e.g.
-    # "⏵⏵ bypass permissions on · 1 shell · ← for agents"). Require at least one Claude
-    # footer line and nothing else, so a shell prompt under the box still skips.
+    # Mode lines vary; require the model/context status line and allow only known
+    # additional footer lines, so a shell prompt under the box still skips.
     mode = r"⏵⏵ .*permissions.*"
     if not footer:
         raise Unsafe("unrecognized_pane_footer")
     for line in footer:
         if not (re.fullmatch(mode, line) or re.fullmatch(status_pattern, line)):
             raise Unsafe("unrecognized_pane_footer")
+    if not any(re.fullmatch(status_pattern, line) for line in footer):
+        raise Unsafe("unrecognized_pane_footer")
 
 
 def run_tmux(args):
@@ -425,7 +467,9 @@ def check(config, runner=run_tmux, clock=time.time):
                         raise Unsafe("another_check_running") from None
                     state = read_state(config.state, now)
                     check_declarations(config, now)
-                    human, context, mtime, last, snapshot = inspect_inputs(config, now)
+                    pane = target_pane(config, runner)
+                    human, context, mtime, last, snapshot, regrown = inspect_inputs(
+                        config, now, state[0] if state else None)
                     idle = (now - human) / 60
                     if idle < config.idle_min:
                         raise Unsafe("human_recent")
@@ -438,9 +482,11 @@ def check(config, runner=run_tmux, clock=time.time):
                             not isinstance(last_message, dict) or
                             last_message.get("stop_reason") != "end_turn"):
                         raise Unsafe("turn_not_finished")
-                    if state and human <= state[0]:
-                        raise Unsafe("already_compacted_this_idle_period")
-                    pane = target_pane(config, runner)
+                    if state:
+                        if now - state[0] < config.idle_min * 60:
+                            raise Unsafe("compact_cooldown")
+                        if not regrown:
+                            raise Unsafe("context_not_regrown_since_send")
                     check_clients(config, runner, now)
                     capture_args = [config.tmux_bin, "capture-pane", "-p", "-e", "-t", pane]
                     check_pane(runner(capture_args))

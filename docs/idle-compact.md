@@ -7,6 +7,8 @@ human-idle threshold is **55 minutes**; the default minimum context is
 Installers enable checks immediately, or install observation-only checks with
 `--dry-run`. No installer restarts the department agent. The pilot directory is
 reference material; deployed jobs use only the framework script.
+**VPS agents running under dtach are not covered yet.** This release requires
+a dedicated Claude Code tmux pane; dtach hosts log `SKIP reason=no_tmux_session`.
 
 ## Safety and context
 
@@ -16,15 +18,32 @@ text in direct project JSONL transcripts. IDs default to
 `6532205130,7470271615`; override the tool's `--human-user-ids` or the installed
 config's `runtime.human_user_ids` for another operator. Channel wrappers, tool
 results, compaction summaries, inject/boot-rearm sources and OODA/DUE_MISSIONS
-machine wakes do not count as humans. Recent older transcripts also contribute
-human activity; malformed older files conservatively contribute their mtime.
+machine wakes do not count as humans. Built-in machine recognisers are:
+
+- Channel envelopes (`<channel`, including `bubble-inject`), local-command and
+  command-name/message/args wrappers, task notifications (`<task-notification`),
+  system reminders, and `[SYSTEM NOTIFICATION` notices.
+- `Resume <Name>'s OODA loop` (including multiword, hyphenated and Unicode names,
+  and `Resume your OODA loop`), `DUE_MISSIONS=`, and `MEETING POLL`.
+- `[session-rotate, automated maintenance` and transcript/message sources
+  containing `bubble-inject` or `ops-loop-boot-rearm`.
+
+Wake regexes are case-insensitive. Add per-agent regular expressions in the
+installed config's `runtime.machine_wake_patterns` array (built-ins remain
+active), for example `["^FLEET HEARTBEAT\\b"]`. Mac reinstalls and VPS `--all` preserve these additions.
+Invalid regexes, empty patterns and patterns matching empty text skip safely.
+Recognised automation never refreshes human idle, even across days of wakes.
+Direct human text (including separate text blocks beside task notices) and any
+allowlisted human ledger entry reset the clock. Human ledger entries are
+always authoritative, including messages quoting generated prompts. Recent
+older transcripts also contribute human activity; malformed older files conservatively contribute their mtime.
 The newest transcript is selected by mtime, never filename.
 
 Context tokens come from the last assistant's input + cache-read + cache-create
 usage; a later compaction boundary/summary resets this estimate. The live pane's
-`| ctx N% left` gauge validates the status footer, including truncated quota
-segments. As in the pilot, a recognized permissions-only footer is accepted
-when the status row is blank; percentages never replace transcript usage.
+`| ctx N% left` gauge plus an Opus/Sonnet/Haiku model validates the status footer,
+including truncated quota segments. A permissions-only footer fails closed;
+percentages never replace transcript usage.
 
 An assistant `end_turn`, quiet transcript, empty boxed `❯`, recognized footer,
 and absence of spinners/interrupt hints are all required. Typed text, multiline
@@ -33,7 +52,10 @@ ignored only on the input line; normal-intensity characters remain drafts.
 Missing/corrupt input, future timestamps, unknown layouts or tmux errors skip.
 
 Fleet additions require an exact session name with exactly one pane whose
-current command is `claude`. All tmux calls use the service's own Unix UID;
+current command is `claude` or a version string matching `^\d+\.\d+\.\d+$`
+(observed on real Macs as `2.1.288` and `2.1.283`). `node` is rejected: the pilot
+has no accepted node transport. Shells and all other commands fail closed.
+The model plus context footer remains required for either accepted command shape. All tmux calls use the service's own Unix UID;
 there is no root terminal injection. An attached client's `client_activity`
 within 55 minutes blocks, even if its typed text was erased without submission.
 Unknown client timestamps fail closed. The resolved pane ID, attached-client
@@ -53,9 +75,16 @@ bypass it. The marker covers declarations outside scanned transcripts and
 longer meetings or poll schedules with no recent transcript event. No pre-existing meeting marker
 contract exists in this repository; meeting operators must adopt this one.
 
-At most one send per human-idle period. The pilot's time-only cooldown exception
-was removed: another send requires human activity after the previous send,
-followed by another 55 quiet minutes. Do not delete state on ordinary restarts.
+At most one send per quiet stretch. Another send needs at least `idle_min`
+minutes since the last send, a new completed assistant turn after that send,
+and context that has re-crossed `min_context`. A post-send compact boundary or
+below-threshold assistant usage establishes the reduction; later assistant
+usage must again reach the threshold. Every other gate still applies, including
+human idle, transcript quiet, empty input, attached-client activity and meetings.
+No new human message is required: autonomous agents can compact repeatedly
+as their context regrows. A stale high-context snapshot or a new turn without
+any evidence of reduction cannot trigger another send. Do not delete state on
+ordinary restarts.
 An atomic `pending` reservation is written before literal `/compact` and Enter,
 then changed to `sent`. Pending state blocks all retries: inspect/clear partial
 input manually and archive state only after resolving the uncertainty.
@@ -86,14 +115,15 @@ path, and a JSON config at `~/.local/state/idle-compact/configs/<slug>.json`.
 Label: `com.bubble.idle-compact-<slug>`. Interval: 300 seconds, no KeepAlive.
 Decision/stdout/stderr logs live in `~/Library/Logs`. The installer validates
 XML with plistlib and plutil before replacement, preserves a loaded definition
-on failure, and leaves unchanged loaded jobs alone. State survives updates.
+on failure, and leaves unchanged loaded jobs alone. Rollback attempts re-bootstrap
+even if file restoration fails, and reports the original and each recovery error
+by stage/type without subprocess output. State survives updates.
 Hermes selectors and Morty are explicitly skipped.
 
-Disable one agent (retain config/state/logs):
+Uninstall one agent (remove plist/config, retain state and logs):
 
 ```sh
-launchctl bootout "gui/$(id -u)/com.bubble.idle-compact-rnd"
-# Remove ~/Library/LaunchAgents/com.bubble.idle-compact-rnd.plist to prevent loading at login.
+scripts/install-mac-idle-compact.sh --slug rnd --uninstall
 ```
 
 ## VPS
@@ -127,23 +157,27 @@ to supply a verified name. Transcript and ledger defaults are
 Other paths are per-agent installer overrides. Unit/config publication rolls
 back on reload/enable failures and restores prior timer enabled/active states.
 
-**VPS transport limitation:** this checkout documents a tmux-free `script`
-PTY runtime (`docs/ARCHITECTURE.md:182`). Canonical `bubble-agent-prepare`
-is maintained in `bubble-vps-platform`, not present here; deployment delegates
-to its renderer (`scripts/deploy-to-morty.sh:102-129`). The existing inject
-patch delivers channel messages, not terminal slash commands
-(`deploy/telegram-plugin/bubble-inject.block.ts:126-128`). These checks will
-skip on that runtime; installing timers alone does not enable VPS compaction.
-The host owner must verify a supported dedicated own-user Claude tmux transport
-before enabling sends. This change does not migrate the agent runtime or send
-`/compact` through channel injection. Legacy shared `claude` UID/custom-home
-units also need explicit runtime review; the installer refuses those layouts.
+**VPS transport limitation:** real VPS agents use **dtach**, which this change
+**does not cover yet**. Timers alone cannot compact those agents. Without a
+supported own-user tmux session the tool logs
+`decision=SKIP reason=no_tmux_session`. This release does not migrate the
+runtime or send slash commands through `bubble-inject` channel messages.
+Legacy shared `claude` UID/custom-home units also need explicit runtime review;
+the installer refuses those layouts.
 
-Disable one agent:
+Uninstall one agent, or every installed/discovered VPS agent:
 
 ```sh
-systemctl disable --now idle-compact@maya.timer
+scripts/install-idle-compact.sh --slug maya --uninstall
+scripts/install-idle-compact.sh --all --uninstall
 ```
+
+Uninstall disables/stops the timer and any running idle-compaction service,
+removes its config, and retains agent state and logs. Shared unit templates
+remain while another config uses them; the last uninstall removes both templates
+and reloads systemd. Mac uninstall boots out the job and removes its plist/config.
+Neither uninstaller stops the department agent. Rollback on installation attempts
+all recovery steps even if restore/reload fails and reports every failed stage.
 
 ## Logs and fleet status
 
