@@ -68,6 +68,7 @@ from scripts.lib.loop_backup import (
     release_due_claims,
     write_due_success,
 )
+from scripts.lib.due_dispatch_ledger import append_success
 
 
 def _now(epoch: int | None) -> dt.datetime:
@@ -983,7 +984,20 @@ def command_complete(args: argparse.Namespace) -> int:
         raise DueMissionConfigError(f"mission is not in due-dispatch scope: {args.mission}")
     _validate_completion_period(mission["cadence"], args.period)
     path = due_watermark_path(str(dept_dir), manifest)
-    write_due_success(path, args.mission, args.period, _now(args.now_epoch))
+    completed_at = _now(args.now_epoch)
+    leased_at = None
+    # Capture the lease before success clears it. KPI evidence is best effort;
+    # neither reading nor publishing it may alter completion's outcome.
+    try:
+        entry = read_due_watermarks(path).get("missions", {}).get(args.mission, {})
+        pending = entry.get("pending") if isinstance(entry, dict) else None
+        if isinstance(pending, dict) and pending.get("period") == args.period:
+            candidate = dt.datetime.fromisoformat(pending["claimed_at"].replace("Z", "+00:00"))
+            if candidate.tzinfo is not None and candidate <= completed_at:
+                leased_at = candidate
+    except Exception as exc:
+        print(f"due-mission KPI ledger warning: cannot read lease: {exc}", file=sys.stderr)
+    write_due_success(path, args.mission, args.period, completed_at)
     # #1235/#1316/#1330: a completion is only real if the marker is actually
     # written — verify the write actually landed (read the persisted state
     # back, not just trust write_due_success's in-memory return) before
@@ -999,6 +1013,10 @@ def command_complete(args: argparse.Namespace) -> int:
             f"(watermark reads {recorded!r} after write) — treat this as a "
             f"FAILED completion, not a success"
         )
+    try:
+        append_success(dept_dir, args.mission, args.period, completed_at, leased_at)
+    except Exception as exc:
+        print(f"due-mission KPI ledger warning: {args.mission}: {exc}", file=sys.stderr)
     print(f"completed {args.mission} for {args.period}")
     return 0
 

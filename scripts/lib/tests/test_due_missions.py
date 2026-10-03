@@ -1324,3 +1324,183 @@ def test_wake_prompt_cli_subprocess_fails_closed_with_empty_stdout_on_unrecogniz
     assert proc.returncode != 0
     assert proc.stdout == ""
     assert "this manifest has neither" in proc.stderr
+
+
+# #1711: success history is independent of the scheduling watermark/VPS ledger.
+@pytest.fixture
+def kpi_mac_dept(tmp_path):
+    dept = tmp_path / "rick"
+    _mission_centric_dept_yaml(dept, "rnd", "Rick")
+    return dept
+
+
+def _complete_kpi_mission(dept, now, period="continuous"):
+    from scripts.due_missions import command_complete, parser
+
+    return command_complete(parser().parse_args([
+        "complete", "--dept-dir", str(dept), "--mission", "board", "--period", period,
+        "--now-epoch", str(int(now.timestamp())),
+    ]))
+
+
+def test_1711_completions_append_history_without_changing_vps_ledger(kpi_mac_dept, capsys):
+    dept = kpi_mac_dept
+    output = dept / "outputs/2026-09-13"
+    output.mkdir(parents=True)
+    vps = output / "dispatch.json"
+    vps.write_text('{"untouched": {}}\n')
+    assert _complete_kpi_mission(dept, NOW) == 0
+    assert _complete_kpi_mission(dept, NOW + dt.timedelta(minutes=1)) == 0
+    assert _complete_kpi_mission(dept, NOW + dt.timedelta(minutes=1)) == 0
+    path = output / "due-dispatch.json"
+    records = json.loads(path.read_text())
+    assert records == [
+        {"mission_id": "board", "period": "continuous", "completed_at": "2026-09-13T12:00:00Z"},
+        {"mission_id": "board", "period": "continuous", "completed_at": "2026-09-13T12:01:00Z"},
+    ]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert vps.read_text() == '{"untouched": {}}\n'
+    assert not capsys.readouterr().err
+
+
+def test_1711_completion_captures_lease_before_watermark_clears_it(kpi_mac_dept):
+    import yaml
+
+    dept = kpi_mac_dept
+    manifest_path = dept / "dept.yaml"
+    data = yaml.safe_load(manifest_path.read_text())
+    data["recurring_missions"][0].update(
+        cadence="daily", due={"policy": "calendar_period", "timezone": "Europe/Paris"})
+    manifest_path.write_text(yaml.safe_dump(data))
+    # Lease date is Paris Sept 13; completion lands on Paris Sept 14.
+    leased = dt.datetime(2026, 9, 13, 21, 59, tzinfo=dt.timezone.utc)
+    watermark = dept / "monitoring/due.json"
+    claim_due_missions(watermark, data, leased, 21600)
+    assert _complete_kpi_mission(dept, leased + dt.timedelta(minutes=2), "2026-09-13") == 0
+    record, = json.loads((dept / "outputs/2026-09-14/due-dispatch.json").read_text())
+    assert record == dict(mission_id="board", period="2026-09-13",
+                          dispatched_at="2026-09-13T21:59:00Z", leased_at="2026-09-13T21:59:00Z",
+                          completed_at="2026-09-13T22:01:00Z")
+    assert "pending" not in read_due_watermarks(watermark)["missions"]["board"]
+    # An identical acknowledgement after the lease was cleared stays one run.
+    assert _complete_kpi_mission(dept, leased + dt.timedelta(minutes=2), "2026-09-13") == 0
+    assert json.loads((dept / "outputs/2026-09-14/due-dispatch.json").read_text()) == [record]
+
+
+@pytest.mark.parametrize("error", [OSError("disk full"), RuntimeError("unexpected ledger failure")])
+def test_1711_ledger_failure_never_changes_completion(kpi_mac_dept, monkeypatch, capsys, error):
+    from scripts import due_missions
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(due_missions, "append_success", fail)
+    assert _complete_kpi_mission(kpi_mac_dept, NOW) == 0
+    assert read_due_watermarks(kpi_mac_dept / "monitoring/due.json")["missions"]["board"][
+        "last_success_period"] == "continuous"
+    captured = capsys.readouterr()
+    assert captured.out == "completed board for continuous\n"
+    assert "KPI ledger warning" in captured.err and str(error) in captured.err
+
+
+def test_1711_optional_lease_read_failure_does_not_change_completion(kpi_mac_dept, monkeypatch, capsys):
+    from scripts import due_missions
+
+    original = due_missions.read_due_watermarks
+    reads = 0
+
+    def read(path):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise OSError("lease snapshot failed")
+        return original(path)
+
+    monkeypatch.setattr(due_missions, "read_due_watermarks", read)
+    assert _complete_kpi_mission(kpi_mac_dept, NOW) == 0
+    assert "cannot read lease" in capsys.readouterr().err
+    record, = json.loads((kpi_mac_dept / "outputs/2026-09-13/due-dispatch.json").read_text())
+    assert "dispatched_at" not in record
+
+
+@pytest.mark.parametrize("component", ["outputs", "day", "ledger", "lock"])
+def test_1711_ledger_symlinks_refused_without_changing_completion(kpi_mac_dept, tmp_path, capsys, component):
+    dept = kpi_mac_dept
+    target = tmp_path / "external"
+    target.mkdir()
+    sentinel = target / "sentinel"
+    sentinel.write_text("unchanged\n")
+    output = dept / "outputs/2026-09-13"
+    if component == "outputs":
+        (dept / "outputs").symlink_to(target, target_is_directory=True)
+    elif component == "day":
+        output.parent.mkdir()
+        output.symlink_to(target, target_is_directory=True)
+    else:
+        output.mkdir(parents=True)
+        name = "due-dispatch.json" if component == "ledger" else ".due-dispatch.lock"
+        (output / name).symlink_to(sentinel)
+    assert _complete_kpi_mission(dept, NOW) == 0
+    assert "KPI ledger warning" in capsys.readouterr().err
+    assert sentinel.read_text() == "unchanged\n"
+    assert list(target.iterdir()) == [sentinel]
+
+
+def test_1711_ledger_rejects_foreign_owner(kpi_mac_dept, monkeypatch):
+    from scripts.lib import due_dispatch_ledger
+
+    uid = os.geteuid()
+    monkeypatch.setattr(due_dispatch_ledger.os, "geteuid", lambda: uid + 1)
+    with pytest.raises(OSError, match="foreign-owned department"):
+        due_dispatch_ledger.append_success(kpi_mac_dept, "board", "continuous", NOW)
+    assert not (kpi_mac_dept / "outputs").exists()
+
+
+def test_1711_atomic_replace_failure_preserves_history(kpi_mac_dept, monkeypatch):
+    from scripts.lib import due_dispatch_ledger
+
+    due_dispatch_ledger.append_success(kpi_mac_dept, "board", "continuous", NOW)
+    path = kpi_mac_dept / "outputs/2026-09-13/due-dispatch.json"
+    before = path.read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(due_dispatch_ledger.os, "replace", fail)
+    with pytest.raises(OSError, match="replace failed"):
+        due_dispatch_ledger.append_success(kpi_mac_dept, "board", "continuous", NOW + dt.timedelta(minutes=1))
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_1711_concurrent_appends_do_not_lose_successes(kpi_mac_dept):
+    from concurrent.futures import ThreadPoolExecutor
+    from scripts.lib.due_dispatch_ledger import append_success
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(append_success, kpi_mac_dept, "board", "continuous",
+                               NOW + dt.timedelta(seconds=i)) for i in range(12)]
+        for future in futures:
+            future.result()
+    records = json.loads((kpi_mac_dept / "outputs/2026-09-13/due-dispatch.json").read_text())
+    assert len(records) == len({r["completed_at"] for r in records}) == 12
+
+
+@pytest.mark.parametrize("name", ["due-dispatch.json", ".due-dispatch.lock"])
+def test_1711_nonregular_ledger_files_refused_without_changing_completion(kpi_mac_dept, capsys, name):
+    output = kpi_mac_dept / "outputs/2026-09-13"
+    output.mkdir(parents=True)
+    (output / name).mkdir()
+    assert _complete_kpi_mission(kpi_mac_dept, NOW) == 0
+    assert "nonregular" in capsys.readouterr().err
+    assert (output / name).is_dir()
+
+
+def test_1711_corrupt_history_is_preserved_and_completion_still_succeeds(kpi_mac_dept, capsys):
+    output = kpi_mac_dept / "outputs/2026-09-13"
+    output.mkdir(parents=True)
+    path = output / "due-dispatch.json"
+    path.write_text("[broken\n")
+    assert _complete_kpi_mission(kpi_mac_dept, NOW) == 0
+    assert "KPI ledger warning" in capsys.readouterr().err
+    assert path.read_text() == "[broken\n"
