@@ -92,7 +92,12 @@ def read_calls(root: Path, missing: set[str]) -> list[dict] | None:
         return None
     for directory, dirs, files in os.walk(root, onerror=errors.append):
         dirs.sort()
-        paths.extend(Path(directory) / name for name in sorted(files) if name.endswith(".jsonl"))
+        # A transcript directory can hold symlinked .jsonl entries (seen on a
+        # real Mac department: a subagent transcript that is a symlink). The
+        # reader never follows symlinks; skipping the entry keeps the total
+        # honest for the regular files instead of losing the whole day.
+        paths.extend(Path(directory) / name for name in sorted(files)
+                     if name.endswith(".jsonl") and not os.path.islink(os.path.join(directory, name)))
     if not paths or errors:
         missing.add("transcripts")
         return None
