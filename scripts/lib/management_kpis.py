@@ -64,7 +64,7 @@ def child(dept_dir: Path, report_day: str, *, dry_run=False,
     day(report_day)
     # Never run this child as root. Owner validation remains the parent's job.
     if os.geteuid() == 0:
-        return 'skipped:uid-zero'
+        return 'error:uid-zero'
     fds = []
     try:
         if stat.S_ISLNK(os.lstat(dept_dir).st_mode):
@@ -171,7 +171,7 @@ def child(dept_dir: Path, report_day: str, *, dry_run=False,
                 pass
         return 'export_missing' if export is None else 'written'
     except Refusal as exc:
-        return 'skipped:' + str(exc)
+        return 'error:' + str(exc)
     except Exception:
         return 'error:child-failed'
     finally:

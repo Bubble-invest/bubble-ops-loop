@@ -26,10 +26,11 @@ else:
 
 ROOT = Path(__file__).resolve().parents[2]
 SLUG = re.compile(r'[a-z][a-z0-9-]{0,79}')
-STATUS = re.compile(r'(?:written|export_missing|(?:skipped|error):[a-zA-Z0-9_.-]{1,80})')
+STATUS = re.compile(r'(?:written|export_missing|skipped:(?:not-live|no-l4|invalid-manifest)|error:[a-zA-Z0-9_.-]{1,80})')
 MAX_REPLY = 4096
 CHILD_TIMEOUT = 120
 EMIT_TIMEOUT = 60
+NOTHING_PROCESSED = 2
 
 
 def owner_for(dept, overrides, *, lstat=os.lstat, lookup=pwd.getpwuid):
@@ -42,10 +43,10 @@ def owner_for(dept, overrides, *, lstat=os.lstat, lookup=pwd.getpwuid):
             return None, 'symlink-dept'
         if not stat.S_ISDIR(info.st_mode):
             return None, 'not-directory'
-        if info.st_uid < 1000:
-            return None, 'uid-below-1000'
+        if info.st_uid == 0:
+            return None, 'uid-zero'
         owner = lookup(info.st_uid)
-        if owner.pw_uid != info.st_uid or owner.pw_uid < 1000:
+        if owner.pw_uid != info.st_uid:
             return None, 'owner-uid-mismatch'
         expected = overrides.get(dept.name, 'agent-' + dept.name)
         if owner.pw_name != expected:
@@ -109,11 +110,12 @@ def run_child(command, *, timeout=CHILD_TIMEOUT):
     except ValueError:
         return 'error:oversized-reply'
     finally:
-        # Kill the entire runuser group, including inherited pipe holders.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        # Kill an unreaped runuser group, including inherited pipe holders.
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         process.wait(timeout=5)
         process.stdout.close()
 
@@ -135,6 +137,7 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
                 raise ValueError('invalid owner override')
             overrides[slug] = user
     failed = False
+    processed = 0
     lock = None
     try:
         if not dry_run:
@@ -165,6 +168,8 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
                 print(f'{slug} {report}: {status}')
                 if status.startswith('error:'):
                     failed = True
+                if status in ('written', 'export_missing'):
+                    processed += 1
                 if status != 'export_missing':
                     continue
                 if not alarm_due:
@@ -193,6 +198,9 @@ def run_loop(agents, state, report, alarm_due, *, env, dry_run=False,
     finally:
         if lock is not None:
             lock.close()
+    if processed == 0:
+        print('ERROR fleet: nothing processed (no department returned written or export_missing)', file=sys.stderr)
+        return NOTHING_PROCESSED
     return int(failed)
 
 

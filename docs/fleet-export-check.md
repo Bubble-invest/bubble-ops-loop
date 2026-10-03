@@ -9,13 +9,17 @@ The consumer, the CEO department's L1 reader, must read the sidecar. That reader
 Security model (six lines):
 
 1. Root lists `AGENTS_ROOT` names and lstats each entry; it never opens, parses or follows file metadata inside a department.
-2. Root rejects symlinks, non-directories, UIDs below 1000 and owners other than `agent-<directory-slug>`; explicit trusted owner overrides retain the UID rule.
+2. Root rejects symlinks, non-directories, UID 0 and owners other than `agent-<directory-slug>`, and requires `pw_uid == st_uid`; explicit trusted owner overrides change only the expected name and cannot bypass UID 0 refusal.
 3. Root launches exactly one `runuser -u <owner> -- <python> -I <framework-child>` per accepted directory, with framework cwd and a 120-second hard timeout.
-4. The owner child reads eligibility, sources and model shape using safe YAML, refuses symlink output components/model files, and opens regular files with `O_NOFOLLOW` through pinned directories.
+4. The owner child refuses UID 0, reads eligibility, sources and model shape using safe YAML, reports symlink/non-regular output components or files as errors, and opens regular files with `O_NOFOLLOW` through pinned directories.
 5. The child caps model exports and manifests at 1 MiB; export parsing failures become `unparseable`; sidecars use same-directory `mkstemp` plus `os.replace`.
 6. Root caps child stdout at 4096 bytes, accepts exactly one JSON `status` field and matching exit code, kills timed-out process groups, and stores alarm receipts only in its own state directory.
 
 Checks run at 21:50 and 23:30 Europe/Paris for today, then 08:10 for yesterday. `Persistent=true` catches a missed timer activation. Before noon the default reporting day is yesterday; afterwards it is today. Only eligible departments with `export_missing` alarm after 23:30 on the report date (or for a past date). Skips and child errors do not alarm. Incidents use stable `fleet-export-missing-<slug>-<day>` IDs, positive `budget=5` and the existing system convergence intent. All alarm text comes from the root-derived validated slug and canonical day, never model content. Only successful emitter acceptance creates a receipt; failed emissions retry on the next run, then stop after success. A root state lock serializes runs. Emitter calls have a 60-second timeout; the service has `TimeoutStartSec=20min` and group cleanup.
+
+Exit codes: 2 means nothing processed (no child returned `written` or `export_missing`), with one explicit error log line, including dry runs. When at least one department is processed, 0 means success and 1 means a child or emitter failed; configuration/enumeration failures also exit 1. Only `not-live`, `no-l4` and `invalid-manifest` use `skipped:`; filesystem refusals use `error:` and the child exits 1.
+
+Mac-hosted departments and `bubble-ops-*` symlinked mirrors (rnd, content, accountant) are NOT covered by this VPS timer.
 
 The 28-day KPI window includes the report day. Ledgers use mission keys, `dispatched_at`, `completed_at`, and listed `artifacts` (including trigger entries). Dispatch/transcript days use Europe/Paris. Transcript discovery includes subagent JSONLs; duplicate assistant IDs retain the fullest usage. Approximate mission attribution unions inclusive dispatch/completion windows and uses `_approx` names. Dollar estimates reuse the framework console's importable default pricing constant and all four token classes; unpriced models omit dollar estimates. Missing or malformed sources remain visible without inventing zero totals; an incomplete transcript scan suppresses token totals. Optional offline inputs are `monitoring/runs.json`, `monitoring/board-issues.json` and ordered `config/mission_kpi_map.yaml` title regex/job mappings. No department code or library copy is imported.
 

@@ -263,7 +263,7 @@ def test_overlapping_windows_count_each_message_once_per_mission(evidence):
 @pytest.fixture(autouse=True)
 def nonroot_child_fixtures(monkeypatch):
     # Offline CI may be uid 0; no real privilege transitions are attempted.
-    monkeypatch.setattr(sidecar.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(sidecar.os, 'geteuid', lambda: 996)
 
 
 def read_sidecar(dept):
@@ -338,7 +338,7 @@ def test_rewritten_sidecar_refreshes_time_and_late_activity(evidence):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize('component', ['management-export.yaml', 'summary.md', 'day', 'outputs', 'dept'])
+@pytest.mark.parametrize('component', ['management-export.yaml', 'summary.md', 'management-kpis.yaml', 'day', 'outputs', '4', 'dept'])
 def test_child_symlink_refuses_before_any_file_read_or_write(evidence, tmp_path, monkeypatch, component):
     dept, _ = evidence
     path = export_file(dept)
@@ -346,14 +346,14 @@ def test_child_symlink_refuses_before_any_file_read_or_write(evidence, tmp_path,
     outside.mkdir()
     target = outside / 'target'
     target.write_bytes(b'SECRET MODEL CONTENT')
-    if component in ('management-export.yaml', 'summary.md'):
+    if component in ('management-export.yaml', 'summary.md', 'management-kpis.yaml'):
         link = path.with_name(component)
         if link.exists():
             link.unlink()
         link.symlink_to(target)
         argument = dept
     else:
-        link = {'day': dept / 'outputs' / DAY, 'outputs': dept / 'outputs', 'dept': dept}[component]
+        link = {'day': dept / 'outputs' / DAY, 'outputs': dept / 'outputs', '4': path.parent, 'dept': dept}[component]
         link.rename(link.with_name(link.name + '-original'))
         link.symlink_to(outside, target_is_directory=True)
         argument = dept
@@ -365,11 +365,41 @@ def test_child_symlink_refuses_before_any_file_read_or_write(evidence, tmp_path,
     monkeypatch.setattr(sidecar, 'read_file', guarded_read)
     monkeypatch.setattr(sidecar, 'build', lambda *a, **k: pytest.fail('KPI sources must not be read'))
     status = sidecar.child(argument, DAY)
-    assert status.startswith('skipped:symlink-')
+    assert status.startswith('error:symlink-')
     assert reads == ([] if component == 'dept' else ['dept.yaml'])
     assert target.read_bytes() == b'SECRET MODEL CONTENT'
     assert sorted(p.name for p in outside.iterdir()) == ['target']
-    assert not list(dept.rglob('management-kpis.yaml'))
+    assert list(dept.rglob('management-kpis.yaml')) == ([link] if component == 'management-kpis.yaml' else [])
+
+
+@pytest.mark.parametrize('component', ['outputs', 'day', '4', 'management-export.yaml',
+                                     'summary.md', 'management-kpis.yaml'])
+@pytest.mark.parametrize('kind', ['symlink', 'nonregular'])
+def test_output_refusal_cli_exits_nonzero(evidence, tmp_path, monkeypatch, capsys, component, kind):
+    dept, _ = evidence
+    export = export_file(dept)
+    path = {'outputs': dept / 'outputs', 'day': dept / 'outputs' / DAY,
+            '4': export.parent}.get(component, export.with_name(component))
+    if path.exists():
+        path.rename(path.with_name(path.name + '-original'))
+    if kind == 'symlink':
+        path.symlink_to(tmp_path / 'absent-target')
+    else:
+        os.mkfifo(path)
+    monkeypatch.setattr(sidecar, 'build', lambda *a, **k: pytest.fail('unexpected KPI read'))
+    monkeypatch.setattr(sys, 'argv', ['management_kpis.py', '--dept-dir', str(dept), '--day', DAY])
+    assert sidecar.main() == 1
+    raw = capsys.readouterr().out.encode()
+    status = 'error:' + kind + '-' + path.name
+    assert fleet_check.parse_reply(1, raw) == status
+    assert fleet_check.parse_reply(0, raw) == 'error:child-exit'
+    assert not list(dept.rglob('.management-kpis.*'))
+
+
+def test_child_refuses_uid_zero(evidence, monkeypatch):
+    dept, _ = evidence
+    monkeypatch.setattr(sidecar.os, 'geteuid', lambda: 0)
+    assert sidecar.child(dept, DAY) == 'error:uid-zero'
 
 
 @pytest.mark.parametrize('status,layers,expected', [('paused', [4], 'skipped:not-live'),
@@ -384,7 +414,7 @@ def test_ineligible_skips_without_sidecar_or_alarm(evidence, tmp_path, status, l
         owner_check=lambda p, o: ('agent-tony', None) if p == dept else (None, 'fixture'),
         child_runner=lambda c, **k: sidecar.child(dept, DAY),
         emit_runner=lambda *a, **k: emitted.append(a))
-    assert result == 0 and emitted == []
+    assert result == fleet_check.NOTHING_PROCESSED and emitted == []
 
 
 def test_nested_live_case_insensitive(evidence):
@@ -397,25 +427,35 @@ def test_nested_live_case_insensitive(evidence):
     assert read_sidecar(dept)['export_shape'] == 'absent'
 
 
-@pytest.mark.parametrize('mode,uid,user,reason', [(0o120777, 1000, 'agent-tony', 'symlink-dept'),
-    (0o40755, 0, 'root', 'uid-below-1000'), (0o40755, 999, 'agent-tony', 'uid-below-1000'),
-    (0o40755, 1000, 'wrong-owner', 'owner-name-mismatch')])
-def test_root_owner_refusals_injected(mode, uid, user, reason):
+@pytest.mark.parametrize('slug,uid', [('ben', 994), ('tony', 996), ('maya', 999),
+                                     ('claudette', 995), ('morty', 993)])
+def test_system_department_owner_accepted(slug, uid):
+    from types import SimpleNamespace
+    assert fleet_check.owner_for(Path('/agents') / slug, {},
+        lstat=lambda p: SimpleNamespace(st_mode=0o40755, st_uid=uid),
+        lookup=lambda n: SimpleNamespace(pw_name='agent-' + slug, pw_uid=n)) == ('agent-' + slug, None)
+
+
+@pytest.mark.parametrize('mode,uid,user,pw_uid,reason', [
+    (0o120777, 996, 'agent-tony', 996, 'symlink-dept'),
+    (0o40755, 0, 'agent-tony', 0, 'uid-zero'),
+    (0o40755, 996, 'wrong-owner', 996, 'owner-name-mismatch'),
+    (0o40755, 996, 'agent-tony', 994, 'owner-uid-mismatch')])
+def test_root_owner_refusals_injected(mode, uid, user, pw_uid, reason):
     from types import SimpleNamespace
     def lookup(n):
-        assert n >= 1000
-        return SimpleNamespace(pw_name=user, pw_uid=n)
+        assert n != 0
+        return SimpleNamespace(pw_name=user, pw_uid=pw_uid)
     assert fleet_check.owner_for(Path('/agents/tony'), {},
         lstat=lambda p: SimpleNamespace(st_mode=mode, st_uid=uid), lookup=lookup) == (None, reason)
 
 
-def test_owner_override_never_allows_uid_zero():
+@pytest.mark.parametrize('uid,expected', [(0, (None, 'uid-zero')), (996, ('legacy', None))])
+def test_owner_override_never_allows_uid_zero(uid, expected):
     from types import SimpleNamespace
-    for uid in (0, 1000):
-        result = fleet_check.owner_for(Path('/agents/tony'), {'tony': 'legacy'},
-            lstat=lambda p: SimpleNamespace(st_mode=0o40755, st_uid=uid),
-            lookup=lambda n: SimpleNamespace(pw_name='legacy', pw_uid=n))
-        assert result == (('legacy', None) if uid == 1000 else (None, 'uid-below-1000'))
+    assert fleet_check.owner_for(Path('/agents/tony'), {'tony': 'legacy'},
+        lstat=lambda p: SimpleNamespace(st_mode=0o40755, st_uid=uid),
+        lookup=lambda n: SimpleNamespace(pw_name='legacy', pw_uid=n)) == expected
 
 
 @pytest.fixture
@@ -441,7 +481,7 @@ def run_fleet(fleet, *, runner=None, emitter=None, dry_run=False, due=True):
         # Real lstat; inject only uid/pwd because this workstation has uid 501.
         def fixture_stat(path):
             value = os.lstat(path)
-            return SimpleNamespace(st_mode=value.st_mode, st_uid=1000)
+            return SimpleNamespace(st_mode=value.st_mode, st_uid=996)
         return fleet_check.owner_for(dept, overrides, lstat=fixture_stat,
             lookup=lambda n: SimpleNamespace(pw_name='agent-' + dept.name, pw_uid=n))
     def child_runner(command, **kwargs):
@@ -526,6 +566,30 @@ def test_pending_export_no_alarm(fleet):
     assert run_fleet(fleet, due=False, emitter=lambda *a, **k: pytest.fail('early alarm')) == 0
 
 
+@pytest.mark.parametrize('status', ['skipped:not-live', 'skipped:no-l4', 'skipped:invalid-manifest',
+                                  'error:child-failed'])
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_nothing_processed_is_visible(fleet, capsys, status, dry_run):
+    assert run_fleet(fleet, runner=lambda *a, **k: status, dry_run=dry_run,
+                     emitter=lambda *a, **k: pytest.fail('unexpected alarm')) == fleet_check.NOTHING_PROCESSED
+    assert capsys.readouterr().err.count('nothing processed') == 1
+
+
+def test_empty_fleet_is_visible(tmp_path, capsys):
+    agents = tmp_path / 'agents'
+    agents.mkdir()
+    assert fleet_check.run_loop(agents, tmp_path / 'state', DAY, False, env={}) == fleet_check.NOTHING_PROCESSED
+    assert capsys.readouterr().err.count('nothing processed') == 1
+
+
+@pytest.mark.parametrize('processed', ['written', 'export_missing'])
+@pytest.mark.parametrize('other,expected', [('skipped:no-l4', 0), ('error:child-failed', 1)])
+def test_one_processed_department_keeps_exit_semantics(fleet, capsys, processed, other, expected):
+    statuses = iter([other, processed])
+    assert run_fleet(fleet, runner=lambda *a, **k: next(statuses), due=False) == expected
+    assert 'nothing processed' not in capsys.readouterr().err
+
+
 def test_real_child_timeout_loop_continues_next_department(fleet, capsys):
     commands = []
     def runner(command, **kwargs):
@@ -543,9 +607,18 @@ def test_real_child_timeout_loop_continues_next_department(fleet, capsys):
 @pytest.mark.parametrize('code,raw', [(0, b'{"status":"written","evil":1}\n'),
     (0, b'{"status":"written","status":"export_missing"}\n'),
     (1, b'{"status":"export_missing"}\n'), (0, b'[]\n'), (0, b'x' * 4097),
-    (0, b'{"status":"written"}\nmore\n'), (0, b'{"status":"error:evil content"}\n')])
+    (0, b'{"status":"written"}\nmore\n'), (0, b'{"status":"error:evil content"}\n'),
+    (0, b'{"status":"skipped:symlink-outputs"}\n'), (0, b'{"status":"skipped:nonregular-summary.md"}\n'),
+    (0, b'{"status":"error:symlink-outputs"}\n'), (1, b'{"status":"skipped:no-l4"}\n')])
 def test_untrusted_reply_rejected(code, raw):
     assert fleet_check.parse_reply(code, raw).startswith('error:')
+
+
+@pytest.mark.parametrize('status,code', [('written', 0), ('error:symlink-outputs', 1)])
+def test_reaped_child_group_is_not_killed(monkeypatch, status, code):
+    monkeypatch.setattr(fleet_check.os, 'killpg', lambda *a: pytest.fail('reaped process group killed'))
+    command = [sys.executable, '-c', f'print({json.dumps({"status": status})!r}); raise SystemExit({code})']
+    assert fleet_check.run_child(command, timeout=5) == status
 
 
 def test_bounded_real_child_output_and_framework_cli(evidence):
@@ -559,7 +632,7 @@ def test_bounded_real_child_output_and_framework_cli(evidence):
     result = fleet_check.run_child([sys.executable, '-I', '-c', bootstrap,
                                    str(ROOT / 'scripts/lib/management_kpis.py'),
                                    '--dept-dir', str(dept), '--day', DAY, '--dry-run'], timeout=10)
-    assert result in ('export_missing', 'skipped:uid-zero')  # Actual host UID, no shim.
+    assert result in ('export_missing', 'error:uid-zero')  # Actual host UID, no shim.
 
 
 def test_timer_service_contract():
@@ -573,8 +646,8 @@ def test_timer_service_contract():
     assert 'ConditionPathExists' not in service and 'EnvironmentFile' not in service
 
 
-@pytest.mark.parametrize('uid,user,reason', [(0, 'root', 'uid-below-1000'),
-    (999, 'agent-ben', 'uid-below-1000'), (1000, 'wrong-user', 'owner-name-mismatch')])
+@pytest.mark.parametrize('uid,user,reason', [(0, 'root', 'uid-zero'),
+    (994, 'wrong-user', 'owner-name-mismatch')])
 def test_root_refusals_log_and_never_dispatch_or_alarm(fleet, uid, user, reason, capsys):
     from types import SimpleNamespace
     agents, state, env, _ = fleet
@@ -585,8 +658,10 @@ def test_root_refusals_log_and_never_dispatch_or_alarm(fleet, uid, user, reason,
     result = fleet_check.run_loop(agents, state, DAY, True, env=env,
         owner_check=owner_check, child_runner=lambda *a, **k: pytest.fail('refused owner dispatched'),
         emit_runner=lambda *a, **k: pytest.fail('refused owner alarmed'))
-    assert result == 0
-    assert reason in capsys.readouterr().out
+    assert result == fleet_check.NOTHING_PROCESSED
+    output = capsys.readouterr()
+    assert reason in output.out
+    assert output.err.count('nothing processed') == 1
     assert not list(state.glob('*.sent'))
 
 
