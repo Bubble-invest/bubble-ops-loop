@@ -6,6 +6,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
 # Runs as ROOT: needs `systemctl restart bubble-agent@%i` + to move the
 # agent-uid-owned session transcripts out of the projects dir. The script itself
 # is fail-safe (skips the rotation unless a fresh HANDOFF.md exists).

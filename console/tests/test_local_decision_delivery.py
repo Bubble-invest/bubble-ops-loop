@@ -125,7 +125,7 @@ class TestLocalHideMarker:
 
     def test_marker_written_when_repo_mirrored_on_disk(self, tmp_path, monkeypatch):
         """On a successful host=local commit, if the repo is mirrored on disk,
-        a hide-marker decision file is written there so the card hides at once."""
+        a hide-marker is written outside the mirror so the card hides at once."""
         monkeypatch.setattr("console.services.dept_registry.get_department",
                             lambda slug: _fake_dept("content", "local"))
         repo = tmp_path / "bubble-ops-content"
@@ -142,8 +142,9 @@ class TestLocalHideMarker:
         monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
         out = github_reader.write_gate_decision("content", "g-mark", {"action": "approve"})
         assert out is not None
-        marker = repo / "inbox" / "decisions" / "g-mark.yaml"
-        assert marker.is_file(), "hide-marker must be written to the on-disk mirror"
+        marker = github_reader._local_hide_marker_dir("content") / "g-mark.yaml"
+        assert marker.is_file(), "hide-marker must be written to console state"
+        assert not (repo / "inbox").exists(), "remote decisions must not modify the mirror"
         assert yaml.safe_load(marker.read_text())["action"] == "approve"
 
     def test_no_marker_when_github_put_fails(self, tmp_path, monkeypatch):
@@ -165,17 +166,18 @@ class TestLocalHideMarker:
         monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
         out = github_reader.write_gate_decision("content", "g-fail", {"action": "approve"})
         assert out is None
-        assert not (repo / "inbox" / "decisions" / "g-fail.yaml").exists(), \
+        assert not (github_reader._local_hide_marker_dir("content") / "g-fail.yaml").exists(), \
             "no hide-marker when the delivery failed"
 
     def test_marker_failure_does_not_break_success(self, tmp_path, monkeypatch):
         """A hide-marker write error must not turn a successful commit into a failure."""
         monkeypatch.setattr("console.services.dept_registry.get_department",
                             lambda slug: _fake_dept("content", "local"))
-        # repo_path points at a path we then make unwritable by pointing at a file
+        # Make the marker state directory unwritable by pointing at a file
         bad = tmp_path / "not-a-dir"
         bad.write_text("x")
-        monkeypatch.setattr(github_reader, "repo_path", lambda slug: bad)
+        monkeypatch.setattr(github_reader, "repo_path", lambda slug: tmp_path)
+        monkeypatch.setattr(github_reader, "_local_hide_marker_dir", lambda slug: bad)
 
         def fake_run(cmd, *a, **k):
             class R:
@@ -187,3 +189,66 @@ class TestLocalHideMarker:
         monkeypatch.setattr("console.services.github_reader.subprocess.run", fake_run)
         out = github_reader.write_gate_decision("content", "g-robust", {"action": "approve"})
         assert out is not None, "commit success must survive a marker write error"
+
+
+@pytest.mark.parametrize("action,pending", [("approve", False), ("reject", False),
+                                          ("defer", False), ("modify", True)])
+def test_external_marker_filters_pending_gate(tmp_path, monkeypatch, action, pending):
+    repo = tmp_path / "bubble-ops-content"
+    gates = repo / "queues" / "gates"
+    gates.mkdir(parents=True)
+    gate = gates / "publish-1709.yaml"
+    gate.write_text("id: publish-1709\n")
+    before = list(repo.rglob("*"))
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+    github_reader._write_local_hide_marker("content", "publish-1709", {
+        "action": action, "comment": "revise",
+    })
+    rows = github_reader._filter_pending_gates("content", repo, [
+        (gate, {"id": "publish-1709"}, None),
+    ])
+    assert bool(rows) is pending
+    if pending:
+        assert rows[0]["_revision_requested"] is True
+    assert list(repo.rglob("*")) == before
+
+
+def test_external_marker_is_superseded_by_processed_decision(tmp_path, monkeypatch):
+    repo = tmp_path / "bubble-ops-content"
+    gates = repo / "queues" / "gates"
+    gates.mkdir(parents=True)
+    (gates / "publish-1709.yaml").write_text("id: publish-1709\n")
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: repo)
+    decision = {"gate_id": "publish-1709", "action": "approve",
+                "decided_at": "2026-10-03T10:00:00Z"}
+    github_reader._write_local_hide_marker("content", "publish-1709", decision)
+    rows = github_reader.list_recent_decisions(["content"])
+    assert [(d["gate_id"], d["processed"]) for d in rows] == [("publish-1709", False)]
+    archive = repo / "inbox" / "decisions" / ".processed"
+    archive.mkdir(parents=True)
+    (archive / "publish-1709.yaml").write_text(yaml.safe_dump(decision))
+    rows = github_reader.list_recent_decisions(["content"])
+    assert [(d["gate_id"], d["processed"]) for d in rows] == [("publish-1709", True)]
+
+
+def test_new_external_decision_wins_over_stale_mirror(tmp_path, monkeypatch):
+    repo = tmp_path / "bubble-ops-content"
+    inbox = repo / "inbox" / "decisions"
+    inbox.mkdir(parents=True)
+    gate = repo / "queues" / "gates" / "publish-1709.yaml"
+    gate.parent.mkdir(parents=True)
+    gate.write_text("id: publish-1709\n")
+    old = {"action": "modify", "decided_at": "2026-10-02T10:00:00Z"}
+    (inbox / "publish-1709.yaml").write_text(yaml.safe_dump(old))
+    monkeypatch.setattr(github_reader, "repo_path", lambda slug: repo)
+    monkeypatch.setattr(github_reader, "runtime_repo_path", lambda slug: repo)
+    github_reader._write_local_hide_marker("content", "publish-1709", {
+        "action": "approve", "decided_at": "2026-10-03T10:00:00Z",
+    })
+    assert github_reader._filter_pending_gates("content", repo, [
+        (gate, {"id": "publish-1709"}, None),
+    ]) == []
+    rows = github_reader.list_recent_decisions(["content"])
+    assert [d["action"] for d in rows] == ["approve"]
+    assert yaml.safe_load((inbox / "publish-1709.yaml").read_text()) == old

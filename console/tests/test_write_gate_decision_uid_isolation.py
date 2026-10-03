@@ -59,9 +59,10 @@ def test_uid_isolated_vps_dept_routes_to_github(tmp_path, monkeypatch):
 
     assert out is not None
     assert called["args"] == ("maya", "gate-42", {"decision": "approve"})
-    # #1597: the mirror gets the existing best-effort UX marker only AFTER
+    # #1709: console state gets the best-effort UX marker only AFTER
     # the authoritative GitHub commit succeeds.
-    assert (legacy_mirror / "inbox" / "decisions" / "gate-42.yaml").exists()
+    assert (github_reader._local_hide_marker_dir("maya") / "gate-42.yaml").exists()
+    assert not (legacy_mirror / "inbox").exists()
     # Nor must anything have been written into the live tree directly — the
     # console process has no write access there; delivery is via GitHub only.
     assert not (live_tree / "inbox" / "decisions" / "gate-42.yaml").exists()

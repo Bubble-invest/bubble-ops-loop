@@ -625,7 +625,7 @@ def test_root_does_not_read_or_follow_dept_files(fleet, monkeypatch):
     for command in commands:
         slug = Path(command[command.index('--dept-dir') + 1]).name
         assert command[:4] == ['runuser', '-u', 'agent-' + slug, '--']
-        assert command[4:7] == [sys.executable, '-I', str(ROOT / 'scripts/lib/management_kpis.py')]
+        assert command[4:8] == [sys.executable, '-I', '-B', str(ROOT / 'scripts/lib/management_kpis.py')]
 
 
 def test_missing_export_alarm_once_retry_after_failed_emit(fleet):
@@ -995,3 +995,24 @@ def test_1711_mac_ledger_symlink_is_not_followed(evidence, tmp_path):
     doc = kpi.build(dept, DAY, transcripts_dir=sessions)
     assert 'dispatch' in doc['sources_missing']
     assert 'external' not in doc['missions']
+def test_root_wrapper_prevents_bytecode_even_in_isolated_python(tmp_path):
+    """Exercise -I (which ignores PYTHON* env) with a real repo-local import."""
+    framework = tmp_path / "framework"
+    scripts = framework / "scripts"
+    lib = scripts / "lib"
+    lib.mkdir(parents=True)
+    wrapper = scripts / "fleet-export-check.sh"
+    wrapper.write_text((ROOT / "scripts/fleet-export-check.sh").read_text())
+    (lib / "dispatch_helpers.py").write_text("value = 1709\n")
+    (lib / "fleet_export_check.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).parent))\n"
+        "import dispatch_helpers\n"
+        "assert sys.dont_write_bytecode\n"
+        "print(dispatch_helpers.value)\n"
+    )
+    env = dict(os.environ, PYTHON_BIN=sys.executable, PYTHONDONTWRITEBYTECODE="0")
+    result = subprocess.run(["bash", str(wrapper)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1709"
+    assert not list(framework.rglob("__pycache__"))

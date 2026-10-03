@@ -19,8 +19,8 @@
 #     fail-safe to "not local", never pull a vps dept by accident).
 #   - FAIL-SAFE: a sync failure on one dept LOGS + SKIPS it and the loop
 #     CONTINUES to the next dept — one bad mirror must never wedge the others.
-#     The script still exits 0 on a transient miss so the systemd timer doesn't
-#     flap; a genuinely broken mirror surfaces in the journal.
+#     Any failed mirror makes the unit fail and emits a deduplicated board alarm.
+#     Alarm delivery is best-effort and never stops the other mirrors.
 #   - Idempotent: a clean, up-to-date mirror re-syncs to a no-op.
 #
 # ── Self-heal (board #667, 2026-07-16) ──────────────────────────────────────
@@ -116,11 +116,10 @@
 # we WARN-skip as before, but track a per-dept consecutive-miss counter
 # (${AGENTS_ROOT}/.sync-local-dept-clones-state/<slug>.skips, deliberately
 # OUTSIDE the mirror so the mirror's own `git clean -fd` can never reset it)
-# and, once it reaches ESCALATE_AFTER runs, emit a kanban card via
-# tools/kanban/emit_kanban_item.sh — this is the "never silently skip
-# forever" half of the fix, for the residual case self-heal can't cover.
+# and log ESCALATE once it reaches ESCALATE_AFTER runs. Since #1709 every
+# failure already emits one stable per-mirror alarm via the standard wrapper.
 #
-# inbox/decisions/* hide-markers (board wiki, 2026-07-12 incident): the cockpit
+# Legacy inbox/decisions/* hide-markers (board wiki, 2026-07-12 incident): the cockpit
 # writes an UNTRACKED decision file straight onto the mirror's disk so a
 # resolved gate disappears immediately (list_pending_gates filters on it)
 # without waiting for a GitHub round-trip. These files are NEVER pushed/pulled
@@ -128,6 +127,8 @@
 # sync, so `clean -fd` explicitly excludes inbox/decisions/ and the sync
 # additionally snapshots + restores that dir around the reset as a second
 # guarantee (belt-and-suspenders against a future clean-path change).
+# Since #1709 new markers live in console state OUTSIDE the mirror; retain
+# this legacy exception and quarantine of other untracked work for safety.
 #
 # Usage: sync-local-dept-clones.sh [--agents-root <dir>]
 #   --agents-root  base dir holding bubble-ops-<slug> clones (default
@@ -147,9 +148,14 @@ CHECK_ORIGIN=""
 # see (kanban card). Overridable for tests / a tighter operational SLA.
 ESCALATE_AFTER="${BUBBLE_SYNC_ESCALATE_AFTER:-3}"
 # EMIT_KANBAN: the repo's kanban emitter. Fixed VPS-deployed path by default
-# (same convention as scripts/emit_rick_request.sh); overridable so tests can
+# (portable skill wrapper); overridable so tests can
 # point it at a stub without touching the real board.
-EMIT_KANBAN="${BUBBLE_SYNC_EMIT_KANBAN:-/home/claude/scripts/emit_kanban_item.sh}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The VPS installs this wrapper separately under /home/claude/scripts.
+if [[ ! -d "$REPO_ROOT/skills/emit-kanban-task" && -d /home/claude/bubble-ops-loop ]]; then
+    REPO_ROOT=/home/claude/bubble-ops-loop
+fi
+EMIT_KANBAN="${BUBBLE_SYNC_EMIT_KANBAN:-${REPO_ROOT}/skills/emit-kanban-task/scripts/emit.sh}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -433,26 +439,50 @@ clear_skip_count() {
 # escalate_stuck_dept <slug> <dir> <reason> <skip_n>: the "never silently
 # skip forever" half of #1064 — for the one case self-heal genuinely can't
 # run (origin's canonical branch itself can't be resolved), push a loud
-# signal after ESCALATE_AFTER consecutive misses instead of leaving it to a
-# human noticing a stale journal WARN. Best-effort: must never crash the sync
-# (a dead board/kanban emitter degrades to a log line, nothing more).
+# journal signal after ESCALATE_AFTER consecutive misses. Board emission is
+# now handled once per failure by fail_mirror(), for every failure category.
 escalate_stuck_dept() {
     local slug="$1" dir="$2" reason="$3" skip_n="$4"
     log "ESCALATE ${slug}: stuck for ${skip_n} consecutive sync(s) — ${reason}"
+}
+
+# One alarm per failed mirror per run; the stable task id dedupes repeat ticks.
+fail_mirror() {
+    local slug="$1" dir="$2" reason="$3"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    log "WARN ${slug}: path=${dir}: ${reason}"
     if [[ -x "$EMIT_KANBAN" ]]; then
-        "$EMIT_KANBAN" \
-            task="sync-local-dept-clones" \
-            title="${slug} mirror stuck ${skip_n}x - ${reason}" \
-            body="scripts/sync-local-dept-clones.sh could not converge ${dir} for ${skip_n} consecutive runs (${reason}). Manual fix: git -C ${dir} checkout -B <canonical> origin/<canonical>; git -C ${dir} branch --set-upstream-to=origin/<canonical> <canonical>; git -C ${dir} reset --hard origin/<canonical>." \
-            type="incident" \
-            priority="high" \
-            owner="rnd" \
-            budget="5" \
-            >/dev/null 2>&1 \
-        || log "WARN ${slug}: escalation emit failed (kanban unreachable) — see the WARN above, fix manually"
+        (cd "$REPO_ROOT" && "$EMIT_KANBAN" \
+            task="mirror-sync-failed-${slug}" \
+            title="${slug} read-only mirror sync failed" \
+            body="Mirror ${dir} could not converge: ${reason}. Inspect ownership and journal; do not delete data with privilege." \
+            type=incident priority=high owner=rnd budget=5) >/dev/null 2>&1 \
+            || log "WARN ${slug}: mirror alarm emit failed — see sync failure above"
     else
-        log "WARN ${slug}: escalation target ${EMIT_KANBAN} not found/executable — no kanban card emitted, see log only"
+        log "WARN ${slug}: mirror alarm emitter ${EMIT_KANBAN} not executable"
     fi
+}
+
+# GNU stat on the VPS; BSD fallback lets the offline harness run on a Mac.
+path_owner() {
+    stat -c '%U(uid=%u)' -- "$1" 2>/dev/null \
+        || stat -f '%Su(uid=%u)' "$1" 2>/dev/null || echo unknown
+}
+
+# Keep the existing conservative guard: all foreign-owned paths block sync,
+# even if an ACL might permit unlinking one. Report working-tree untracked
+# paths (including ignored bytecode) before any fetch/reset, never sudo/chown.
+foreign_path_details() {
+    local dir="$1" paths="$2" p kind
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        kind=foreign-owned
+        if [[ "$p" != "$dir/.git/"* ]] && \
+            ! git -C "$dir" ls-files --error-unmatch -- "${p#"$dir/"}" >/dev/null 2>&1; then
+            kind="foreign-owned untracked"
+        fi
+        printf ' [%s path=%q owner=%s]' "$kind" "$p" "$(path_owner "$p")"
+    done <<< "$paths"
 }
 
 # ── Destructive-blast-radius containment (r16 review, 2026-07-16) ──────────
@@ -511,8 +541,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     if [[ ! -d "$dir/.git" ]]; then
         # The read-only clone hasn't been created yet (an activation-time step);
         # log + skip rather than error — never wedge the run on a missing mirror.
-        log "skip ${slug}: no git clone at ${dir} yet (mirror not created — activation step)"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
+        fail_mirror "$slug" "$dir" "no git clone (mirror not created — activation step)"
         continue
     fi
 
@@ -520,7 +549,10 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     # sync runs as `claude` and CANNOT fix ownership itself — detect it, log
     # the exact remediation command, and skip this dept for this tick rather
     # than fail mid-reset with a raw "Permission denied".
-    root_owned="$(root_owned_paths "$dir")"
+    if ! root_owned="$(root_owned_paths "$dir")"; then
+        fail_mirror "$slug" "$dir" "ownership scan failed — mirror cannot be inspected safely"
+        continue
+    fi
     # Self-heal the common footgun: a root-owned .git/index (left by a root
     # restic-restore or a stray sudo git — seen 2026-07-19, blocked the content
     # mirror for days). The index is a DERIVED file and .git/ itself is claude-owned,
@@ -531,12 +563,14 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
         echo "$root_owned" | while read -r p; do [[ -n "$p" ]] && rm -f "$p"; done
         git -C "$dir" reset -q 2>/dev/null || true
         log "${slug}: self-healed root-owned .git/index (rebuilt as $(id -un)) — was blocking the mirror pull"
-        root_owned="$(root_owned_paths "$dir")"
+        if ! root_owned="$(root_owned_paths "$dir")"; then
+            fail_mirror "$slug" "$dir" "ownership rescan failed after index rebuild"
+            continue
+        fi
     fi
     if [[ -n "$root_owned" ]]; then
         root_owned_count="$(echo "$root_owned" | grep -c .)"
-        log "WARN ${slug}: ${root_owned_count} root-owned path(s) in mirror — sync cannot proceed as user '$(id -un)'. Fix on the VPS: chown -R $(id -un):$(id -gn) '${dir}'"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
+        fail_mirror "$slug" "$dir" "${root_owned_count} foreign-owned path(s); sync cannot proceed as user '$(id -un)':$(foreign_path_details "$dir" "$root_owned"). Operator ownership repair: chown -R $(id -un):$(id -gn) '${dir}'"
         continue
     fi
 
@@ -586,8 +620,7 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     before_head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")"
 
     if ! git -C "$dir" fetch --quiet origin >/tmp/.sync-local-fetch-$$ 2>&1; then
-        log "WARN ${slug}: git fetch failed — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-fetch-$$ 2>/dev/null)"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
+        fail_mirror "$slug" "$dir" "git fetch failed — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-fetch-$$ 2>/dev/null)"
         rm -f /tmp/.sync-local-fetch-$$
         restore_hide_markers "$dir" "$stash_dir"
         continue
@@ -625,9 +658,8 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
             # name. ESCALATE after N consecutive misses instead of warning
             # into the void forever (the exact #1064 failure mode).
             skip_n="$(bump_skip_count "$slug")"
-            log "WARN ${slug}: no upstream tracking branch (on '${current_branch:-detached HEAD}') and origin's canonical branch could not be resolved — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
+            fail_mirror "$slug" "$dir" "no upstream tracking branch (on '${current_branch:-detached HEAD}') and origin's canonical branch could not be resolved — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
             [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "no upstream + canonical branch unresolvable" "$skip_n"
-            FAIL_COUNT=$((FAIL_COUNT + 1))
             restore_hide_markers "$dir" "$stash_dir"
             continue
         fi
@@ -636,9 +668,8 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
         target_head="$(git -C "$dir" rev-parse "$target_ref" 2>/dev/null || echo "")"
         if [[ -z "$target_head" ]]; then
             skip_n="$(bump_skip_count "$slug")"
-            log "WARN ${slug}: resolved canonical branch '${canonical_branch}' but ${target_ref} doesn't exist locally after fetch — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
+            fail_mirror "$slug" "$dir" "resolved canonical branch '${canonical_branch}' but ${target_ref} doesn't exist locally after fetch — skipping (mirror left as-is) [consecutive misses: ${skip_n}]"
             [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "canonical branch '${canonical_branch}' unreachable" "$skip_n"
-            FAIL_COUNT=$((FAIL_COUNT + 1))
             restore_hide_markers "$dir" "$stash_dir"
             continue
         fi
@@ -672,10 +703,9 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
             upstream="$target_ref"
         else
             skip_n="$(bump_skip_count "$slug")"
-            log "WARN ${slug}: self-heal checkout of canonical branch '${canonical_branch}' FAILED — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-checkout-$$ 2>/dev/null) [consecutive misses: ${skip_n}]"
+            fail_mirror "$slug" "$dir" "self-heal checkout of canonical branch '${canonical_branch}' FAILED — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-checkout-$$ 2>/dev/null) [consecutive misses: ${skip_n}]"
             rm -f /tmp/.sync-local-checkout-$$
             [[ "$skip_n" -ge "$ESCALATE_AFTER" ]] && escalate_stuck_dept "$slug" "$dir" "self-heal checkout of '${canonical_branch}' failed" "$skip_n"
-            FAIL_COUNT=$((FAIL_COUNT + 1))
             restore_hide_markers "$dir" "$stash_dir"
             continue
         fi
@@ -734,13 +764,16 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     # freeze forever on any of the three failure modes.
     reset_ok=1
     if ! git -C "$dir" reset --hard "$upstream_head" >/tmp/.sync-local-reset-$$ 2>&1; then
-        log "WARN ${slug}: git reset --hard failed — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-reset-$$ 2>/dev/null)"
+        fail_mirror "$slug" "$dir" "git reset --hard failed — skipping (mirror left as-is): $(tail -n1 /tmp/.sync-local-reset-$$ 2>/dev/null)"
         reset_ok=0
     fi
     rm -f /tmp/.sync-local-reset-$$
 
     if [[ "$reset_ok" == "1" ]]; then
-        git -C "$dir" clean -fd --exclude=inbox/decisions --exclude=.selfheal-quarantine >/tmp/.sync-local-clean-$$ 2>&1
+        if ! git -C "$dir" clean -fd --exclude=inbox/decisions --exclude=.selfheal-quarantine >/tmp/.sync-local-clean-$$ 2>&1; then
+            fail_mirror "$slug" "$dir" "git clean failed: $(tail -n1 /tmp/.sync-local-clean-$$ 2>/dev/null)"
+            reset_ok=0
+        fi
         rm -f /tmp/.sync-local-clean-$$
     fi
 
@@ -750,10 +783,10 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
     restore_hide_markers "$dir" "$stash_dir"
 
     if [[ "$reset_ok" != "1" ]]; then
-        FAIL_COUNT=$((FAIL_COUNT + 1))
         continue
     fi
 
+    clear_skip_count "$slug"
     after_head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")"
     if [[ "$endangered" == "1" ]]; then
         # DISTINCT loud line (review round 2; count fixed board #1096): this is
@@ -781,6 +814,5 @@ for dir in "${AGENTS_ROOT}"/bubble-ops-*; do
 done
 
 log "DONE local_depts=${LOCAL_COUNT} failures=${FAIL_COUNT}"
-# Always exit 0: a transient sync miss must not flap the systemd timer. Genuine
-# breakage is visible in the journal (the WARN lines + the failures= count).
-exit 0
+# Continue through every mirror, but expose any failure to systemd.
+[[ "$FAIL_COUNT" -eq 0 ]]

@@ -17,8 +17,7 @@
 #   T2  a clear per-dept "synced" log line names each local dept converged.
 #   T3  FAIL-SAFE: a sync failure on one local dept logs + skips it but the
 #       OTHER local depts STILL get synced (one bad dept never wedges the run)
-#       and the script still exits 0 (a transient mirror miss must not flap a
-#       timer).
+#       and the script exits non-zero so systemd surfaces the failure.
 #   T4  no host:local depts at all -> clean no-op exit 0.
 #   T5  the fixture agents-root is a throwaway, NOT the live /home/claude/agents.
 #   T6  REAL-GIT regression (#405, covered by the #667 converge-to-origin
@@ -112,6 +111,17 @@ trap 'rm -rf "$WORK"' EXIT
 
 AGENTS="$WORK/agents"; mkdir -p "$AGENTS"
 
+# All alarms are hermetic, including failures in the older regression cases.
+export EMIT_CALLS_FILE="$WORK/alarms.log"
+: > "$EMIT_CALLS_FILE"
+cat > "$WORK/emit.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$EMIT_CALLS_FILE"
+exit "${EMIT_STUB_RC:-0}"
+EOF
+chmod +x "$WORK/emit.sh"
+export BUBBLE_SYNC_EMIT_KANBAN="$WORK/emit.sh"
+
 # ── git stub ────────────────────────────────────────────────────────────────
 # Emulates the verb set the self-heal strategy (board #667) drives per dept:
 # ls-files -v (skip-worktree scan), rev-parse HEAD/@{u}/<upstream>, fetch,
@@ -158,7 +168,12 @@ case "\$verb" in
       exit 1
     fi
     exit 0 ;;
-  clean) exit 0 ;;
+  clean)
+    if [[ "\${CLEAN_STUB_FAIL:-0}" == 1 ]]; then
+      echo 'warning: cannot remove blocked/path: Permission denied' >&2
+      exit 1
+    fi
+    exit 0 ;;
   update-index) exit 0 ;;
   *) exit 0 ;;
 esac
@@ -203,7 +218,7 @@ nowant "T2b vps dept 'ben' is never mentioned as pulled" "pull.*ben\|ben.*pulled
 
 # -----------------------------------------------------------------------------
 # T3: FAIL-SAFE — a pull failure on ONE local dept must not wedge the others;
-#     the run still pulls the rest and exits 0.
+#     the run still pulls the rest and exits non-zero.
 # -----------------------------------------------------------------------------
 rm -rf "$AGENTS"; mkdir -p "$AGENTS"; : > "$GIT_LOG"; : > "$FAIL_FILE"
 make_dept content local
@@ -213,8 +228,13 @@ echo "bubble-ops-media" > "$FAIL_FILE"   # media's pull will exit 1
 rc="$(run)"
 pulled="$(sed 's#.*/##' "$GIT_LOG" | sed 's/^bubble-ops-//' | sort | tr '\n' ' ')"
 chk_eq "T3 all three local depts were ATTEMPTED (failure didn't abort the loop)" "content extra media " "$pulled"
-chk "T3b a single pull failure still exits 0 (transient miss must not flap the timer)" 0 "$rc"
+chk "T3b a single sync failure exits non-zero" 1 "$rc"
 want "T3c the failed dept is logged as skipped/failed (not silent)" "media" "$WORK/run.log"
+chk_eq "T3f exactly one alarm for the stuck mirror" "1" "$(grep -c 'task=mirror-sync-failed-media ' "$EMIT_CALLS_FILE")"
+rc="$(EMIT_STUB_RC=1 run)"
+chk "T3g emitter failure does not change sync failure status" 1 "$rc"
+want "T3h emitter failure is visible" "mirror alarm emit failed" "$WORK/run.log"
+chk_eq "T3i repeats reuse the stable mirror task id" "2" "$(grep -c 'task=mirror-sync-failed-media ' "$EMIT_CALLS_FILE")"
 # the OTHER local depts must have been synced despite media failing
 want "T3d content still pulled after media failed" "content" "$WORK/run.log"
 want "T3e extra still pulled after media failed"   "extra"   "$WORK/run.log"
@@ -519,7 +539,7 @@ real_git_env_with_find_stub=( env "PATH=${FIND_STUB_DIR}:${PATH#${STUBS}:}" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null )
 "${real_git_env_with_find_stub[@]}" "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS4" >"$WORK/run-real4.log" 2>&1
 rc4=$?
-chk "T9 root-owned-path run still exits 0 (fail-safe, no timer flap)" 0 "$rc4"
+chk "T9 foreign-owned-path run exits non-zero" 1 "$rc4"
 want "T9a root-owned dept WARN names the exact chown remediation" "chown -R" "$WORK/run-real4.log"
 want "T9b root-owned dept slug named in the WARN" "content" "$WORK/run-real4.log"
 # The root-owned mirror must NOT have been reset (skipped BEFORE any reset) —
@@ -1104,9 +1124,9 @@ run_t18() {
 : > "$WORK/run-real12-2.log"; run_t18 >"$WORK/run-real12-2.log" 2>&1; rc12_2=$?
 : > "$WORK/run-real12-3.log"; run_t18 >"$WORK/run-real12-3.log" 2>&1; rc12_3=$?
 
-chk "T18 run 1 exits 0 (fail-safe, no timer flap)" 0 "$rc12_1"
-chk "T18 run 2 exits 0" 0 "$rc12_2"
-chk "T18 run 3 exits 0" 0 "$rc12_3"
+chk "T18 run 1 exits non-zero" 1 "$rc12_1"
+chk "T18 run 2 exits non-zero" 1 "$rc12_2"
+chk "T18 run 3 exits non-zero" 1 "$rc12_3"
 want "T18a run 1 WARN-skips (not silent)" "WARN.*noheadorigin.*canonical branch could not be resolved" "$WORK/run-real12-1.log"
 want "T18b run 1 names the consecutive-miss count" "consecutive misses: 1" "$WORK/run-real12-1.log"
 want "T18c run 2 names the consecutive-miss count" "consecutive misses: 2" "$WORK/run-real12-2.log"
@@ -1115,8 +1135,8 @@ nowant "T18e no escalation fired before the threshold (run 1)" "ESCALATE" "$WORK
 nowant "T18f no escalation fired before the threshold (run 2)" "ESCALATE" "$WORK/run-real12-2.log"
 want "T18g escalation fires exactly at the threshold (run 3)" "ESCALATE noheadorigin" "$WORK/run-real12-3.log"
 emit_call_count="$(grep -c . "$EMIT_CALLS" 2>/dev/null || echo 0)"
-chk_eq "T18h the (stubbed) kanban emitter was invoked exactly once (only at the threshold)" "1" "$emit_call_count"
-want "T18i the kanban emit call names the dept + task" "task=sync-local-dept-clones" "$EMIT_CALLS"
+chk_eq "T18h one alarm per failed mirror per run" "3" "$emit_call_count"
+want "T18i the kanban emit call names the dept + task" "task=mirror-sync-failed-noheadorigin" "$EMIT_CALLS"
 want "T18j the kanban emit call is a real incident title naming the dept" "noheadorigin" "$EMIT_CALLS"
 
 # -----------------------------------------------------------------------------
@@ -1302,6 +1322,63 @@ chk_eq "T21 precondition: mirror started on the stale default branch" "onboardin
 chk "T21a real-git run exits 0" 0 "$rc21"
 chk_eq "T21b mirror self-healed to origin's CURRENT default 'main' (stale origin/HEAD refreshed)" "main" "$after_branch21"
 chk_eq "T21c mirror converged to origin/main HEAD" "$origin_head21" "$after_head21"
+
+# T23: clean failures also fail the unit and emit exactly one alarm.
+rm -rf "$AGENTS"; mkdir -p "$AGENTS"; : > "$FAIL_FILE"; : > "$EMIT_CALLS_FILE"
+make_dept content local
+rc23="$(CLEAN_STUB_FAIL=1 run)"
+chk "T23 failed clean exits non-zero" 1 "$rc23"
+want "T23a clean error identifies the blocked path" 'git clean failed:.*blocked/path' "$WORK/run.log"
+chk_eq "T23b one alarm for a clean failure" "1" "$(grep -c 'task=mirror-sync-failed-content ' "$EMIT_CALLS_FILE")"
+: > "$EMIT_CALLS_FILE"
+rc23="$(run)"
+chk "T23c subsequent healthy run exits zero" 0 "$rc23"
+chk_eq "T23d healthy run emits no alarms" "0" "$(wc -l < "$EMIT_CALLS_FILE" | tr -d ' ')"
+
+# T24: two stuck mirrors produce distinct stable alarms; healthy sibling syncs.
+rm -rf "$AGENTS"; mkdir -p "$AGENTS"; : > "$FAIL_FILE"; : > "$EMIT_CALLS_FILE"
+make_dept content local; make_dept accountant local; make_dept rnd local
+printf 'bubble-ops-content\nbubble-ops-accountant\n' > "$FAIL_FILE"
+rc24="$(run)"
+chk "T24 multiple failures exit non-zero" 1 "$rc24"
+chk_eq "T24a one content alarm" "1" "$(grep -c 'task=mirror-sync-failed-content ' "$EMIT_CALLS_FILE")"
+chk_eq "T24b one accountant alarm" "1" "$(grep -c 'task=mirror-sync-failed-accountant ' "$EMIT_CALLS_FILE")"
+want "T24c healthy sibling still syncs" 'synced rnd:' "$WORK/run.log"
+want "T24d failure count stays per-mirror" 'DONE local_depts=3 failures=2' "$WORK/run.log"
+: > "$FAIL_FILE"
+
+# T22: foreign-owned untracked paths: precise path + owner, no fetch/removal.
+# Reuse the healthy real-git fixture. No privileged chown is required.
+foreign="$MIRROR21/inbox/decisions/publish-1709.yaml"
+mkdir -p "$(dirname "$foreign")"
+printf 'action: approve\n' > "$foreign"
+owner_stubs="$WORK/owner-stubs"; mkdir -p "$owner_stubs"
+cat > "$owner_stubs/find" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "$MIRROR21" && "\$2" == "-not" ]]; then
+    printf '%s\n' "$foreign"
+    exit 0
+fi
+exec "$REAL_FIND" "\$@"
+EOF
+REAL_STAT="$(command -v stat)"
+cat > "$owner_stubs/stat" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *publish-1709.yaml*) echo 'bubble-console(uid=991)'; exit 0 ;;
+esac
+exec "$REAL_STAT" "\$@"
+EOF
+chmod +x "$owner_stubs/find" "$owner_stubs/stat"
+: > "$EMIT_CALLS_FILE"
+env PATH="$owner_stubs:${PATH#${STUBS}:}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+  "$SCRIPT_UNDER_TEST" --agents-root "$REALGIT_AGENTS21" > "$WORK/run-foreign.log" 2>&1
+rc22=$?
+chk "T22 ownership guard fails the unit" 1 "$rc22"
+want "T22a exact untracked path is reported" "foreign-owned untracked path=$foreign" "$WORK/run-foreign.log"
+want "T22b actual owner and uid are reported" 'owner=bubble-console(uid=991)' "$WORK/run-foreign.log"
+chk_eq "T22c one stable alarm for this mirror" "1" "$(grep -c 'task=mirror-sync-failed-stalehead ' "$EMIT_CALLS_FILE")"
+chk_eq "T22d foreign file is preserved" 'action: approve' "$(cat "$foreign")"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"

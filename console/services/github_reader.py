@@ -617,35 +617,20 @@ def _filter_pending_gates(slug: str, root: Path, gate_files: List[tuple]) -> Lis
     stays visible + flagged) to an already-parsed gate_files list. Split out
     of list_pending_gates so list_layer_queues can reuse a single parse of
     queues/gates/ without re-globbing/re-parsing it (board #450)."""
-    # Pre-compute the set of gate ids that already have a decision recorded in
-    # inbox/decisions/.  The approval path (write_gate_decision) writes the
-    # decision file there immediately when {{OPERATOR}} clicks Approve/Reject in the
-    # cockpit — BEFORE the dept's agent loop processes and resolves the gate
-    # (which is when resolved:true would normally appear in the gate YAML).
-    # Without this check there is a window — between {{OPERATOR}} approving and the
-    # dept agent draining the inbox — where the gate still appears as pending
-    # in "Décisions qu'on attend de toi".  Skipping it as soon as its decision
-    # file exists closes that window immediately.
-    #
-    # This check applies to host=vps depts (decision file written to disk by
-    # write_gate_decision).  For host=local depts the decision is committed to
-    # GitHub, not to the cockpit's local disk, so the inbox/ directory here may
-    # not yet reflect it — but host=local gates are a separate case (Miranda on
-    # {{OPERATOR_2}}'s Mac).  The live bug is Maya = vps, so the disk check fixes the
-    # reported issue.  A future improvement could call the GitHub API for
-    # host=local depts, but we keep the scope narrow here.
-    decisions_dir = root / "inbox" / "decisions"
-    # Map gate_id → decision doc (for modify detection).
+    # Remote-delivery UX markers live in console-owned state, outside Git trees.
+    # A newer operator decision must win while the mirror still has an old copy.
     decided_map: Dict[str, Any] = {}
-    if decisions_dir.is_dir():
+    for decisions_dir in (root / "inbox" / "decisions", _local_hide_marker_dir(slug)):
+        if not decisions_dir.is_dir():
+            continue
         for dp in decisions_dir.glob("*.yaml"):
             try:
                 ddoc = yaml.safe_load(dp.read_text(encoding="utf-8"))
-                if isinstance(ddoc, dict):
+                ddoc = ddoc if isinstance(ddoc, dict) else {}
+                prior = decided_map.get(dp.stem, {})
+                if str(ddoc.get("decided_at", "")) >= str(prior.get("decided_at", "")):
                     decided_map[dp.stem] = ddoc
-                else:
-                    decided_map[dp.stem] = {}
-            except yaml.YAMLError:
+            except (OSError, yaml.YAMLError):
                 decided_map[dp.stem] = {}
 
     out: List[Dict[str, Any]] = []
@@ -1610,7 +1595,7 @@ def write_gate_decision(slug: str, gate_id: str, decision: Dict[str, Any]
         # gate, and pushes `resolved:true` back (minutes when the loop is alive,
         # up to the launchd backstop otherwise). If the dept's repo is ALSO
         # mirrored on the cockpit disk (the hybrid case — gates render from it),
-        # drop the same decision file there as a local hide-marker so
+        # store a console-owned hide-marker outside the mirror so
         # list_pending_gates filters the card immediately, exactly like host=vps.
         # Best-effort, only on a successful GitHub commit; never fails the call.
         if out is not None:
@@ -1667,18 +1652,26 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _local_hide_marker_dir(slug: str) -> Path:
+    """Use the existing writable console state directory (#1709)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", slug):
+        raise ValueError("invalid department slug")
+    return settings.SESSION_DB_PATH.parent / "gate-markers" / slug
+
+
 def _write_local_hide_marker(slug: str, gate_id: str, decision: Dict[str, Any]
                              ) -> None:
-    """For a remote-write dept whose repo is ALSO mirrored on the cockpit disk,
-    drop the decision file into the local inbox/decisions/ as a hide-marker so
-    list_pending_gates filters the card immediately (the authoritative copy still
-    went to GitHub). Best-effort: silently no-op if the repo isn't on disk or the
-    write fails — it must never turn a successful GitHub commit into an error."""
+    """Hide a successfully delivered remote decision without writing in a mirror.
+
+    GitHub remains the delivery channel; this best-effort console state is only
+    for immediate display and survives mirror syncs independently.
+    """
     try:
-        root = repo_path(slug)
-        if root is None:
-            return  # no on-disk mirror (pure local dept) — nothing to mark
-        decisions_dir = root / "inbox" / "decisions"
+        if repo_path(slug) is None:
+            return  # no on-disk mirror — nothing to mark
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", gate_id):
+            raise ValueError("invalid gate id")
+        decisions_dir = _local_hide_marker_dir(slug)
         decisions_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(
             decisions_dir / f"{gate_id}.yaml",
@@ -2286,28 +2279,39 @@ def list_recent_decisions(slugs: List[str], limit: Optional[int] = 10) -> List[D
         mirror = repo_path(slug)
         scan_dirs = [(False, decisions_dir), (True, decisions_dir / ".processed")]
         # A successful remote write leaves a local marker until the runtime
-        # pulls it. Canonical decisions (including consumed ones) win over it.
+        # pulls it. Canonical decisions win unless an external marker is newer.
         runtime_ids = {p.stem for _, directory in scan_dirs
                        for p in directory.glob("*.yaml")}
         if mirror is not None and mirror != root:
             scan_dirs.append((False, mirror / "inbox" / "decisions"))
+        scan_dirs.append((False, _local_hide_marker_dir(slug)))
 
         # Scan both the live inbox and the .processed/ sub-directory.
         for processed, glob_dir in scan_dirs:
             if not glob_dir.is_dir():
                 continue
             for dp in glob_dir.glob("*.yaml"):
-                if glob_dir not in (decisions_dir, decisions_dir / ".processed"):
-                    if dp.stem in runtime_ids:
-                        continue
-                    gate = load_gate_direct(slug, dp.stem)
-                    if not gate or gate.get("resolved") or gate.get("decided_by") or gate.get("approved_by"):
-                        continue
                 try:
                     raw = dp.read_text(encoding="utf-8")
                     ddoc = yaml.safe_load(raw)
                     if not isinstance(ddoc, dict):
                         continue
+                    if glob_dir not in (decisions_dir, decisions_dir / ".processed"):
+                        if dp.stem in runtime_ids:
+                            # A re-decision after modify may be newer than the
+                            # mirrored inbox/archive. Keep that external marker.
+                            prior_stamp = max((d["decided_at"] for d in results
+                                               if d["slug"] == slug and d["gate_id"] == dp.stem),
+                                              default="")
+                            if (glob_dir != _local_hide_marker_dir(slug)
+                                    or str(ddoc.get("decided_at", "")) <= prior_stamp):
+                                continue
+                        gate = load_gate_direct(slug, dp.stem)
+                        if not gate or gate.get("resolved") or gate.get("decided_by") or gate.get("approved_by"):
+                            continue
+                    if glob_dir == _local_hide_marker_dir(slug) and dp.stem in runtime_ids:
+                        results = [d for d in results if d["slug"] != slug
+                                   or d["gate_id"] != dp.stem or d["processed"]]
                     gate_id = ddoc.get("gate_id") or dp.stem
                     action = ddoc.get("action", "")
                     decided_at = ddoc.get("decided_at", "")

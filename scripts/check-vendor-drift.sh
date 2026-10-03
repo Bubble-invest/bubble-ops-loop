@@ -44,6 +44,8 @@
 #   1  at least one FORK divergence found — a real, unmanaged drift to look at.
 #   2  usage / unrecoverable setup error (bad flag, missing framework).
 set -uo pipefail
+# Imports must never leave bytecode owned by this maintenance UID in dept trees.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
