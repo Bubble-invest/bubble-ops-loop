@@ -108,6 +108,9 @@ ReadWritePaths=/home/claude/agents
 # (board #1074).
 StateDirectory=bubble-ops-console
 Environment=CONSOLE_SESSION_DB=/var/lib/bubble-ops-console/sessions.db
+# Board #1712: the cost tracker's SQLite cache must be writable; HOME is read-only
+# (ProtectHome), so without this every /costs build is a cold scan of the whole mirror.
+Environment=BUBBLE_COST_CACHE_DIR=/var/lib/bubble-ops-console/cost-cache
 
 [Install]
 WantedBy=multi-user.target
