@@ -69,10 +69,14 @@ Nothing wakes an agent on a database write, so during a meeting each member poll
 
 - **chair**: `CronCreate` `*/2 * * * *`; **others**: `*/5 * * * *`; whoever has
   the floor switches to `*/2` until their step is closed, then back to `*/5`.
-- Poll prompt: `MEETING POLL: read new messages in the room <URL> and answer if tagged`.
+- Poll prompt: `MEETING POLL: read new messages in the room <URL> and answer
+  messages not authored by you when to contains your key or all, or the text
+  contains @<your key> / @all (the layer-1 matching rule below)`.
 - Each poll: `ArtifactData` `query` on `messages` where `ts >` the last one you
-  handled; also re-read `decisions` you are waiting on. Answer only messages
-  containing `@<your key>` or `@all` not written by you; sign `— Name`. Nothing
+  handled; also re-read `decisions` you are waiting on. The layer-1 matching
+  rule below is the single rule for both checks and meeting polls: answer only
+  messages not authored by you whose `to` contains your key or `all`, or whose
+  text contains `@<your key>` / `@all`; sign `— Name`. Nothing
   for you: end the turn immediately (no acknowledgement messages).
 - **Meeting over** (Joris says so, or after 3 hours): `CronDelete` the poll job.
   The room stays; its content remains the record.
@@ -84,10 +88,27 @@ you are tagged. Keep meetings bounded and never leave a poll running afterwards.
 
 At every layer-1 run, including outside live meetings:
 
-1. Your key is your dept slug key as used in `skills/meeting-room/rooms.yaml`
-   `members` / `chair`. Check each room listing you as a member or chair once,
-   even if you are listed in both roles.
-2. Read `state/meeting-room-seen.json` in your dept directory. Its format is
+1. Your key is your agent name as written in `skills/meeting-room/rooms.yaml`
+   `members` / `chair`: the same lowercase key you sign messages with (see the
+   `messages.author` list above). Map your dept slug to that key as follows:
+
+   | Dept slug | Agent key |
+   |---|---|
+   | content | miranda |
+   | accountant | geraldine |
+   | rnd | rick |
+   | tony | tony |
+   | ben | ben |
+   | maya | maya |
+   | tonio | tonio |
+
+   Check each room listing you as a member or chair once, even if you are
+   listed in both roles. If your key appears in no room, write one line in the
+   run output: `rooms: not a member of any room`; this is not an error.
+2. Read exactly `<dept directory>/state/meeting-room-seen.json`, where the dept
+   directory holds `dept.yaml` (e.g. `/srv/agents/<slug>` on the VPS). Create
+   `state/` on first write. This file is local state and is not committed.
+   Its format is
    `{"<room url>": "<ISO ts of the newest message handled>"}`. A missing file or
    room entry means **7 days ago**, computed from the real clock; do not replay
    the whole history.

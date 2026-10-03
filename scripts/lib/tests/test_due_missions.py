@@ -626,6 +626,37 @@ def test_idle_envelopes_never_include_room_check():
         assert "ROOM CHECK" not in prompt
 
 
+def test_room_check_clause_cli_is_exact_and_needs_no_yaml_or_manifest():
+    import subprocess
+    import sys
+    from scripts.due_missions import ROOM_CHECK_CLAUSE
+
+    script = Path(__file__).resolve().parents[2] / "due_missions.py"
+    result = subprocess.run(
+        [sys.executable, "-S", str(script), "room-check-clause"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ROOM_CHECK_CLAUSE
+    assert result.stderr == ""
+
+
+def test_shell_room_check_clause_failure_is_nonfatal_and_only_logs_to_stderr():
+    import re
+    import subprocess
+
+    script = Path(__file__).resolve().parents[2] / "loop-backup.sh"
+    helper = re.search(r"^room_check_clause\(\) \{.*?^\}", script.read_text(), re.M | re.S)
+    assert helper is not None
+    result = subprocess.run(
+        ["bash", "-c", 'PY=false; REPO_ROOT=.; log() { echo "$*"; }; ' + helper[0] + "\nroom_check_clause"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.count("room-check clause unavailable") == 1
+
+
 def test_dept_label_reads_department_display_name_or_slug_with_generic_fallback():
     from scripts.due_missions import _dept_label
 

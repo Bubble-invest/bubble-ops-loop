@@ -1003,9 +1003,17 @@ def command_complete(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_room_check_clause(args: argparse.Namespace) -> int:
+    """Expose the shared clause without loading a dept manifest."""
+    print(ROOM_CHECK_CLAUSE, end="")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
+    room_check = sub.add_parser("room-check-clause")
+    room_check.set_defaults(func=command_room_check_clause)
     plan = sub.add_parser("plan")
     plan.add_argument("--dept-dir", required=True)
     plan.add_argument("--now-epoch", type=int)
