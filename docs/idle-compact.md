@@ -1,14 +1,14 @@
 # Fleet idle compaction
 
 The standard-library Python 3.9+ tool at `scripts/idle-compact/idle_compact.py`
-checks a dedicated Claude Code tmux session every five minutes. Its default
+checks Claude Code every five minutes through tmux (Mac) or dtach (VPS). Its default
 human-idle threshold is **55 minutes**; the default minimum context is
 **200,000 input tokens** and transcript quiet time is **120 seconds**.
 Installers enable checks immediately, or install observation-only checks with
 `--dry-run`. No installer restarts the department agent. The pilot directory is
 reference material; deployed jobs use only the framework script.
-**VPS agents running under dtach are not covered yet.** This release requires
-a dedicated Claude Code tmux pane; dtach hosts log `SKIP reason=no_tmux_session`.
+Transport defaults to `tmux`; the VPS installer writes `runtime.transport=dtach`.
+Hermes agents, including Morty, remain excluded.
 
 ## Safety and context
 
@@ -48,13 +48,13 @@ usage; a later compaction boundary/summary resets this estimate. The live pane's
 including truncated quota segments. A permissions-only footer fails closed;
 percentages never replace transcript usage.
 
-An assistant `end_turn`, quiet transcript, empty boxed `❯`, recognized footer,
+For tmux, an assistant `end_turn`, quiet transcript, empty boxed `❯`, recognized footer,
 and absence of spinners/interrupt hints are all required. Typed text, multiline
 drafts and paste/image placeholders block sending. SGR dim suggestions are
 ignored only on the input line; normal-intensity characters remain drafts.
 Missing/corrupt input, future timestamps, unknown layouts or tmux errors skip.
 
-Fleet additions require an exact session name with exactly one pane whose
+The tmux transport requires an exact session name with exactly one pane whose
 current command is `claude` or a version string matching `^\d+\.\d+\.\d+$`
 (observed on real Macs as `2.1.288` and `2.1.283`). `node` is rejected: the pilot
 has no accepted node transport. Shells and all other commands fail closed.
@@ -86,7 +86,8 @@ minutes since the last send, a new completed assistant turn after that send,
 and context that has re-crossed `min_context`. A post-send compact boundary or
 below-threshold assistant usage establishes the reduction; later assistant
 usage must again reach the threshold. Every other gate still applies, including
-human idle, transcript quiet, empty input, attached-client activity and meetings.
+human idle, transcript quiet and meetings, plus empty input and attached-client
+activity on tmux.
 No new human message is required: autonomous agents can compact repeatedly
 as their context regrows. A stale high-context snapshot or a new turn without
 any evidence of reduction cannot trigger another send. Do not delete state on
@@ -137,39 +138,100 @@ scripts/install-mac-idle-compact.sh --slug rnd --uninstall
 Install the framework at `/opt/bubble-ops-loop`; run the installer as root:
 
 ```sh
-scripts/install-idle-compact.sh --slug maya --tmux-session ops-loop-maya --dry-run
+scripts/install-idle-compact.sh --slug maya --dry-run
 scripts/install-idle-compact.sh --all --dry-run
-# Per-agent: rerun without --dry-run after observing the actual terminal.
+# After observing WOULD COMPACT for this agent, enable sends:
+scripts/install-idle-compact.sh --slug maya
 ```
 
-The service itself uses `User=agent-%i`, `Group=agent-%i`,
-`HOME=/home/agent-%i`, and `/srv/agents/%i`. It does not need rotate's root
-privileges: rotate stops/restarts services and moves owned transcripts;
-compaction only reads its own files and writes its own terminal/state.
-Root-readable configs are at `/etc/bubble-idle-compact/<slug>.json` (0644,
-no secrets). State and decision logs are under
-`/home/agent-<slug>/.local/state/idle-compact`, owned by that agent.
-Hardening includes NoNewPrivileges, ProtectSystem=strict, ProtectHome=read-only
-and one writable state directory. PrivateTmp is deliberately false to expose
-the agent's existing `/tmp/tmux-UID` socket.
+VPS agents use `/usr/bin/dtach -N /run/bubble-agent-<slug>/dtach.sock` under
+`bubble-agent@<slug>.service`. No screen is available. This transport is for
+headless Claude Code agents with bypass permissions and humans delivering
+through the Telegram ledger. Terminal drafts, menus and permission dialogs
+cannot be inspected; verify these runtime assumptions before enabling sends.
+The tool does not attach a screen or migrate the department runtime.
 
-`--all` enumerates `/srv/agents`, skips `/etc/bubble-harness/<slug>` selectors
-set to Hermes and Morty, and preserves installed per-agent overrides.
-`--all --dry-run` also forces existing configs into observation mode.
-For new configs, `ops-loop-<slug>` is a **candidate session name**, matching the
-Mac convention, not a claim about the current VPS. Use `--slug --tmux-session`
-to supply a verified name. Transcript and ledger defaults are
-`~/.claude/projects/-srv-agents-<slug>` and the own-home Telegram path above.
-Other paths are per-agent installer overrides. Unit/config publication rolls
-back on reload/enable failures and restores prior timer enabled/active states.
+Without screen evidence, dtach requires all of the following:
 
-**VPS transport limitation:** real VPS agents use **dtach**, which this change
-**does not cover yet**. Timers alone cannot compact those agents. Without a
-supported own-user tmux session the tool logs
-`decision=SKIP reason=no_tmux_session`. This release does not migrate the
-runtime or send slash commands through `bubble-inject` channel messages.
-Legacy shared `claude` UID/custom-home units also need explicit runtime review;
-the installer refuses those layouts.
+- The newest main transcript (mtime, excluding top-level `agent-*.jsonl`) ends
+  in a completed assistant `end_turn` with no tool-use blocks. User/tool-result,
+  unknown meaningful rows and incomplete JSONL writes block. Known metadata
+  and turn-duration rows are ignored as on tmux.
+- Both its mtime and that assistant row's timestamp are at least 120 seconds
+  old. Future or invalid row timestamps fail closed.
+- No JSONL under `<session-id>/subagents/` (including nested files), the legacy
+  project `subagents/` directory, or top-level `agent-*.jsonl` was modified
+  within 120 seconds. Sub-agent files never supply main-session context.
+- The socket exists, is an actual socket (symlinks refused), and belongs to the
+  runtime UID. `/proc` must show exactly one live own-UID dtach master with
+  `-N <socket>` in `bubble-agent@<slug>.service`, owning a live Claude child.
+  Missing, foreign-owned, dead or ambiguous targets skip.
+- All shared gates pass: ledger/transcript human idle, context usage,
+  cooldown/reduction/regrowth, pending reservation, harness and meeting checks.
+  After a short pause, socket/master identity and transcript/ledger/sub-agent
+  fingerprints must still match. Fingerprints are checked again immediately
+  before writing the command, after reserving pending state.
+
+The send uses two bounded (five-second timeout) `dtach -p <socket>` subprocesses:
+first the fixed bytes `/compact` without newline, then a 1.5-second pause, then
+`\r`. There is no shell and no arbitrary payload. A failure leaves pending
+state and blocks retries; inspect the terminal manually before clearing it.
+A delivery or background write can still race the last check or the two writes:
+dtach has no atomic conditional send primitive.
+
+`COMPACT_SENT` records delivery of both writes. Later timer polls look for a
+new `compact_boundary` in the original transcript inode, after the reserved
+byte offset, timestamped within `--confirm-min` minutes (default 10) of sending.
+They record `compact_confirmed_at` in state. If no valid boundary appears,
+one poll logs `COMPACT_UNCONFIRMED reason=compact_boundary_timeout` and persists
+that notification flag. A missing/replaced transcript or a summary alone is not
+confirmation. Reporting happens on the first poll at/after the deadline;
+no oneshot waits ten minutes. Unconfirmed sends retain the normal cooldown and
+reduction/regrowth rule; timeout alone never authorizes a resend.
+
+The service uses `User=agent-%i`, `Group=agent-%i`, `HOME=/home/agent-%i`, and
+`/srv/agents/%i`. Configs are `/etc/bubble-idle-compact/<slug>.json` (0644,
+no secrets). State/logs are `/home/agent-<slug>/.local/state/idle-compact`, owned
+by that agent. Hardening includes NoNewPrivileges, ProtectSystem=strict,
+ProtectHome=read-only, an explicit read-only `/run/bubble-agent-%i` mount and
+one writable state directory. Connecting to an existing Unix socket does not
+need a writable filesystem mount. `/proc` stays visible for own-UID liveness
+checks; PrivateTmp remains false for compatibility with existing tmux configs.
+The optional socket mount tolerates an absent runtime directory so the tool
+can log a missing-socket skip.
+
+`--all` enumerates `/srv/agents`, skips Hermes selectors and Morty, and preserves
+installed per-agent overrides while upgrading old VPS configs to dtach.
+`--all --dry-run` forces existing configs into observation mode. Enable sends
+for an observed agent with `--slug` without `--dry-run`.
+Transcript and ledger defaults are
+`/home/agent-<slug>/.claude/projects/-srv-agents-<slug>` and
+`/home/agent-<slug>/.claude/channels/telegram-<slug>/delivery-ledger.jsonl`.
+Per-agent installer overrides include `--dtach-socket PATH`, `--dtach-bin PATH`,
+`--confirm-min N`, transcript/ledger paths and meeting/harness selectors.
+For direct tool invocation use `--transport dtach --slug <slug>` (slug otherwise
+comes from the current `agent-<slug>` Unix username); no tmux session is required.
+Unit/config publication rolls back on reload/enable failures and restores prior
+timer enabled/active states. Legacy shared UID/custom-home layouts are refused.
+
+Observe the installed transport, timer and content-free decisions:
+
+```sh
+scripts/install-idle-compact.sh --status
+systemctl status idle-compact@maya.timer
+sudo -u agent-maya tail -n 20 /home/agent-maya/.local/state/idle-compact/maya.log
+# Trigger an observation immediately while its config is still dry_run=true:
+systemctl start idle-compact@maya.service
+```
+
+Disable one agent's checks while retaining its config/state/logs:
+
+```sh
+systemctl disable --now idle-compact@maya.timer
+systemctl stop idle-compact@maya.service
+# Re-enable only when ready:
+systemctl enable --now idle-compact@maya.timer
+```
 
 Uninstall one agent, or every installed/discovered VPS agent:
 
@@ -193,7 +255,7 @@ One content-free decision line per invocation:
 2026-10-03T12:00:00Z decision=SKIP reason=human_recent idle_minutes=12.00 context_tokens=210000
 ```
 
-Decisions: `SKIP`, `WOULD COMPACT`, `COMPACT_SENT`. Reasons are fixed strings;
+Decisions: `SKIP`, `WOULD COMPACT`, `COMPACT_SENT`, `COMPACT_UNCONFIRMED` (dtach). Reasons are fixed strings;
 unevaluated numbers are `unknown`. No messages or subprocess output are logged.
 If the log cannot be opened, no action occurs and stdout reports
 `SKIP reason=log_unavailable`. Arrange host log rotation; preserve current logs
@@ -206,16 +268,17 @@ python3 scripts/idle-compact/idle_compact.py --status --min-context 300000
 ```
 
 Status is read-only JSONL per configured agent: latest decision/time,
-last confirmed send time (`last_compaction_time`), pending/sent state,
+last send time (`last_compaction_time`), transport, pending/sent state,
+dtach boundary confirmation time (`compact_confirmed_at`),
 context tokens, `high_context_since`, timer installed/enabled and agent installed/active.
 The Mac active flag indicates that its agent LaunchAgent is loaded. An observed
 context at or above the selected threshold starts `high_context_since`; a
 known smaller observation resets it, unknown observations preserve it.
 Alarm if this age exceeds one day, or if decisions stop advancing. This is an
 observation history, not a live context measurement or proof of completion.
-Unconfigured department directories (VPS) or agent LaunchAgents (Mac) produce
-explicit missing-config rows with unknown installation flags; Hermes entries
-are expected rollout exclusions. Root is needed on VPS to read all private logs.
+Only idle-compact configs produce status rows. Unrelated backup/wake/main
+LaunchAgents and unconfigured departments are omitted. Root is needed on VPS
+to read all private logs.
 Corrupt config/state or unavailable service commands produce `status_error`.
 
 ## Offline verification and live acceptance
@@ -225,11 +288,13 @@ python3 -m unittest discover -s tests -p 'test_idle_compact*.py' -v
 python3 -m pytest -q tests/test_idle_compact.py tests/test_idle_compact_fleet.py
 ```
 
-Host acceptance must verify Python/tmux paths, actual UID/socket/pane command,
+Host acceptance must verify Python/transport paths, actual UID/socket/process,
 absolute transcript and ledger paths, custom harness selectors, context/footer
 variants, attached typing and meeting inhibition, enabled timer cadence, and
 one observed dry-run before a send. Then prove the compaction boundary/context
 reduction in the actual transcript and that another poll skips. Check reboot
-persistence, disable/reinstall, and config/state/log ownership. VPS acceptance
-also requires resolving the documented transport mismatch; no host was
-contacted or changed by this implementation.
+persistence, disable/reinstall, and config/state/log ownership. For VPS, verify
+headless/bypass assumptions, `/proc` command/cgroup identity, socket connectivity
+under the hardened service, sub-agent layout and quiet inhibition, the two-write
+send, boundary confirmation within ten minutes and one unconfirmed-timeout log.
+No host was contacted or changed by this implementation.

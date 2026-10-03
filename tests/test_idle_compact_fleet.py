@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import plistlib
 import subprocess
@@ -304,6 +305,454 @@ class FleetSafetyTests(unittest.TestCase):
         self.assertEqual(self.check()[0], 'COMPACT_SENT')
 
 
+class DtachSafetyTests(unittest.TestCase):
+    assistant = pilot_tests.PilotTests.assistant
+    user = pilot_tests.PilotTests.user
+    write_rows = pilot_tests.PilotTests.write_rows
+    save = pilot_tests.PilotTests.save
+
+    def setUp(self):
+        pilot_tests.PilotTests.setUp(self)
+        self.config.transport = 'dtach'
+        self.config.slug = 'rnd'
+        self.config.dtach_socket = self.transcripts.parent / 'dtach.sock'
+        self.config.dtach_socket.touch()
+        socket_path = self.config.dtach_socket
+        original_lstat = Path.lstat
+        def lstat(path):
+            info = original_lstat(path)
+            if path == socket_path:
+                return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=os.getuid(),
+                                       st_dev=info.st_dev, st_ino=info.st_ino)
+            return info
+        socket_stat = patch.object(Path, 'lstat', new=lstat)
+        socket_stat.start()
+        self.addCleanup(socket_stat.stop)
+        self.processes = {
+            101: dict(parent=1, name='dtach', argv=['/usr/bin/dtach', '-N', str(self.config.dtach_socket),
+                      '/bin/sh', '-c', 'exec claude'], cgroup='0::/system.slice/bubble-agent@rnd.service\n'),
+            102: dict(parent=101, name='claude', argv=['claude', '--dangerously-skip-permissions'],
+                      cgroup='0::/system.slice/bubble-agent@rnd.service\n')}
+        self.events = []
+        self.on_sleep = None
+        self.fail_payload = None
+        proc = patch.object(compact, 'own_processes', side_effect=lambda: self.processes)
+        proc.start()
+        self.addCleanup(proc.stop)
+
+    def sleep(self, seconds):
+        self.events.append(('sleep', seconds))
+        if self.on_sleep:
+            self.on_sleep()
+
+    def send(self, args, **kwargs):
+        self.assertEqual(args, [self.config.dtach_bin, '-p', str(self.config.dtach_socket)])
+        self.assertEqual(kwargs['timeout'], 5)
+        self.assertTrue(kwargs['check'])
+        self.assertTrue(kwargs['capture_output'])
+        self.assertNotIn('shell', kwargs)
+        payload = kwargs['input']
+        self.assertIn(payload, (b'/compact', b'\r'))
+        saved = json.loads(self.config.state.read_text())
+        self.assertEqual(saved['status'], 'pending')
+        self.events.append(('send', payload))
+        if payload == self.fail_payload:
+            raise subprocess.TimeoutExpired(args, 5, output='PRIVATE_SENTINEL')
+        return SimpleNamespace(stdout=b'')
+
+    def check(self):
+        with patch.object(compact.subprocess, 'run', side_effect=self.send), \
+             patch.object(compact.time, 'sleep', side_effect=self.sleep):
+            before = len(self.config.log.read_text().splitlines()) if self.config.log.exists() else 0
+            result = compact.check(self.config, runner=lambda _: self.fail('tmux used'), clock=lambda: self.now)
+            self.assertEqual(len(self.config.log.read_text().splitlines()), before + 1)
+            return result
+
+    def assert_skip(self, reason):
+        self.assertEqual(self.check(), ('SKIP', reason))
+        self.assertFalse(any(event[0] == 'send' for event in self.events))
+
+    def boundary(self, when):
+        return {'type': 'system', 'subtype': 'compact_boundary', 'timestamp': compact.iso(when)}
+
+    def test_two_step_fixed_send_order_delay_and_state(self):
+        self.config.dtach_bin = '/custom/dtach'
+        self.assertEqual(self.check(), ('COMPACT_SENT', 'all_conditions_met'))
+        self.assertEqual(self.events, [('sleep', 0), ('send', b'/compact'), ('sleep', 1.5), ('send', b'\r')])
+        saved = json.loads(self.config.state.read_text())
+        self.assertEqual(saved['status'], 'sent')
+        self.assertEqual(saved['transport'], 'dtach')
+        self.assertEqual(saved['transcript_path'], str(self.transcript))
+        self.assertEqual(saved['transcript_size'], self.transcript.stat().st_size)
+        self.events.clear()
+        self.assert_skip('compact_cooldown')
+
+    def test_quiet_by_mtime_and_row_timestamp(self):
+        self.save(mtime=NOW - 119)
+        self.assert_skip('transcript_not_quiet')
+        self.entries = [self.assistant(age=119)]
+        self.save()
+        self.assert_skip('transcript_row_not_quiet')
+        self.entries = [self.assistant(age=120)]
+        self.save(mtime=NOW - 120)
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_only_completed_assistant_last_row(self):
+        for row in (self.assistant(stop='tool_use'), self.assistant(stop=None),
+                    self.user('<channel>wake</channel>'),
+                    self.user([{'type': 'tool_result', 'content': 'done'}]),
+                    {'type': 'unknown'}):
+            self.entries = [self.assistant(), row]
+            self.save()
+            self.assert_skip('turn_not_finished')
+        row = self.assistant()
+        row['message']['role'] = 'user'
+        self.entries = [row]
+        self.save()
+        self.assert_skip('turn_not_finished')
+        row['message']['role'] = 'assistant'
+        row['message']['content'] = [{'type': 'tool_use', 'name': 'Bash'}]
+        self.save()
+        self.assert_skip('turn_not_finished')
+
+    def test_partial_json_and_complete_json_without_newline_fail_closed(self):
+        for path in (self.transcript, self.config.ledger):
+            self.save()
+            path.write_bytes(path.read_bytes().rstrip(b'\n'))
+            self.assert_skip('partial_transcript_write')
+            self.save()
+            with path.open('a') as handle:
+                handle.write('{"incomplete":')
+            self.assert_skip('partial_transcript_write')
+
+    def test_newest_session_mtime_and_metadata(self):
+        old = self.transcripts / 'zzzz.jsonl'
+        self.write_rows(old, [self.assistant(tokens=100000)])
+        os.utime(old, (NOW - 1000, NOW - 1000))
+        self.entries += [{'type': 'last-prompt'}, {'type': 'system', 'subtype': 'turn_duration'}]
+        self.save()
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_subagent_writing_in_each_layout_blocks(self):
+        for relative in ('current/subagents/agent-a.jsonl', 'current/subagents/nested/agent-b.jsonl',
+                         'agent-a.jsonl', 'subagents/agent-a.jsonl'):
+            path = self.transcripts / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('background\n')
+            os.utime(path, (NOW - 1, NOW - 1))
+            self.assert_skip('subagent_not_quiet')
+            os.utime(path, (NOW - 120, NOW - 120))
+            self.config.dry_run = True
+            self.assertEqual(self.check()[0], 'WOULD COMPACT')
+            path.unlink()
+
+    def test_unrelated_session_subagent_does_not_block(self):
+        path = self.transcripts / 'other/subagents/agent-a.jsonl'
+        path.parent.mkdir(parents=True)
+        path.write_text('working\n')
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_human_context_meeting_and_harness_gates_are_shared(self):
+        self.ledger_rows.append({'ts': compact.iso(NOW - 1), 'user_id': '6532205130'})
+        self.save()
+        self.assert_skip('human_recent')
+        self.ledger_rows.pop()
+        self.entries = [self.assistant(tokens=199999)]
+        self.save()
+        self.assert_skip('context_small')
+        self.entries = [self.assistant()]
+        self.save()
+        marker = self.transcripts / 'meeting'
+        self.config.meeting_marker = marker
+        marker.touch()
+        self.assert_skip('meeting_poll_declared')
+        marker.unlink()
+        entry = FleetSafetyTests.cron(self)
+        self.entries = [entry, self.assistant()]
+        self.save()
+        self.assert_skip('meeting_poll_declared')
+        selector = self.transcripts / 'harness'
+        selector.write_text('hermes')
+        self.config.harness_selector = selector
+        self.assert_skip('hermes_harness_skipped')
+
+    def test_socket_missing_not_socket_foreign_owned_and_symlink(self):
+        path = self.config.dtach_socket
+        self.config.dtach_socket = path.with_name('missing')
+        self.assert_skip('dtach_socket_missing')
+        self.config.dtach_socket.touch()
+        self.assert_skip('dtach_not_socket')
+        self.config.dtach_socket.unlink()
+        self.config.dtach_socket.symlink_to(path)
+        self.assert_skip('dtach_not_socket')
+        self.config.dtach_socket = path
+        original = Path.lstat
+        with patch.object(Path, 'lstat', new=lambda p: SimpleNamespace(st_mode=original(p).st_mode,
+                   st_uid=os.getuid() + 1) if p == path else original(p)):
+            self.assert_skip('dtach_socket_foreign_owner')
+
+    def test_dead_wrong_socket_wrong_unit_or_ambiguous_master(self):
+        original = self.processes.copy()
+        self.processes = {}
+        self.assert_skip('dtach_master_not_alive')
+        self.processes = original
+        self.processes[101]['argv'][2] += '-other'
+        self.assert_skip('dtach_master_not_alive')
+        self.processes[101]['argv'][2] = str(self.config.dtach_socket)
+        self.processes[101]['cgroup'] = '0::/system.slice/bubble-agent@maya.service\n'
+        self.assert_skip('dtach_master_not_alive')
+        self.processes[101]['cgroup'] = '0::/system.slice/bubble-agent@rnd.service\n'
+        self.processes[103] = self.processes[101].copy()
+        self.assert_skip('dtach_master_not_alive')
+
+    def test_claude_child_must_be_alive_and_owned_by_master(self):
+        child = self.processes.pop(102)
+        self.assert_skip('dtach_claude_child_not_alive')
+        self.processes[102] = child
+        child['parent'] = 42
+        self.assert_skip('dtach_claude_child_not_alive')
+        child.update(parent=101, name='sh', argv=['/bin/sh', '-c', 'exec claude'])
+        self.assert_skip('dtach_claude_child_not_alive')
+
+    def test_main_or_ledger_fingerprint_change_before_send(self):
+        for path in (self.transcript, self.config.ledger):
+            self.save()
+            self.on_sleep = lambda: path.write_text(path.read_text() + '\n')
+            self.assert_skip('inputs_changed_before_send')
+            self.assertFalse(self.config.state.exists())
+
+    def test_subagent_appears_or_changes_during_recheck(self):
+        path = self.transcripts / 'current/subagents/agent-a.jsonl'
+        path.parent.mkdir(parents=True)
+        self.on_sleep = lambda: path.write_text('working\n')
+        self.assert_skip('inputs_changed_before_send')
+        os.utime(path, (NOW - 300, NOW - 300))
+        self.assert_skip('inputs_changed_before_send')
+
+    def test_socket_or_master_replaced_before_send(self):
+        def replace_master():
+            self.processes[201] = self.processes.pop(101)
+            self.processes[102]['parent'] = 201
+        self.on_sleep = replace_master
+        self.assert_skip('dtach_changed_before_send')
+
+    def test_meeting_starts_during_recheck(self):
+        marker = self.transcripts / 'meeting'
+        self.config.meeting_marker = marker
+        self.on_sleep = marker.touch
+        self.assert_skip('meeting_poll_declared')
+
+    def test_final_fingerprint_after_reservation(self):
+        original = compact.write_state
+        def mutate(path, saved):
+            original(path, saved)
+            with self.transcript.open('a') as handle:
+                handle.write('\n')
+        with patch.object(compact, 'write_state', side_effect=mutate):
+            self.assert_skip('inputs_changed_before_send')
+        self.assertEqual(json.loads(self.config.state.read_text())['status'], 'pending')
+
+    def test_partial_send_timeout_stays_pending_and_never_retries(self):
+        self.fail_payload = b'\r'
+        self.assertEqual(self.check(), ('SKIP', 'io_parse_or_tmux_error'))
+        self.assertEqual(json.loads(self.config.state.read_text())['status'], 'pending')
+        self.events.clear()
+        self.assert_skip('previous_send_uncertain_check_state')
+        self.assertNotIn('PRIVATE_SENTINEL', self.config.log.read_text())
+
+    def test_dry_run_never_writes_compaction_state(self):
+        self.config.dry_run = True
+        self.assertEqual(self.check(), ('WOULD COMPACT', 'all_conditions_met'))
+        self.assertFalse(self.config.state.exists())
+        self.assertFalse(any(event[0] == 'send' for event in self.events))
+
+    def test_unconfirmed_logs_once_and_does_not_retry(self):
+        self.check()
+        self.events.clear()
+        self.now += 599
+        self.assert_skip('compact_cooldown')
+        self.now += 1
+        self.assertEqual(self.check(), ('COMPACT_UNCONFIRMED', 'compact_boundary_timeout'))
+        self.assertTrue(json.loads(self.config.state.read_text())['unconfirmed_logged'])
+        self.now += 300
+        self.assert_skip('compact_cooldown')
+        self.now = NOW + 3600
+        self.assert_skip('context_not_regrown_since_send')
+        self.assertEqual(self.config.log.read_text().count('decision=COMPACT_UNCONFIRMED'), 1)
+
+    def test_custom_confirmation_deadline(self):
+        self.config.confirm_min = 2
+        self.check()
+        self.now += 120
+        self.assertEqual(self.check()[0], 'COMPACT_UNCONFIRMED')
+
+    def test_boundary_confirms_reserved_transcript_after_session_rotation(self):
+        self.check()
+        self.entries.append(self.boundary(NOW + 65))
+        self.save(mtime=NOW + 65)
+        new = self.transcripts / 'new-session.jsonl'
+        self.write_rows(new, [self.assistant(tokens=100000, age=-70)])
+        os.utime(new, (NOW + 70, NOW + 70))
+        self.now += 900
+        self.check()
+        saved = json.loads(self.config.state.read_text())
+        self.assertEqual(saved['compact_confirmed_at'], compact.iso(NOW + 65))
+        self.assertNotIn('COMPACT_UNCONFIRMED', self.config.log.read_text())
+
+    def test_missing_malformed_replaced_or_late_boundary_is_unconfirmed(self):
+        for case in ('missing', 'malformed', 'replaced', 'late', 'summary'):
+            self.config.state.unlink(missing_ok=True)
+            self.now = NOW
+            self.entries = [self.assistant()]
+            self.save()
+            self.check()
+            if case == 'missing':
+                self.transcript.unlink()
+            elif case == 'malformed':
+                with self.transcript.open('a') as handle:
+                    handle.write('not json\n')
+            elif case == 'replaced':
+                replacement = self.transcript.with_suffix('.tmp')
+                self.write_rows(replacement, self.entries + [self.boundary(NOW + 65)])
+                replacement.replace(self.transcript)
+            else:
+                self.entries.append(self.boundary(NOW + 601) if case == 'late' else
+                                    self.user('summary', age=-65, isCompactSummary=True))
+                self.save(mtime=NOW + 65)
+            self.now = NOW + 900
+            self.assertEqual(self.check()[0], 'COMPACT_UNCONFIRMED')
+
+    def test_repeat_uses_shared_reduction_regrowth_and_cooldown_rules(self):
+        self.check()
+        self.events.clear()
+        self.entries += [self.boundary(NOW + 65), self.assistant(age=-3000)]
+        self.now = NOW + 3200
+        self.save(mtime=self.now - 180)
+        self.assert_skip('compact_cooldown')
+        self.now = NOW + 3600
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+        self.events.clear()
+        self.now += 3600
+        self.check()  # Record timeout for the second send, whose boundary is absent.
+        self.assert_skip('context_not_regrown_since_send')
+        self.entries += [self.assistant(tokens=50000, age=-(self.now - NOW) + 300),
+                         self.assistant(age=-(self.now - NOW) + 180)]
+        self.save(mtime=self.now - 180)
+        self.assertEqual(self.check()[0], 'COMPACT_SENT')
+
+    def test_payload_guard(self):
+        with self.assertRaises(compact.Unsafe), patch.object(compact.subprocess, 'run') as run:
+            compact.write_dtach(self.config, b'/compact\n')
+        run.assert_not_called()
+
+    def test_corrupt_confirmation_metadata_fails_closed(self):
+        self.check()
+        saved = json.loads(self.config.state.read_text())
+        self.events.clear()
+        for key, invalid in (('transcript_size', -1), ('transcript_identity', []),
+                             ('transcript_path', None), ('unconfirmed_logged', 'true')):
+            self.config.state.write_text(json.dumps(dict(saved, **{key: invalid})))
+            self.assert_skip('invalid_state')
+
+    def test_socket_inode_changes_before_send(self):
+        original = Path.lstat
+        changed = []
+        def lstat(path):
+            info = original(path)
+            if path == self.config.dtach_socket and changed:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid, st_dev=info.st_dev,
+                                       st_ino=info.st_ino + 1)
+            return info
+        self.on_sleep = lambda: changed.append(True)
+        with patch.object(Path, 'lstat', new=lstat):
+            self.assert_skip('dtach_changed_before_send')
+
+    def test_inputs_change_during_inspection(self):
+        original = compact.rows
+        def mutate(path, **kwargs):
+            yield from original(path, **kwargs)
+            if path == self.transcript:
+                with path.open('a') as handle:
+                    handle.write('\n')
+        with patch.object(compact, 'rows', side_effect=mutate):
+            self.assert_skip('inputs_changed_during_read')
+
+    def test_dry_run_preserves_existing_sent_state_even_after_timeout(self):
+        self.check()
+        saved = self.config.state.read_bytes()
+        self.config.dry_run = True
+        self.now += 900
+        self.events.clear()
+        self.assert_skip('compact_cooldown')
+        self.assertEqual(self.config.state.read_bytes(), saved)
+
+
+class ProcTests(unittest.TestCase):
+    def test_proc_reader_filters_foreign_uids_zombies_and_parses_cmdline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for pid, uid, state in ((101, os.getuid(), 'S'), (102, os.getuid() + 1, 'S'),
+                                    (103, os.getuid(), 'Z')):
+                path = root / str(pid)
+                path.mkdir()
+                (path / 'status').write_text('Name:\tclaude\nState:\t' + state + ' (state)\nPPid:\t1\nUid:\t' +
+                                           '\t'.join([str(uid)] * 4) + '\n')
+                (path / 'cmdline').write_bytes(b'/usr/bin/claude\0--continue\0')
+                (path / 'cgroup').write_text('0::/system.slice/bubble-agent@rnd.service\n')
+            (root / '104').mkdir()  # Exited between enumeration and reading.
+            (root / 'self').mkdir()
+            result = compact.own_processes(root)
+            self.assertEqual(set(result), {101})
+            self.assertEqual(result[101]['argv'], ['/usr/bin/claude', '--continue'])
+            self.assertEqual(result[101]['parent'], 1)
+
+    def test_malformed_proc_data_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '101').mkdir()
+            (root / '101/status').write_text('Name:\tclaude\n')
+            with self.assertRaisesRegex(compact.Unsafe, 'invalid_dtach_process_record'):
+                compact.own_processes(root)
+
+
+class DtachCliTests(unittest.TestCase):
+    def test_cli_dtach_defaults_socket_and_allows_no_tmux_session(self):
+        argv = ['idle_compact.py', '--transport', 'dtach', '--slug', 'maya', '--transcript-dir', '/t',
+                '--ledger', '/l', '--state', '/s', '--log', '/log', '--dtach-bin', '/custom/dtach',
+                '--confirm-min', '3', '--dry-run']
+        with patch.object(sys, 'argv', argv), patch.object(compact, 'check') as check:
+            compact.main()
+        config = check.call_args.args[0]
+        self.assertEqual(config.tmux_session, '')
+        self.assertEqual(config.transport, 'dtach')
+        self.assertEqual(config.dtach_socket, Path('/run/bubble-agent-maya/dtach.sock'))
+        self.assertEqual(config.dtach_bin, '/custom/dtach')
+        self.assertEqual(config.confirm_min, 3)
+        self.assertTrue(config.dry_run)
+
+    def test_config_transport_socket_and_uid_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            path.write_text(json.dumps({'runtime': dict(transport='dtach', transcript_dir='/t', ledger='/l',
+                            state='/s', log='/log', dtach_socket='/custom/dtach.sock')}))
+            with patch.object(sys, 'argv', ['idle_compact.py', '--config', str(path)]), \
+                 patch.object(compact.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='agent-maya')), \
+                 patch.object(compact, 'check') as check:
+                compact.main()
+            config = check.call_args.args[0]
+            self.assertEqual(config.slug, 'maya')
+            self.assertEqual(config.dtach_socket, Path('/custom/dtach.sock'))
+
+    def test_invalid_transport_config_or_relative_socket_fails_before_check(self):
+        argv = ['idle_compact.py', '--transport', 'dtach', '--slug', 'maya', '--transcript-dir', '/t',
+                '--ledger', '/l', '--state', '/s', '--log', '/log']
+        for extra in (['--dtach-socket', 'relative'], ['--confirm-min', 'nan'], ['--confirm-min', '0']):
+            with patch.object(sys, 'argv', argv + extra), patch.object(compact, 'check') as check, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                compact.main()
+            check.assert_not_called()
+
+
 class HostCommands:
     def __init__(self):
         self.calls = []
@@ -514,6 +963,7 @@ class InstallerTests(unittest.TestCase):
         self.addCleanup(pwd_patch.stop)
         # Redirect every production path to this test's local tree. No /etc or /home writes.
         old_read = Path.read_bytes
+        old_read_text = Path.read_text
         old_exists = Path.exists
         old_write = installer.publish
         old_original = installer.original
@@ -532,6 +982,7 @@ class InstallerTests(unittest.TestCase):
                    patch.object(installer, 'publish', lambda p, data, mode=0o644: old_write(mapped(p), data, mode)),
                    patch.object(installer, 'original', lambda paths: old_original([mapped(p) for p in paths])),
                    patch.object(installer.os, 'chown'), patch.object(installer.os, 'chmod')]
+        patches.append(patch.object(Path, 'read_text', lambda p, *a, **kw: old_read_text(mapped(p), *a, **kw)))
         # Save-map must retain production keys for change detection and restore.
         patches[3] = patch.object(installer, 'original', lambda paths: {p: old_read(mapped(p)) if old_exists(mapped(p)) else None for p in paths})
         old_restore = installer.restore
@@ -553,9 +1004,17 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('User=agent-%i', service)
         self.assertIn('ProtectSystem=strict', service)
         self.assertIn('PrivateTmp=false', service)
+        self.assertIn('ReadOnlyPaths=-/run/bubble-agent-%i', service)
+        self.assertIn('ProtectHome=read-only', service)
+        self.assertIn('ReadWritePaths=/home/agent-%i/.local/state/idle-compact', service)
         config = json.loads((mapped / 'etc/bubble-idle-compact/rnd.json').read_text())
         self.assertEqual(config['runtime']['ledger'], '/home/agent-rnd/.claude/channels/telegram-rnd/delivery-ledger.jsonl')
         self.assertEqual(config['runtime']['transcript_dir'], '/home/agent-rnd/.claude/projects/-srv-agents-rnd')
+        self.assertEqual(config['runtime']['transport'], 'dtach')
+        self.assertEqual(config['runtime']['slug'], 'rnd')
+        self.assertEqual(config['runtime']['dtach_socket'], '/run/bubble-agent-rnd/dtach.sock')
+        self.assertEqual(config['runtime']['dtach_bin'], '/usr/bin/dtach')
+        self.assertEqual(config['runtime']['confirm_min'], 10)
         self.assertIn('idle-compact@rnd.timer', self.cmd.enabled)
         count = len(self.cmd.calls)
         installer.install_vps(self.args)
@@ -570,6 +1029,46 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((mapped / 'etc/bubble-idle-compact/rnd.json').exists())
         self.assertNotIn('idle-compact@rnd.timer', self.cmd.enabled)
         self.assertIn(('systemctl', 'disable', 'idle-compact@rnd.timer'), self.cmd.calls)
+
+    def test_vps_observe_and_dtach_overrides_render(self):
+        mapped = self.vps_setup()
+        self.args.dry_run = True
+        self.args.dtach_socket = Path('/run/custom/dtach.sock')
+        self.args.dtach_bin = '/custom/dtach'
+        self.args.confirm_min = 4
+        installer.install_vps(self.args)
+        data = json.loads((mapped / 'etc/bubble-idle-compact/rnd.json').read_text())['runtime']
+        self.assertTrue(data['dry_run'])
+        self.assertEqual(data['transport'], 'dtach')
+        self.assertEqual(data['dtach_socket'], '/run/custom/dtach.sock')
+        self.assertEqual(data['dtach_bin'], '/custom/dtach')
+        self.assertEqual(data['confirm_min'], 4)
+        self.assertIn('idle-compact@rnd.timer', self.cmd.enabled)
+        self.args.dry_run = False
+        installer.install_vps(self.args)
+        self.assertFalse(json.loads((mapped / 'etc/bubble-idle-compact/rnd.json').read_text())['runtime']['dry_run'])
+
+    def test_vps_all_upgrades_transport_preserves_rules_and_forces_observe(self):
+        mapped = self.vps_setup()
+        installer.install_vps(self.args)
+        config = mapped / 'etc/bubble-idle-compact/rnd.json'
+        data = json.loads(config.read_text())
+        data['runtime'].update(transport='tmux', transcript_dir='/custom/transcripts',
+                               machine_wake_patterns=['^CUSTOM WAKE'], idle_min=80)
+        del data['runtime']['dtach_socket']
+        config.write_text(json.dumps(data))
+        self.args.all, self.args.slug, self.args.dry_run = True, None, True
+        original = Path.iterdir
+        with patch.object(Path, 'iterdir', new=lambda p: iter([SimpleNamespace(name='rnd', is_dir=lambda: True)])
+                          if p == self.args.agents_root else original(p)):
+            installer.install_vps(self.args)
+        runtime = json.loads(config.read_text())['runtime']
+        self.assertEqual(runtime['transport'], 'dtach')
+        self.assertEqual(runtime['dtach_socket'], '/run/bubble-agent-rnd/dtach.sock')
+        self.assertEqual(runtime['transcript_dir'], '/custom/transcripts')
+        self.assertEqual(runtime['machine_wake_patterns'], ['^CUSTOM WAKE'])
+        self.assertEqual(runtime['idle_min'], 80)
+        self.assertTrue(runtime['dry_run'])
 
     def test_vps_restore_failure_still_attempts_reload_and_timer_recovery(self):
         self.vps_setup()
@@ -687,6 +1186,45 @@ class InstallerTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    def test_both_status_entrypoints_only_report_configured_agents(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            root = Path(tmp)
+            configs = root / 'configs'
+            configs.mkdir()
+            launchagents = root / 'Library/LaunchAgents'
+            launchagents.mkdir(parents=True)
+            for slug in ('rnd', 'backup-rnd', 'wake-rnd', 'main'):
+                (launchagents / ('com.bubble.ops-loop-' + slug + '.plist')).touch()
+            (configs / 'rnd.json').write_text(json.dumps(dict(slug='rnd', platform='mac', home=str(root),
+                service='gui/501/com.bubble.idle-compact-rnd', unit_path=str(root / 'missing.plist'),
+                runtime=dict(transport='tmux', state=str(root / 'state'), log=str(root / 'log')))))
+            for main, argv in ((installer.main, ['install.py', 'mac', '--status', '--home', str(root),
+                                                '--config-dir', str(configs)]),
+                               (compact.main, ['idle_compact.py', '--status', '--config-dir', str(configs)])):
+                output = io.StringIO()
+                with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(output), \
+                     patch.object(compact.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
+                    main()
+                rows = [json.loads(line) for line in output.getvalue().splitlines()]
+                self.assertEqual([row['slug'] for row in rows], ['rnd'])
+                self.assertEqual(rows[0]['transport'], 'tmux')
+
+    def test_status_reports_dtach_confirmation_and_transport(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            root = Path(tmp)
+            (root / 'state').write_text(json.dumps(dict(status='sent', last_compact_at=compact.iso(NOW),
+                                                       compact_confirmed_at=compact.iso(NOW + 65))))
+            configs = root / 'configs'
+            configs.mkdir()
+            (configs / 'rnd.json').write_text(json.dumps(dict(slug='rnd', platform='vps', service='idle-compact@rnd.timer',
+                runtime=dict(transport='dtach', state=str(root / 'state'), log=str(root / 'log')))))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                compact.fleet_status(configs, runner=lambda *a, **kw: SimpleNamespace(returncode=0, stdout='loaded\n'))
+            row = json.loads(output.getvalue())
+            self.assertEqual(row['transport'], 'dtach')
+            self.assertEqual(row['compact_confirmed_at'], compact.iso(NOW + 65))
+
     def test_status_reports_decisions_compaction_and_disabled_timer(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
             root = Path(tmp)
@@ -710,6 +1248,7 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(data['last_decision']['time'], compact.iso(NOW))
             self.assertEqual(data['last_compaction_time'], compact.iso(NOW - 90000))
             self.assertEqual(data['high_context_since'], compact.iso(NOW - 90000))
+            self.assertEqual(data['transport'], 'tmux')  # Backwards-compatible configs.
 
     def test_pending_send_preserves_prior_compaction_time_from_log(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
@@ -729,14 +1268,11 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(data['send_status'], 'pending')
             self.assertEqual(data['last_compaction_time'], compact.iso(NOW - 90000))
 
-    def test_status_includes_unconfigured_agents(self):
+    def test_status_excludes_unconfigured_and_phantom_agents(self):
         output = io.StringIO()
         with tempfile.TemporaryDirectory(dir=ROOT) as tmp, contextlib.redirect_stdout(output):
-            compact.fleet_status(Path(tmp), known_slugs=['maya'])
-        data = json.loads(output.getvalue())
-        self.assertEqual(data['slug'], 'maya')
-        self.assertFalse(data['config_installed'])
-        self.assertIsNone(data['timer_installed'])
+            compact.fleet_status(Path(tmp), known_slugs=['maya', 'backup-rnd', 'wake-rnd', 'main'])
+        self.assertEqual(output.getvalue(), '')
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 """Transactional idle-compaction installers; Python 3.9+, no dependencies."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -94,6 +95,13 @@ def configuration(args, slug, home, dept, config, unit, selector):
                    machine_wake_patterns=[],
                    tmux_bin=args.tmux_bin, meeting_marker=str(args.meeting_marker or dept / "state/meeting-poll.active"),
                    harness_selector=str(selector))
+    runtime["transport"] = "tmux" if args.platform == "mac" else "dtach"
+    if args.platform == "vps":
+        runtime.update(slug=slug,
+                       dtach_socket=str(getattr(args, "dtach_socket", None) or
+                                        Path("/run/bubble-agent-" + slug + "/dtach.sock")),
+                       dtach_bin=getattr(args, "dtach_bin", "/usr/bin/dtach"),
+                       confirm_min=getattr(args, "confirm_min", 10))
     service = "gui/{}/com.bubble.idle-compact-{}".format(os.getuid(), slug) if args.platform == "mac" else "idle-compact@" + slug + ".timer"
     return dict(slug=slug, home=str(home), platform=args.platform, runtime=runtime, service=service,
                 unit_path=str(unit), config_path=str(config))
@@ -188,6 +196,8 @@ def install_vps(args):
             data["runtime"].update(previous["runtime"])
             if args.dry_run:
                 data["runtime"]["dry_run"] = True
+        # Upgrade old tmux-only VPS configurations while retaining per-agent paths/rules.
+        data["runtime"].update(transport="dtach", slug=slug)
         plans.append((data, account))
     if not plans:
         return
@@ -301,6 +311,9 @@ def main():
         parser.add_argument("--" + name, type=lambda p: Path(p).expanduser())
     parser.add_argument("--tmux-session")
     parser.add_argument("--tmux-bin", default="tmux")
+    parser.add_argument("--dtach-socket", type=lambda p: Path(p).expanduser())
+    parser.add_argument("--dtach-bin", default="/usr/bin/dtach")
+    parser.add_argument("--confirm-min", type=float, default=10)
     parser.add_argument("--dry-run", action="store_true", help="install checks that never send /compact")
     parser.add_argument("--unit-dir", type=Path, default=Path("/etc/systemd/system"))
     parser.add_argument("--agents-root", type=Path, default=Path("/srv/agents"))
@@ -312,17 +325,18 @@ def main():
     args.selector_dir = args.selector_dir or (args.home / "Library/Application Support/bubble-ops-loop" if args.platform == "mac" else Path("/etc/bubble-harness"))
     args.config_dir = args.config_dir or (args.home / ".local/state/idle-compact/configs" if args.platform == "mac" else Path("/etc/bubble-idle-compact"))
     if args.status:
-        known = ([p.name for p in args.agents_root.iterdir() if p.is_dir()] if args.platform == "vps" and args.agents_root.exists()
-                 else [p.stem.removeprefix("com.bubble.ops-loop-") for p in
-                       (args.home / "Library/LaunchAgents").glob("com.bubble.ops-loop-*.plist")])
-        fleet_status(args.config_dir, known_slugs=known)
+        fleet_status(args.config_dir)
         return
     if bool(args.slug) == bool(args.all) or (args.all and args.platform == "mac"):
         parser.error("choose --slug or VPS --all")
-    if args.all and any((args.dept_dir, args.transcript_dir, args.ledger, args.tmux_session, args.meeting_marker)):
+    if args.all and any((args.dept_dir, args.transcript_dir, args.ledger, args.tmux_session,
+                         args.meeting_marker, args.dtach_socket)):
         parser.error("per-agent path/session overrides require --slug")
     if args.slug:
         validate_slug(args.slug)
+    if (not math.isfinite(args.confirm_min) or args.confirm_min <= 0 or
+            (args.dtach_socket and not args.dtach_socket.is_absolute())):
+        parser.error("confirmation minutes must be positive and dtach socket absolute")
     if args.platform == "mac" and not args.uninstall and not (args.dept_dir and args.tmux_session):
         parser.error("Mac requires --dept-dir and --tmux-session")
     try:

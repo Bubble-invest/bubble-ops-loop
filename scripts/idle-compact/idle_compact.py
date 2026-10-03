@@ -6,8 +6,10 @@ import fcntl
 import json
 import math
 import os
+import pwd
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -49,6 +51,92 @@ class Config:
     meeting_marker: Path = None
     harness_selector: Path = None
     machine_wake_patterns: tuple = ()  # Per-agent additions to built-in recognisers.
+    transport: str = "tmux"
+    slug: str = ""
+    dtach_socket: Path = None
+    dtach_bin: str = "/usr/bin/dtach"
+    confirm_min: float = 10
+
+    def __post_init__(self):
+        if self.transport == "dtach":
+            if not self.slug:
+                owner = pwd.getpwuid(os.getuid()).pw_name
+                if owner.startswith("agent-"):
+                    self.slug = owner[6:]
+            if self.dtach_socket is None:
+                self.dtach_socket = Path("/run/bubble-agent-" + self.slug + "/dtach.sock")
+
+
+def own_processes(proc_root=Path("/proc")):
+    """Read own-UID process identity, parent, liveness and systemd membership."""
+    processes = {}
+    for path in proc_root.iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            if path.stat().st_uid != os.getuid():
+                continue
+            fields = dict(line.split(":", 1) for line in (path / "status").read_text().splitlines()
+                          if ":" in line)
+            if any(int(uid) != os.getuid() for uid in fields["Uid"].split()):
+                continue
+            if fields["State"].strip().split()[0] in ("Z", "X"):
+                continue
+            processes[int(path.name)] = dict(
+                parent=int(fields["PPid"]), name=fields["Name"].strip(),
+                argv=(path / "cmdline").read_bytes().decode().rstrip("\0").split("\0"),
+                cgroup=(path / "cgroup").read_text())
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # An exiting process cannot establish liveness.
+        except (KeyError, IndexError, ValueError, UnicodeError):
+            raise Unsafe("invalid_dtach_process_record") from None
+    return processes
+
+
+def target_dtach(config):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,79}", config.slug):
+        raise Unsafe("invalid_dtach_slug")
+    try:
+        info = config.dtach_socket.lstat()
+    except FileNotFoundError:
+        raise Unsafe("dtach_socket_missing") from None
+    if not stat.S_ISSOCK(info.st_mode):
+        raise Unsafe("dtach_not_socket")
+    if info.st_uid != os.getuid():
+        raise Unsafe("dtach_socket_foreign_owner")
+    processes = own_processes()
+    masters = []
+    for pid, process in processes.items():
+        argv = process["argv"]
+        unit = "bubble-agent@" + config.slug + ".service"
+        in_unit = any(unit in line.split(":", 2)[-1].split("/")
+                      for line in process["cgroup"].splitlines())
+        if (len(argv) >= 3 and Path(argv[0]).name == "dtach" and
+                argv[1:3] == ["-N", str(config.dtach_socket)] and in_unit):
+            masters.append(pid)
+    if len(masters) != 1:
+        raise Unsafe("dtach_master_not_alive")
+    master = masters[0]
+    if not any(process["parent"] == master and process["argv"] and
+               (process["name"] == "claude" or Path(process["argv"][0]).name == "claude")
+               for process in processes.values()):
+        raise Unsafe("dtach_claude_child_not_alive")
+    return info.st_dev, info.st_ino, master
+
+
+def subagent_stamps(config, latest):
+    if config.transport != "dtach":
+        return {}
+    # Claude Code uses <session-id>/subagents/; older layouts use agent-*.jsonl.
+    files = set(config.transcript_dir.glob("agent-*.jsonl"))
+    for directory in (latest.with_suffix("") / "subagents", config.transcript_dir / "subagents"):
+        files.update(directory.rglob("*.jsonl"))
+    return {path: fingerprint(path) for path in files}
+
+
+def check_subagents(stamps, now, quiet_sec):
+    if any(now - stamp[3] / 1e9 < quiet_sec for stamp in stamps.values()):
+        raise Unsafe("subagent_not_quiet")
 
 
 def check_declarations(config, now):
@@ -128,9 +216,11 @@ def fingerprint(path):
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
-def rows(path):
+def rows(path, complete=False):
     with path.open(encoding="utf-8") as handle:
         for line in handle:
+            if complete and not line.endswith("\n"):
+                raise Unsafe("partial_transcript_write")
             if not line.strip():
                 continue
             try:
@@ -269,6 +359,8 @@ class MeetingPolls:
 
 def inspect_inputs(config, now, previous_send=None):
     files = list(config.transcript_dir.glob("*.jsonl"))
+    if config.transport == "dtach":
+        files = [path for path in files if not path.name.startswith("agent-")]
     if not files:
         raise Unsafe("no_transcript")
     stamps = {path: fingerprint(path) for path in files}
@@ -277,9 +369,10 @@ def inspect_inputs(config, now, previous_send=None):
     if len(newest) != 1:
         raise Unsafe("ambiguous_newest_transcript")
     latest = newest[0]
+    children = subagent_stamps(config, latest)
     ledger_stamp = fingerprint(config.ledger)
     human = None
-    for row in rows(config.ledger):
+    for row in rows(config.ledger, complete=config.transport == "dtach"):
         uid = row.get("user_id")
         if not isinstance(uid, (str, int)) or isinstance(uid, bool):
             raise Unsafe("invalid_ledger_user_id")
@@ -310,7 +403,7 @@ def inspect_inputs(config, now, previous_send=None):
                 activity = stamps[path][3] / 1e9
                 human = activity if human is None else max(human, activity)
             continue
-        for index, row in enumerate(rows(path)):
+        for index, row in enumerate(rows(path, complete=config.transport == "dtach")):
             kind = row.get("type")
             if not isinstance(kind, str):
                 raise Unsafe("invalid_transcript_type")
@@ -356,7 +449,7 @@ def inspect_inputs(config, now, previous_send=None):
     context = sum(tokens)
     if boundary_index > assistant_index or (boundary_time is not None and boundary_time > assistant_time):
         context = 0
-    snapshot = (stamps, ledger_stamp)
+    snapshot = (stamps, ledger_stamp, latest, children)
     if not unchanged(config, snapshot):
         raise Unsafe("inputs_changed_during_read")
     regrown = regrowth_baseline and previous_send is not None and assistant_time > previous_send
@@ -364,10 +457,14 @@ def inspect_inputs(config, now, previous_send=None):
 
 
 def unchanged(config, snapshot):
-    stamps, ledger_stamp = snapshot
-    return (set(config.transcript_dir.glob("*.jsonl")) == set(stamps) and
+    stamps, ledger_stamp, latest, children = snapshot
+    files = set(config.transcript_dir.glob("*.jsonl"))
+    if config.transport == "dtach":
+        files = {path for path in files if not path.name.startswith("agent-")}
+    return (files == set(stamps) and
             all(fingerprint(path) == stamp for path, stamp in stamps.items()) and
-            fingerprint(config.ledger) == ledger_stamp)
+            fingerprint(config.ledger) == ledger_stamp and
+            subagent_stamps(config, latest) == children)
 
 
 SGR = re.compile(r"\x1b\[[0-9;]*m")
@@ -489,6 +586,69 @@ def run_tmux(args):
     return result.stdout
 
 
+def write_dtach(config, payload):
+    # Only the two fixed command fragments may reach stdin. Never invoke a shell.
+    if payload not in (b"/compact", b"\r"):
+        raise Unsafe("invalid_dtach_payload")
+    subprocess.run([config.dtach_bin, "-p", str(config.dtach_socket)], input=payload,
+                   capture_output=True, check=True, timeout=5)
+
+
+def verify_dtach(config, now):
+    """Confirm the reserved session on later polls, even if a different session is newest.
+
+    Return True only once when the confirmation deadline expires. Repeat eligibility
+    still comes exclusively from inspect_inputs and the common cooldown/regrowth gates.
+    """
+    if config.dry_run or not config.state.exists():
+        return False
+    saved = json.loads(config.state.read_text())
+    if saved.get("transport") != "dtach":
+        return False
+    identity, size, transcript = (saved.get("transcript_identity"), saved.get("transcript_size"),
+                                  saved.get("transcript_path"))
+    if (not isinstance(transcript, str) or not Path(transcript).is_absolute() or
+            type(size) is not int or size < 0 or not isinstance(identity, list) or
+            len(identity) != 2 or any(type(value) is not int or value < 0 for value in identity) or
+            type(saved.get("unconfirmed_logged", False)) is not bool):
+        raise Unsafe("invalid_state")
+    if saved.get("compact_confirmed_at"):
+        timestamp(saved["compact_confirmed_at"], now)
+        return False
+    sent = timestamp(saved["last_compact_at"], now)
+    path = Path(transcript)
+    confirmed = None
+    try:
+        stamp = fingerprint(path)
+        if (list(stamp[:2]) != saved["transcript_identity"] or stamp[2] < saved["transcript_size"]):
+            raise Unsafe("confirmation_transcript_replaced")
+        # Check appended rows only; an old boundary with an equal timestamp is not proof.
+        with path.open("rb") as handle:
+            handle.seek(saved["transcript_size"])
+            for line in handle:
+                if not line.endswith(b"\n"):
+                    break  # In-progress writes are retried on the next timer poll.
+                row = json.loads(line)
+                if (isinstance(row, dict) and row.get("type") == "system" and
+                        row.get("subtype") == "compact_boundary"):
+                    boundary = timestamp(row.get("timestamp"), now)
+                    if sent <= boundary <= sent + config.confirm_min * 60:
+                        confirmed = boundary
+                        break
+        if fingerprint(path) != stamp:
+            confirmed = None
+    except (OSError, Unsafe, ValueError, UnicodeError, TypeError, RecursionError, OverflowError):
+        confirmed = None  # Missing, replaced, partial or malformed data is not proof.
+    if confirmed is not None:
+        saved["compact_confirmed_at"] = iso(confirmed)
+        write_state(config.state, saved)
+    elif now - sent >= config.confirm_min * 60 and not saved.get("unconfirmed_logged"):
+        saved["unconfirmed_logged"] = True
+        write_state(config.state, saved)
+        return True
+    return False
+
+
 def read_state(path, now):
     if not path.exists():
         return None
@@ -529,7 +689,7 @@ def check(config, runner=run_tmux, clock=time.time):
     context = None
     decision, reason = "SKIP", "unknown"
     try:
-        # Prove the log writable before any tmux action.
+        # Prove the log writable before any terminal action.
         config.log.parent.mkdir(parents=True, exist_ok=True)
         with config.log.open("a", encoding="utf-8") as log:
             try:
@@ -541,7 +701,12 @@ def check(config, runner=run_tmux, clock=time.time):
                         raise Unsafe("another_check_running") from None
                     state = read_state(config.state, now)
                     check_declarations(config, now)
-                    pane = target_pane(config, runner)
+                    if config.transport not in ("tmux", "dtach"):
+                        raise Unsafe("invalid_transport")
+                    if verify_dtach(config, now):
+                        decision = "COMPACT_UNCONFIRMED"
+                        raise Unsafe("compact_boundary_timeout")
+                    target = target_dtach(config) if config.transport == "dtach" else target_pane(config, runner)
                     human, context, mtime, last, snapshot, regrown, meeting = inspect_inputs(
                         config, now, state[0] if state else None)
                     idle = (now - human) / 60
@@ -557,33 +722,59 @@ def check(config, runner=run_tmux, clock=time.time):
                             not isinstance(last_message, dict) or
                             last_message.get("stop_reason") != "end_turn"):
                         raise Unsafe("turn_not_finished")
+                    if config.transport == "dtach":
+                        content = last_message.get("content")
+                        if (last_message.get("role") != "assistant" or not isinstance(content, list) or
+                                any(not isinstance(block, dict) or block.get("type") == "tool_use"
+                                    for block in content)):
+                            raise Unsafe("turn_not_finished")
+                        if now - timestamp(last.get("timestamp"), now) < config.quiet_sec:
+                            raise Unsafe("transcript_row_not_quiet")
+                        check_subagents(snapshot[3], now, config.quiet_sec)
                     if state:
                         if now - state[0] < config.idle_min * 60:
                             raise Unsafe("compact_cooldown")
                         if not regrown:
                             raise Unsafe("context_not_regrown_since_send")
-                    check_clients(config, runner, now)
-                    capture_args = [config.tmux_bin, "capture-pane", "-p", "-e", "-t", pane]
-                    check_pane(runner(capture_args))
-                    # Narrow the unavoidable capture/send race with a second capture a moment later.
+                    if config.transport == "tmux":
+                        check_clients(config, runner, now)
+                        capture_args = [config.tmux_bin, "capture-pane", "-p", "-e", "-t", target]
+                        check_pane(runner(capture_args))
+                    # Recheck after a pause: a second capture on tmux, fingerprints on dtach.
                     time.sleep(config.recheck_delay)
-                    check_pane(runner(capture_args))
+                    if config.transport == "tmux":
+                        check_pane(runner(capture_args))
                     check_declarations(config, clock())
                     check_meeting(config)
-                    check_clients(config, runner, clock())
-                    if target_pane(config, runner) != pane:
-                        raise Unsafe("pane_changed_before_send")
+                    if config.transport == "tmux":
+                        check_clients(config, runner, clock())
+                        if target_pane(config, runner) != target:
+                            raise Unsafe("pane_changed_before_send")
+                    elif target_dtach(config) != target:
+                        raise Unsafe("dtach_changed_before_send")
                     if not unchanged(config, snapshot):
                         raise Unsafe("inputs_changed_before_send")
                     if config.dry_run:
                         decision, reason = "WOULD COMPACT", "all_conditions_met"
                     else:
                         # Reserve before sending: a partial/uncertain send must not retry.
-                        saved = {"version": 1, "last_compact_at": iso(now),
+                        saved = {"version": 1, "last_compact_at": iso(clock()),
                                  "human_activity_at": iso(human), "status": "pending"}
+                        if config.transport == "dtach":
+                            saved.update(transport="dtach", transcript_path=str(snapshot[2]),
+                                         transcript_size=snapshot[0][snapshot[2]][2],
+                                         transcript_identity=list(snapshot[0][snapshot[2]][:2]))
                         write_state(config.state, saved)
-                        runner([config.tmux_bin, "send-keys", "-t", pane, "-l", "/compact"])
-                        runner([config.tmux_bin, "send-keys", "-t", pane, "Enter"])
+                        # Final fingerprint check after durable reservation, just before injection.
+                        if not unchanged(config, snapshot):
+                            raise Unsafe("inputs_changed_before_send")
+                        if config.transport == "dtach":
+                            write_dtach(config, b"/compact")
+                            time.sleep(1.5)
+                            write_dtach(config, b"\r")
+                        else:
+                            runner([config.tmux_bin, "send-keys", "-t", target, "-l", "/compact"])
+                            runner([config.tmux_bin, "send-keys", "-t", target, "Enter"])
                         saved["status"] = "sent"
                         write_state(config.state, saved)
                         decision, reason = "COMPACT_SENT", "all_conditions_met"
@@ -603,13 +794,8 @@ def check(config, runner=run_tmux, clock=time.time):
 
 
 def fleet_status(directory, runner=None, threshold=200000, known_slugs=()):
-    """Read-only JSONL status, one record per installed configuration, including disabled jobs."""
+    """Read-only JSONL per installed config. Legacy known_slugs is intentionally ignored."""
     runner = runner or subprocess.run
-    present = {path.stem for path in directory.glob("*.json")}
-    for slug in sorted(set(known_slugs) - present):
-        print(json.dumps(dict(slug=slug, config_installed=False, timer_installed=None,
-                              timer_enabled=None, agent_installed=None, agent_active=None, last_decision=None,
-                              last_compaction_time=None, reason="idle_compact_not_configured")))
     for path in sorted(directory.glob("*.json")):
         try:
             data = json.loads(path.read_text())
@@ -645,9 +831,11 @@ def fleet_status(directory, runner=None, threshold=200000, known_slugs=()):
                 agent_installed = probe("show", "bubble-agent@" + data["slug"] + ".service", "-p", "LoadState", "--value").stdout.strip() == "loaded"
                 agent = probe("is-active", "bubble-agent@" + data["slug"] + ".service").returncode == 0
             print(json.dumps(dict(slug=data["slug"], config_installed=True, timer_installed=installed, timer_enabled=enabled,
+                                  transport=runtime.get("transport", "tmux"),
                                   agent_installed=agent_installed, agent_active=agent, last_decision=last,
                                   last_compaction_time=saved.get("last_compact_at") if saved.get("status") == "sent" else last_sent,
                                   send_status=saved.get("status"), context_tokens=context,
+                                  compact_confirmed_at=saved.get("compact_confirmed_at"),
                                   high_context_since=high_since)))
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             print(json.dumps(dict(slug=path.stem, status_error="unreadable_config_state_or_service")))
@@ -661,7 +849,11 @@ def main():
     parser.add_argument("--agents-root", type=Path, default=Path("/srv/agents"))
     parser.add_argument("--tmux-session", default=argparse.SUPPRESS)
     parser.add_argument("--tmux-bin", default=argparse.SUPPRESS)
-    for name in ("transcript-dir", "ledger", "state", "log", "meeting-marker", "harness-selector"):
+    parser.add_argument("--transport", choices=("tmux", "dtach"), default=argparse.SUPPRESS)
+    parser.add_argument("--slug", default=argparse.SUPPRESS)
+    parser.add_argument("--dtach-bin", default=argparse.SUPPRESS)
+    parser.add_argument("--confirm-min", type=float, default=argparse.SUPPRESS)
+    for name in ("transcript-dir", "ledger", "state", "log", "meeting-marker", "harness-selector", "dtach-socket"):
         parser.add_argument("--" + name, default=argparse.SUPPRESS)
     parser.add_argument("--idle-min", type=float, default=argparse.SUPPRESS)
     parser.add_argument("--min-context", type=int, default=argparse.SUPPRESS)
@@ -670,16 +862,11 @@ def main():
     parser.add_argument("--human-user-ids", default=argparse.SUPPRESS)
     args = vars(parser.parse_args())
     status, directory, config_path = args.pop("status"), args.pop("config_dir"), args.pop("config")
-    agents_root = args.pop("agents_root")
+    args.pop("agents_root")
     if status:
         directory = directory or (Path.home() / ".local/state/idle-compact/configs" if os.uname().sysname == "Darwin"
                                   else Path("/etc/bubble-idle-compact"))
-        if os.uname().sysname == "Darwin":
-            known = [p.stem.removeprefix("com.bubble.ops-loop-") for p in
-                     (Path.home() / "Library/LaunchAgents").glob("com.bubble.ops-loop-*.plist")]
-        else:
-            known = [p.name for p in agents_root.iterdir() if p.is_dir()] if agents_root.exists() else []
-        fleet_status(directory.expanduser(), threshold=args.get("min_context", 200000), known_slugs=known)
+        fleet_status(directory.expanduser(), threshold=args.get("min_context", 200000))
         return
     values = {}
     if config_path:
@@ -688,7 +875,8 @@ def main():
         except (OSError, ValueError, KeyError):
             parser.error("unreadable config")
     values.update(args)
-    for name in ("transcript_dir", "ledger", "state", "log", "meeting_marker", "harness_selector"):
+    values.setdefault("tmux_session", "")
+    for name in ("transcript_dir", "ledger", "state", "log", "meeting_marker", "harness_selector", "dtach_socket"):
         if values.get(name) is not None:
             values[name] = Path(values[name]).expanduser()
     if isinstance(values.get("human_user_ids"), str):
@@ -699,10 +887,16 @@ def main():
         parser.error("supply --config or all of --tmux-session --transcript-dir --ledger --state --log")
     if (not math.isfinite(config.idle_min) or config.idle_min <= 0 or config.min_context <= 0 or
             not math.isfinite(config.quiet_sec) or config.quiet_sec <= 0 or
-            not config.tmux_session.strip() or not all(str(uid).isdigit() for uid in config.human_user_ids)):
-        parser.error("thresholds must be positive, session nonempty, and human IDs numeric")
+            not math.isfinite(config.confirm_min) or config.confirm_min <= 0 or
+            config.transport not in ("tmux", "dtach") or
+            (config.transport == "tmux" and not config.tmux_session.strip()) or
+            (config.transport == "dtach" and (not re.fullmatch(r"[a-z][a-z0-9-]{0,79}", config.slug) or
+                                               not config.dtach_socket.is_absolute())) or
+            not all(str(uid).isdigit() for uid in config.human_user_ids)):
+        parser.error("invalid thresholds, transport target, or human IDs")
     # Launchd PATH includes the three fleet locations; explicit --tmux-bin wins.
     config.tmux_bin = shutil.which(config.tmux_bin) or config.tmux_bin
+    config.dtach_bin = shutil.which(config.dtach_bin) or config.dtach_bin
     check(config)
 
 
