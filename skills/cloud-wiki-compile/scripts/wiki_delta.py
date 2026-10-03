@@ -212,8 +212,8 @@ def result_is_success(path: pathlib.Path, run_id: str | None = None) -> bool:
         return valid
     # Board #1700 (Joris, tg 10270, 2026-10-03): the receipt must be the LAST
     # non-empty line of the final message, exact and plan-bound. Text before it
-    # is tolerated (a benign "all steps complete" sentence cost two full
-    # nights); anything after it, or a wrong/missing run id, still fails.
+    # is tolerated (a benign "all steps complete" sentence cost the
+    # 2026-10-02 night); anything after it, or a wrong/missing run id, still fails.
     text = result.get("result")
     if not isinstance(text, str):
         return False

@@ -100,7 +100,7 @@ def test_result_requires_exact_plan_bound_receipt(tmp_path):
                 result=str(successful_result(plan_args, receipt=receipt)),
             ))
     # Board #1700: a preamble before the exact last-line receipt is accepted
-    # (the 2026-10-01 and 2026-10-02 nights), as is trailing whitespace.
+    # (the 2026-10-02 night), as is trailing whitespace.
     for receipt in (
         f"Report queued. All STEP 0-10 actions are complete. Final turn is the receipt only.\n\n{good}",
         f"{good}\n\n  ",
